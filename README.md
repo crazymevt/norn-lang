@@ -1,4 +1,4 @@
-# Loom
+# Norn
 
 A general-purpose Lisp in the family of Common Lisp, Clojure and Racket:
 CLOS-style generic functions, the condition system and images; immutable
@@ -20,25 +20,25 @@ Requires Rust (stable, edition 2024).
 
 ```sh
 cargo build --release
-./target/release/loom                       # REPL
-./target/release/loom -e '(reduce + (range 1000000))'
-./target/release/loom tests/loom/core_test.loom
-cargo test                                  # Rust + Loom test suites
+./target/release/norn                       # REPL
+./target/release/norn -e '(reduce + (range 1000000))'
+./target/release/norn tests/norn/core_test.norn
+cargo test                                  # Rust + Norn test suites
 cargo run -p jit-spike --release            # tier-1 platform checks
-./target/release/loom -e '(do (load-file "bench/pingpong.loom") (ping-pong 500000 10))'
+./target/release/norn -e '(do (load-file "bench/pingpong.norn") (ping-pong 500000 10))'
                                             # 1M fibers ping-pong
-LOOM_GC_STRESS=1 ./target/release/loom tests/loom/conc_test.loom
+NORN_GC_STRESS=1 ./target/release/norn tests/norn/conc_test.norn
                                             # force a GC at every slow-path poll
 ```
 
 ## Layout
 
 ```
-crates/loom-rt   values, heap, objects, collections, printer, namespaces
-crates/loom-vm   reader, seed compiler, interpreter, scheduler, channels, primitives
-crates/loom      the `loom` binary
-lib/core         loom.core, written in Loom
-tests/loom       Loom test suites
+crates/norn-rt   values, heap, objects, collections, printer, namespaces
+crates/norn-vm   reader, seed compiler, interpreter, scheduler, channels, primitives
+crates/norn      the `norn` binary
+lib/core         norn.core, written in Norn
+tests/norn       Norn test suites
 bench/           benchmarks
 spikes/          throwaway platform experiments
 docs/            design documents

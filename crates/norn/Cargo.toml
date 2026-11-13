@@ -1,0 +1,14 @@
+[package]
+name = "norn"
+description = "The norn command: REPL and script runner"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "norn"
+path = "src/main.rs"
+
+[dependencies]
+norn-rt = { path = "../norn-rt" }
+norn-vm = { path = "../norn-vm" }
+ctrlc = "3"

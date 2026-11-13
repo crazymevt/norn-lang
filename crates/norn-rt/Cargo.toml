@@ -1,0 +1,8 @@
+[package]
+name = "norn-rt"
+description = "Norn runtime core: values, heap, objects, collections"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mmtk = { version = "0.33.0", default-features = false, features = ["immix_non_moving"] }

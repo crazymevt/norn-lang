@@ -1,8 +1,0 @@
-[package]
-name = "loom-vm"
-description = "Loom tier-0: reader, seed compiler, bytecode interpreter"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-loom-rt = { path = "../loom-rt" }

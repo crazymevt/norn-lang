@@ -1,4 +1,4 @@
-# Loom Runtime Architecture (draft 0.1)
+# Norn Runtime Architecture (draft 0.1)
 
 Companion to [design.md](design.md). This document covers *how* the Rust
 runtime delivers the language's promises: fibers that can be parked and
@@ -14,14 +14,14 @@ design doc.
 
 Most of this document follows from these three choices:
 
-1. **Loom frames live in heap-allocated, segmented stacks — not on the
+1. **Norn frames live in heap-allocated, segmented stacks — not on the
    native stack** (§3). A fiber's stack is ordinary heap data. That makes
    fiber switches cheap, makes stacks visible to the GC precisely, and lets
    the debugger inspect them and images save them.
-2. **Rust never calls Loom** (§2.3). Runtime primitives are leaves. Anything
+2. **Rust never calls Norn** (§2.3). Runtime primitives are leaves. Anything
    that needs to call user code (sorting with a comparator, `print-object`,
-   reader macros) is written in Loom. This is what makes rule 1 possible:
-   there are never Rust frames sandwiched between Loom frames.
+   reader macros) is written in Norn. This is what makes rule 1 possible:
+   there are never Rust frames sandwiched between Norn frames.
 3. **One frame format for interpreted and compiled code** (§3.3). The
    bytecode interpreter and Cranelift-compiled code push the same frames, so
    stacks can mix both, the debugger handles them identically, and
@@ -34,12 +34,12 @@ Most of this document follows from these three choices:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Loom code: stdlib, CLOS/MOP, conditions, compiler, REPL server      │  lib/*.loom
+│ Norn code: stdlib, CLOS/MOP, conditions, compiler, REPL server      │  lib/*.norn
 ├─────────────────────────────────────────────────────────────────────┤
-│ Execution:  bytecode interpreter (tier 0) │ Cranelift JIT/AOT (tier 1)│  loom-vm, loom-jit
+│ Execution:  bytecode interpreter (tier 0) │ Cranelift JIT/AOT (tier 1)│  norn-vm, norn-jit
 ├─────────────────────────────────────────────────────────────────────┤
 │ Runtime core: values · object model · persistent collections        │
-│   fibers & stacks · scheduler · reactor · sync primitives           │  loom-rt
+│   fibers & stacks · scheduler · reactor · sync primitives           │  norn-rt
 │   image save/load · FFI                                             │
 ├─────────────────────────────────────────────────────────────────────┤
 │ MMTk (GC)   Cranelift (codegen)   crossbeam-deque   mio             │  dependencies
@@ -55,7 +55,7 @@ Tier-1 targets: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`,
 
 ### 2.1 Value representation **[decided]**
 
-A Loom value is one 64-bit word, `#[repr(transparent)] struct Value(u64)`,
+A Norn value is one 64-bit word, `#[repr(transparent)] struct Value(u64)`,
 with low-bit tagging (as in SBCL), not NaN-boxing: fast fixnums matter more
 for a Lisp than unboxed floats do, and the JIT can unbox floats locally.
 
@@ -92,17 +92,17 @@ Conses are the exception: they have no header, just two words (`car`,
 - **Mutable instances** (`(:mutable)` classes) carry an extra hidden slot,
   `owner`, holding a fiber id. Immutable instances pay nothing for it.
 
-### 2.3 "Rust never calls Loom" **[decided]**
+### 2.3 "Rust never calls Norn" **[decided]**
 
 Rust primitives (`vector-conj`, `string-concat`, `atom-cas`, …) are leaf
-functions: they may allocate but never invoke Loom code. Consequences:
+functions: they may allocate but never invoke Norn code. Consequences:
 
 - **Equality and hashing are structural and runtime-defined**, so the HAMT in
   Rust can implement `assoc`/`get` without calling back into user code. That
   also guarantees map operations can't deadlock or run user side effects in
   parallel folds. Custom key semantics use a key function. **[open: confirm]**
 - **Sorted collections, `sort` with a comparator, `print-object`, reader
-  macros and anything else higher-order are written in Loom.**
+  macros and anything else higher-order are written in Norn.**
 - **FFI callbacks** are the single exception: they are *continuation
   barriers*. While native code is on the stack, the fiber is pinned to its
   carrier and can't be captured, saved or migrated. Racket's CS backend has
@@ -110,13 +110,13 @@ functions: they may allocate but never invoke Loom code. Consequences:
 
 ### 2.4 Collections **[proposed]**
 
-| In Rust (no user callbacks needed) | In Loom |
+| In Rust (no user callbacks needed) | In Norn |
 |---|---|
 | Persistent vector (RRB), hash map/set (CHAMP), string, byte-vector, cons | Sorted map/set, lazy streams, transducers, `sort` |
 | Transients (with owner-fiber check) | Queues, everything built on the above |
 
 Rust gives them speed while everything runs on the bytecode interpreter.
-Once the native compiler is good, moving more into Loom is an option.
+Once the native compiler is good, moving more into Norn is an option.
 
 ---
 
@@ -147,16 +147,16 @@ segments**, which are ordinary heap objects (class `StackSegment`).
   GC scans exactly the live words, never stale frames above the top.
 - **Fiber switch** means saving the segment and frame offset into the old
   fiber and loading the next fiber's. There are no registers to save between
-  Loom calls (§3.2) and no assembly context switching.
+  Norn calls (§3.2) and no assembly context switching.
 - **Memory (measured, M1):** a parked fiber costs about 1.7 KB in total
   (fiber object, first segment, closure, waiter). 1M parked fibers use
   1.73 GB of heap. A fiber gets its first segment when it starts running.
 
 ### 3.2 Calls compile to "push frame + tail call" **[decided]**
 
-The native stack never holds Loom values across a Loom call.
+The native stack never holds Norn values across a Norn call.
 
-- **Non-tail call:** spill live values into the current Loom frame, record the
+- **Non-tail call:** spill live values into the current Norn frame, record the
   *resume point*, then jump to the callee (Cranelift's `tail` calling
   convention with `return_call`).
 - **Return:** the callee jumps to the caller's frame's resume point.
@@ -202,14 +202,14 @@ The kernel provides **one-shot** delimited control: `%prompt` and
 `%capture`. With segmented stacks, capturing splits the segment at the
 prompt (O(1)), and resuming relinks it. Fibers, generators, `await`, effect
 handlers and the condition system's non-local exits are all built on this
-in Loom.
+in Norn.
 
 Multi-shot continuations (copy on reinstatement) are **[open]**; nothing in
 the design needs them yet.
 
 ### 3.5 Kernel language **[proposed]**
 
-All of Loom macro-expands to roughly 14 forms, which both tiers implement:
+All of Norn macro-expands to roughly 14 forms, which both tiers implement:
 
 ```
 quote  if  do  let*  letrec*  fn*  def  var
@@ -230,10 +230,10 @@ values rather than boxes.
 ### 4.1 GC: MMTk **[decided]**
 
 - **M1: MMTk 0.33, `Immix` plan built with `immix_non_moving`**
-  (`loom-rt/src/heap.rs`): parallel (one GC worker per core), stop-the-world,
+  (`norn-rt/src/heap.rs`): parallel (one GC worker per core), stop-the-world,
   and objects never move, so the interpreter's cached code and frame pointers
   stay valid across a GC. Dynamic heap size, 64 MB up to 8 GB by default
-  (`LOOM_HEAP_MIN`, `LOOM_HEAP_MAX`).
+  (`NORN_HEAP_MIN`, `NORN_HEAP_MAX`).
 - **Next: generational `StickyImmix`** with `sticky_immix_non_moving_nursery`.
   It needs write barriers on stores into possibly-old objects (var roots,
   atoms, fiber, channel and scope fields; §4.4). Stack frames don't need
@@ -248,7 +248,7 @@ values rather than boxes.
 
 ### 4.2 Roots and safepoints **[decided]**
 
-Loom values live only in the heap (stack frames included), so the roots that
+Norn values live only in the heap (stack frames included), so the roots that
 live *outside* the heap are few (implemented in M1):
 
 - Runtime tables: interned symbols and keywords, namespaces → vars, the
@@ -271,12 +271,12 @@ saw. Anything that needs a busy carrier's attention bumps that counter:
 |---|---|
 | reduction budget (2000) used up | yield, if other fibers are waiting |
 | stop-the-world requested | save stack top, block until the GC finishes |
-| `(gc)` or `LOOM_GC_STRESS` | save stack top, request a collection, block |
+| `(gc)` or `NORN_GC_STRESS` | save stack top, request a collection, block |
 | fiber cancelled / interrupted | raise `Cancelled` / `Interrupted` |
 | work submitted from outside (REPL, cancel) | handle it |
 
-The **safepoint protocol** (`loom-rt/src/safepoint.rs`) counts *running*
-participants: carriers executing Loom code, and the timer thread while it
+The **safepoint protocol** (`norn-rt/src/safepoint.rs`) counts *running*
+participants: carriers executing Norn code, and the timer thread while it
 fires timers. Stopping the world waits until none is running. Idle carriers
 count as safe.
 
@@ -284,12 +284,12 @@ count as safe.
 
 **Allocation never triggers a collection.** If allocation runs out of room it
 takes more memory and sets the poll word, and the collection then happens at
-the next safepoint, where every live Loom value is in a heap stack frame.
+the next safepoint, where every live Norn value is in a heap stack frame.
 
 This removes almost all rooting from Rust. Primitives are leaves (§2.3), so
 they contain no safepoints and can hold raw `Value`s across allocation
 freely. Handles (`Handle<'scope>`, as in V8's HandleScope) are only needed by
-the little Rust code that runs Loom code *and* keeps values across it. In M0
+the little Rust code that runs Norn code *and* keeps values across it. In M0
 that is only the seed compiler holding forms while it calls a macro.
 
 - **Risk:** a primitive that allocates enormously between safepoints
@@ -300,11 +300,11 @@ that is only the seed compiler holding forms while it calls a macro.
   heap makes it *request* a collection, and the collection then starts
   through our `stop_all_mutators`, which waits for every carrier to reach a
   safepoint.
-- **Nested runs are GC-inhibited.** Rust code that re-enters Loom (the seed
+- **Nested runs are GC-inhibited.** Rust code that re-enters Norn (the seed
   compiler expanding macros, boot) holds values the GC can't see. While such a
   run is active, the carrier's polls don't stop for a GC, which simply waits
   for the run to end. The seed compiler is replaced in M4.
-- **GC stress mode:** `LOOM_GC_STRESS=N` forces a collection at every N-th
+- **GC stress mode:** `NORN_GC_STRESS=N` forces a collection at every N-th
   slow-path poll of every carrier. With N=1, the core suite completed
   2,032,983 collections with 0 failures.
 
@@ -336,8 +336,8 @@ that is only the seed compiler holding forms while it calls a macro.
           ▲  global injector queue          └─────────────┘        └───────────────┘
 ```
 
-- **As built in M1** (`loom-vm/src/sched.rs`):
-  - one carrier thread per core (`LOOM_THREADS` overrides), plus a timer thread;
+- **As built in M1** (`norn-vm/src/sched.rs`):
+  - one carrier thread per core (`NORN_THREADS` overrides), plus a timer thread;
   - each carrier has a mutex-guarded run queue, and there is one global queue;
   - a carrier takes from its own queue first, then the global one, then
     steals from other carriers;
@@ -373,12 +373,12 @@ that is only the seed compiler holding forms while it calls a macro.
 ### 5.3 Sync primitives **[M1: atoms, channels, scopes built]**
 
 All shared mutable state is in the heap, guarded by one-word spinlocks inside
-the objects (`loom-rt/src/conc.rs`). There are no Rust-side allocations,
+the objects (`norn-rt/src/conc.rs`). There are no Rust-side allocations,
 finalisers or extra root tables.
 
 | Primitive | Implementation |
 |---|---|
-| `atom` | `AtomicU64` CAS on a tagged value; `swap!` is a CAS loop written in Loom |
+| `atom` | `AtomicU64` CAS on a tagged value; `swap!` is a CAS loop written in Norn |
 | `var` | root slot (release store / acquire load) + flags |
 | `chan` | spinlock + optional ring buffer + FIFO queues of waiters (two lists each) for takers and putters; unbuffered channels hand values over directly. `alts!` locks its channels in address order and parks on all of them with one shared claim. `timeout` is a channel the timer thread closes. |
 | scope | children list, pending count, first failure, owner waiter. A failing child cancels its siblings; cancelling the owner cancels the tree. |
@@ -393,7 +393,7 @@ finalisers or extra root tables.
 **[proposed]**
 
 - A generic function object holds an atomically swappable pointer to an
-  immutable **dispatch cache**, itself a Loom persistent map: our own data
+  immutable **dispatch cache**, itself a Norn persistent map: our own data
   structures, used for our own runtime.
 - Cache key: the tuple of layouts (not classes — this also catches obsolete
   instances) of the *specialised* argument positions only. Cache value: the
@@ -504,13 +504,13 @@ Consequences **[decided]**:
 ## 9. Bootstrap
 
 ```
-1. loom-rt + loom-vm (Rust) compile.
-2. loom-vm contains a small Rust "seed compiler": reader → kernel forms
+1. norn-rt + norn-vm (Rust) compile.
+2. norn-vm contains a small Rust "seed compiler": reader → kernel forms
    (+ non-hygienic defmacro) → bytecode.                 [throwaway, ~2k LOC]
-3. Seed compiler loads lib/core/*.loom (stdlib basics, CLOS, conditions).
-4. Seed compiler loads lib/compiler/*.loom — the real compiler, in Loom.
+3. Seed compiler loads lib/core/*.norn (stdlib basics, CLOS, conditions).
+4. Seed compiler loads lib/compiler/*.norn — the real compiler, in Norn.
 5. Real compiler recompiles itself and the stdlib → save base.lim.
-6. From here on: `loom` = loom-rt + base.lim. The seed compiler is used only
+6. From here on: `norn` = norn-rt + base.lim. The seed compiler is used only
    to rebuild from scratch (and in CI, to prove we still can).
 ```
 
@@ -519,14 +519,14 @@ Consequences **[decided]**:
 ## 10. Repository layout
 
 ```
-loom-lang/
+./
   Cargo.toml                 workspace
   crates/
-    loom-rt/                 values, objects, collections, heap (MMTk binding),
+    norn-rt/                 values, objects, collections, heap (MMTk binding),
                              fibers, scheduler, reactor, sync, images, FFI
-    loom-vm/                 bytecode, interpreter, seed compiler, reader (bootstrap)
-    loom-jit/                Cranelift backend (M4)
-    loom/                    `loom` binary: REPL, run image, build
+    norn-vm/                 bytecode, interpreter, seed compiler, reader (bootstrap)
+    norn-jit/                Cranelift backend (M4)
+    norn/                    `norn` binary: REPL, run image, build
   lib/
     core/                    kernel macros, seqs, printing, numbers
     clos/                    classes, generic functions, MOP, method combination
@@ -534,11 +534,11 @@ loom-lang/
     async/                   scopes, channels, processes, supervisors, parallel
     compiler/                expander, ANF, optimiser, codegen drivers
     repl/                    network REPL server
-  bench/                     benchmarks (bench/pingpong.loom: the M1 done-check)
+  bench/                     benchmarks (bench/pingpong.norn: the M1 done-check)
   spikes/
     jit-spike/               platform checks for tier 1 and images (§7.4)
   docs/
-  tests/loom/                .loom test suites (run by crates/loom-vm/tests/)
+  tests/norn/                .norn test suites (run by crates/norn-vm/tests/)
 ```
 
 ---
@@ -548,16 +548,16 @@ loom-lang/
 **[proposed]**
 
 - **Concurrency:** the scheduler, channels and atoms are model-checked with
-  [`loom`](https://github.com/tokio-rs/loom) (Tokio's permutation tester —
-  yes, same name) and/or `shuttle`.
+  [`loom`](https://github.com/tokio-rs/loom) (Tokio's permutation tester)
+  and/or `shuttle`.
 - **GC:** stress mode (collect on every allocation, poison freed memory) runs
   in CI on the whole test suite.
-- **Differential:** every `.loom` test runs on tier 0 and tier 1, and the
+- **Differential:** every `.norn` test runs on tier 0 and tier 1, and the
   results must agree. Images are tested by round-tripping (save → load → run
   the suite).
 - **Fuzzing:** the reader, the bytecode verifier and image load (a malformed
   image must not crash the runtime).
-- **Miri** on the `unsafe` core of `loom-rt`, wherever the code is
+- **Miri** on the `unsafe` core of `norn-rt`, wherever the code is
   Miri-compatible.
 
 ---
@@ -571,9 +571,9 @@ together.
 |---|---|---|
 | M0 ✅ | Workspace, `Value`/object model, cons/vector/map/string, reader, printer, seed compiler, tier-0 VM on heap stacks, REPL; NoGC heap | `(reduce + (range 1000000))` at the REPL; macOS JIT spike works |
 | M1 ✅ | Fibers, scheduler, safepoints, MMTk GC (non-moving Immix), atoms, channels, scopes | 1M fibers ping-pong across all cores under GC stress |
-| M2 | CLOS in Loom: `defclass`, layouts, generic functions, method combination, dispatch caches | Live `defmethod` while 8 cores call the generic function |
+| M2 | CLOS in Norn: `defclass`, layouts, generic functions, method combination, dispatch caches | Live `defmethod` while 8 cores call the generic function |
 | M3 | Conditions, restarts, parked-fiber debugger, REPL protocol | Fix a crashed fiber from the editor and resume it |
-| M4 | Real compiler in Loom, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
+| M4 | Real compiler in Norn, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
 | M5 | Images: save/load, layers, parked fibers, `on-image-restore` | Under 50 ms startup; a saved fiber resumes after load |
 | M6 | Hygiene, modules/phases, `#lang`, sealing | Stdlib built as sealed modules |
 | M7 | Full MOP, STM, processes/supervisors, FFI, gradual types, contracts | — |
@@ -581,21 +581,21 @@ together.
 ### 12.1 M0 status (2026-11-13)
 
 **Built:**
-- **`loom-rt`:**
+- **`norn-rt`:**
   - tagged values and the object model;
   - the NoGC heap;
   - persistent vector (32-way trie with tail) and HAMT map/set;
   - interned symbols and keywords;
   - structural `=`/`hash`;
   - seq abstraction, printer, namespaces and vars.
-- **`loom-vm`:**
+- **`norn-vm`:**
   - the reader (`#()`, syntax-quote with qualification and `x#` gensyms, `#lang`, `#_`, `#|…|#`);
   - the seed compiler (kernel forms plus macro expansion; flat closures; `letrec*` fix-ups; `recur` as a backward jump);
-  - the register-based bytecode interpreter on heap segmented stacks (proper tail calls, a spare-segment cache, stack-overflow detection, Ctrl-C interrupt at the safepoint poll, Loom backtraces);
+  - the register-based bytecode interpreter on heap segmented stacks (proper tail calls, a spare-segment cache, stack-overflow detection, Ctrl-C interrupt at the safepoint poll, Norn backtraces);
   - 103 primitives.
-- **`lib/core/core.loom`:** 88 macros and functions, from `defn` and `cond` to `sort-by` and `update-in`.
-- **`loom`:** a REPL with multi-line input, plus `loom FILE` and `loom -e EXPR`.
-- **Tests:** 6 runtime unit tests, plus 89 Loom checks and REPL-level error/printing tests in `cargo test`.
+- **`lib/core/core.norn`:** 88 macros and functions, from `defn` and `cond` to `sort-by` and `update-in`.
+- **`norn`:** a REPL with multi-line input, plus `norn FILE` and `norn -e EXPR`.
+- **Tests:** 6 runtime unit tests, plus 89 Norn checks and REPL-level error/printing tests in `cargo test`.
 
 **Measured** (release build, Apple Silicon, tier 0):
 - `(reduce + (range 1000000))`: about 46 ms
@@ -628,14 +628,14 @@ together.
   - `pmap`, `preduce`.
 - **All evaluation runs in fibers.** `eval` is an interpreter intrinsic, so evaluated code can park, and the REPL thread never touches the heap.
 
-**Measured** (release build, Apple M-series, 10 cores; `bench/pingpong.loom`):
+**Measured** (release build, Apple M-series, 10 cores; `bench/pingpong.norn`):
 
 | Run | Result |
 |---|---|
-| 1M fibers alive at once, then 10M messages | ✅ 1.73 GB heap; 4.6 s with `LOOM_HEAP_MIN=3g` (1 GC); 21 s from the default 64 MB heap (161 GCs, mostly while spawning) |
-| 1M fibers, `LOOM_GC_STRESS=20` | ✅ 441 GCs, 68 s |
-| 40k fibers, `LOOM_GC_STRESS=1` | ✅ 65,694 GCs, 2M messages, checksums correct |
-| core suite, `LOOM_GC_STRESS=1` | ✅ 2,032,983 GCs, 0 failures |
+| 1M fibers alive at once, then 10M messages | ✅ 1.73 GB heap; 4.6 s with `NORN_HEAP_MIN=3g` (1 GC); 21 s from the default 64 MB heap (161 GCs, mostly while spawning) |
+| 1M fibers, `NORN_GC_STRESS=20` | ✅ 441 GCs, 68 s |
+| 40k fibers, `NORN_GC_STRESS=1` | ✅ 65,694 GCs, 2M messages, checksums correct |
+| core suite, `NORN_GC_STRESS=1` | ✅ 2,032,983 GCs, 0 failures |
 | suites ×10 at 1, 2, 3 and 10 carriers | ✅ 0 failures |
 
 **Found along the way:**
@@ -648,7 +648,7 @@ together.
 |---|---|
 | Dynamic bindings and conveyance | M3, with conditions |
 | `try` (tests use `settle` meanwhile) | M3 |
-| Error locations (`file:line`) for code loaded through `load-file`, which now runs in Loom | M3 |
+| Error locations (`file:line`) for code loaded through `load-file`, which now runs in Norn | M3 |
 | I/O reactor, FFI monitor thread | M7 |
 | Generational GC (needs write barriers) | — |
 
@@ -657,7 +657,7 @@ together.
 ## 13. Open questions
 
 1. **Structural-only equality and hashing** (§2.3): confirm, or allow
-   user-defined `=`/`hash`, which would push hash maps into Loom.
+   user-defined `=`/`hash`, which would push hash maps into Norn.
 2. **Multi-shot continuations** (§3.4): keep them out unless a need appears?
 3. **Concurrent GC** (§4.1): wait for MMTk, or plan our own?
 4. **Parked fibers nothing can wake** are currently collected silently

@@ -167,7 +167,7 @@ fn check_file_mapped_code() -> Res<()> {
     let bytes = compiled.code_buffer().to_vec();
     assert!(compiled.buffer.relocs().is_empty(), "leaf function should need no relocations");
 
-    let dir = std::env::temp_dir().join(format!("loom-jit-spike-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("norn-jit-spike-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("mul_add.code");
     std::fs::write(&path, &bytes)?;
@@ -196,7 +196,7 @@ fn call_mul_add(p: *mut libc::c_void) -> i64 {
 
 fn map_file_exec(bytes: &[u8]) -> Res<i64> {
     use std::os::fd::AsRawFd;
-    let path = std::env::temp_dir().join(format!("loom-jit-spike-{}.code", std::process::id()));
+    let path = std::env::temp_dir().join(format!("norn-jit-spike-{}.code", std::process::id()));
     std::fs::write(&path, bytes)?;
     let file = std::fs::File::open(&path)?;
     // SAFETY: mapping a file we just wrote; length matches its size.
@@ -277,7 +277,7 @@ fn map_copy_exec(bytes: &[u8]) -> Res<i64> {
 }
 
 fn main() -> Res<()> {
-    println!("Loom JIT spike on {}-{}", std::env::consts::ARCH, std::env::consts::OS);
+    println!("Norn JIT spike on {}-{}", std::env::consts::ARCH, std::env::consts::OS);
     check_basic_jit()?;
     check_tail_calls()?;
     check_file_mapped_code()?;

@@ -632,29 +632,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
-name = "loom"
-version = "0.0.1"
-dependencies = [
- "ctrlc",
- "loom-rt",
- "loom-vm",
-]
-
-[[package]]
-name = "loom-rt"
-version = "0.0.1"
-dependencies = [
- "mmtk",
-]
-
-[[package]]
-name = "loom-vm"
-version = "0.0.1"
-dependencies = [
- "loom-rt",
-]
-
-[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -741,6 +718,29 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "norn"
+version = "0.0.1"
+dependencies = [
+ "ctrlc",
+ "norn-rt",
+ "norn-vm",
+]
+
+[[package]]
+name = "norn-rt"
+version = "0.0.1"
+dependencies = [
+ "mmtk",
+]
+
+[[package]]
+name = "norn-vm"
+version = "0.0.1"
+dependencies = [
+ "norn-rt",
 ]
 
 [[package]]

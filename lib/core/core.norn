@@ -1,0 +1,447 @@
+#lang norn
+;;;; norn.core — the language's core macros and functions.
+;;;;
+;;;; Loaded by the seed compiler at start-up, on top of the kernel forms
+;;;; (quote if do def var fn* let* letrec* loop* recur) and the Rust
+;;;; primitives. Collection functions are eager (design.md §3.3) until lazy
+;;;; streams and transducers arrive.
+
+;;; ---- evaluation --------------------------------------------------------------
+
+;; `eval` of a top-level (do …) calls this, so each form is compiled only after
+;; the previous one ran (a macro defined early can be used later).
+(def %eval-all
+  (fn* %eval-all [forms]
+    (loop* [s (seq forms) last nil]
+      (if s (recur (next s) (eval (first s))) last))))
+
+;;; ---- defining things ------------------------------------------------------
+
+(def defmacro
+  (fn* defmacro [name & body]
+    (let* [body (if (string? (first body)) (rest body) body)]
+      `(do (def ~name (fn* ~name ~@body))
+           (%set-macro! (var ~name))
+           (var ~name)))))
+(%set-macro! (var defmacro))
+
+(defmacro defn
+  "Define a named function. A docstring may follow the name."
+  [name & body]
+  (let* [body (if (string? (first body)) (rest body) body)]
+    `(def ~name (fn* ~name ~@body))))
+
+(defmacro defn- [name & body] `(defn ~name ~@body))
+(defmacro fn [& sigs] `(fn* ~@sigs))
+(defmacro let [bindings & body] `(let* ~bindings ~@body))
+(defmacro loop [bindings & body] `(loop* ~bindings ~@body))
+(defmacro declare [& names] `(do ~@(loop* [ns names acc ()]
+                                      (if (seq ns)
+                                        (recur (rest ns) (cons (list 'def (first ns)) acc))
+                                        acc))))
+(defmacro comment [& _] nil)
+
+;;; ---- basics -------------------------------------------------------------------
+
+(defn not [x] (if x false true))
+(defn some? [x] (not (nil? x)))
+(defn true? [x] (identical? x true))
+(defn false? [x] (identical? x false))
+(defn identity [x] x)
+(defn second [coll] (first (next coll)))
+(defn ffirst [coll] (first (first coll)))
+(defn nnext [coll] (next (next coll)))
+(defn empty? [coll] (not (seq coll)))
+(defn not-empty [coll] (if (seq coll) coll nil))
+(defn zero? [n] (== n 0))
+(defn pos? [n] (> n 0))
+(defn neg? [n] (< n 0))
+(defn even? [n] (zero? (rem n 2)))
+(defn odd? [n] (not (even? n)))
+(defn abs [n] (if (neg? n) (- n) n))
+(defn max ([x] x) ([x y] (if (> x y) x y)) ([x y & more] (apply max (max x y) more)))
+(defn min ([x] x) ([x y] (if (< x y) x y)) ([x y & more] (apply min (min x y) more)))
+(defn constantly [x] (fn [& _] x))
+(defn complement [f] (fn [& args] (not (apply f args))))
+
+;;; ---- control flow ------------------------------------------------------------
+
+(defmacro when [test & body] `(if ~test (do ~@body)))
+(defmacro when-not [test & body] `(if ~test nil (do ~@body)))
+(defmacro if-not [test then & else] `(if ~test (do ~@else) ~then))
+
+(defmacro cond [& clauses]
+  (when (seq clauses)
+    (when-not (next clauses)
+      (error "cond requires an even number of forms"))
+    `(if ~(first clauses)
+       ~(second clauses)
+       (cond ~@(nnext clauses)))))
+
+(defmacro and [& xs]
+  (if (seq xs)
+    (if (next xs)
+      `(let* [and# ~(first xs)] (if and# (and ~@(rest xs)) and#))
+      (first xs))
+    true))
+
+(defmacro or [& xs]
+  (if (seq xs)
+    (if (next xs)
+      `(let* [or# ~(first xs)] (if or# or# (or ~@(rest xs))))
+      (first xs))
+    nil))
+
+(defmacro if-let [binding then & else]
+  `(let* [temp# ~(second binding)]
+     (if temp#
+       (let* [~(first binding) temp#] ~then)
+       (do ~@else))))
+
+(defmacro when-let [binding & body]
+  `(let* [temp# ~(second binding)]
+     (when temp# (let* [~(first binding) temp#] ~@body))))
+
+(defmacro -> [x & forms]
+  (loop* [x x forms forms]
+    (if forms
+      (let* [form (first forms)]
+        (recur (if (seq? form) `(~(first form) ~x ~@(next form)) (list form x))
+               (next forms)))
+      x)))
+
+(defmacro ->> [x & forms]
+  (loop* [x x forms forms]
+    (if forms
+      (let* [form (first forms)]
+        (recur (if (seq? form) `(~@form ~x) (list form x))
+               (next forms)))
+      x)))
+
+(defmacro doto [x & forms]
+  (let* [g (gensym "doto")]
+    `(let* [~g ~x]
+       ~@(loop* [fs forms acc []]
+           (if fs
+             (let* [f (first fs)]
+               (recur (next fs) (conj acc (if (seq? f) `(~(first f) ~g ~@(next f)) `(~f ~g)))))
+             acc))
+       ~g)))
+
+(defmacro letfn [fnspecs & body]
+  `(letrec* ~(loop* [specs fnspecs acc []]
+               (if (seq specs)
+                 (let* [spec (first specs)]
+                   (recur (rest specs) (conj (conj acc (first spec)) `(fn* ~@spec))))
+                 acc))
+     ~@body))
+
+(defmacro assert [x & msg]
+  `(when-not ~x
+     (error "Assert failed:" ~(if (seq msg) (first msg) (pr-str x)))))
+
+;;; ---- iteration ------------------------------------------------------------------
+
+(defmacro dotimes [bindings & body]
+  (let* [i (first bindings) n (second bindings)]
+    `(let* [n# ~n]
+       (loop* [~i 0]
+         (when (< ~i n#)
+           ~@body
+           (recur (inc ~i)))))))
+
+(defmacro doseq [bindings & body]
+  (let* [x (first bindings) coll (second bindings)]
+    `(loop* [s# (seq ~coll)]
+       (when s#
+         (let* [~x (first s#)] ~@body)
+         (recur (next s#))))))
+
+(defmacro while [test & body]
+  `(loop* [] (when ~test ~@body (recur))))
+
+(defmacro time [expr]
+  `(let* [start# (nano-time)
+          ret# ~expr]
+     (println (str "Elapsed time: " (/ (float (- (nano-time) start#)) 1000000.0) " msecs"))
+     ret#))
+
+;;; ---- reduce and friends --------------------------------------------------------
+
+(defn reduce
+  ([f coll]
+   (let [s (seq coll)]
+     (if s (reduce f (first s) (rest s)) (f))))
+  ([f init coll]
+   (if (%indexed? coll)
+     ;; Vectors, ranges: index directly, no per-element allocation.
+     (let [n (count coll)]
+       (loop [i 0 acc init]
+         (if (< i n) (recur (inc i) (f acc (nth coll i))) acc)))
+     (loop [s (seq coll) acc init]
+       (if s (recur (next s) (f acc (first s))) acc)))))
+
+(defn reduce-kv [f init m]
+  (reduce (fn [acc e] (f acc (first e) (second e))) init m))
+
+(defn reverse* [coll] (reduce (fn [acc x] (cons x acc)) () coll))
+(defn reverse [coll] (reverse* coll))
+
+(defn comp
+  ([] identity)
+  ([f] f)
+  ([f g] (fn [& args] (f (apply g args))))
+  ([f g & fs]
+   (let [fs (reverse* (cons f (cons g fs)))]
+     (fn [& args]
+       (loop [fs (next fs) acc (apply (first fs) args)]
+         (if fs (recur (next fs) ((first fs) acc)) acc))))))
+
+(defn partial [f & bound] (fn [& args] (apply f (concat bound args))))
+
+(defn into [to from]
+  (if (and (vector? to) (empty? to))
+    (vec from)
+    (reduce conj to from)))
+
+(defn map
+  ([f coll] (reduce (fn [acc x] (conj acc (f x))) [] coll))
+  ([f c1 c2]
+   (loop [a (seq c1) b (seq c2) acc []]
+     (if (and a b)
+       (recur (next a) (next b) (conj acc (f (first a) (first b))))
+       acc)))
+  ([f c1 c2 c3]
+   (loop [a (seq c1) b (seq c2) c (seq c3) acc []]
+     (if (and a b c)
+       (recur (next a) (next b) (next c) (conj acc (f (first a) (first b) (first c))))
+       acc))))
+
+(def mapv map)
+
+(defn map-indexed [f coll]
+  (loop [s (seq coll) i 0 acc []]
+    (if s (recur (next s) (inc i) (conj acc (f i (first s)))) acc)))
+
+(defn filter [pred coll]
+  (reduce (fn [acc x] (if (pred x) (conj acc x) acc)) [] coll))
+(def filterv filter)
+(defn remove [pred coll] (filter (complement pred) coll))
+(defn keep [f coll]
+  (reduce (fn [acc x] (let [y (f x)] (if (nil? y) acc (conj acc y)))) [] coll))
+(defn mapcat [f coll] (reduce (fn [acc x] (into acc (f x))) [] coll))
+
+(defn some [pred coll]
+  (loop [s (seq coll)]
+    (when s (or (pred (first s)) (recur (next s))))))
+
+(defn every? [pred coll]
+  (loop [s (seq coll)]
+    (if s (if (pred (first s)) (recur (next s)) false) true)))
+
+(defn not-any? [pred coll] (not (some pred coll)))
+
+(defn take [n coll]
+  (loop [s (seq coll) i 0 acc []]
+    (if (and s (< i n)) (recur (next s) (inc i) (conj acc (first s))) acc)))
+
+(defn drop [n coll]
+  (loop [s (seq coll) i 0]
+    (if (and s (< i n)) (recur (next s) (inc i)) (vec s))))
+
+(defn take-while [pred coll]
+  (loop [s (seq coll) acc []]
+    (if (and s (pred (first s))) (recur (next s) (conj acc (first s))) acc)))
+
+(defn drop-while [pred coll]
+  (loop [s (seq coll)]
+    (if (and s (pred (first s))) (recur (next s)) (vec s))))
+
+(defn last [coll]
+  (if (vector? coll)
+    (peek coll)
+    (loop [s (seq coll)] (if (next s) (recur (next s)) (first s)))))
+
+(defn butlast [coll]
+  (let [v (vec coll)] (if (seq v) (pop v) nil)))
+
+(defn nthnext [coll n]
+  (loop [s (seq coll) n n] (if (and s (pos? n)) (recur (next s) (dec n)) s)))
+
+(defn repeat [n x] (loop [i 0 acc []] (if (< i n) (recur (inc i) (conj acc x)) acc)))
+
+(defn interpose [sep coll]
+  (loop [s (seq coll) acc []]
+    (if s
+      (recur (next s) (if (empty? acc) (conj acc (first s)) (conj (conj acc sep) (first s))))
+      acc)))
+
+(defn distinct [coll]
+  (loop [s (seq coll) seen #{} acc []]
+    (if s
+      (let [x (first s)]
+        (if (contains? seen x) (recur (next s) seen acc) (recur (next s) (conj seen x) (conj acc x))))
+      acc)))
+
+(defn partition [n coll]
+  (loop [s (seq coll) acc []]
+    (let [chunk (take n s)]
+      (if (== (count chunk) n) (recur (nthnext s n) (conj acc chunk)) acc))))
+
+(defn frequencies [coll]
+  (reduce (fn [m x] (assoc m x (inc (get m x 0)))) {} coll))
+
+(defn group-by [f coll]
+  (reduce (fn [m x] (let [k (f x)] (assoc m k (conj (get m k []) x)))) {} coll))
+
+(defn zipmap [ks vs]
+  (loop [k (seq ks) v (seq vs) m {}]
+    (if (and k v) (recur (next k) (next v) (assoc m (first k) (first v))) m)))
+
+;;; ---- maps -----------------------------------------------------------------------
+
+(defn merge [& maps]
+  (reduce (fn [acc m] (if m (conj (or acc {}) m) acc)) nil maps))
+
+(defn get-in [m ks] (reduce get m ks))
+
+(defn assoc-in [m ks v]
+  (let [k (first ks) more (next ks)]
+    (if more (assoc m k (assoc-in (get m k) more v)) (assoc m k v))))
+
+(defn update [m k f & args] (assoc m k (apply f (get m k) args)))
+
+(defn update-in [m ks f & args]
+  (assoc-in m ks (apply f (get-in m ks) args)))
+
+(defn select-keys [m ks]
+  (reduce (fn [acc k] (if (contains? m k) (assoc acc k (get m k)) acc)) {} ks))
+
+;;; ---- sorting --------------------------------------------------------------------
+
+(defn- merge-sorted [cmp a b]
+  (loop [a (seq a) b (seq b) acc []]
+    (cond
+      (not a) (into acc b)
+      (not b) (into acc a)
+      (pos? (cmp (first a) (first b))) (recur a (next b) (conj acc (first b)))
+      :else (recur (next a) b (conj acc (first a))))))
+
+(defn sort
+  "Stable merge sort; returns a vector."
+  ([coll] (sort compare coll))
+  ([cmp coll]
+   (let [v (vec coll) n (count v)]
+     (if (< n 2)
+       v
+       (let [mid (quot n 2)]
+         (merge-sorted cmp (sort cmp (take mid v)) (sort cmp (drop mid v))))))))
+
+(defn sort-by
+  ([keyfn coll] (sort-by keyfn compare coll))
+  ([keyfn cmp coll] (sort (fn [a b] (cmp (keyfn a) (keyfn b))) coll)))
+
+;;; ---- loading code ------------------------------------------------------------------
+
+(defn %eval-reader [r]
+  (loop [last nil]
+    (let [f (%read r)]
+      (if (%eof? f) last (recur (eval f))))))
+
+(defn load-string [s] (%eval-reader (%reader s "<string>")))
+
+(defn load-file [path]
+  (let [ns (current-ns)
+        v (%eval-reader (%reader (slurp path) path))]
+    (in-ns ns)
+    v))
+
+;; Root fibers started by the host (REPL, `norn -e`, tests).
+(defn %eval-root [s] (load-string s))
+(defn %repl-eval [s]
+  (let [r (%reader s "<repl>")]
+    (loop []
+      (let [f (%read r)]
+        (when-not (%eof? f)
+          (prn (eval f))
+          (recur))))))
+
+;;; ---- concurrency (design.md §6) ---------------------------------------------------
+
+(defmacro spawn
+  "Run body in a new fiber inside scope s; returns the fiber."
+  [s & body]
+  `(%scope-spawn ~s (fn* [] ~@body)))
+
+(defmacro spawn-detached
+  "Run body in a new fiber that belongs to no scope."
+  [& body]
+  `(%spawn (fn* [] ~@body)))
+
+(defn %scope-run [s thunk]
+  (let [body (%scope-spawn s thunk)]
+    (%scope-join s)
+    (%scope-result s body)))
+
+(defmacro with-scope
+  "Structured concurrency: body runs in a fiber of a new scope bound to s, and
+  the form returns only when every fiber spawned in s has finished. If any of
+  them fails, the others are cancelled and the error is re-raised here."
+  [binding & body]
+  (let [s (first binding)]
+    `(let* [~s (%scope)] (%scope-run ~s (fn* [] ~@body)))))
+
+(defn settle
+  "Wait for fiber f without raising: {:value v} or {:error message}."
+  [f]
+  (%join f)
+  (let [e (fiber-error f)]
+    (if e {:error e} {:value (await f)})))
+
+(defn swap! [a f & args]
+  (loop []
+    (let [old (deref a)
+          new (apply f old args)]
+      (if (compare-and-set! a old new) new (recur)))))
+
+(def >! put!)
+(def <! take!)
+
+(defn- %chunk-size [n]
+  (let [parts (* 4 (carrier-count))]
+    (max 1 (quot (+ n (dec parts)) parts))))
+
+(defn pmap
+  "Parallel map: splits coll into chunks, one fiber per chunk. Order-preserving."
+  [f coll]
+  (let [v (vec coll) n (count v) size (%chunk-size n)]
+    (with-scope [s]
+      (let [parts (loop [lo 0 acc []]
+                    (if (< lo n)
+                      (let [hi (min n (+ lo size))]
+                        (recur hi (conj acc (spawn s (loop [j lo out []]
+                                                       (if (< j hi) (recur (inc j) (conj out (f (nth v j)))) out))))))
+                      acc))]
+        (reduce (fn [acc t] (into acc (await t))) [] parts)))))
+
+(defn preduce
+  "Parallel reduce: f must be associative and init its identity."
+  [f init coll]
+  (let [v (vec coll) n (count v) size (%chunk-size n)]
+    (with-scope [s]
+      (let [parts (loop [lo 0 acc []]
+                    (if (< lo n)
+                      (let [hi (min n (+ lo size))]
+                        (recur hi (conj acc (spawn s (loop [j lo r init]
+                                                       (if (< j hi) (recur (inc j) (f r (nth v j))) r))))))
+                      acc))]
+        (reduce (fn [acc t] (f acc (await t))) init parts)))))
+
+;;; ---- vars -------------------------------------------------------------------------
+
+(defn alter-var-root [v f & args] (%set-root! v (apply f (var-get v) args)))
+
+(defmacro ns
+  "M0: switch to (creating) a namespace. :require arrives with modules (M6)."
+  [name & _]
+  `(in-ns '~name))

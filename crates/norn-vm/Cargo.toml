@@ -1,0 +1,8 @@
+[package]
+name = "norn-vm"
+description = "Norn tier-0: reader, seed compiler, bytecode interpreter"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+norn-rt = { path = "../norn-rt" }

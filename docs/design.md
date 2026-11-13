@@ -1,4 +1,4 @@
-# Loom — Language Design (draft 0.1)
+# Norn — Language Design (draft 0.1)
 
 > A general-purpose Lisp that takes CLOS, the condition system and images from
 > Common Lisp; immutable data and identity/state separation from Clojure;
@@ -35,7 +35,7 @@ Status: **draft for discussion**. Every section marks decisions as
 |---|---|---|
 | Common Lisp | Lisp-2, mutable conses everywhere, `nil` = `()` = false pun, global symbol-interned packages | Hostile to concurrency and to hygiene |
 | Clojure | JVM startup/stack traces, no TCO (`recur`), lazy-seq + dynamic-binding surprises, no restarts, single-dispatch protocols, no method combination | We control the VM |
-| Racket | Weak shared-memory parallelism (places/futures), no images | Core goals of Loom |
+| Racket | Weak shared-memory parallelism (places/futures), no images | Core goals of Norn |
 
 ---
 
@@ -84,7 +84,7 @@ CL/Racket conveniences.
 |---|---|---|
 | `var` | Late-bound global with root value + fiber-local dynamic bindings | All top-level definitions; redefinable |
 | `atom` | Lock-free CAS cell, `swap!` / `reset!` | Uncoordinated shared state |
-| `ref` + `dosync` | MVCC software transactional memory | Coordinated multi-cell updates (**[open]**: core or `loom.stm` library) |
+| `ref` + `dosync` | MVCC software transactional memory | Coordinated multi-cell updates (**[open]**: core or `norn.stm` library) |
 | `volatile` | Unsynchronized cell, fiber-confined | Hot local state |
 | `chan` | CSP channel, buffered/unbuffered | Pipelines, coordination |
 | `process` | Fiber + mailbox (actor) | Isolated stateful services |
@@ -342,7 +342,7 @@ mapping the file, which gives instant startup.
 ```
 
 ```sh
-loom --image app.lim
+norn --image app.lim
 ```
 
 ### 7.2 Images and concurrency **[decided]**
@@ -365,7 +365,7 @@ images small.
 
 ### 7.4 Images vs reproducibility **[decided]**
 
-Source modules are the source of truth; `loom build` produces images
+Source modules are the source of truth; `norn build` produces images
 deterministically from source. Dev images are "pets" (source-drift tracking,
 §5.1, keeps them honest); build images are "cattle".
 
@@ -381,9 +381,9 @@ deterministically from source. Dev images are "pets" (source-drift tracking,
   DSLs and alternate syntaxes are first-class.
 
 ```clojure
-#lang loom
+#lang norn
 (ns myapp.core
-  (:require [loom.async :as a]
+  (:require [norn.async :as a]
             [myapp.db :refer [query]]))
 ```
 
@@ -408,7 +408,7 @@ deterministically from source. Dev images are "pets" (source-drift tracking,
 ### 8.3 Compilation pipeline **[open: implementation]**
 
 ```
-reader → expander (hygiene, phases) → core forms → Loom IR (CPS/ANF)
+reader → expander (hygiene, phases) → core forms → Norn IR (CPS/ANF)
       → optimiser (inlining, type inference, unboxing, escape analysis)
       → backend: bytecode interpreter  |  native via Cranelift (JIT & AOT)
 ```
@@ -460,14 +460,14 @@ would compromise three of the five principles.
 
 ### 10.2 Bootstrapping (assuming A) **[proposed]**
 
-The compiler is written in Loom and lives in the base image (like SBCL).
+The compiler is written in Norn and lives in the base image (like SBCL).
 The Rust core holds only the runtime.
 
 ```
-loom-rt  (Rust)   GC, scheduler, object layout, primitives, image I/O, FFI, Cranelift glue
-loom0    (Rust)   tiny interpreter for core forms; exists only to bootstrap
-compiler (Loom)   expander + optimiser + codegen; compiled by loom0, then by itself
-stdlib   (Loom)
+norn-rt  (Rust)   GC, scheduler, object layout, primitives, image I/O, FFI, Cranelift glue
+norn0    (Rust)   tiny interpreter for core forms; exists only to bootstrap
+compiler (Norn)   expander + optimiser + codegen; compiled by norn0, then by itself
+stdlib   (Norn)
 → base.lim
 ```
 
@@ -475,11 +475,11 @@ stdlib   (Loom)
 
 | # | Milestone | Done when |
 |---|---|---|
-| M0 | Reader, printer, persistent data structures, `loom0` interpreter, basic REPL | `(reduce + (range 1e6))` at a REPL |
+| M0 | Reader, printer, persistent data structures, `norn0` interpreter, basic REPL | `(reduce + (range 1e6))` at a REPL |
 | M1 | **Fibers + scheduler + safepoints + atoms + channels** (concurrency from day one) | 1M fibers ping-ponging across all cores |
 | M2 | Generic functions, `defclass`, method combination, dispatch caches | Shapes example + live `defmethod` under load |
 | M3 | Condition system, restarts, parked-fiber debugger over the REPL protocol | Fix a crashed fiber from the editor and resume it |
-| M4 | Compiler in Loom → Cranelift; self-host; proper tail calls | Compiler compiles itself |
+| M4 | Compiler in Norn → Cranelift; self-host; proper tail calls | Compiler compiles itself |
 | M5 | Images: save/load, layering, `on-image-restore`, parked fibers | Sub-50ms startup of a saved app image |
 | M6 | Hygienic macros + modules/phases, `#lang`, sealing | Stdlib rebuilt as sealed modules |
 | M7 | MOP completeness, STM, processes/supervisors, FFI, gradual types, contracts | — |
@@ -494,8 +494,6 @@ stdlib   (Loom)
 3. **STM:** in core or as a library — §3.2.
 4. **Mutable objects:** enforce ownership checks (proposal), or trust the
    programmer like CL — §4.2.
-5. **Name:** "Loom" collides with Java's Project Loom (virtual threads), which
-   is fitting thematically but confusing in search results.
-6. **Primary audience:** what should the first real program written in Loom be?
+5. **Primary audience:** what should the first real program written in Norn be?
    (It will shape stdlib priorities: web services, data processing, games,
    tooling…)
