@@ -29,7 +29,7 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
 | 6.6 | **The basic FFI**: load a library (`libloading`); call functions with integer, float, pointer and byte-buffer arguments; Cranelift-generated call stubs; fast or blocking calls; handles as resources with finalizers | Calls into libc and a test library; a blocking call doesn't stall its carrier |
 | 6.7 | **Done-check and docs**: a 10,000-connection TCP echo server; a socket saved in an image comes back as `ResourceLost` and `reconnect` works; runtime.md status §12.7 | `crates/norn/tests/io.rs` |
 
-## M7: numbers, collections, the pure stdlib and tooling
+## M7: numbers, collections, the pure stdlib and tooling — done (2026-11-13)
 
 Decisions for M7 are at the end, after M6's.
 

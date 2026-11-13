@@ -97,14 +97,16 @@
 (is (= :file (handle-kind (io/with-open [h (io/open (f "s.txt") :read)] h))))
 (is (= :error (fails (io/open (f "s.txt") :sideways))))
 
-;;; an unreachable stream is closed by its cleanup
-(def handles-before (:handles (sys/runtime)))
+;;; an unreachable stream is closed by its cleanup (observed through a
+;;; cleanup of our own on the same stream, which runs in the same pass:
+;;; counting handles would also count other suites' running in parallel)
 (def leaked (io/open (f "s.txt") :read))
-(is (= (inc handles-before) (:handles (sys/runtime))))
+(is (%handle-live? leaked))
+(def leak-cleaned (chan 1))
+(add-cleanup! leaked (fn [] (offer! leak-cleaned :cleaned)))
 (def leaked nil)
 (gc)
-(sleep 100)
-(is (= handles-before (:handles (sys/runtime))))
+(is (= :cleaned (first (alts! [leak-cleaned (timeout 5000)]))))
 
 ;;; ---- norn.fs: watching ----
 (def w (fs/watch dir :recursive true))
