@@ -6,9 +6,12 @@
 //! ← {:event :debug :fiber 12 :condition "Divide by zero" :restarts […]}   (pushed)
 //! ```
 //!
-//! Ops: `:eval`, `:debugging`, `:backtrace`, `:restart`, `:restart-frame`,
-//! `:abort`, `:eval-in-frame`, `:complete` — implemented in Norn
-//! (`%serve-request` in core.norn). Each request runs in its own root fiber,
+//! Ops (implemented in Norn, `%serve-request` in core.norn): `:eval`,
+//! `:load-file`, `:interrupt`, `:debugging`, `:backtrace`, `:restart`,
+//! `:restart-frame`, `:abort`, `:eval-in-frame`, `:complete`, `:doc`,
+//! `:definition`, `:macroexpand`, `:inspect`, `:ns-vars`, `:test`,
+//! `:format` and `:lint`. What an evaluation prints streams as
+//! `{:event :out :id … :text …}` events. Each request runs in its own root fiber,
 //! so a request that waits in the debugger doesn't block the connection:
 //! the editor can inspect it and pick a restart on the same socket.
 //!
@@ -65,11 +68,23 @@ fn connection(stream: TcpStream) {
         }
         let tx = tx.clone();
         thread::spawn(move || {
+            let id = request_id(&line);
             let reply = match loom.run(RootTask::Request(line), "user").result {
                 Ok(s) => s,
-                Err(e) => format!("{{:error \"{}\"}}", escape(&e.to_string())),
+                // An interrupted or failed request: still answer its id.
+                Err(e) => match id {
+                    Some(id) => format!("{{:error \"{}\" :id {id}}}", escape(&e.to_string())),
+                    None => format!("{{:error \"{}\"}}", escape(&e.to_string())),
+                },
             };
             let _ = tx.send(reply);
         });
     }
+}
+
+/// The `:id` of a request line, if it's a plain integer.
+fn request_id(line: &str) -> Option<i64> {
+    let at = line.find(":id ")? + 4;
+    let digits: String = line[at..].trim_start().chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect();
+    digits.parse().ok()
 }

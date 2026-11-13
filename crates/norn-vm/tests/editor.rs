@@ -56,13 +56,24 @@ impl Editor {
 
     /// Send a request (the inside of a map, without :id) and wait for its reply.
     fn request(&mut self, body: &str) -> String {
+        let id = self.send(body);
+        self.reply(id)
+    }
+
+    /// Send a request without waiting: its id.
+    fn send(&mut self, body: &str) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         writeln!(self.out, "{{{body} :id {id}}}").unwrap();
         self.out.flush().unwrap();
+        id
+    }
+
+    /// The reply to request `id`.
+    fn reply(&self, id: u32) -> String {
         // Maps print in hash order, so :id can be anywhere in the reply.
         let (end, mid) = (format!(":id {id}}}"), format!(":id {id},"));
-        self.wait_for(&format!("reply {id}"), |l| !l.contains(":event") && (l.contains(&end) || l.contains(&mid)))
+        self.wait_for(&format!("reply {id}"), |l| !l.contains(":event :") && (l.contains(&end) || l.contains(&mid)))
     }
 }
 
@@ -136,4 +147,77 @@ fn the_editor_formats_and_lints_code() {
     assert!(f.contains(r#":value "(defn f [x]\n  (let [y 1]\n    (+ x y)))\n""#), "{f}");
     let l = ed.request(&format!(":op :lint :file \"f.norn\" :code {}", quote("(ns lint-from-editor)\n(defn g [x] (let [unused 1] (h x)))")));
     assert!(l.contains(":kind :unused") && l.contains(":kind :unresolved") && l.contains(":line 2"), "{l}");
+}
+
+#[test]
+fn the_editor_finds_definitions_docs_and_vars() {
+    let mut ed = Editor::connect();
+    // Evaluated as if at line 40 of a file, as the editor does with ⌘⏎.
+    let r = ed.request(&format!(
+        ":op :eval :ns \"user\" :file \"/tmp/where.norn\" :line 40 :code {}",
+        quote("(defn area\n  \"The area of a w by h rectangle.\"\n  [w h]\n  (* w h))")
+    ));
+    assert!(r.contains("#'user/area"), "{r}");
+    let d = ed.request(":op :definition :ns \"user\" :sym \"area\"");
+    assert!(d.contains(":file \"/tmp/where.norn\"") && d.contains(":line 40"), "{d}");
+    let doc = ed.request(":op :doc :ns \"user\" :sym \"area\"");
+    assert!(doc.contains("The area of a w by h rectangle.") && doc.contains("[w h]"), "{doc}");
+    let core = ed.request(":op :doc :ns \"user\" :sym \"map\"");
+    assert!(core.contains(":arglists"), "{core}");
+    let vars = ed.request(":op :ns-vars :ns \"user\"");
+    assert!(vars.contains(":name \"area\""), "{vars}");
+    let m = ed.request(&format!(":op :macroexpand :ns \"user\" :code {}", quote("(when ok (go))")));
+    assert!(m.contains("(if ok"), "{m}");
+}
+
+#[test]
+fn printed_output_streams_and_evaluations_can_be_interrupted() {
+    let mut ed = Editor::connect();
+    let id = ed.send(&format!(":op :eval :code {}", quote("(dotimes [i 3] (println \"line\" i)) :done")));
+    let first = ed.wait_for("output event", |l| l.contains(":event :out") && l.contains(&format!(":id {id}")));
+    assert!(first.contains("line 0"), "{first}");
+    let r = ed.reply(id);
+    assert!(r.contains(":value \":done\""), "{r}");
+
+    // A runaway evaluation, stopped from the editor.
+    let busy = ed.send(&format!(":op :eval :code {}", quote("(loop [n 0] (recur (inc n)))")));
+    std::thread::sleep(Duration::from_millis(300));
+    let i = ed.request(&format!(":op :interrupt :target {busy}"));
+    assert!(i.contains(":value \"true\""), "{i}");
+    let stopped = ed.reply(busy);
+    assert!(stopped.contains("Interrupted"), "{stopped}");
+    let none = ed.request(&format!(":op :interrupt :target {busy}"));
+    assert!(none.contains(":value \"false\""), "{none}");
+}
+
+#[test]
+fn the_editor_inspects_loads_files_and_runs_tests() {
+    let mut ed = Editor::connect();
+    let v = ed.request(&format!(":op :inspect :ns \"user\" :code {}", quote("{:a [1 2 3] :b \"x\"}")));
+    assert!(v.contains("Map\"") && v.contains(":count 2"), "{v}");
+    // The :a entry can be opened: its id is the third element of its item.
+    let at = v.find("[\":a\" \"[1 2 3]\" ").unwrap_or_else(|| panic!("{v}")) + "[\":a\" \"[1 2 3]\" ".len();
+    let child: String = v[at..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    let c = ed.request(&format!(":op :inspect :target {child}"));
+    assert!(c.contains(":count 3") && c.contains("Vector\""), "{c}");
+
+    let dir = std::env::temp_dir().join(format!("norn-editor-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("loaded.norn");
+    std::fs::write(&src, "(ns loaded)\n\n(defn twice [x] (* 2 x))\n(twice 21)\n").unwrap();
+    let l = ed.request(&format!(":op :load-file :path {}", quote(&src.to_string_lossy())));
+    assert!(l.contains(":value \"42\""), "{l}");
+    let d = ed.request(":op :definition :ns \"loaded\" :sym \"twice\"");
+    assert!(d.contains(":line 3") && d.contains("loaded.norn"), "{d}");
+
+    let t = dir.join("sample_test.norn");
+    std::fs::write(
+        &t,
+        "(ns sample-test (:require [norn.test :refer [is deftest]]))\n(deftest good (is (= 2 (+ 1 1))))\n(deftest bad (is (= 3 (+ 1 1))))\n",
+    )
+    .unwrap();
+    let r = ed.request(&format!(":op :test :paths [{}]", quote(&t.to_string_lossy())));
+    assert!(r.contains(":pass 1") && r.contains(":fail 1"), "{r}");
+    assert!(r.contains(":expected \"3\"") && r.contains(":actual \"2\""), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

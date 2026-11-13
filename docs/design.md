@@ -349,9 +349,24 @@ editor evaluations.
   - **M3 builds the core of it** (`norn --server PORT`). Messages are Norn
     data, one map per line, so any editor can speak it with a socket and a
     small reader.
-  - **Ops:** `:eval`, `:debugging`, `:backtrace`, `:restart`,
-    `:restart-frame`, `:abort`, `:eval-in-frame`, `:complete`.
-  - **Pushed events:** `{:event :debug …}` and `{:event :resumed …}`.
+  - **Ops:**
+    - M3: `:eval`, `:debugging`, `:backtrace`, `:restart`,
+      `:restart-frame`, `:abort`, `:eval-in-frame`, `:complete`;
+    - M7: `:format` and `:lint`;
+    - M7.6:
+      - `:eval` with `:file` and `:line` (definitions and errors point at
+        the source);
+      - `:load-file`, and `:interrupt` (a running request, by its id);
+      - `:doc` and `:definition` (a symbol's docstring, arglists, file and
+        line);
+      - `:macroexpand` (`:all` for a full expansion);
+      - `:inspect` (`:code`, or `:target`, a part's id, with `:offset` and
+        `:limit`) and `:inspect-clear`;
+      - `:ns-vars`, and `:test` (run test files: the results as data).
+  - **Pushed events:** `{:event :debug …}` and `{:event :resumed …}`. Since
+    M7.6, what a request prints streams as `{:event :out :id … :text …}`.
+  - A request that fails or is interrupted is still answered with its
+    `:id`.
 - **Source drift tracking:** the REPL records definitions entered
   interactively that don't match any file, so `(unsaved-definitions)` tells you
   what your image knows that your repo doesn't.

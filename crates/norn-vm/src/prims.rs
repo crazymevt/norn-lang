@@ -208,6 +208,7 @@ prims! {
     "fiber?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Fiber)));
     "done?" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "done?")?; Ok(Value::bool(a[0].fiber_state().load(std::sync::atomic::Ordering::Acquire) == norn_rt::conc::fiber::DONE)) };
     "cancel!" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "cancel!")?; crate::sched::cancel(a[0], norn_rt::conc::fiber::CANCELLED); Ok(Value::NIL) };
+    "%interrupt!" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "%interrupt!")?; crate::sched::cancel(a[0], norn_rt::conc::fiber::INTERRUPTED); Ok(Value::NIL) };
     "chan" 0 Some(2) => |vm, a| {
         let n = match a.first() { Some(&v) => int(v, "chan")?.max(0) as usize, None => 0 };
         let c = norn_rt::conc::chan_new(&mut vm.m, n);
@@ -489,6 +490,22 @@ fn join(a: &[Value], readably: bool) -> String {
 fn out_to(vm: &mut Vm, s: &str, newline: bool) -> Result<Value> {
     let sym = rt().symbol(&mut vm.m, None, "*out*");
     let capture = vm.core.lookup(sym).and_then(|var| if vm.dyn_env.is(Kind::Map) { vm.dyn_env.map_get(var) } else { None });
+    // Bound to {:out-event id} (an editor request): each piece streams to
+    // the editors as {:event :out :id id :text "…"}.
+    if let Some(m) = capture.filter(|b| b.is(Kind::Map)) {
+        let key = rt().keyword(&mut vm.m, None, "out-event");
+        if let Some(id) = m.map_get(key) {
+            let text = if newline { format!("{s}\n") } else { s.to_owned() };
+            let mut line = String::from("{:event :out :id ");
+            write_value(&mut line, id, true);
+            line.push_str(" :text ");
+            let t = str_new(&mut vm.m, &text);
+            write_value(&mut line, t, true);
+            line.push('}');
+            crate::sched::post_event(line);
+            return Ok(Value::NIL);
+        }
+    }
     if let Some(buf) = capture.filter(|b| b.is(Kind::Atom)) {
         let text = if newline { format!("{s}\n") } else { s.to_owned() };
         let piece = str_new(&mut vm.m, &text);

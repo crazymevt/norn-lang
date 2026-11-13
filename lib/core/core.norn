@@ -1294,14 +1294,118 @@
             (%run-after-eval-hooks)
             (recur)))))))
 
-(defn- %serve-eval [req]
+(declare definition %ensure-core-indexed! *out* %tool-call)
+
+(def %requests "Editor requests running now: id → their fiber (for :interrupt)." (atom {}))
+
+(defn- %serve-run
+  "Run thunk for editor request req: it can be interrupted, and what it
+  prints streams to the editor as {:event :out :id … :text …}."
+  [req thunk]
+  (let [id (:id req)]
+    (swap! %requests assoc id (current-fiber))
+    (try
+      (binding [*out* {:out-event id}] (thunk))
+      (finally (swap! %requests dissoc id)))))
+
+(defn- %serve-eval
+  "Evaluate :code in :ns. With :file and :line, the code is read as if at
+  that line of that file, so errors and definitions point at the source."
+  [req]
   (in-ns (symbol (or (:ns req) "user")))
   (binding [*debugger* :park]
     (restart-case
-      (let [v (%eval-reader (%reader (:code req) "<editor>"))]
+      (let [line (max 1 (or (:line req) 1))
+            code (str (apply str (repeat (dec line) "\n")) (:code req))
+            v (%serve-run req (fn [] (%eval-reader (%reader code (or (:file req) "<editor>")))))]
         (%run-after-eval-hooks)
         {:value (pr-str v) :ns (str (current-ns))})
       (abort [] :report "Abort this evaluation" {:error "Aborted" :ns (str (current-ns))}))))
+
+(defn- %serve-load-file [req]
+  (binding [*debugger* :park]
+    (restart-case
+      (let [v (%serve-run req (fn [] (load-file (:path req))))]
+        (%run-after-eval-hooks)
+        {:value (pr-str v)})
+      (abort [] :report "Abort loading the file" {:error "Aborted"}))))
+
+;; The inspector: values being looked at, by id, so the editor can open the
+;; parts of a value (and the parts of those) without printing all of it.
+(def %inspected (atom {:next 0 :values {}}))
+
+(defn- %inspect-id [x]
+  (let [st (swap! %inspected (fn [st] (let [n (inc (:next st))] (-> st (assoc :next n) (assoc-in [:values n] x)))))]
+    (:next st)))
+
+(defn- %inspect-view
+  "x for the inspector: {:id :type :value :count :items}, :items being
+  [key-text value-text id-or-nil] from offset (up to limit); an id when the
+  value can be opened in turn."
+  [x offset limit]
+  (let [short (fn [v] (let [t (pr-str v)] (if (> (count t) 200) (str (subs t 0 197) "...") t)))
+        openable? (fn [v] (or (coll? v) (%instance? v) (and (string? v) (> (count v) 200))))
+        item (fn [k v] [(if (string? k) k (short k)) (short v) (when (openable? v) (%inspect-id v))])
+        page (fn [xs] (take limit (drop offset xs)))
+        items (cond (%instance? x) (mapv (fn [k] (item (str k) (slot-value x k))) (page (%class-get (class-of x) :layout)))
+                    (map? x) (mapv (fn [kv] (item (first kv) (second kv))) (page (seq x)))
+                    (string? x) (vec (map-indexed (fn [i c] (item (str (+ offset i)) c)) (page (seq x))))
+                    (coll? x) (vec (map-indexed (fn [i v] (item (str (+ offset i)) v)) (page (seq x))))
+                    :else nil)
+        base {:id (%inspect-id x) :type (str (class-name (class-of x))) :value (short x) :offset offset}
+        base (if (or (coll? x) (string? x)) (assoc base :count (count x)) base)]
+    (if items (assoc base :items items) base)))
+
+(defn- %serve-inspect [req]
+  (let [offset (or (:offset req) 0) limit (or (:limit req) 100)]
+    (if (:code req)
+      (do (in-ns (symbol (or (:ns req) "user")))
+          {:inspect (%inspect-view (eval (read-string (:code req))) offset limit)})
+      (let [values (:values (deref %inspected))]
+        (if (contains? values (:target req))
+          {:inspect (%inspect-view (get values (:target req)) offset limit)}
+          {:error "Nothing to inspect with that id (cleared?)"})))))
+
+(defn- %printable-definition
+  "What is known about a definition, as plain data the editor can read."
+  [d]
+  (when d
+    (into {:name (str (:name d)) :ns (str (:ns d))}
+          (filter second
+                  [[:kind (when (:kind d) (str (:kind d)))]
+                   [:doc (:doc d)]
+                   [:arglists (when (:arglists d) (mapv pr-str (:arglists d)))]
+                   [:file (:file d)]
+                   [:line (:line d)]
+                   [:deprecated (when (:deprecated d) (str (:deprecated d)))]]))))
+
+(defn- %serve-definition [req]
+  (in-ns (symbol (or (:ns req) "user")))
+  (%printable-definition (definition (symbol (:sym req)))))
+
+(defn- %serve-ns-vars
+  "Namespace :ns's definitions: those read from source (with file and line)
+  and the other public vars."
+  [req]
+  (%ensure-core-indexed!)
+  (let [nsname (:ns req)
+        prefix (str nsname "/")
+        known (keep (fn [kd] (let [k (first kd)]
+                               (when (= prefix (subs k 0 (min (count k) (count prefix)))) (%printable-definition (second kd)))))
+                    (deref %definitions))
+        named (set (map :name known))
+        others (keep (fn [k] (when-not (contains? named (name k)) {:name (name k) :ns nsname}))
+                     (keys (or (ns-publics (symbol nsname)) {})))]
+    {:vars (vec (sort-by :name (concat known others)))}))
+
+(defn- %serve-test
+  "Run test files (:paths) with norn.test: the results as plain data."
+  [req]
+  (let [r (%serve-run req (fn [] (%tool-call 'norn.test 'run-files (:paths req) :serial (:serial req))))
+        clean (fn [e] (reduce (fn [e k] (if (contains? e k) (update e k pr-str) e))
+                              (update e :test str)
+                              [:form :expected :actual]))]
+    {:results (update r :files (fn [fs] (mapv (fn [f] (update f :tests (fn [ts] (mapv (fn [t] (-> t (update :events (fn [es] (mapv clean es))) (update :name str) (update :ns str))) ts)))) fs)))}))
 
 (defn- %complete [prefix nsname]
   (let [names (fn [ns] (map (fn [k] (name k)) (keys (or (ns-publics ns) {}))))
@@ -1319,10 +1423,24 @@
   [line]
   (let [req (read-string line)
         op (:op req)
-        resp (if (= op :eval)
-               (%serve-eval req)
+        resp (cond
+               (= op :eval) (%serve-eval req)
+               (= op :load-file) (%serve-load-file req)
+               :else
                (handler-case
                  (cond
+                   (= op :interrupt) (if-let [f (get (deref %requests) (:target req))]
+                                       (do (%interrupt! f) {:value "true"})
+                                       {:value "false"})
+                   (= op :doc) {:doc (%serve-definition req)}
+                   (= op :definition) (or (%serve-definition req) {:error (str "No definition of " (:sym req))})
+                   (= op :macroexpand) (do (in-ns (symbol (or (:ns req) "user")))
+                                           (let [f (read-string (:code req))]
+                                             {:value (pr-str (if (:all req) (macroexpand f) (macroexpand-1 f)))}))
+                   (= op :inspect) (%serve-inspect req)
+                   (= op :inspect-clear) (do (reset! %inspected {:next 0 :values {}}) {:value "true"})
+                   (= op :ns-vars) (%serve-ns-vars req)
+                   (= op :test) (%serve-test req)
                    (= op :debugging) {:value (debugging)}
                    (= op :backtrace) {:frames (mapv (fn [fr] {:fn (str (:fn fr)) :locals (pr-str (:locals fr))
                                                               :internal (:internal? fr)})
