@@ -3,6 +3,7 @@ name = "jit-spike"
 description = "M0 spike: Cranelift JIT, tail calls and file-mapped code on this platform"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]

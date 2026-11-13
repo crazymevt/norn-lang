@@ -8,7 +8,7 @@ runtime built for many cores.
 - Language design: [docs/design.md](docs/design.md)
 - Runtime architecture and milestones: [docs/runtime.md](docs/runtime.md)
 
-**Status: M4** — a bytecode interpreter running millions of fibers on a
+**Status: M5** — a bytecode interpreter running millions of fibers on a
 work-stealing scheduler (one carrier per core), with channels, `alts!`,
 atoms, structured concurrency scopes and a parallel MMTk garbage collector;
 plus CLOS-style classes and generic functions (multiple dispatch, method
@@ -17,6 +17,8 @@ condition system with a debugger: an unhandled error parks the fiber with its
 stack intact, you fix the code, and resume it from the REPL or an editor
 (`norn --server`). The compiler is written in Norn and compiles itself; set `NORN_TIER=1`
 for Cranelift-generated native code (2–9× faster on the benchmarks so far).
+Images save the running heap, parked fibers included (even one waiting in
+the debugger), and start in about 35 ms.
 See [runtime.md §12](docs/runtime.md#12-revised-milestones) for what exists
 and what's next.
 
@@ -37,6 +39,10 @@ cargo run -p jit-spike --release            # tier-1 platform checks
                                             # live defmethod under 8 cores
 NORN_GC_STRESS=1 ./target/release/norn tests/norn/conc_test.norn
                                             # force a GC at every slow-path poll
+./target/release/norn -e '(save-image "dev.nimg")'
+./target/release/norn --image dev.nimg       # carry on from a saved image
+./target/release/norn build app.nimg app.norn --entry app/main
+./target/release/norn --image app.nimg ARGS… # run its entry function
 ```
 
 ## Layout
@@ -51,3 +57,7 @@ bench/           benchmarks
 spikes/          throwaway platform experiments
 docs/            design documents
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

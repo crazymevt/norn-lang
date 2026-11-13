@@ -132,6 +132,18 @@ pub fn register_builtin(name: &str, class: Value) -> bool {
     }
 }
 
+/// Every builtin class slot, in `BUILTIN_NAMES` order (nil if unset).
+pub fn builtins() -> Vec<Value> {
+    BUILTINS.iter().map(|b| Value(b.load(Ordering::Acquire))).collect()
+}
+
+/// Restore the builtin class slots from an image.
+pub fn set_builtins(classes: &[Value]) {
+    for (b, &c) in BUILTINS.iter().zip(classes) {
+        b.store(c.0, Ordering::Release);
+    }
+}
+
 pub fn builtin(b: Builtin) -> Value {
     Value(BUILTINS[b as usize].load(Ordering::Acquire))
 }

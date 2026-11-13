@@ -1,8 +1,8 @@
 //! Process-wide runtime state: interned symbols and keywords, namespaces,
 //! shared singletons.
 //!
-//! M0 keeps these tables in Rust. In M5 they move into the heap so images can
-//! save them (runtime.md §7).
+//! The tables live in Rust; an image saves their contents as roots and
+//! `init_from_image` rebuilds them (runtime.md §7).
 
 use crate::array::array_new;
 use crate::equal::{hash_str, mix64};
@@ -83,6 +83,80 @@ pub fn init(m: &mut Mutator) {
             empty_array,
         }
     });
+}
+
+/// The runtime's tables as an image saves them (runtime.md §7.1), in a
+/// deterministic order: symbols and keywords sorted by name, namespaces by
+/// name, and each namespace's mappings by symbol.
+pub struct Tables {
+    pub symbols: Vec<Value>,
+    pub keywords: Vec<Value>,
+    /// (namespace name, [(symbol, var)…])
+    pub namespaces: Vec<(Value, Vec<(Value, Value)>)>,
+    /// empty list, vector, map, set, array
+    pub empties: [Value; 5],
+}
+
+fn name_key(v: Value) -> NameKey {
+    let ns = v.field(SYM_NS);
+    (if ns.is_nil() { None } else { Some(ns.as_str().to_owned()) }, v.field(SYM_NAME).as_str().to_owned())
+}
+
+fn sorted_by_name(mut v: Vec<Value>) -> Vec<Value> {
+    v.sort_by_cached_key(|&s| name_key(s));
+    v
+}
+
+impl Runtime {
+    pub fn tables(&self) -> Tables {
+        let symbols = sorted_by_name(self.symbols.lock().unwrap().values().copied().collect());
+        let keywords = sorted_by_name(self.keywords.lock().unwrap().values().copied().collect());
+        let mut namespaces: Vec<(Value, Vec<(Value, Value)>)> = self
+            .all_namespaces()
+            .into_iter()
+            .map(|ns| {
+                let mut m = ns.mappings();
+                m.sort_by_cached_key(|&(k, _)| name_key(k));
+                (ns.name, m)
+            })
+            .collect();
+        namespaces.sort_by_cached_key(|&(n, _)| name_key(n));
+        Tables {
+            symbols,
+            keywords,
+            namespaces,
+            empties: [self.empty_list, self.empty_vector, self.empty_map, self.empty_set, self.empty_array],
+        }
+    }
+}
+
+/// Install tables loaded from an image (instead of `init`). Fails if the
+/// runtime was already initialised.
+pub fn init_from_image(t: Tables) -> Result<(), String> {
+    let index = |vs: &[Value]| -> HashMap<NameKey, Value> { vs.iter().map(|&v| (name_key(v), v)).collect() };
+    let namespaces = t
+        .namespaces
+        .iter()
+        .map(|(name, maps)| {
+            let ns: &'static Namespace = Box::leak(Box::new(Namespace {
+                name: *name,
+                mappings: RwLock::new(maps.iter().copied().collect()),
+            }));
+            (*name, ns)
+        })
+        .collect();
+    let [empty_list, empty_vector, empty_map, empty_set, empty_array] = t.empties;
+    let r = Runtime {
+        symbols: Mutex::new(index(&t.symbols)),
+        keywords: Mutex::new(index(&t.keywords)),
+        namespaces: Mutex::new(namespaces),
+        empty_list,
+        empty_vector,
+        empty_map,
+        empty_set,
+        empty_array,
+    };
+    RT.set(r).map_err(|_| "the runtime is already initialised".to_string())
 }
 
 /// A fresh mutator with the runtime initialised, for unit tests.

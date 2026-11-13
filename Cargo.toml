@@ -6,6 +6,7 @@ default-members = ["crates/norn-rt", "crates/norn-vm", "crates/norn"]
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
+license = "MIT"
 
 [profile.release]
 debug = 1

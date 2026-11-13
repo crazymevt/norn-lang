@@ -3,6 +3,7 @@ name = "norn"
 description = "The norn command: REPL and script runner"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "norn"

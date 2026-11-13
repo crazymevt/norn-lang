@@ -46,6 +46,16 @@ pub fn next_id() -> u64 {
     GENSYM_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// The gensym counter, saved in images so that names generated after a
+/// restore don't repeat ones already in the image.
+pub fn gensym_counter() -> u64 {
+    GENSYM_ID.load(Ordering::Relaxed)
+}
+
+pub fn set_gensym_counter(n: u64) {
+    GENSYM_ID.fetch_max(n, Ordering::Relaxed);
+}
+
 #[derive(Default)]
 struct FnArgs {
     max: usize,

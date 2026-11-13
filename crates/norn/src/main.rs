@@ -5,26 +5,43 @@
 //! norn FILE.norn       load a file
 //! norn -e EXPR         evaluate EXPR and print the result
 //! norn --server [PORT]  REPL plus the editor protocol on 127.0.0.1:PORT (default 7888)
+//! norn --image IMG …   start from a saved image instead of booting from source;
+//!                      an image with an entry function runs it with the
+//!                      remaining arguments (unless they are -e EXPR)
+//! norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]
+//!                      load the files into a fresh runtime and save an image
 //! ```
 //!
 //! This thread never touches the Norn heap: it hands source text to a root
 //! fiber on the scheduler and waits for the outcome.
 
-use norn_vm::{RootTask, start};
+use norn_vm::{RootTask, start_with};
 use std::io::{self, BufRead, Write};
 use std::process::exit;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-const USAGE: &str = "usage: norn [FILE.norn | -e EXPR | --server [PORT]]";
+const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --server [PORT] | ARGS…]
+       norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]";
 
 /// Ticket of the root fiber the REPL is waiting on (0 = none), for Ctrl-C.
 static CURRENT: AtomicU64 = AtomicU64::new(0);
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let norn = start().unwrap_or_else(|e| {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("build") {
+        exit(build(&args[1..]));
+    }
+    let image = match args.as_slice() {
+        [flag, path, ..] if flag == "--image" => {
+            let p = std::path::PathBuf::from(path);
+            args.drain(..2);
+            Some(p)
+        }
+        _ => None,
+    };
+    let norn = start_with(image.as_deref()).unwrap_or_else(|e| {
         eprintln!("{e}");
         exit(1)
     });
@@ -34,6 +51,25 @@ fn main() {
             norn.interrupt(t);
         }
     });
+
+    if image.is_some()
+        && args.first().map(String::as_str) != Some("-e")
+        && eval_raw(norn, "(if norn.core/%image-entry true false)", "user") == "true"
+    {
+        let call = format!("(norn.core/%run-entry {})", args.iter().map(|a| norn_string(a)).collect::<Vec<_>>().join(" "));
+        let t = norn.submit(RootTask::Eval(call), "user");
+        CURRENT.store(t, Ordering::Release);
+        let done = norn.wait(t);
+        let _ = io::stdout().flush();
+        exit(match done.result {
+            // An integer result is the exit status.
+            Ok(v) => v.parse::<i64>().map(|n| n.clamp(0, 255) as i32).unwrap_or(0),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                1
+            }
+        });
+    }
 
     let done = match args.as_slice() {
         [] => {
@@ -64,6 +100,58 @@ fn main() {
         }
     };
     exit(if done { 0 } else { 1 })
+}
+
+/// `s` as a Norn string literal.
+fn norn_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n"))
+}
+
+/// `norn build OUT.nimg [FILE…] [--entry NS/NAME] [--image BASE.nimg [--layered]]`.
+/// Saves without fibers, so the same sources give the same image.
+fn build(args: &[String]) -> i32 {
+    let (mut out, mut files, mut entry, mut base, mut layered) = (None, Vec::new(), None, None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--entry" => entry = it.next().cloned(),
+            "--image" => base = it.next().map(std::path::PathBuf::from),
+            "--layered" => layered = true,
+            _ if out.is_none() => out = Some(a.clone()),
+            _ => files.push(a.clone()),
+        }
+    }
+    let Some(out) = out else {
+        eprintln!("{USAGE}");
+        return 2;
+    };
+    let norn = start_with(base.as_deref()).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        exit(1)
+    });
+    for f in files {
+        if !run(norn, RootTask::Load(f), false) {
+            return 1;
+        }
+    }
+    let entry = match entry {
+        Some(e) => format!("(var {e})"),
+        None => "nil".into(),
+    };
+    let save = format!(
+        "(let [r (save-image {} :entry {entry} :fibers :none :layered {layered})] (str (:objects r) \" objects, \" (:bytes r) \" bytes\"))",
+        norn_string(&out)
+    );
+    match norn.run(RootTask::EvalRaw(save), "user").result {
+        Ok(s) => {
+            println!("{out}: {s}");
+            0
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            1
+        }
+    }
 }
 
 fn run(norn: &norn_vm::Norn, task: RootTask, print: bool) -> bool {
@@ -150,10 +238,17 @@ fn needs_more(src: &str) -> bool {
 
 fn repl(norn: &'static norn_vm::Norn) {
     println!(
-        "Norn {} (M3: conditions, restarts and a debugger; fibers on {} carriers)\nCtrl-C interrupts a running evaluation; Ctrl-D exits.",
+        "Norn {} (M5: images; fibers on {} carriers)\nCtrl-C interrupts a running evaluation; Ctrl-D exits.",
         env!("CARGO_PKG_VERSION"),
         norn.carriers()
     );
+    // Started from an image: say which, and who is still in the debugger.
+    let info = eval_raw(norn, "(when-let [i (image-info)] (str \"Image: \" (:image i)))", "user");
+    if info != "nil" {
+        println!("{info}");
+        let waiting = eval_raw(norn, "(apply str (map (fn [d] (%debugger-banner (:fiber d))) (debugging)))", "user");
+        print!("{waiting}");
+    }
     let events = norn_vm::subscribe();
     let mut ns = "user".to_owned();
     loop {

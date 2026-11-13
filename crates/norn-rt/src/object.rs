@@ -71,6 +71,16 @@ pub const HEADER_WORDS: usize = 2;
 
 static NEXT_IDENTITY_HASH: AtomicU64 = AtomicU64::new(0x9e37_79b9);
 
+/// The identity-hash counter, saved in images so that hashes assigned after
+/// a restore don't repeat ones already stored in object headers.
+pub fn identity_hash_counter() -> u64 {
+    NEXT_IDENTITY_HASH.load(Ordering::Relaxed)
+}
+
+pub fn set_identity_hash_counter(n: u64) {
+    NEXT_IDENTITY_HASH.fetch_max(n, Ordering::Relaxed);
+}
+
 /// Allocate an object with `payload_words` words after the header.
 #[inline]
 pub fn alloc(m: &mut Mutator, kind: Kind, payload_words: usize) -> Value {

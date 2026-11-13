@@ -228,16 +228,22 @@ fn to_ref(v: Value) -> Option<ObjectReference> {
 // ---- object model -----------------------------------------------------------------------------
 
 #[inline]
-fn kind_at(p: *const u64) -> Kind {
+pub(crate) fn kind_at(p: *const u64) -> Kind {
     // SAFETY: word 0 of every object is a pointer into LAYOUTS.
     unsafe { (*(*p as *const Layout)).kind }
 }
 
 /// Exact size in words of the object at `p` (header included).
-fn object_words(p: *const u64) -> usize {
+pub(crate) fn object_words(p: *const u64) -> usize {
     // SAFETY: p is the start of a live object; payload reads stay inside it.
-    let w = |i: usize| unsafe { *p.add(2 + i) } as usize;
-    match kind_at(p) {
+    size_words(kind_at(p), |i| unsafe { *p.add(2 + i) } as usize)
+}
+
+/// Size in words (header included) of an object of `kind` whose payload word
+/// `i` is `w(i)`. Shared with the image loader, which sizes objects from file
+/// words before they exist in the heap.
+pub(crate) fn size_words(kind: Kind, w: impl Fn(usize) -> usize) -> usize {
+    match kind {
         Kind::Cons => 3,
         Kind::String => 3 + w(0).div_ceil(8),
         Kind::Float | Kind::Set | Kind::Claim | Kind::Atom => 3,
@@ -314,7 +320,7 @@ fn slot_at(p: *const u64) -> NornSlot {
 }
 
 /// Visit every value-holding word of the object at `p`.
-fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
+pub(crate) fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
     // SAFETY: offsets below are within the object's payload (see object_words).
     let field = |i: usize| unsafe { p.add(2 + i) as *const u64 };
     let w = |i: usize| unsafe { *p.add(2 + i) } as usize;
@@ -399,6 +405,7 @@ impl Scanning<Norn> for Norn {
             }
         };
         crate::runtime::for_each_root(&mut add);
+        crate::image::for_each_root(&mut add);
         if let Some(f) = EXTRA_ROOTS.get() {
             f(&mut add);
         }
@@ -431,7 +438,14 @@ impl Collection<Norn> for Norn {
         let GCThreadContext::Worker(worker) = ctx;
         std::thread::Builder::new()
             .name("norn-gc".into())
-            .spawn(move || memory_manager::start_worker(mmtk(), VMWorkerThread(VMThread::UNINITIALIZED), worker))
+            .spawn(move || {
+                // MMTk wants a distinct, non-null handle per worker. Ours
+                // carry nothing: the address of a per-thread byte will do.
+                // (`is_mutator` never matches it: only mutator cells count.)
+                let me: &'static u8 = Box::leak(Box::new(0));
+                let tls = VMWorkerThread(VMThread(OpaquePointer::from_address(Address::from_ptr(me))));
+                memory_manager::start_worker(mmtk(), tls, worker)
+            })
             .expect("failed to start GC worker");
     }
 }

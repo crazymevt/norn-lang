@@ -45,7 +45,7 @@ Status: **draft for discussion**. Every section marks decisions as
 CL/Racket conveniences.
 
 ```clojure
-42  3/4  1.5e3  #c(1 2)          ; full numeric tower: fixnum, bignum, ratio, float, complex
+42  3/4  1.5e3  #c(1 2)          ; numeric tower: fixnum, bignum, ratio, float (complex later, as a library)
 "utf-8 string"  \a  \newline     ; immutable UTF-8 strings, chars
 :keyword  ::ns-local  'symbol
 (list 1 2)  [1 2 3]  {:a 1}  #{1 2}
@@ -74,7 +74,8 @@ CL/Racket conveniences.
   (HAMT/CHAMP), sorted maps & sets, lists, queues.
 - **Transients** for fast local building (`transient` / `persistent!`),
   checked to be confined to the fiber that created them.
-- Value equality `=` on all immutable data; `identical?` for identity.
+- Value equality `=` on all immutable data; `identical?` for identity. See
+  §3.4.
 - Everything — including built-ins like `Integer`, `Vector`, `String` — has a
   class, so you can `defmethod` on anything (§4).
 
@@ -84,19 +85,81 @@ CL/Racket conveniences.
 |---|---|---|
 | `var` | Late-bound global with root value + fiber-local dynamic bindings | All top-level definitions; redefinable |
 | `atom` | Lock-free CAS cell, `swap!` / `reset!` | Uncoordinated shared state |
-| `ref` + `dosync` | MVCC software transactional memory | Coordinated multi-cell updates (**[open]**: core or `norn.stm` library) |
+| `ref` + `dosync` | MVCC software transactional memory | Coordinated multi-cell updates (**[decided]**: the `norn.stm` library, not the core) |
 | `volatile` | Unsynchronized cell, fiber-confined | Hot local state |
 | `chan` | CSP channel, buffered/unbuffered | Pipelines, coordination |
 | `process` | Fiber + mailbox (actor) | Isolated stateful services |
 
-### 3.3 Sequences and laziness **[open]**
+### 3.3 Sequences and laziness **[decided, 2026-11-13]**
 
 Clojure's pervasive lazy seqs interact badly with dynamic binding, resource
 scopes and parallelism (work leaks out of the scope it was meant to run in).
-Proposal: core sequence functions on concrete collections are **eager and
-type-preserving** (`(map inc [1 2])` → `[2 3]`); laziness is explicit via
-`lazy` streams; heavy pipelines use **transducers**, which also parallelise
-(§6.6).
+So:
+
+- **Core sequence functions are eager and type-preserving.** They run when
+  called, inside the caller's bindings and scope, and return the kind of
+  collection they were given:
+
+  | Input | `map`, `filter`, `remove`, `take`, `drop`… return |
+  |---|---|
+  | vector | vector: `(map inc [1 2])` → `[2 3]` |
+  | list | list, in the same order |
+  | set | set |
+  | map | `filter`/`remove`/`take`/`drop` give a map. `map` gives a vector, since `f` needn't return entries; `update-vals` and `into {}` cover map-to-map |
+  | range, string or other seqable | vector |
+
+- **Laziness is explicit.** A `lazy` stream is a value you create on purpose:
+  `(lazy coll)`, or a generator such as `(iterate f x)`, `(repeat x)`,
+  `(cycle xs)`, `(range)` with no end, or a line stream over a file. Sequence
+  functions on a stream return a stream, so laziness spreads only from a
+  stream you made. `vec`, `into` and `reduce` realise one.
+- **Heavy pipelines use transducers**, which also parallelise (§6.6).
+
+*Status:* today's core is eager but returns vectors for everything. Making it
+type-preserving, and adding streams, is part of M7 (runtime.md §12).
+
+### 3.4 Equality and hashing **[decided, 2026-11-13]**
+
+`=` and `hash` are defined by the runtime, structurally, and never run user
+code. So a hash-map operation can't block, deadlock or cause side effects,
+even inside a parallel fold (runtime.md §2.3).
+
+- **Values compare by structure.**
+  - Strings and keywords compare by contents; maps compare by entries; sets
+    by members.
+  - Sequential collections are equal when their elements are:
+    `(= [1 2] '(1 2))`.
+  - Instances are equal when their class is the same and their slots are.
+- **Identity types compare by identity:** atoms, vars, channels, fibers,
+  scopes, functions, generic functions and classes.
+- **Classes can change the rule declaratively**, and the runtime reads the
+  declaration (no user code runs):
+  - `(defclass Account () (…) (:equality :identity))`: instances compare by
+    identity, as entities do. This is the expected rule for mutable objects
+    (§4.2).
+  - The slot option `:compare false` leaves a slot (a cache, a timestamp)
+    out of both `=` and `hash`.
+- **Anything more exotic uses a key function**, e.g. case-insensitive keys:
+  `(group-by str/lower-case xs)`, or a map keyed by `(key-fn x)`.
+- **`=` is an equivalence relation:** NaN equals NaN, and `-0.0` equals
+  `0.0`. So every value can be found again as a map key or set member. `==`
+  keeps IEEE semantics (NaN ≠ NaN).
+- **Numbers** (with the M7 numeric tower):
+  - integers are equal whatever their representation (a bignum that fits is
+    stored as a fixnum);
+  - ratios are normalised (`2/4` is `1/2`, `2/1` is `2`);
+  - `=` keeps the categories apart: `(= 1 1.0)` and `(= 1/2 0.5)` are
+    false. `==` compares numerically across them.
+- **Across kinds:** maps never equal sets; strings never equal vectors of
+  characters; instances never equal maps.
+- **Redefined classes:** an instance made before a `defclass` redefinition
+  compares with newer ones through the class's current layout. A slot it
+  lacks counts as that slot's default.
+
+*Status:* structural equality, identity types and Clojure-style number
+categories exist today. Still to build in M7: the `:equality` and
+`:compare` declarations, reflexive NaN (today `(= ##NaN ##NaN)` is false,
+though `(let [x ##NaN] (= x x))` is true), and the numeric-tower rules.
 
 ---
 
@@ -176,19 +239,51 @@ threads freely.
 (:radius c)                         ; instances also behave like read-only maps
 ```
 
-Mutable objects are opt-in and **owned**:
+Mutable objects are opt-in and **owned** **[decided, 2026-11-13]**:
 
 ```clojure
 (defclass connection-pool ()
-  ((conns :mutable true))
+  ((conns :mutable true) (size))
   (:mutable))                        ; instances have an owner fiber
+
+(set-slot! pool :conns [])           ; only settable slots
+(update-slot! pool :conns conj c)
 ```
 
-- A mutable instance belongs to the fiber that created it. Access from another
-  fiber signals `ownership-error` in safe mode; ownership can be
-  explicitly transferred (`(send! ch obj)` transfers, `(share obj)` wraps it in
-  a lock).
-- Checks compile away under `(declare (optimize (safety 0)))`.
+- **Declaring.** `(:mutable)` on the class, and `:mutable true` on each slot
+  that can be set; `set-slot!` and `update-slot!` write them. A mutable class
+  always compares by identity (§3.4): a hash that changed while the object
+  sat in a map would lose it.
+- **Ownership states:**
+  - *owned* by a fiber: the creator at first;
+  - *free*: the next fiber to touch the object claims it (compare-and-swap);
+  - *shared*: see below.
+
+  Fibers, not threads, are owners, since fibers migrate between carriers.
+- **Checks.** A read or write by a fiber other than the owner signals
+  `OwnershipError`. The exception: the debugger, inspector and printer read
+  without a check, since they only observe. Checks are always on until
+  `(declare (optimize (safety 0)))` exists (M9/M10), which removes them.
+- **Hand-off.**
+  - `(release! obj)` makes an object free.
+  - A mutable object put directly on a channel is released automatically, and
+    the receiver claims it on first touch.
+  - An object nested inside other data is released explicitly before sending.
+- **Owners that go away.**
+  - When the owning fiber finishes, its objects become free. Nothing is
+    tracked: an access just sees that the owner is done.
+  - When an image is restored, objects whose owner wasn't saved are free.
+- **Sharing.** `(share obj)` makes an object shared. Every access then takes a
+  per-object lock that parks the fiber instead of spinning. `(locking obj …)`
+  makes a multi-slot update atomic. Deadlocks are left to deadlock detection
+  (runtime M11).
+- **Why check at all.** Races on slots can't corrupt memory: a slot is one
+  aligned word and the GC doesn't move objects. Ownership turns silent logic
+  races into clear errors, for one load and compare per access.
+- **Cost:** a hidden owner word, on instances of mutable classes only.
+
+*Status:* to build in M7. Instances are immutable today; there is no way to
+set a slot.
 
 ### 4.3 Meta-object protocol **[decided]**
 
@@ -394,18 +489,19 @@ folds over them cheap.
 ### 7.1 What an image is **[decided]**
 
 A snapshot of the heap (code, classes, generic functions, vars, data), and
-optionally parked fibers, in an mmap-able, relocatable format. Loading means
+optionally parked fibers, in an mmap-able, relocatable format. Image files
+use the extension `.nimg`. Loading means
 mapping the file, which gives instant startup.
 
 ```clojure
-(save-image "app.lim"
+(save-image "app.nimg"
   :entry  #'myapp/main
   :fibers :parked          ; :none | :parked
   :shake  true)            ; tree-shake unreachable code for deployment
 ```
 
 ```sh
-norn --image app.lim
+norn --image app.nimg
 ```
 
 ### 7.2 Images and concurrency **[decided]**
@@ -422,7 +518,7 @@ norn --image app.lim
 
 ### 7.3 Layered images **[decided]**
 
-`base.lim` (runtime + compiler + stdlib) → `deps.lim` → `app.lim`. Each layer
+`base.nimg` (runtime + compiler + stdlib) → `deps.nimg` → `app.nimg`. Each layer
 stores only its delta. This makes dev images fast to save, and deployment
 images small.
 
@@ -431,6 +527,26 @@ images small.
 Source modules are the source of truth; `norn build` produces images
 deterministically from source. Dev images are "pets" (source-drift tracking,
 §5.1, keeps them honest); build images are "cattle".
+
+### 7.5 As built (M5)
+
+Images work as described above, with these details and gaps (runtime.md §7.5):
+
+- **Resources.** Code that owns an external resource calls
+  `(register-resource! r)`. After a restore, `(on-image-restore r)` runs for
+  each registered resource: a method that reconnects returns true. Code that
+  uses a resource calls `(ensure-live r)`. On a resource that is still dead,
+  it signals `ResourceLost` with the restarts `reconnect` (calls
+  `(reconnect r)`) and `abort`.
+- **The saving fiber** doesn't continue in the image: it ends there with an
+  error, like every fiber that `:fibers :none` leaves out.
+- **`:entry`** gets the command-line arguments. An integer result becomes the
+  process's exit status.
+- **Layers** use `(save-image f :layered true)`, which saves a delta against
+  the image the process started from.
+- **`norn build`** writes images without fibers and byte-for-byte
+  reproducibly.
+- **`:shake`** (tree shaking) is not built yet.
 
 ---
 
@@ -509,6 +625,35 @@ Dynamically typed with **optional, gradual annotations**: CL-style
 - **[open]** Whether to target a second host later (e.g. WASM), or stay with
   the native runtime only.
 
+### 9.1 UI: `norn.ui` **[decided, 2026-11-13]**
+
+Native rendering, with a full UI library as the goal; the Norn editor is its
+first user. The split follows "Rust never calls Norn" (runtime.md §2.3):
+
+- **Rust: the UI host.**
+  - It owns the main thread (macOS requires windows to live there), runs the
+    platform event loop, and delivers input as channel messages: keys, IME
+    composition, pointer, focus, resize, clipboard and accessibility
+    requests.
+  - It draws *display lists*: immutable Norn data describing rectangles,
+    paths, images and glyph runs. It draws them on the GPU.
+  - It shapes and lays out text: font fallback, bidi, line breaking.
+  - Likely crates: `winit` (windows and events), `wgpu` (rendering),
+    `cosmic-text` or `parley` (text), `accesskit` (accessibility).
+- **Norn: everything above that.** Widgets, layout (flex and grid),
+  styling, focus, animation and state, in a declarative style that suits
+  immutable data:
+  - application state lives in atoms;
+  - a view is a function from state to a widget tree;
+  - the library diffs trees and re-lays out only what changed.
+- **Live programming applies to UIs too.** Redefining a view function at the
+  REPL updates the open window. Windows are image resources, so a restored
+  image reopens them through `on-image-restore`.
+- **Risk: speed before the optimiser.** Layout runs in Norn every frame,
+  and the optimising compiler comes later (M10). Mitigations: incremental
+  layout, a retained tree, and Rust doing the per-pixel and per-glyph work.
+  Measuring this early is part of M7.5.
+
 ---
 
 ## 10. Implementation strategy
@@ -538,7 +683,7 @@ norn-rt  (Rust)   GC, scheduler, object layout, primitives, image I/O, FFI, Cran
 norn0    (Rust)   tiny interpreter for core forms; exists only to bootstrap
 compiler (Norn)   expander + optimiser + codegen; compiled by norn0, then by itself
 stdlib   (Norn)
-→ base.lim
+→ base.nimg
 ```
 
 ### 10.3 Milestones **[superseded — see [runtime.md §12](runtime.md#12-revised-milestones)]**
@@ -559,11 +704,20 @@ stdlib   (Norn)
 ## 11. Open questions (summary)
 
 1. ~~**Host**~~ — decided: own Rust runtime (§10.1, [runtime.md](runtime.md)).
-2. **Laziness:** eager type-preserving core + explicit lazy streams, or
-   Clojure-style lazy-by-default — §3.3.
-3. **STM:** in core or as a library — §3.2.
-4. **Mutable objects:** enforce ownership checks (proposal), or trust the
-   programmer like CL — §4.2.
-5. **Primary audience:** what should the first real program written in Norn be?
-   (It will shape stdlib priorities: web services, data processing, games,
-   tooling…)
+2. ~~**Laziness**~~ — decided: eager, type-preserving core with explicit
+   lazy streams (§3.3).
+3. ~~**STM**~~ — decided: a library, `norn.stm` (§3.2).
+4. ~~**Mutable objects**~~ — decided: opt-in, owned by a fiber, checked
+   (§4.2).
+5. ~~**Primary audience**~~ — decided: Norn is a general-purpose language,
+   developed by one person to start with. Its first real program is a
+   VS Code-style editor made for Norn, written in Norn (runtime.md §12,
+   M7.6), on the `norn.ui` library (M7.5).
+6. ~~**The editor's UI technology**~~ — decided: native rendering, with a
+   full UI library, `norn.ui`, as the driving goal (§9.1).
+7. ~~**License**~~ — decided: MIT.
+8. ~~**Versioning**~~ — decided: semantic versioning per module, enforced
+   by `norn api-diff`; a breaking change needs a major version and a
+   deprecation period of at least one minor release.
+9. ~~**Complex numbers**~~ — decided: later, as a library type rather than
+   part of the core numeric tower.

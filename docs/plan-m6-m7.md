@@ -1,0 +1,50 @@
+# Plan: M6 and M7
+
+The work plan for the next two milestones (runtime.md §12 has the scope and
+done-checks). Each part ends with its tests passing at tier 0 and tier 1 and
+under GC stress, and with a commit. Decisions made along the way are recorded
+in design.md or runtime.md and listed at the end of this file.
+
+## Before M6: loading libraries
+
+Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
+
+- The libraries live in `lib/norn/` (`io.norn`, `net.norn`, …), one
+  namespace each (`norn.io`, …).
+- They are embedded in the binary with `include_str!`, so `norn` stays a
+  single file.
+- `(require 'norn.io)` loads one the first time, from the embedded copy
+  (or from `NORN_PATH` for user code), and caches it.
+- An image includes whatever was loaded before the save.
+
+## M6: I/O, the system, and a basic FFI
+
+| Part | Work | Checked by |
+|---|---|---|
+| 6.1 | **Weak references and finalizers** in the MMTk binding (`ReferenceGlue`, finalizable objects). The resource registry becomes weak. | Weak values disappear after a GC; finalizers run once; GC stress |
+| 6.2 | **Byte arrays and buffers** (a new heap kind); UTF-8, base64 and hex encodings | Round trips; printing and equality |
+| 6.3 | **The reactor**: a `mio` thread (kqueue/epoll) that wakes parked fibers through waiters and claims, as timers do; a **blocking pool** for files and blocking calls; the **monitor thread**, which starts a replacement carrier when one is stuck in a long native call | Thousands of fibers waiting on sockets without blocking a carrier; a carrier stuck in a blocking call doesn't stall the others |
+| 6.4 | **`norn.io`** (files, streams, paths), **`norn.fs`** (walking directories, glob patterns, watching with `notify`), **`norn.sys`**, **`norn.process`** (child processes with pipes), **`norn.time`**, **`norn.signal`** (signals as channel messages, via `signal-hook`), **fiber dumps** | Library suites; signals; a fiber dump of a busy runtime |
+| 6.5 | **`norn.net`**: TCP and UDP on the reactor; TLS with `rustls` | Echo client and server; TLS against a local certificate |
+| 6.6 | **The basic FFI**: load a library (`libloading`); call functions with integer, float, pointer and byte-buffer arguments; Cranelift-generated call stubs; fast or blocking calls; handles as resources with finalizers | Calls into libc and a test library; a blocking call doesn't stall its carrier |
+| 6.7 | **Done-check and docs**: a 10,000-connection TCP echo server; a socket saved in an image comes back as `ResourceLost` and `reconnect` works; runtime.md status §12.7 | `crates/norn/tests/io.rs` |
+
+## M7: numbers, collections, the pure stdlib and tooling
+
+| Part | Work |
+|---|---|
+| 7.1 | **The numeric tower**: bignums (a heap kind holding limbs in the Norn heap) and ratios; automatic promotion in the primitives; tier 1's overflow takes the slow path; the equality rules of design §3.4 (reflexive NaN, normalisation, categories) |
+| 7.2 | **Equality declarations and mutable objects**: `(:equality :identity)`, `:compare false`; `(:mutable)` classes with fiber ownership, `release!`, `share` and `locking` (design §4.2) |
+| 7.3 | **Sequences**: type-preserving `map`, `filter` and the rest (design §3.3); `lazy` streams and the generators; transducers (with `preduce` and channels) |
+| 7.4 | **Collections**: sorted maps and sets, a persistent queue, transients, and persistent ropes (for the editor) |
+| 7.5 | **Text and data**: `norn.string` (with Unicode graphemes and display widths), `norn.format`, `norn.regex` (the `regex` crate), `norn.json`, `norn.edn`, `norn.pprint` |
+| 7.6 | **Everything else in the pure stdlib**: `norn.math`, `norn.set`, `norn.walk`, `norn.random`, `norn.async` extras, `norn.sync`, `norn.cache`, `norn.log` |
+| 7.7 | **Testing**: `norn.test` and the `norn test` runner; the existing suites ported to it |
+| 7.8 | **Formatting and linting**: the reader mode that keeps comments and whitespace; `norn fmt`; indentation hints on macros; `norn lint` (compiler warnings); `:format`/`:lint` in the editor protocol; `lib/` and `tests/` formatted and lint-clean |
+| 7.9 | **Docs and the REPL**: the docstring convention, `norn doc`, deprecation; `doc`, `apropos`, `source`, an inspector, `trace`/`untrace`; `norn.bench`; a terminal line editor (`rustyline`); `norn image info` and image diff; `norn check`; coverage if cheap |
+| 7.10 | **Done-check and docs**: every suite on `norn.test`; promotion past 62 bits identical at both tiers; `fmt --check` and `lint` clean; runtime.md status §12.8 |
+
+## Decisions made along the way
+
+- **2026-11-13: Emacs and VS Code plugins dropped from M7.** The Norn
+  editor (M7.6) is the target; other editors can use `norn lsp` (M9).

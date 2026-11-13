@@ -227,5 +227,15 @@
   (is #{:v1 :v2} @seen)
   (is :v2 (work 1)))
 
+;;; A method on another namespace's generic function extends that function in
+;;; place (it doesn't define a new one here).
+(defclass gadget () ())
+(defmethod on-image-restore ((g gadget)) :gadget)
+(is :gadget (norn.core/on-image-restore (gadget)))
+(is nil (on-image-restore 42))
+(is false (contains? (ns-publics 'clos-test) 'on-image-restore))
+(defmethod norn.core/reconnect ((g gadget)) :again)
+(is :again (norn.core/reconnect (gadget)))
+
 (println (str "clos_test: " checks " checks, " failures " failures"))
 (when (pos? failures) (error failures "CLOS tests failed"))

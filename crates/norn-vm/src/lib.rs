@@ -5,6 +5,7 @@ pub mod bytecode;
 pub mod compiler;
 pub mod conc;
 pub mod eval;
+pub mod image;
 pub mod jit;
 pub mod prims;
 pub mod reader;
@@ -13,5 +14,5 @@ pub mod server;
 pub mod vm;
 
 pub use reader::{ReadError, Reader};
-pub use sched::{Norn, RootDone, RootTask, start, subscribe};
+pub use sched::{Norn, RootDone, RootTask, start, start_with, subscribe};
 pub use vm::{Error, Result, Vm};

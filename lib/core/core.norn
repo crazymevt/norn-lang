@@ -776,12 +776,21 @@
                    (when (%uses? body 'next-method?)
                      [(symbol "next-method?") `(fn* [] (some? ~nxt))]))
         shape (%lambda-shape params)
-        mname (symbol (str (name gname) "-method"))]
-    `(def ~gname
-       (%add-method (%generic-for-method (%bound-value '~gname) '~(symbol (name (current-ns)) (name gname))
-                                         ~(first shape) ~(second shape))
-                    ~specs ~qualifier
-                    (fn* ~mname [~nxt ~@lam] (let* [~@bindings] ~@body))))))
+        mname (symbol (str (name gname) "-method"))
+        ;; A generic function of another namespace (say norn.core's
+        ;; on-image-restore) gets the method in place; otherwise def one here.
+        own? (and (nil? (namespace gname)) (contains? (or (ns-publics (symbol (name (current-ns)))) {}) gname))
+        foreign (when-not own?
+                  (let [v (resolve gname)] (when (and v (generic? (var-get v))) v)))
+        method `(fn* ~mname [~nxt ~@lam] (let* [~@bindings] ~@body))]
+    (if foreign
+      `(do (%add-method (%generic-for-method (var-get '~foreign) '~gname ~(first shape) ~(second shape))
+                        ~specs ~qualifier ~method)
+           '~foreign)
+      `(def ~gname
+         (%add-method (%generic-for-method (%bound-value '~gname) '~(symbol (name (current-ns)) (name gname))
+                                           ~(first shape) ~(second shape))
+                      ~specs ~qualifier ~method)))))
 
 ;;; ---- dispatch: the miss path ------------------------------------------------------------
 ;;;
@@ -1353,3 +1362,91 @@
        (when s#
          (let [~x (first s#)] ~@body)
          (recur (next s#))))))
+
+;;; ---- images (design §7) ------------------------------------------------------------------
+;;;
+;;; (save-image "app.nimg" :entry #'app/main) writes the running heap to a
+;;; file; `norn --image app.nimg` starts from it. Parked fibers are saved with
+;;; their stacks and carry on after the restore; the fiber that saves does not.
+;;;
+;;; External resources (sockets, files, FFI handles) can't survive a restore.
+;;; Code that owns one registers it; after a restore it is dead until
+;;; reconnected, either eagerly by an on-image-restore method or lazily: a
+;;; fiber that calls (ensure-live r) on a dead resource gets a ResourceLost
+;;; error with `reconnect` and `abort` restarts.
+
+(def %image-entry nil)
+(def %image-generation 0)
+(def %resources (atom []))
+
+(defclass ResourceLost (Error) ((resource :initform nil)))
+
+(defgeneric on-image-restore (resource)
+  "Called on every registered resource after the image it lives in has been
+  restored, before the entry function or REPL starts. A method that
+  reconnects the resource returns true; the default does nothing.")
+(defmethod on-image-restore (r) nil)
+
+(defgeneric reconnect (resource)
+  "Re-open a resource lost in an image restore (the `reconnect` restart).")
+
+(defn register-resource!
+  "Track external resource r for image restores. Returns r."
+  [r]
+  (swap! %resources conj [r (atom %image-generation)])
+  r)
+
+(defn- %resource-entry [r]
+  (some (fn [e] (when (identical? (first e) r) e)) @%resources))
+
+(defn resource-live?
+  "False for a registered resource lost in an image restore and not yet reconnected."
+  [r]
+  (let [e (%resource-entry r)]
+    (or (nil? e) (= @(second e) %image-generation))))
+
+(defn- %mark-live! [r]
+  (when-let [e (%resource-entry r)] (reset! (second e) %image-generation)))
+
+(defn ensure-live
+  "r, if it is live. Otherwise signal ResourceLost, with restarts `reconnect`
+  (calls (reconnect r) and carries on) and `abort` (ends this fiber)."
+  [r]
+  (if (resource-live? r)
+    r
+    (restart-case
+      (error ResourceLost :resource r :message (str "Resource lost in an image restore: " (pr-str r)))
+      (reconnect [] :report "Reconnect the resource and carry on" (reconnect r) (%mark-live! r) r)
+      (abort [] :report "End this fiber" (%abort-fiber "Resource lost in an image restore" [])))))
+
+(defn save-image
+  "Save the running image to path. Options:
+    :entry   a var or function the image runs when started (with the
+             command-line arguments); without one it starts a REPL
+    :fibers  :parked (default) saves every unfinished fiber, resumable;
+             :none saves them dead (they end with an error when restored)
+    :layered true writes only what changed since the image this process
+             started from (a delta that names it as its base)
+  Returns {:objects :patches :reused :bytes}."
+  [path & {:keys [entry fibers layered]}]
+  (when-not (or (nil? fibers) (= fibers :parked) (= fibers :none))
+    (error "save-image: :fibers must be :parked or :none, not" (pr-str fibers)))
+  (%save-image path entry (not= fibers :none) (if layered true false))
+  (%save-image-outcome))
+
+(defn %image-restored
+  "Run once after an image is loaded: resources become dead, then each gets
+  on-image-restore."
+  []
+  (alter-var-root (var %image-generation) inc)
+  (doseq [e @%resources]
+    (let [r (first e)]
+      (handler-case (when (on-image-restore r) (%mark-live! r))
+        (Error [c] (println "on-image-restore failed for" (pr-str r) "-" (condition-text c))))))
+  nil)
+
+(defn %run-entry
+  "Call the image's entry function with the command-line arguments."
+  [& args]
+  (let [e %image-entry]
+    (apply (if (var? e) (var-get e) e) args)))

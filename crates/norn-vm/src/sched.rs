@@ -15,6 +15,13 @@
 //!
 //! **Roots.** Run queues, timers, root fibers and each carrier's current fiber
 //! are the GC roots that live outside the heap (`for_each_root`).
+//!
+//! **Pausing.** Saving an image needs every fiber stopped at a resume point.
+//! `pause_all` sets `paused` and waits until no carrier is doing work: a
+//! carrier counts itself `in_flight` before it picks a fiber or handles
+//! external jobs, then checks `paused` (both sequentially consistent, so
+//! either the carrier sees the pause or the pauser sees the carrier), and
+//! running fibers yield at their next poll.
 
 use crate::vm::{Error, Exit, Vm, cancel_error};
 use norn_rt::conc::{fiber, fiber_new, is_claimed, scope, spin_lock, try_claim, waiter};
@@ -29,7 +36,7 @@ use norn_rt::{Kind, Value};
 use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -107,6 +114,8 @@ pub struct Sched {
     roots: Mutex<HashMap<u64, Value>>,
     notifies: Mutex<HashMap<u64, (mpsc::Sender<RootDone>, bool)>>,
     next_id: AtomicU64,
+    paused: AtomicBool,
+    in_flight: AtomicUsize,
     pub spawned: AtomicU64,
     pub finished: AtomicU64,
 }
@@ -138,6 +147,8 @@ impl Sched {
             roots: Mutex::new(HashMap::new()),
             notifies: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            paused: AtomicBool::new(false),
+            in_flight: AtomicUsize::new(0),
             spawned: AtomicU64::new(0),
             finished: AtomicU64::new(0),
         }
@@ -229,6 +240,127 @@ fn next_fiber(me: usize) -> Option<Value> {
 pub fn has_other_work(me: usize) -> bool {
     let s = sched();
     (me < s.n && !s.locals[me].lock().unwrap().is_empty()) || !s.injector.lock().unwrap().is_empty()
+}
+
+// ---- pausing (image saves) ---------------------------------------------------------
+
+/// Is an image save pausing the scheduler? Running fibers yield when it is.
+pub fn pausing() -> bool {
+    SCHED.get().is_some_and(|s| s.paused.load(Ordering::Relaxed))
+}
+
+/// Start a unit of carrier work (picking a fiber, handling external jobs)
+/// unless the scheduler is paused. Pair with `end_work`.
+fn begin_work(s: &Sched) -> bool {
+    s.in_flight.fetch_add(1, Ordering::SeqCst);
+    if s.paused.load(Ordering::SeqCst) {
+        s.in_flight.fetch_sub(1, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
+fn end_work(s: &Sched) {
+    s.in_flight.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Stop the carriers: no fiber runs once this returns `Ok`. Fibers that were
+/// running yield at their next poll (back to the run queue, resumable). Gives
+/// up after `limit` (a fiber stuck in a long native call can't be stopped).
+pub(crate) fn pause_all(limit: Duration) -> Result<(), String> {
+    let s = sched();
+    if s.paused.swap(true, Ordering::SeqCst) {
+        return Err("another image save is in progress".into());
+    }
+    safepoint::bump_attention();
+    let deadline = Instant::now() + limit;
+    while s.in_flight.load(Ordering::SeqCst) != 0 {
+        if Instant::now() > deadline {
+            resume_all();
+            return Err("couldn't stop the running fibers (one may be inside a long native call)".into());
+        }
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    Ok(())
+}
+
+pub(crate) fn resume_all() {
+    let s = sched();
+    s.paused.store(false, Ordering::SeqCst);
+    let _g = s.idle.lock().unwrap();
+    s.idle_cv.notify_all();
+}
+
+/// While paused: the runnable fibers, in queue order.
+pub(crate) fn queued_fibers() -> Vec<Value> {
+    let s = sched();
+    let mut v: Vec<Value> = Vec::new();
+    for q in &s.locals {
+        v.extend(q.lock().unwrap().iter().copied());
+    }
+    v.extend(s.injector.lock().unwrap().iter().copied());
+    v
+}
+
+/// A pending timer as an image saves it.
+pub(crate) struct SavedTimer {
+    pub ms_left: u64,
+    /// true: wake a sleeping fiber's waiter; false: close a `timeout` channel.
+    pub wake: bool,
+    pub target: Value,
+}
+
+/// Run `f` with the timer thread held off (it wakes fibers, which would
+/// change the heap under an image save), given the pending timers in due order.
+pub(crate) fn with_timers_held<R>(f: impl FnOnce(Vec<SavedTimer>) -> R) -> R {
+    let s = sched();
+    let t = s.timers.lock().unwrap();
+    let now = Instant::now();
+    let mut due: Vec<(Instant, u64)> = t.heap.iter().map(|r| r.0).collect();
+    due.sort();
+    let saved = due
+        .into_iter()
+        .filter_map(|(at, seq)| {
+            t.entries.get(&seq).map(|(k, v)| SavedTimer {
+                ms_left: at.saturating_duration_since(now).as_millis() as u64,
+                wake: matches!(k, TimerKind::Wake),
+                target: *v,
+            })
+        })
+        .collect();
+    let r = f(saved);
+    drop(t);
+    r
+}
+
+/// Re-arm a timer from an image.
+pub(crate) fn restore_timer(t: &SavedTimer) {
+    let kind = if t.wake { TimerKind::Wake } else { TimerKind::Close };
+    add_timer(Instant::now() + Duration::from_millis(t.ms_left), kind, t.target);
+}
+
+pub(crate) fn fiber_id_counter() -> u64 {
+    sched().next_id.load(Ordering::Relaxed)
+}
+
+/// Keep `v` alive while only Rust code holds it (returns a key for `unroot`).
+pub(crate) fn root(v: Value) -> u64 {
+    let s = sched();
+    let k = s.next_id();
+    s.roots.lock().unwrap().insert(k, v);
+    k
+}
+
+pub(crate) fn unroot(k: u64) {
+    sched().roots.lock().unwrap().remove(&k);
+}
+
+/// The error a fiber saved dead in an image ends with after the restore.
+pub const NOT_SAVED: &str = "Fiber was not saved in the image";
+
+/// End a fiber that an image saved dead (waking its joiners and scope).
+pub(crate) fn finish_unsaved(vm: &mut Vm, f: Value) {
+    finish(vm, f, Err(Error::new(NOT_SAVED)));
 }
 
 // ---- fibers -------------------------------------------------------------------------
@@ -369,6 +501,7 @@ fn finish(vm: &mut Vm, f: Value, r: Result<Value, Error>) {
     } else if let Some(e) = &err
         && sc.is_nil()
         && e.msg != "Cancelled"
+        && e.msg != NOT_SAVED
     {
         // A detached fiber died: say so, as Erlang does (it can still be awaited).
         eprintln!("Fiber {} failed: {e}", f.fiber_id());
@@ -653,23 +786,38 @@ fn carrier_loop(vm: &mut Vm) {
     let s = sched();
     let me = vm.carrier;
     loop {
-        process_external(vm);
-        if let Some(f) = next_fiber(me) {
-            run_one(vm, f);
-            continue;
+        if begin_work(s) {
+            process_external(vm);
+            let f = next_fiber(me);
+            if let Some(f) = f {
+                run_one(vm, f);
+            }
+            end_work(s);
+            if f.is_some() {
+                continue;
+            }
         }
         // Idle. Count ourselves idle *before* the final check, under the
         // lock, so a concurrent `schedule` can't miss us.
         let g = s.idle.lock().unwrap();
         s.idle_count.fetch_add(1, Ordering::AcqRel);
-        let found = next_fiber(me);
+        let found = if begin_work(s) {
+            let f = next_fiber(me);
+            if f.is_none() {
+                end_work(s);
+            }
+            f
+        } else {
+            None
+        };
         if let Some(f) = found {
             s.idle_count.fetch_sub(1, Ordering::AcqRel);
             drop(g);
             run_one(vm, f);
+            end_work(s);
             continue;
         }
-        if s.external_len.load(Ordering::Acquire) > 0 {
+        if s.external_len.load(Ordering::Acquire) > 0 && !s.paused.load(Ordering::SeqCst) {
             s.idle_count.fetch_sub(1, Ordering::AcqRel);
             continue;
         }
@@ -707,13 +855,32 @@ fn scheduler_roots(f: &mut dyn FnMut(Value)) {
 
 /// Start the runtime (once per process) and boot norn.core.
 pub fn start() -> Result<&'static Norn, Error> {
-    NORN.get_or_init(|| {
+    start_with(None)
+}
+
+/// Start the runtime from an image (`Some(path)`) or by booting norn.core
+/// from source (`None`). Once per process: later calls return the runtime
+/// started first.
+pub fn start_with(image: Option<&std::path::Path>) -> Result<&'static Norn, Error> {
+    let norn = NORN.get_or_init(|| {
         let n = carrier_count();
         norn_rt::heap::init_heap();
+        let restore = match image {
+            Some(p) => match crate::image::load(p) {
+                Ok(r) => Some(r),
+                Err(e) => return Err(e),
+            },
+            None => None,
+        };
         let _ = SCHED.set(Sched::new(n));
+        if let Some(r) = &restore {
+            sched().next_id.fetch_max(r.next_fiber_id, Ordering::Relaxed);
+        }
         let (boot_tx, boot_rx) = mpsc::channel::<Result<(), String>>();
+        let mut restore = Some(restore);
         for id in 0..n {
             let boot_tx = boot_tx.clone();
+            let restore = if id == 0 { restore.take().flatten() } else { None };
             std::thread::Builder::new()
                 .name(format!("norn-carrier-{id}"))
                 .stack_size(16 << 20)
@@ -722,7 +889,13 @@ pub fn start() -> Result<&'static Norn, Error> {
                     safepoint::register();
                     let mut vm = crate::eval::carrier_vm(id);
                     if id == 0 {
-                        let r = crate::eval::boot(&mut vm).map_err(|e| e.to_string());
+                        let r = match restore {
+                            Some(r) => {
+                                crate::image::restore(&mut vm, r);
+                                Ok(())
+                            }
+                            None => crate::eval::boot(&mut vm).map_err(|e| e.to_string()),
+                        };
                         let ok = r.is_ok();
                         let _ = boot_tx.send(r);
                         if !ok {
@@ -744,11 +917,20 @@ pub fn start() -> Result<&'static Norn, Error> {
                 Ok(Norn { pending: Mutex::new(HashMap::new()) })
             }
             Ok(Err(e)) => Err(format!("loading core.norn failed: {e}")),
+            // (restoring an image can't fail once it has loaded)
             Err(_) => Err("boot carrier died".into()),
         }
     })
     .as_ref()
-    .map_err(|e| Error::new(e.clone()))
+    .map_err(|e| Error::new(e.clone()))?;
+    if image.is_some() {
+        // Tell the image it has been restored (on-image-restore hooks).
+        static RESTORED: std::sync::Once = std::sync::Once::new();
+        let mut r = Ok(());
+        RESTORED.call_once(|| r = norn.eval("(norn.core/%image-restored)", "user").map(|_| ()));
+        r?;
+    }
+    Ok(norn)
 }
 
 impl Norn {

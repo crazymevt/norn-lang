@@ -100,7 +100,10 @@ functions: they may allocate but never invoke Norn code. Consequences:
 - **Equality and hashing are structural and runtime-defined**, so the HAMT in
   Rust can implement `assoc`/`get` without calling back into user code. That
   also guarantees map operations can't deadlock or run user side effects in
-  parallel folds. Custom key semantics use a key function. **[open: confirm]**
+  parallel folds. Custom key semantics use a key function. **[decided,
+  2026-11-13]**: classes may declare `(:equality :identity)` or leave slots
+  out with `:compare false`, which the Rust side reads from the class (design
+  §3.4).
 - **Sorted collections, `sort` with a comparator, `print-object`, reader
   macros and anything else higher-order are written in Norn.**
 - **FFI callbacks** are the single exception: they are *continuation
@@ -582,6 +585,110 @@ Consequences **[decided]**:
 - Linux allows file-backed `PROT_EXEC` mappings, so it keeps the zero-copy
   path.
 
+### 7.5 As built in M5 **[built]**
+
+`crates/norn-rt/src/image.rs` (format, writer, loader) and
+`crates/norn-vm/src/image.rs` (roots, the save, the restore).
+
+**Format.** Little-endian 64-bit words: a header, the base image's path (for
+a delta), the object area, a relocation bitmap over the area (one bit per
+word: is it a reference?), and the roots. A reference is stored as
+`(object number << 3) | tag`, and an object's layout word as its kind
+number. Nothing in the file is an address.
+
+**Save.**
+1. `save-image` parks the calling fiber and hands the work to a helper
+   thread.
+2. The helper pauses the scheduler. A carrier counts itself `in_flight`
+   before it picks a fiber or handles external jobs, then checks `paused`;
+   both are sequentially consistent, so either the carrier sees the pause or
+   the helper sees the carrier. Running fibers yield at their next poll,
+   whether or not other work is waiting.
+3. When nothing is in flight, the helper becomes a running safepoint
+   participant (so the GC can't start), holds the timer lock, and walks the
+   heap breadth-first from the roots. The walk mostly reuses the GC's `scan`.
+   Segments store their live frames, zeroed beyond the top. A fiber's
+   namespace pointer is stored as the namespace's name. A proto's native
+   entry is stored as 0, since tier 1 recompiles lazily. Completion tickets
+   are cleared.
+4. The roots, in order:
+   - counters: identity hashes, gensyms, class epoch and fiber ids;
+   - the empty collections and the builtin classes;
+   - the frame-kind closures and the entry function;
+   - symbols and keywords, sorted by name;
+   - namespaces, sorted, each with its sorted mappings;
+   - the run queues;
+   - the pending timers, each with the time it had left.
+5. **Dead fibers:** the saving fiber (and with `:fibers :none`, every
+   unfinished fiber) is saved without its stack. Their waiters' claims are
+   saved as taken, so no channel hands them a value.
+6. The file is written to a temporary name and renamed.
+
+**Load.** `norn --image FILE` loads before any carrier starts:
+1. Allocate every object in the MMTk heap.
+2. Copy each object in, relocating its references through the object table.
+3. Rebuild the runtime tables (`runtime::init_from_image`), and turn each
+   fiber's namespace name back into a namespace.
+
+Carrier 0 then finishes the restore in place of boot:
+- it requeues the runnable fibers;
+- it re-arms the timers;
+- it ends the dead fibers through the normal `finish` path, so their joiners
+  and scopes see "Fiber was not saved in the image".
+
+Last, `(norn.core/%image-restored)` runs `on-image-restore`.
+
+**Layers.** `(save-image f :layered true)` writes a delta against the image
+the process started from:
+- the objects created since the load;
+- *patches* for loaded objects whose canonical encoding differs from the one
+  in their file.
+
+Loading a delta loads its base chain first (the base is named relative to
+the delta when they share a directory) and checks the base's checksum.
+Image objects are **immortal**: they are GC roots for the life of the
+process, as a boot-image space would be. So their addresses are never
+reused, and a later delta can recognise them by address.
+
+**Safety.**
+- An image records a fingerprint of the runtime build that wrote it, covering:
+  - primitive names and arities;
+  - object kinds and builtin classes;
+  - the image format;
+  - the core library and compiler sources.
+- A checksum covers the whole file.
+- The loader validates the structure:
+  - section sizes;
+  - object kinds and sizes;
+  - every reference's range and tag;
+  - each root's kind.
+- Damaged files are refused with a message, not a crash.
+- Not covered: a deliberately crafted file with a valid checksum could still
+  describe a bad stack or bytecode. That needs the bytecode verifier
+  (design §11).
+
+**Measured** (release, Apple M-series, base image of 7,900 objects / 434 KB):
+
+| Start-up path | Time |
+|---|---|
+| From an image (`-e '(+ 1 2)'`) | 35 ms |
+| Booting from source | 40 ms |
+
+- The image load itself takes about 2 ms; booting core.norn and the compiler
+  from source takes about 7 ms.
+- Most of the remainder is `mmtk_init` at about 14 ms. It touches about 40 MB
+  before the first allocation.
+
+**Deviations from §7.1–7.3:**
+- **Objects are copied in, not mapped.** Loading allocates and fills each
+  object. Mapping the heap segment at a preferred address would need MMTk's
+  VM space. Copying costs 2 ms at this size and needs no relocation table or
+  write barrier.
+- **No code segment.** Tier-1 code isn't saved; protos are recompiled when
+  first run.
+- **Deltas don't use dirty-page tracking.** They compare encodings: the save
+  walks the whole reachable heap (a few ms) but writes only what changed.
+
 ---
 
 ## 8. Execution tiers
@@ -664,8 +771,8 @@ it can replace this piece by piece.
    (+ non-hygienic defmacro) → bytecode.                 [throwaway, ~2k LOC]
 3. Seed compiler loads lib/core/*.norn (stdlib basics, CLOS, conditions).
 4. Seed compiler loads lib/compiler/*.norn — the real compiler, in Norn.
-5. Real compiler recompiles itself and the stdlib → save base.lim.
-6. From here on: `norn` = norn-rt + base.lim. The seed compiler is used only
+5. Real compiler recompiles itself and the stdlib → save base.nimg.
+6. From here on: `norn` = norn-rt + base.nimg. The seed compiler is used only
    to rebuild from scratch (and in CI, to prove we still can).
 ```
 
@@ -678,8 +785,9 @@ it can replace this piece by piece.
 - **Self-hosting fixpoint.** The compiler compiled by the seed, by itself
   and by that result produce identical code for every function
   (`tests/norn/compiler_test.norn`).
-- Step 5 needs images (M5). Until then, each start recompiles the compiler
-  with the seed (a few ms).
+- Step 5 is available since M5: `norn build base.nimg` saves the booted
+  runtime, and `norn --image base.nimg` starts from it. The default start
+  still boots from source, which takes 7 ms of a 40 ms start (§7.5).
 - **Macros run in the compiling fiber.** Since the compiler is Norn code,
   macros are ordinary calls: they can block, and compilation no longer
   inhibits the GC. The nested-run machinery remains only for boot and the
@@ -738,6 +846,71 @@ it can replace this piece by piece.
 These replace design.md §10.3; the order changed so that GC and fibers land
 together.
 
+**Revised after M5 (2026-11-13).** The standard library is split by what
+each part needs from the runtime:
+
+- **M6, I/O, comes first.** I/O needs a runtime piece that isn't built yet:
+  the reactor, so that sockets park fibers instead of carriers. Its handles
+  are exactly what M5's resource protocol is for.
+- **M7 comes before sealing.** It adds the libraries that are mostly Norn,
+  and the runtime types they build on. Sealing freezes interfaces, so
+  anything other modules depend on has to exist first.
+- **The numeric tower is decided:** fixnums promote to bignums automatically
+  (as in Clojure and Common Lisp), and division of integers can give ratios.
+  This changes what `+` means, so it lands before `norn.core` is sealed.
+  Tier 1 keeps its fixnum fast path; overflow takes the slow path instead of
+  raising an error.
+- **Transducers, `format` and `edn` are in M7** because they shape
+  `norn.core` itself: transducers add arities to `map`, `filter` and the
+  rest, which a sealed module couldn't take later.
+- **A basic FFI is in M6.** It reuses M6's blocking pool and byte buffers,
+  and M5's resource protocol. It lets libraries bring native code without
+  changing the runtime build, so they don't invalidate saved images, as a
+  new Rust primitive would.
+  - Buffers passed to C need no pinning, because the GC never moves objects.
+  - Callbacks (C calling Norn, with frames in heap segments), struct layouts
+    and the safety model stay in M9; the safety model needs M8's modules.
+- **`norn fmt` and `norn lint` are in M7**, so the stdlib is sealed already
+  formatted and lint-clean, and the core macros ship with indentation hints.
+  The linter is the compiler in analysis mode, so the same warnings appear
+  when compiling at the REPL. Rules that need modules come in M8.
+- **Tools whose conventions end up in sealed source come before sealing:**
+  the docstring convention and `norn doc`, deprecation, the test runner and
+  `norn check` (M7). Tools that need a baseline taken at sealing, or that
+  follow hygiene, come with it: `api-diff` and the macro stepper (M8).
+- **Decisions due by M7** (they change `norn.core`, so they must be made
+  before sealing). All three are now decided:
+  - ~~**Laziness**~~ — decided (2026-11-13): an eager, type-preserving core
+    with explicit lazy streams (design §3.3).
+  - ~~**Mutable objects**~~ — decided (2026-11-13): opt-in, owned by a fiber,
+    checked, with `release!`, `share` and `locking` (design §4.2).
+  - ~~**Equality**~~ — decided (2026-11-13): structural, never running user
+    code, with declarative per-class options (design §3.4).
+- **M7.5 and M7.6 come before sealing**, so the stdlib can still change in
+  response to what the UI library and the editor need.
+- **Linux is the second platform** (decided 2026-11-13), then Windows.
+  Linux CI can start any time: M12 is where the platform work is finished,
+  not where it begins.
+- **M7.5 is `norn.ui` and M7.6 the Norn editor** (decided 2026-11-13).
+  - The UI is native-rendered, with a full UI library as the goal (design
+    §9.1).
+  - The UI host is part of the runtime, so the UI doesn't wait for M9's FFI
+    callbacks: events arrive as channel messages, and Norn hands Rust
+    immutable display lists to draw.
+  - The editor needs, from earlier milestones:
+    - persistent ropes and Unicode graphemes and display widths (M7);
+    - the comment-keeping reader, `fmt` and `lint` (M7);
+    - file watching and `norn.process` (M6);
+    - the editor protocol (M3).
+  - Both target macOS first. Linux and Windows follow with M12, and the
+    crates chosen work on all three.
+- **Ongoing, outside the milestones:** a language reference and a tutorial.
+  The project is MIT-licensed. Versioning is semantic, per module, enforced
+  by `api-diff`; a breaking change needs a major version and at least one
+  minor release of deprecation.
+- **What depends on the full FFI or on `net` waits until after sealing**
+  (M9), along with libraries nothing else in the stdlib builds on.
+
 | # | Milestone | Done when |
 |---|---|---|
 | M0 ✅ | Workspace, `Value`/object model, cons/vector/map/string, reader, printer, seed compiler, tier-0 VM on heap stacks, REPL; NoGC heap | `(reduce + (range 1000000))` at the REPL; macOS JIT spike works |
@@ -745,9 +918,16 @@ together.
 | M2 ✅ | CLOS in Norn: `defclass`, layouts, generic functions, method combination, dispatch caches | Live `defmethod` while 8 cores call the generic function |
 | M3 ✅ | Conditions, restarts, parked-fiber debugger, REPL protocol | Fix a crashed fiber from the editor and resume it |
 | M4 ✅ | Real compiler in Norn, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
-| M5 | Images: save/load, layers, parked fibers, `on-image-restore` | Under 50 ms startup; a saved fiber resumes after load |
-| M6 | Hygiene, modules/phases, `#lang`, sealing | Stdlib built as sealed modules |
-| M7 | Full MOP, STM, processes/supervisors, FFI, gradual types, contracts | — |
+| M5 ✅ | Images: save/load, layers, parked fibers, `on-image-restore` | Under 50 ms startup; a saved fiber resumes after load |
+| M6 | I/O: the reactor (`mio`) plus a blocking pool for files; byte arrays and buffers; `norn.io` (files, streams, paths), `norn.net` (TCP, UDP, TLS via `rustls`), `norn.process`, `norn.time`, `norn.sys` (environment variables (read-only), command-line arguments, exit, OS type and architecture, core count, memory, pid, directories, hostname, the Norn version and build; all read live, so a restored image sees the machine it runs on), `norn.fs` (walking directories, glob patterns, file watching), `norn.signal` (OS signals as channel messages); byte encodings (UTF-8, base64, hex); a basic FFI (load a dynamic library; call C functions with integer, float, pointer and byte-buffer arguments, either fast on the carrier or blocking on the pool; Cranelift-generated call stubs). Handles, including FFI handles, are image resources; weak references and finalizers in the GC binding (for resource registries, caches and freeing FFI handles); the monitor thread (replaces a carrier stuck in a long native call); fiber dumps (every fiber's stack, on a signal) | A TCP echo server holds 10,000 connections on fibers without blocking a carrier; a socket saved in an image comes back as `ResourceLost` and its `reconnect` restart works |
+| M7 | Numbers, collections and the pure stdlib: bignums and ratios with automatic promotion; sorted maps and sets, a persistent queue, transients; `norn.string`, `norn.math`, `norn.set`, `norn.walk`, `norn.regex`, `norn.json`, `norn.pprint`, `norn.random`, `norn.test`; type-preserving sequence functions and explicit `lazy` streams (design §3.3); transducers (one vocabulary for sequences, channels and `preduce`); `norn.format` (`cl-format` and `printf`); `norn.edn` (a safe reader for untrusted data); `norn.async` extras (`mult`, `pub`/`sub`, `pipeline`, `merge`, dropping and sliding buffers), `norn.sync` (semaphores, latches, a rate limiter), `norn.cache` (`memoize` with LRU and TTL variants); REPL tools (`doc`, `apropos`, `source`, an inspector, `trace`/`untrace`), `norn.bench` and `norn.log`; tooling: a reader mode that keeps comments and whitespace, `norn fmt` (one canonical style, no options; macros declare indentation, e.g. `{:indent 1}`), `norn lint` (the compiler in analysis mode, signalling `Warning`s: unresolved symbols, unused locals, wrong arity to known functions, shadowed core names, `def` inside a function, `defmethod` lambda lists that don't match), and `:format`/`:lint` editor ops; `norn doc` with a docstring convention (Markdown; `:since`, `:deprecated`, `:see-also`, runnable `:examples`) and deprecation warnings; `norn test` (discovers tests, runs them in parallel on fibers, filters, TAP and JUnit output); `norn check` (fmt, lint, test and docs in one command); a terminal REPL line editor (history, multi-line editing, completion); `norn image info` and image diff; code coverage from bytecode counters if it's cheap. equality per design §3.4 (`:equality :identity`, `:compare false`, reflexive NaN, numeric-tower rules); mutable objects per design §4.2 (`(:mutable)` classes, `set-slot!`/`update-slot!`, fiber ownership with `release!`, `share` and `locking`) | Every suite runs on `norn.test`; arithmetic promotes past 62 bits identically at tier 0 and tier 1; `norn fmt --check` and `norn lint` are clean on `lib/` and `tests/`, and formatting is idempotent and reads back to the same forms |
+| M7.5 | `norn.ui`, a native UI library (design §9.1). In Rust, the UI host: the main-thread event loop, windows, input (including IME), clipboard, accessibility, GPU drawing of display lists, text shaping and layout. In Norn: widgets, flex and grid layout, styling, focus, animation, and declarative views over atom state with tree diffing; windows as image resources | A widget gallery runs smoothly at the display's frame rate on macOS; redefining a view at the REPL updates the open window; a restored image reopens its windows |
+| M7.6 | The Norn editor, the first real program: a VS Code-style editor made for Norn, written in Norn on `norn.ui`, to test the stdlib before it is sealed. It lives in its own repository; until M8's packages exist it loads Norn sources from a local checkout of this one. Text buffers are persistent ropes; highlighting and structure come from M7's comment-keeping reader; the REPL, debugger and evaluation go through the editor protocol (M3) to a separate `norn` process; `norn fmt` and `norn lint` run in it | Norn's own development happens in the editor: editing, the REPL, the debugger, formatting and linting; what it needed is fixed or scheduled before M8 |
+| M8 | Hygiene, modules/phases, `#lang`, sealing; then packages: a project file, dependency resolution, and `norn build` across dependencies, starting with Git and path dependencies only, with a registry later (perhaps its own milestone); module-aware lint rules (unused or missing requires, private access, phase errors, redefining sealed vars); `norn api-diff` (a snapshot of each module's public interface, taken when it is first sealed, and breaking-change detection between versions); a macro stepper that shows hygiene's renaming; a bytecode verifier for compiled code from packages (and crafted images) | Stdlib built as sealed modules |
+| M9 | Full MOP, the `norn.stm` library, processes/supervisors, the full FFI (callbacks from C, struct layouts, typed signatures, unsafe modules), gradual types, contracts; then HTTP, compression, crypto, database drivers, `norn.schedule`, `norn.uri`, `norn.uuid`, `norn.csv` and TOML, `norn.zip`, `norn.data` (structural diff), a binary format for Norn values, a sampling profiler, source-drift tracking (design §5.1), `norn lsp` (a Language Server Protocol adapter over the editor protocol), tree shaking for images (`:shake`, using sealing to prove code unused), `norn new` (project scaffolding), and code coverage if M7 didn't get it | — |
+| M10 | The optimising compiler: the IR (design §8.3), inlining, type inference from M9's signatures, unboxing, escape analysis; tier 1's full calling convention (push-frame and `return_call`), inline caches, and native compilation of every `defn` | Measured wins on `bench/` with tier 0 and tier 1 still agreeing on every suite |
+| M11 | GC maturity: generational collection (write barriers), opportunistic defragmentation (the M1 fragmentation finding), concurrent collection; deadlock detection for fibers nothing can wake (open question 4: a deadlock event, and the fiber kept in the debugger with a `Deadlock` condition); complex numbers as a library type | Bounded pause times and heap overhead under the M1 stress workloads |
+| M12 | Platforms and distribution: Linux first, then Windows (JIT memory, signals), CI on all three, release builds and installers, `norn` shipped with a base image (bootstrap step 6); WASM as a second target (design §9, open) | Every suite passes on macOS, Linux and Windows; `norn` starts from its bundled image |
 
 ### 12.1 M0 status (2026-11-13)
 
@@ -918,14 +1098,67 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
   possible. The IR and optimisations (design §8.3) are the next step for
   the compiler.
 
+### 12.6 M5 status (2026-11-13)
+
+**Built:**
+- images (§7.5): `save-image` and `norn --image`, with `:entry`, `:fibers
+  :parked|:none` and `:layered`;
+- `image-info`;
+- `norn build OUT.nimg [FILE…] [--entry NS/NAME]`, which produces
+  reproducible images;
+- the restore protocol (design §7.2):
+  - `register-resource!`, `on-image-restore` and `ensure-live`;
+  - `ResourceLost`, with `reconnect` and `abort` restarts.
+
+**Verified** (`crates/norn/tests/images.rs`, the done-check):
+- These fibers carry on after a save and load:
+  - a fiber parked on a channel;
+  - a sleeping fiber (its timer keeps its remaining time);
+  - a `timeout` channel;
+  - busy fibers preempted mid-loop;
+  - a fiber crashed into the debugger, which is fixed and restarted at its
+    frame after the load.
+- The saving fiber, and unsaved fibers, end with an error that their joiners
+  see.
+- Every suite passes in a runtime started from an image: at tier 1, on one
+  carrier, and under `NORN_GC_STRESS=2` on all carriers and on two. The
+  conc and clos suites also pass at level 1.
+- **`NORN_GC_STRESS=1` feeds on itself.** Each collection bumps attention,
+  so every carrier's next poll takes the slow path and requests another
+  collection. A 300,000-iteration loop collects 301,237 times at level 1 and
+  16 times at level 10. Level 2 already breaks the cycle (1,119 collections
+  for the core suite) and is the practical setting for full-suite runs.
+- Layered images are about 5% of the base's size, and they refuse a changed
+  base.
+- `norn build` is byte-for-byte reproducible.
+- Damaged images are refused.
+- Start-up is 35 ms in release.
+
+**Fixed along the way:**
+- **GC workers had a null thread handle.** MMTk's debug build asserts on
+  this, and the GC worker died; the fiber that asked for that collection
+  then waited forever. Workers now get a real handle.
+- **`defmethod` on another namespace's generic function** used to define a
+  new local one. It now adds the method to the existing one.
+
+**Deviations from the plan:**
+- **Copy-in loading, no code segment, no dirty-page tracking** (§7.5).
+- **No tree shaking yet** (`:shake`, design §7.1). An image holds everything
+  reachable from the namespaces.
+- **Resources are a Norn protocol only.** There are no file, socket or FFI
+  handles yet, so nothing in the runtime registers itself.
+- **Start-up:** the 50 ms target is met. The floor is now MMTk's
+  initialisation, not Norn's.
+
 ---
 
 ## 13. Open questions
 
-1. **Structural-only equality and hashing** (§2.3): confirm, or allow
-   user-defined `=`/`hash`, which would push hash maps into Norn.
+1. ~~**Structural-only equality and hashing**~~ — decided: structural, with
+   declarative per-class options (§2.3, design §3.4).
 2. **Multi-shot continuations** (§3.4): keep them out unless a need appears?
 3. **Concurrent GC** (§4.1): wait for MMTk, or plan our own?
-4. **Parked fibers nothing can wake** are currently collected silently
-   (§4.2). Should they instead be reported as a deadlock (as Go does), or
-   kept for the debugger (M3)?
+4. ~~**Parked fibers nothing can wake**~~ — decided: both. When the GC
+   finds a parked fiber nothing can reach, it posts a deadlock event (as Go
+   does) and moves the fiber into the debugger's list with a `Deadlock`
+   condition instead of freeing it. Built in M11, on M6's finalizers.

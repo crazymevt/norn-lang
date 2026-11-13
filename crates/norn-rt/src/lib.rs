@@ -9,6 +9,7 @@ pub mod conc;
 pub mod equal;
 pub mod func;
 pub mod heap;
+pub mod image;
 pub mod list;
 pub mod map;
 pub mod object;

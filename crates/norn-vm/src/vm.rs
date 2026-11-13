@@ -502,9 +502,13 @@ impl Vm {
                 return Err(cancel_error(c as i64));
             }
         }
-        if self.budget <= 0 {
-            self.budget = BUDGET;
-            if self.can_park() && crate::sched::has_other_work(self.carrier) {
+        // An image save is waiting for every fiber to stop: yield now.
+        let pausing = crate::sched::pausing();
+        if self.budget <= 0 || pausing {
+            if self.budget <= 0 {
+                self.budget = BUDGET;
+            }
+            if self.can_park() && (pausing || crate::sched::has_other_work(self.carrier)) {
                 // Time slice over: continue exactly here later.
                 // SAFETY: st describes the current frame.
                 unsafe { st.set_resume(st.pc) };
