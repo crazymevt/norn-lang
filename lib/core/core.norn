@@ -229,7 +229,9 @@
 (defn remove [pred coll] (filter (complement pred) coll))
 (defn keep [f coll]
   (reduce (fn [acc x] (let [y (f x)] (if (nil? y) acc (conj acc y)))) [] coll))
-(defn mapcat [f coll] (reduce (fn [acc x] (into acc (f x))) [] coll))
+(defn mapcat
+  ([f coll] (reduce (fn [acc x] (into acc (f x))) [] coll))
+  ([f c1 c2] (reduce (fn [acc x] (into acc x)) [] (map f c1 c2))))
 
 (defn some [pred coll]
   (loop [s (seq coll)]
@@ -1241,3 +1243,113 @@
                                    (when-not (:internal? fr)
                                      (str "    " i ": " (:fn fr) " " (pr-str (:locals fr)) "\n")))
                                  (backtrace id))))))
+
+;;; ---- destructuring ------------------------------------------------------------------------
+;;;
+;;; Clojure's: vectors ([a b & more :as all]), maps ({:keys [a b] :strs […]
+;;; :syms […] :or {a 1} :as m}, {x :k}), nested. A rest map (& {:keys […]})
+;;; accepts keyword arguments. `let`, `loop`, `fn`, `defn`, `defmacro` and
+;;; `doseq` are redefined below to destructure; with plain symbols they expand
+;;; exactly as before.
+
+(declare %destructure-1)
+
+(defn- %destructure-vec [acc pat init]
+  (let [g (gensym "vec")]
+    (loop [acc (conj (conj acc g) init) i 0 ps (seq pat)]
+      (if ps
+        (let [p (first ps)]
+          (cond (= p '&) (recur (%destructure-1 acc (second ps) (list 'norn.core/nthnext g i)) i (nnext ps))
+                (= p :as) (recur (conj (conj acc (second ps)) g) i (nnext ps))
+                :else (recur (%destructure-1 acc p (list 'norn.core/nth g i nil)) (inc i) (next ps))))
+        acc))))
+
+(defn- %destructure-map [acc pat init]
+  (let [g (gensym "map")
+        defaults (get pat :or {})
+        acc (conj (conj acc g) (list 'norn.core/%as-map init))
+        acc (if (contains? pat :as) (conj (conj acc (:as pat)) g) acc)
+        entries (concat (map (fn [s] [s (keyword (name s))]) (:keys pat))
+                        (map (fn [s] [s (name s)]) (:strs pat))
+                        (map (fn [s] [s (list 'quote s)]) (:syms pat))
+                        (remove (fn [e] (keyword? (first e))) pat))]
+    (reduce (fn [acc e]
+              (let [bp (first e)
+                    k (second e)
+                    getter (if (and (symbol? bp) (contains? defaults bp))
+                             (list 'norn.core/get g k (get defaults bp))
+                             (list 'norn.core/get g k))]
+                (%destructure-1 acc bp getter)))
+            acc entries)))
+
+(defn %as-map
+  "A rest-argument seq of keyword arguments becomes a map."
+  [x]
+  (if (seq? x) (apply hash-map x) x))
+
+(defn- %destructure-1 [acc pat init]
+  (cond (symbol? pat) (conj (conj acc pat) init)
+        (vector? pat) (%destructure-vec acc pat init)
+        (map? pat) (%destructure-map acc pat init)
+        :else (error "Unsupported binding form:" (pr-str pat))))
+
+(defn destructure
+  "Expand a binding vector with patterns into one of plain symbols."
+  [bindings]
+  (reduce (fn [acc p] (%destructure-1 acc (first p) (second p))) [] (partition 2 bindings)))
+
+(defn- %simple-bindings? [bindings]
+  (loop [s (seq bindings)] (if s (if (symbol? (first s)) (recur (nnext s)) false) true)))
+
+(defmacro let [bindings & body]
+  (if (%simple-bindings? bindings)
+    `(let* ~bindings ~@body)
+    `(let* ~(destructure bindings) ~@body)))
+
+(defmacro loop [bindings & body]
+  (if (%simple-bindings? bindings)
+    `(loop* ~bindings ~@body)
+    (let [pairs (partition 2 bindings)
+          gs (mapv (fn [p] (if (symbol? (first p)) (first p) (gensym "loop"))) pairs)]
+      `(let* [~@(mapcat (fn [g p] [g (second p)]) gs pairs)]
+         (loop* [~@(mapcat (fn [g] [g g]) gs)]
+           (let [~@(mapcat (fn [g p] [(first p) g]) gs pairs)] ~@body))))))
+
+;; One arity: [params] body… → params of plain symbols, patterns let-bound.
+(defn- %fn-arity [sig]
+  (let [ps (first sig)
+        body (rest sig)]
+    (if (every? symbol? ps)
+      sig
+      (let [new (mapv (fn [p] (if (symbol? p) p (gensym "p"))) ps)
+            binds (vec (mapcat (fn [p g] (when-not (symbol? p) [p g])) ps new))]
+        (list new `(let ~binds ~@body))))))
+
+(defmacro fn [& sigs]
+  (let [nm (when (symbol? (first sigs)) (first sigs))
+        sigs (if nm (rest sigs) sigs)]
+    (if (vector? (first sigs))
+      (let [a (%fn-arity sigs)] `(fn* ~@(when nm [nm]) ~@a))
+      `(fn* ~@(when nm [nm]) ~@(map %fn-arity sigs)))))
+
+(defmacro defn
+  "Define a named function. A docstring may follow the name. Parameters
+  destructure."
+  [fname & body]
+  (let [body (if (string? (first body)) (rest body) body)]
+    `(def ~fname (fn ~fname ~@body))))
+
+(defmacro defmacro [mname & body]
+  (let [body (if (string? (first body)) (rest body) body)]
+    `(do (def ~mname (fn ~mname ~@body))
+         (%set-macro! (var ~mname))
+         (var ~mname))))
+
+(defmacro doseq
+  "(doseq [x coll] body…): x may be a destructuring pattern."
+  [bindings & body]
+  (let [x (first bindings) coll (second bindings)]
+    `(loop* [s# (seq ~coll)]
+       (when s#
+         (let [~x (first s#)] ~@body)
+         (recur (next s#))))))

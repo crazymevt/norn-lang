@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 struct Editor {
     out: TcpStream,
     lines: std::sync::mpsc::Receiver<String>,
+    /// Lines received but not yet matched. Events can arrive before the reply
+    /// to the request that caused them, so nothing may be dropped.
+    backlog: std::cell::RefCell<Vec<String>>,
     next_id: u32,
 }
 
@@ -26,18 +29,27 @@ impl Editor {
                 }
             }
         });
-        Editor { out: stream, lines: rx, next_id: 1 }
+        Editor { out: stream, lines: rx, backlog: Default::default(), next_id: 1 }
     }
 
     /// Wait for a line satisfying `pred` (responses and events interleave).
     fn wait_for(&self, what: &str, pred: impl Fn(&str) -> bool) -> String {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        {
+            let mut b = self.backlog.borrow_mut();
+            if let Some(i) = b.iter().position(|l| pred(l)) {
+                return b.remove(i);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.lines.recv_timeout(left) {
                 Ok(line) if pred(&line) => return line,
-                Ok(_) => {}
-                Err(_) => panic!("timed out waiting for {what}"),
+                Ok(line) => self.backlog.borrow_mut().push(line),
+                Err(_) => panic!(
+                    "timed out waiting for {what}; unmatched lines:\n{}",
+                    self.backlog.borrow().join("\n")
+                ),
             }
         }
     }
