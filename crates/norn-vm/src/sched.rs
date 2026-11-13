@@ -1039,6 +1039,12 @@ fn scheduler_roots(f: &mut dyn FnMut(Value)) {
     }
 }
 
+/// Block until the runtime has started (by `start` or `start_with` on any
+/// thread): the runtime, or None if starting it failed.
+pub fn wait_started() -> Option<&'static Norn> {
+    NORN.wait().as_ref().ok()
+}
+
 /// Start the runtime (once per process) and boot norn.core.
 pub fn start() -> Result<&'static Norn, Error> {
     start_with(None)

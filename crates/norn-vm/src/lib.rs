@@ -10,6 +10,7 @@ pub mod cst;
 pub mod compiler;
 pub mod conc;
 pub mod eval;
+pub mod ext;
 pub mod ffi;
 pub mod image;
 pub mod jit;
@@ -27,5 +28,5 @@ pub mod sys;
 pub mod vm;
 
 pub use reader::{ReadError, Reader};
-pub use sched::{Norn, RootDone, RootTask, start, start_with, subscribe};
+pub use sched::{Norn, RootDone, RootTask, start, start_with, subscribe, wait_started};
 pub use vm::{Error, Result, Vm};

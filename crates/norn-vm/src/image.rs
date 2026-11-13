@@ -52,6 +52,7 @@ pub fn build_id() -> u64 {
             eat(p.name.as_bytes());
             eat(&[p.min as u8, p.max.map_or(255, |m| m as u8)]);
         }
+        crate::ext::fingerprint(&mut eat);
         for l in norn_rt::object::LAYOUTS {
             eat(l.name.as_bytes());
         }

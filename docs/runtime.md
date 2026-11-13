@@ -660,6 +660,38 @@ heap under GC stress in M6; the fix and this rule came together.
   signatures, variadic functions (on Apple arm64 their arguments go on the
   stack), and the module-level safety model.
 
+### 5.7 Native extensions and the main thread **[built in M7.5]**
+
+For native code larger than the FFI suits, the first being `norn-ui`'s
+engine (design §9.1). Nothing here is UI-specific.
+
+- **Extensions** (`norn_vm::ext`): a Rust crate registers an `Extension`
+  (a name, a namespace it owns, primitives) before the runtime starts.
+  - Extension primitives are numbered after the built-in ones and follow
+    the same rules (§2.3: Rust leaf functions that never call Norn).
+  - Their names are part of the build fingerprint, so an image only loads
+    in a binary with the same extensions.
+- **Native objects** are `Handle`s owning a `Box<dyn Any + Send>`
+  (`ext::handle`, `ext::with_native`). Closing a handle drops the object.
+  A handle saved in an image comes back lost, as M6's sockets do.
+- **Ports:** a thread outside the carriers posts to a `Port`.
+  - The Port keeps its channel rooted, and builds each value inside
+    `delivering` with the shared feeder mutator, so §5.5's rule is enforced
+    by the API rather than by care.
+  - `post` puts only if there is room now; the extension decides whether to
+    coalesce, retry or drop.
+- **The main thread:** `norn::run_with_main_thread(f)` runs the whole
+  command line (REPL, scripts, `-e`, `test`…) on a thread of its own. Once
+  the runtime has started, it gives the process's first thread to `f`
+  (macOS requires its UI event loop there). The process ends when either
+  finishes.
+- **Tested** by `norn-ext-demo` (`crates/norn/tests/ext.rs`):
+  - 20,000 events posted from the main thread arrive in order, under GC
+    stress and at tier 1;
+  - native handles work, and close;
+  - an image keeps its extension fingerprint, and its handles come back
+    lost.
+
 ### 5.3 Sync primitives **[M1: atoms, channels, scopes built]**
 
 All shared mutable state is in the heap, guarded by one-word spinlocks inside

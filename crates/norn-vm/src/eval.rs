@@ -80,6 +80,7 @@ pub(crate) fn carrier_vm(id: usize) -> Vm {
 /// Install primitives and load core.norn (carrier 0, before anything runs).
 pub(crate) fn boot(vm: &mut Vm) -> Result<()> {
     crate::prims::install(vm);
+    crate::ext::install(vm);
     vm.load_str(CORE_SRC, "core.norn")?;
     // The real compiler, compiled by the seed compiler. From here on it
     // compiles everything (unless NORN_COMPILER=seed, kept for comparison).

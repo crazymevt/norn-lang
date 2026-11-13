@@ -5,9 +5,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "norn"
 path = "src/main.rs"
+
+# A test-only binary with a demonstration extension, for the M7.5 done-check
+# (crates/norn/tests/ext.rs): primitives, native handles, posting from the
+# main thread through run_with_main_thread.
+[[bin]]
+name = "norn-ext-demo"
+path = "src/bin/ext_demo.rs"
 
 [dependencies]
 norn-rt = { path = "../norn-rt" }

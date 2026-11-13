@@ -18,7 +18,7 @@
 //! values across them (runtime.md §4.3).
 
 use crate::bytecode::*;
-use crate::prims::{ABORT_FIBER, APPLY, EVAL, PRIMS, RESTART_FRAME, THROW};
+use crate::prims::{ABORT_FIBER, APPLY, EVAL, RESTART_FRAME, THROW};
 use norn_rt::conc::fiber;
 use norn_rt::func::{
     VAR_DYNBOUND, Capture, F_FN, F_PREV, F_PROTO, F_RESUME, HDR, PREV_BOUNDARY, PREV_SEG_START, closure_new, segment_new,
@@ -598,10 +598,10 @@ impl Vm {
         if args.len() < f.prim_min() || args.len() > f.prim_max() {
             return Err(arity_error(f, args.len()));
         }
-        match (PRIMS[f.prim_index()].f)(self, args) {
+        match (crate::ext::prim(f.prim_index()).f)(self, args) {
             Err(e) if e.kind == ErrKind::Runtime => match args.iter().find_map(|&a| norn_rt::seq::first_unrealized(a)) {
                 Some(s) => {
-                    let one_step = matches!(PRIMS[f.prim_index()].name, "first" | "rest" | "next" | "seq" | "nth" | "empty?");
+                    let one_step = matches!(crate::ext::prim(f.prim_index()).name, "first" | "rest" | "next" | "seq" | "nth" | "empty?");
                     Err(Error::force(s, !one_step))
                 }
                 None => Err(e),

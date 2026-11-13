@@ -45,6 +45,9 @@ pub(crate) enum Io {
     Library(std::sync::Arc<libloading::Library>),
     /// A foreign function (norn.ffi).
     Foreign(Box<crate::ffi::Foreign>),
+    /// A native extension's object (ext.rs); dropping it releases it.
+    #[allow(dead_code)] // reached through downcasts
+    Native(Box<dyn std::any::Any + Send>),
 }
 
 impl Io {
@@ -57,7 +60,7 @@ impl Io {
             Io::Tcp(s) => (s, Interest::READABLE | Interest::WRITABLE),
             Io::Udp(s) => (s, Interest::READABLE | Interest::WRITABLE),
             Io::Tls(t) => (&mut t.sock, Interest::READABLE | Interest::WRITABLE),
-            Io::File(_) | Io::Watch(_) | Io::Child(_) | Io::Library(_) | Io::Foreign(_) => return None,
+            Io::File(_) | Io::Watch(_) | Io::Child(_) | Io::Library(_) | Io::Foreign(_) | Io::Native(_) => return None,
         })
     }
 }
