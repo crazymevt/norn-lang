@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["crates/loom-rt", "crates/loom-vm", "crates/loom", "spikes/jit-spike"]
+default-members = ["crates/loom-rt", "crates/loom-vm", "crates/loom"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+
+[profile.release]
+debug = 1

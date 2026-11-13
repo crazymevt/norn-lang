@@ -1,0 +1,14 @@
+[package]
+name = "loom"
+description = "The loom command: REPL and script runner"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "loom"
+path = "src/main.rs"
+
+[dependencies]
+loom-rt = { path = "../loom-rt" }
+loom-vm = { path = "../loom-vm" }
+ctrlc = "3"
