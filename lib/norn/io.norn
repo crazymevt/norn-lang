@@ -46,7 +46,9 @@
 
 ;;; ---- streams ----
 
-(defn- auto-close [h]
+(defn auto-close
+  "Low level: close handle h once it is unreachable. Returns h."
+  [h]
   ;; A cleanup that closes the handle once it is unreachable (it holds the
   ;; handle's number, not the handle).
   (let [id (%handle-id h)] (add-cleanup! h (fn [] (%io-close-id id))))
@@ -58,10 +60,19 @@
   [path mode]
   (auto-close (%fs-open (str path) mode)))
 
-(defn- retry [h dir f]
+(defn retry-io
+  "Low level: call (f) until it stops answering :again (wait until h is
+  readable) or :again-write (wait until it is writable), and return its
+  answer. The event counts are read before each try, so a wake-up between
+  the try and the wait is never lost."
+  [h f]
   (loop []
-    (let [s (%io-seq h dir) r (f)]
-      (if (= r :again) (do (%io-wait h dir s) (recur)) r))))
+    (let [rs (%io-seq h :read)
+          ws (%io-seq h :write)
+          r (f)]
+      (cond (= r :again) (do (%io-wait h :read rs) (recur))
+            (= r :again-write) (do (%io-wait h :write ws) (recur))
+            :else r))))
 
 (defn read
   "Up to n bytes from a stream (file, pipe or socket), or nil at the end."
@@ -69,7 +80,7 @@
   (let [h (ensure-live h)]
     (if (= :file (handle-kind h))
       (%file-read h n)
-      (retry h :read (fn [] (%io-read h n))))))
+      (retry-io h (fn [] (%io-read h n))))))
 
 (defn write
   "Write all of data (a string, as UTF-8, or bytes) to a stream."
@@ -80,10 +91,16 @@
       (%file-write h b)
       (loop [i 0]
         (when (< i (count b))
-          (recur (+ i (retry h :write (fn [] (%io-write h b i))))))))
+          (recur (+ i (retry-io h (fn [] (%io-write h b i))))))))
     nil))
 
-(defn close "Close a stream (closing twice is harmless)." [h] (%io-close h))
+(defn close
+  "Close a stream (closing twice is harmless). A TLS stream first tells the
+  peer it is closing."
+  [h]
+  (when (and (= :tls (handle-kind h)) (%handle-live? h))
+    (try (retry-io h (fn [] (%tls-shutdown h))) (catch Error _ nil)))
+  (%io-close h))
 
 (defmacro with-open
   "(with-open [h (open path :read)] body…): close h when body ends, however it ends."
@@ -132,6 +149,9 @@
   ;; A file reopens at its path. (:write reopens as :append, so what was
   ;; written before the restore stays.)
   (let [i (handle-info h)]
-    (if (= :file (handle-kind h))
-      (open (:path i) (if (= :write (:mode i)) :append (:mode i)))
-      (error "Don't know how to reconnect" (pr-str h)))))
+    (cond (= :file (handle-kind h))
+          (open (:path i) (if (= :write (:mode i)) :append (:mode i)))
+          ;; Sockets: norn.net knows how (it is loaded if a socket exists).
+          (and (contains? #{:tcp :tls} (handle-kind h)) (:host i))
+          ((var-get (resolve 'norn.net/%reconnect)) h)
+          :else (error "Don't know how to reconnect" (pr-str h)))))

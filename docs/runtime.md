@@ -515,6 +515,20 @@ OS (files, DNS, blocking FFI), so carriers never do.
   idle and enough regular carriers are back. All run queues, including the
   spares', can be stolen from.
 
+**The rule for threads outside the carriers.** A thread may take a heap
+value out of a GC root (a waiter out of the reactor's table, a timer's
+target out of the timer table) only while it is a running participant.
+`sched::delivering` makes it one, so it must be entered *before* the value
+leaves the root. Otherwise the thread can wait in `delivering` while a
+collection frees what it holds. That bug, in the reactor, corrupted the
+heap under GC stress in M6; the fix and this rule came together.
+- Such threads allocate with one shared feeder mutator, under a lock, and
+  never drop it. A thread-local mutator would be destroyed by the thread's
+  exit destructor, outside any safepoint, possibly in the middle of a
+  collection.
+- Carriers are already running participants, so they never use
+  `delivering`: it could wait for a collection that is waiting for them.
+
 **Images.**
 - An image save holds off the timer thread, the reactor and the pool
   together (`sched::delivering` takes a shared lock; the save takes it

@@ -256,20 +256,25 @@ pub(crate) fn stdin_line(vm: &mut Vm) -> Result<Value> {
 
 // ---- watching -----------------------------------------------------------------------------------
 
-thread_local! {
-    /// A mutator for threads that feed channels from outside the carriers
-    /// (file watchers, the signal thread).
-    static FEED_M: std::cell::RefCell<Option<Mutator>> = const { std::cell::RefCell::new(None) };
-}
+/// The one mutator that threads outside the carriers (file watchers, signal
+/// listeners, dump helpers) allocate with, one at a time. It is never
+/// dropped: a thread-local mutator would be destroyed by the thread's exit
+/// destructor, outside any safepoint, possibly in the middle of a
+/// collection.
+struct Feeder(Option<Mutator>);
 
-/// From a non-carrier thread: run `f` as a running participant with this
-/// thread's mutator (made on first use).
+// SAFETY: the mutator is used by one thread at a time (under the lock), as
+// a running participant; MMTk identifies it by its cell, not its thread.
+unsafe impl Send for Feeder {}
+
+static FEEDER: std::sync::Mutex<Feeder> = std::sync::Mutex::new(Feeder(None));
+
+/// From a non-carrier thread: run `f` as a running participant with the
+/// shared feeder mutator.
 pub(crate) fn on_feed_thread<R>(f: impl FnOnce(&mut Mutator) -> R) -> R {
     crate::sched::delivering(|| {
-        FEED_M.with(|cell| {
-            let mut slot = cell.borrow_mut();
-            f(slot.get_or_insert_with(Mutator::new))
-        })
+        let mut g = FEEDER.lock().unwrap();
+        f(g.0.get_or_insert_with(Mutator::new))
     })
 }
 

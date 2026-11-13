@@ -1,7 +1,8 @@
 ;;;; The standard libraries (lib/norn/*.norn): loaded with require.
 
 (ns lib-test (:require [norn.bytes :as b] [norn.io :as io] [norn.fs :as fs] [norn.sys :as sys]
-                       [norn.process :as proc] [norn.time :as t] [norn.signal :as sig]))
+                       [norn.process :as proc] [norn.time :as t] [norn.signal :as sig]
+                       [norn.net :as net]))
 
 (def failures 0)
 (def checks 0)
@@ -173,6 +174,62 @@
   (is :usr2 (first (alts! [(:signals l) (timeout 5000)])))
   (sig/stop l))
 (is :error (fails (sig/listen :kill)))
+
+;;; ---- norn.net ----
+;; This file's directory, for the test certificates (runners use different
+;; working directories).
+(def here (let [loc (%location)]
+            (io/parent (loop [i (dec (count loc))] (if (= (nth loc i) \:) (subs loc 0 i) (recur (dec i)))))))
+(def certs (io/path here "certs"))
+
+(defn- serve-lines
+  "Answer each line on each accepted connection with line!, n connections."
+  [l n & tls-opts]
+  (spawn-detached
+    (dotimes [_ n]
+      (let [c (apply net/accept l tls-opts)]
+        (spawn-detached
+          (let [r (io/line-reader c)]
+            (loop [] (when-let [line (io/read-line r)] (io/write c (str line "!\n")) (recur)))
+            (io/close c)))))))
+
+(let [l (net/listen "127.0.0.1" 0)
+      port (net/port (net/local-address l))
+      server (serve-lines l 25)
+      talk (fn [i] (let [c (net/connect "127.0.0.1" port)
+                         r (io/line-reader c)]
+                     (io/write c (str "a" i "\nb" i "\n"))
+                     (let [x [(io/read-line r) (io/read-line r)]]
+                       (net/shutdown-output c)
+                       (let [after (io/read-line r)] (io/close c) (conj x after)))))]
+  (is (mapv (fn [i] [(str "a" i "!") (str "b" i "!") nil]) (range 25))
+      (mapv await (mapv (fn [i] (spawn-detached (talk i))) (range 25))))
+  (await server)
+  (is true (string? (net/local-address l)))
+  (io/close l))
+
+(let [l (net/listen "127.0.0.1" 0)
+      port (net/port (net/local-address l))
+      server (serve-lines l 3 :tls true :cert-file (io/path certs "server.pem") :key-file (io/path certs "server.key"))
+      talk (fn [msg] (let [c (net/connect "localhost" port :tls true :ca-file (io/path certs "ca.pem"))
+                           r (io/line-reader c)]
+                       (io/write c (str msg "\n"))
+                       (let [x (io/read-line r)] (io/close c) [(handle-kind c) x])))]
+  (is [[:tls "one!"] [:tls "two!"]] (mapv await (mapv (fn [m] (spawn-detached (talk m))) ["one" "two"])))
+  ;; Without the private CA the server isn't trusted.
+  (is :error (fails (net/connect "localhost" port :tls true)))
+  (io/close l))
+
+(let [a (net/udp "127.0.0.1" 0)
+      b (net/udp "127.0.0.1" 0)]
+  (net/send-to a "ping" "127.0.0.1" (net/port (net/local-address b)))
+  (let [m (net/receive b)]
+    (is ["ping" true] [(bytes->string (:data m)) (= (:from m) (net/local-address a))]))
+  (io/close a)
+  (io/close b))
+
+(is :error (fails (net/connect "127.0.0.1" 1)))
+(is true (pos? (count (net/resolve "localhost"))))
 
 ;;; ---- fiber dumps ----
 (let [ch (chan)

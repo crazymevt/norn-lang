@@ -269,6 +269,21 @@ prims! {
     "%args" 0 Some(0) => |vm, _| Ok(crate::sys::args(&mut vm.m));
     "%sys-info" 0 Some(0) => |vm, _| Ok(crate::sys::system(&mut vm.m));
     "%split-lines" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "lines")?; let ls: Vec<Value> = a[0].as_str().lines().map(|l| str_new(&mut vm.m, l)).collect(); Ok(vec_from_slice(&mut vm.m, &ls)) };
+    // sockets and TLS (net.rs; norn.net)
+    "%resolve" 2 Some(2) => |vm, a| { let port = int(a[1], "resolve")?; crate::net::resolve(vm, text(a[0]), port.clamp(0, 65535) as u16) };
+    "%tcp-connect" 2 Some(2) => |vm, a| crate::net::tcp_connect(vm, &text(a[0]), a[1]);
+    "%tcp-check" 1 Some(1) => |vm, a| crate::net::tcp_check(vm, a[0]);
+    "%tcp-listen" 2 Some(2) => |vm, a| crate::net::tcp_listen(vm, &text(a[0]), a[1]);
+    "%tcp-accept" 1 Some(1) => |vm, a| crate::net::tcp_accept(vm, a[0]);
+    "%socket-address" 2 Some(2) => |vm, a| crate::net::address(vm, a[0], a[1].truthy());
+    "%shutdown-write" 1 Some(1) => |_, a| crate::net::shutdown_write(a[0]);
+    "%udp-bind" 2 Some(2) => |vm, a| crate::net::udp_bind(vm, &text(a[0]), a[1]);
+    "%udp-send" 3 Some(3) => |vm, a| { let d = data_bytes(a[1])?; crate::net::udp_send(vm, a[0], &d, &text(a[2])) };
+    "%udp-recv" 2 Some(2) => |vm, a| { let n = int(a[1], "receive")?.max(1) as usize; crate::net::udp_recv(vm, a[0], n) };
+    "%tls-client" 4 Some(4) => |vm, a| { let ca = if a[2].is_nil() { None } else { Some(data_bytes(a[2])?) }; crate::net::tls_client(vm, a[0], &text(a[1]), ca.as_deref(), a[3]) };
+    "%tls-server" 4 Some(4) => |vm, a| { let c = data_bytes(a[1])?; let k = data_bytes(a[2])?; crate::net::tls_server(vm, a[0], &c, &k, a[3]) };
+    "%tls-shutdown" 1 Some(1) => |vm, a| tls_shutdown(vm, a[0]);
+    "%tls-handshake" 1 Some(1) => |vm, a| tls_handshake(vm, a[0]);
     // processes, time, signals, fiber dumps (os.rs; norn.process, norn.time, norn.signal)
     "%process-start" 6 Some(6) => |vm, a| process_start(vm, a);
     "%process-wait" 1 Some(1) => |vm, a| crate::os::wait(vm, a[0]);
@@ -679,39 +694,97 @@ fn again(vm: &mut Vm) -> Value {
     rt().keyword(&mut vm.m, None, "again")
 }
 
-/// `(%io-read h n)`: up to n bytes, nil at end of input, or :again.
-fn io_read(vm: &mut Vm, h: Value, n: i64) -> Result<Value> {
-    use std::io::Read;
-    let mut buf = vec![0u8; n.clamp(1, 1 << 20) as usize];
-    let r = crate::reactor::with_io(h, |io| match io {
-        crate::reactor::Io::PipeIn(r) => r.read(&mut buf),
-        crate::reactor::Io::Tcp(s) => s.read(&mut buf),
-        _ => Err(std::io::Error::other("this handle can't be read")),
-    })?;
-    match r {
-        Ok(0) => Ok(Value::NIL),
-        Ok(k) => Ok(norn_rt::string::bytes_new(&mut vm.m, &buf[..k])),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(again(vm)),
-        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(again(vm)),
-        Err(e) => Err(Error::new(format!("read failed: {e}"))),
+/// What a TLS operation is waiting for, as a keyword.
+fn tls_wait(vm: &mut Vm, w: crate::net::Wait) -> Value {
+    match w {
+        crate::net::Wait::Read => again(vm),
+        crate::net::Wait::Write => again_write(vm),
     }
 }
 
-/// `(%io-write h bytes start)`: bytes written from index start, or :again.
+/// The value write-side I/O primitives return when they would block.
+fn again_write(vm: &mut Vm) -> Value {
+    rt().keyword(&mut vm.m, None, "again-write")
+}
+
+/// `(%io-read h n)`: up to n bytes, nil at end of input, :again (wait until
+/// readable) or :again-write (TLS: wait until writable).
+fn io_read(vm: &mut Vm, h: Value, n: i64) -> Result<Value> {
+    use std::io::Read;
+    let mut buf = vec![0u8; n.clamp(1, 1 << 20) as usize];
+    enum R {
+        Plain(std::io::Result<usize>),
+        Tls(std::result::Result<Option<Vec<u8>>, std::result::Result<crate::net::Wait, std::io::Error>>),
+    }
+    let r = crate::reactor::with_io(h, |io| match io {
+        crate::reactor::Io::PipeIn(r) => R::Plain(r.read(&mut buf)),
+        crate::reactor::Io::Tcp(s) => R::Plain(s.read(&mut buf)),
+        crate::reactor::Io::Tls(t) => R::Tls(t.read(n.max(1) as usize)),
+        _ => R::Plain(Err(std::io::Error::other("this handle can't be read"))),
+    })?;
+    match r {
+        R::Plain(Ok(0)) => Ok(Value::NIL),
+        R::Plain(Ok(k)) => Ok(norn_rt::string::bytes_new(&mut vm.m, &buf[..k])),
+        R::Plain(Err(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => Ok(again(vm)),
+        R::Plain(Err(e)) => Err(Error::new(format!("read failed: {e}"))),
+        R::Tls(Ok(Some(b))) => Ok(norn_rt::string::bytes_new(&mut vm.m, &b)),
+        R::Tls(Ok(None)) => Ok(Value::NIL),
+        R::Tls(Err(Ok(w))) => Ok(tls_wait(vm, w)),
+        R::Tls(Err(Err(e))) => Err(Error::new(format!("TLS read failed: {e}"))),
+    }
+}
+
+/// `(%io-write h bytes start)`: bytes written from index start, :again-write
+/// (wait until writable) or :again (TLS: wait until readable).
 fn io_write(vm: &mut Vm, h: Value, b: Value, start: i64) -> Result<Value> {
     use std::io::Write;
     expect(b, Kind::Bytes, "write")?;
     let data = b.as_bytes().get(start.max(0) as usize..).unwrap_or(&[]);
+    enum R {
+        Plain(std::io::Result<usize>),
+        Tls(std::result::Result<usize, std::result::Result<crate::net::Wait, std::io::Error>>),
+    }
     let r = crate::reactor::with_io(h, |io| match io {
-        crate::reactor::Io::PipeOut(w) => w.write(data),
-        crate::reactor::Io::Tcp(s) => s.write(data),
-        _ => Err(std::io::Error::other("this handle can't be written")),
+        crate::reactor::Io::PipeOut(w) => R::Plain(w.write(data)),
+        crate::reactor::Io::Tcp(s) => R::Plain(s.write(data)),
+        crate::reactor::Io::Tls(t) => R::Tls(t.write(data)),
+        _ => R::Plain(Err(std::io::Error::other("this handle can't be written"))),
     })?;
     match r {
-        Ok(k) => Ok(Value::fix(k as i64)),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(again(vm)),
-        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(again(vm)),
-        Err(e) => Err(Error::new(format!("write failed: {e}"))),
+        R::Plain(Ok(k)) | R::Tls(Ok(k)) => Ok(Value::fix(k as i64)),
+        R::Plain(Err(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => Ok(again_write(vm)),
+        R::Plain(Err(e)) => Err(Error::new(format!("write failed: {e}"))),
+        R::Tls(Err(Ok(w))) => Ok(tls_wait(vm, w)),
+        R::Tls(Err(Err(e))) => Err(Error::new(format!("TLS write failed: {e}"))),
+    }
+}
+
+/// `(%tls-handshake h)`: nil once the handshake is done, or a wait.
+fn tls_handshake(vm: &mut Vm, h: Value) -> Result<Value> {
+    let r = crate::reactor::with_io(h, |io| match io {
+        crate::reactor::Io::Tls(t) => t.handshake(),
+        _ => Ok(()),
+    })?;
+    match r {
+        Ok(()) => Ok(Value::NIL),
+        Err(Ok(w)) => Ok(tls_wait(vm, w)),
+        Err(Err(e)) => Err(Error::new(format!("TLS handshake failed: {e}"))),
+    }
+}
+
+/// `(%tls-shutdown h)`: send close_notify and drain: nil once sent, or a wait.
+fn tls_shutdown(vm: &mut Vm, h: Value) -> Result<Value> {
+    let r = crate::reactor::with_io(h, |io| match io {
+        crate::reactor::Io::Tls(t) => {
+            t.conn.send_close_notify();
+            t.drain()
+        }
+        _ => Ok(()),
+    })?;
+    match r {
+        Ok(()) => Ok(Value::NIL),
+        Err(Ok(w)) => Ok(tls_wait(vm, w)),
+        Err(Err(e)) => Err(Error::new(format!("TLS close failed: {e}"))),
     }
 }
 

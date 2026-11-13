@@ -9,6 +9,7 @@ pub mod conc;
 pub mod eval;
 pub mod image;
 pub mod jit;
+pub mod net;
 pub mod os;
 pub mod prims;
 pub mod reactor;

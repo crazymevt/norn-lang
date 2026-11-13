@@ -180,7 +180,7 @@
 ;;; the reactor: fibers parked on pipes (many pairs at once, to shake out
 ;;; lost wake-ups between "would block" and parking)
 (defn- io-retry [h dir f]
-  (loop [] (let [s (%io-seq h dir) r (f)] (if (= r :again) (do (%io-wait h dir s) (recur)) r))))
+  (loop [] (let [s (%io-seq h dir) r (f)] (if (contains? #{:again :again-write} r) (do (%io-wait h dir s) (recur)) r))))
 (defn- send-all [w b]
   (loop [i 0] (when (< i (count b)) (recur (+ i (io-retry w :write (fn [] (%io-write w b i))))))))
 (defn- recv-n [r n]

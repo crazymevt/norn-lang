@@ -125,3 +125,26 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
   - The walk holds off the reactor and the pool but not the timer thread.
     Listing the roots takes the timer lock, and a timer firing can only move
     a fiber to a run queue.
+- **Sockets:**
+  - TCP and UDP are non-blocking `mio` sockets; only DNS resolution runs on
+    the blocking pool.
+  - TLS is `rustls` with the `ring` provider (no C build), trusting the OS's
+    root certificates (`rustls-native-certs`) unless given `:ca-file`.
+  - A TLS client finishes its handshake in `connect`, so an untrusted
+    server fails there. A server handshakes on its first read, so one slow
+    client can't hold up an accept loop.
+  - I/O primitives answer `:again` (wait to read) or `:again-write` (wait
+    to write). TLS can need either direction for either operation.
+- **The open-file limit is raised at startup** to the most the OS allows
+  (macOS caps it at `kern.maxfilesperproc`), as Go does.
+- **Test certificates** live in `tests/norn/certs` (a CA and a
+  `localhost`/`127.0.0.1` server certificate valid for 100 years; the CA's
+  key was deleted).
+- **Found and fixed: heap corruption under GC stress.** Two causes:
+  - The reactor took waiters out of its table before becoming a running
+    participant, so a collection could free them.
+  - Feeder threads' thread-local mutators were destroyed at thread exit
+    outside a safepoint.
+
+  Also a deadlock: closing a handle on a carrier went through `delivering`.
+  The rule now in runtime.md §5.5 covers all three.

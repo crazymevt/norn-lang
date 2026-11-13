@@ -463,6 +463,13 @@ pub(crate) fn with_timers_held<R>(f: impl FnOnce(Vec<SavedTimer>) -> R) -> R {
     r
 }
 
+/// Is this thread a carrier? (Carriers are already running participants:
+/// they must never go through `delivering`, which could wait for a
+/// collection that is waiting for them.)
+pub(crate) fn on_carrier() -> bool {
+    CARRIER.with(|c| c.get()) != usize::MAX
+}
+
 /// Is waiter `w` waiting for a timer (a sleeping fiber)?
 pub(crate) fn timer_holds(w: Value) -> bool {
     sched().timers.lock().unwrap().entries.values().any(|(k, v)| matches!(k, TimerKind::Wake) && *v == w)
@@ -1065,6 +1072,7 @@ pub fn start_with(image: Option<&std::path::Path>) -> Result<&'static Norn, Erro
         std::thread::Builder::new().name("norn-monitor".into()).spawn(monitor_main).expect("failed to start monitor thread");
         crate::reactor::start();
         crate::os::dump_on_sigquit();
+        crate::net::raise_fd_limit();
         match boot_rx.recv() {
             Ok(Ok(())) => {
                 // From here on the GC may run: register the roots that live

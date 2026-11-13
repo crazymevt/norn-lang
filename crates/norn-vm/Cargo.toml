@@ -14,3 +14,5 @@ libc = "0.2"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
 notify = "8"
 signal-hook = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"

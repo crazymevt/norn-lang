@@ -26,16 +26,18 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-#[allow(dead_code)] // the socket variants come into use with norn.net (M6 part 5)
 pub(crate) enum Io {
     PipeIn(mio::unix::pipe::Receiver),
     PipeOut(mio::unix::pipe::Sender),
     TcpListener(mio::net::TcpListener),
     Tcp(mio::net::TcpStream),
     Udp(mio::net::UdpSocket),
+    /// A TLS session over a TCP stream (norn.net).
+    Tls(Box<crate::net::Tls>),
     /// Not pollable: read and written on the blocking pool.
     File(std::fs::File),
-    /// A file watcher (norn.fs); dropping it stops the watch.
+    /// A file watcher or signal listener; dropping it stops it.
+    #[allow(dead_code)] // held for its Drop
     Watch(Box<dyn std::any::Any + Send>),
     /// A child process (norn.process): waited for on the blocking pool.
     Child(std::process::Child),
@@ -50,6 +52,7 @@ impl Io {
             Io::TcpListener(l) => (l, Interest::READABLE),
             Io::Tcp(s) => (s, Interest::READABLE | Interest::WRITABLE),
             Io::Udp(s) => (s, Interest::READABLE | Interest::WRITABLE),
+            Io::Tls(t) => (&mut t.sock, Interest::READABLE | Interest::WRITABLE),
             Io::File(_) | Io::Watch(_) | Io::Child(_) => return None,
         })
     }
@@ -100,22 +103,25 @@ fn run(mut poll: Poll) {
             }
             panic!("I/O poll failed: {e}");
         }
-        let mut wake = Vec::new();
-        for ev in events.iter() {
-            let Some(entry) = lookup(ev.token().0 as u64) else { continue };
-            let mut r = entry.ready.lock().unwrap();
-            if ev.is_readable() || ev.is_read_closed() || ev.is_error() {
-                r.seq[READ] += 1;
-                wake.append(&mut r.waiters[READ]);
+        // Become a running participant *before* taking waiters out of the
+        // table: once out, they are GC roots only through this thread, and
+        // no collection may start until they are delivered.
+        sched::delivering(|| {
+            let mut wake = Vec::new();
+            for ev in events.iter() {
+                let Some(entry) = lookup(ev.token().0 as u64) else { continue };
+                let mut r = entry.ready.lock().unwrap();
+                if ev.is_readable() || ev.is_read_closed() || ev.is_error() {
+                    r.seq[READ] += 1;
+                    wake.append(&mut r.waiters[READ]);
+                }
+                if ev.is_writable() || ev.is_write_closed() || ev.is_error() {
+                    r.seq[WRITE] += 1;
+                    wake.append(&mut r.waiters[WRITE]);
+                }
             }
-            if ev.is_writable() || ev.is_write_closed() || ev.is_error() {
-                r.seq[WRITE] += 1;
-                wake.append(&mut r.waiters[WRITE]);
-            }
-        }
-        if !wake.is_empty() {
-            sched::delivering(|| wake_all(wake));
-        }
+            wake_all(wake);
+        });
     }
 }
 
@@ -209,8 +215,18 @@ pub(crate) fn close(h: Value) -> Result<Value> {
     Ok(Value::NIL)
 }
 
-/// Close by table number (cleanups hold the number, not the handle).
+/// Close by table number (cleanups hold the number, not the handle). Called
+/// on carriers, which are running participants, so the waiters it takes
+/// out of the table stay safe until woken.
 pub(crate) fn close_id(id: u64) {
+    if !sched::on_carrier() {
+        sched::delivering(|| close_id_running(id));
+        return;
+    }
+    close_id_running(id);
+}
+
+fn close_id_running(id: u64) {
     let Some(e) = TABLE.lock().unwrap().as_mut().and_then(|t| t.remove(&id)) else { return };
     if let Some(mut io) = e.io.lock().unwrap().take()
         && let Some((src, _)) = io.source()
@@ -223,9 +239,13 @@ pub(crate) fn close_id(id: u64) {
         let [a, b] = std::mem::take(&mut r.waiters);
         a.into_iter().chain(b).collect()
     };
-    if !ws.is_empty() {
-        sched::delivering(|| wake_all(ws));
-    }
+    wake_all(ws);
+}
+
+/// Stop polling a source that is moving to a new handle (TLS wrapping a
+/// TCP stream).
+pub(crate) fn deregister_source(s: &mut dyn mio::event::Source) -> std::io::Result<()> {
+    registry().deregister(s)
 }
 
 /// Open handles (for tests and `norn.sys`).
