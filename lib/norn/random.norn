@@ -39,7 +39,6 @@
   ([g] (if (generator? g) (%rand-at (:seed g) (tick! g) 1) (* g (%rand 1))))
   ([g lo hi] (+ lo (* (- hi lo) (if g (float g) (%rand 1))))))
 
-
 (defn- integer-fixnum? [n] (< n (* 2 (bit-shift-left 1 61))))
 
 (defn- bits62 "62 random bits." [g] (if g (%rand-at (:seed g) (tick! g) 0) (%rand 0)))
@@ -107,4 +106,3 @@
          b (assoc b 6 (bit-or 0x40 (bit-and (nth b 6) 0x0f)) 8 (bit-or 0x80 (bit-and (nth b 8) 0x3f)))
          hex (fn [from to] (apply str (map (fn [x] (format "%02x" x)) (subvec* b from to))))]
      (str (hex 0 4) "-" (hex 4 6) "-" (hex 6 8) "-" (hex 8 10) "-" (hex 10 16)))))
-

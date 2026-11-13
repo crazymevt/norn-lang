@@ -307,4 +307,3 @@
 (is (= :error (errs (let [t (transient [])] (persistent! t) (conj! t 1)))))
 (is (= :error (errs (let [t (transient [])] (await (spawn (conj! t 1)))))))
 (is (= (vec (range 1000)) (persistent! (reduce conj! (transient []) (range 1000)))))
-

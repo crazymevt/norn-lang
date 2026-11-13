@@ -24,7 +24,9 @@ use std::time::Duration;
 
 const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --server [PORT] | ARGS…]
        norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]
-       norn test [--only REGEX] [--serial] [--tap] [--junit FILE] [PATH…]";
+       norn test [--only REGEX] [--serial] [--tap] [--junit FILE] [PATH…]
+       norn fmt [--check] [PATH…]
+       norn lint [PATH…]";
 
 /// Ticket of the root fiber the REPL is waiting on (0 = none), for Ctrl-C.
 static CURRENT: AtomicU64 = AtomicU64::new(0);
@@ -72,10 +74,10 @@ fn main() {
         });
     }
 
-    if args.first().map(String::as_str) == Some("test") {
-        // `norn test …`: norn.test/main returns the exit status.
+    if let Some(tool @ ("test" | "fmt" | "lint")) = args.first().map(String::as_str) {
+        // `norn test …`, `norn fmt …`: the library's main returns the exit status.
         let call = format!(
-            "(do (require 'norn.test) (norn.test/main {}))",
+            "(do (require 'norn.{tool}) (norn.{tool}/main {}))",
             args[1..].iter().map(|a| norn_string(a)).collect::<Vec<_>>().join(" ")
         );
         let t = norn.submit(RootTask::Eval(call), "user");

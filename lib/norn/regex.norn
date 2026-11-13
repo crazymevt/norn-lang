@@ -64,4 +64,4 @@
   ([re s] (%re-split re s nil))
   ([re s limit] (%re-split re s limit)))
 
-(defn quote "A regex matching string s literally." [s] (re-quote s))
+(defn literal "A regex matching string s literally." [s] (re-quote s))

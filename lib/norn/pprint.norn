@@ -70,7 +70,7 @@
             (seqable? x) (render-list (seq x) col width)
             :else flat))))
 
-(defn pprint-str "x pretty-printed to fit width (default *width*), as a string." 
+(defn pprint-str "x pretty-printed to fit width (default *width*), as a string."
   ([x] (pprint-str x *width*))
   ([x width] (render x 0 width)))
 

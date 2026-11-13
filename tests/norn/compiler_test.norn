@@ -10,14 +10,14 @@
 ;;; Byte-identical output to the seed compiler on the whole core library
 ;;; (compiled in its own namespace) and on the compiler itself.
 (is (= [] (do (in-ns 'norn.core)
-           (let [d (norn.compiler/compare-compilers (%compiler-source) "compiler.norn")]
-             (in-ns 'compiler-test)
-             d))))
+              (let [d (norn.compiler/compare-compilers (%compiler-source) "compiler.norn")]
+                (in-ns 'compiler-test)
+                d))))
 (is (= [] (let [saved (current-ns)]
-         (in-ns 'norn.core)
-         (let [d (norn.compiler/compare-compilers (%core-source) "core.norn")]
-           (in-ns saved)
-           d))))
+            (in-ns 'norn.core)
+            (let [d (norn.compiler/compare-compilers (%core-source) "core.norn")]
+              (in-ns saved)
+              d))))
 
 ;;; The self-hosting fixpoint: the compiler compiled by the seed (stage 1),
 ;;; by itself (stage 2) and by stage 2 (stage 3) are the same code.
@@ -46,9 +46,8 @@
 
 ;;; Compile errors are conditions with restarts.
 (is (= "Unable to resolve symbol: nowhere in this context"
-    (handler-case (eval 'nowhere) (norn.compiler/CompileError [e] (condition-message e)))))
+       (handler-case (eval 'nowhere) (norn.compiler/CompileError [e] (condition-message e)))))
 (is (= 42 (handler-bind [norn.compiler/CompileError (fn [c] (eval '(def nowhere-yet 41)) (invoke-restart 'retry))]
-         (+ 1 (eval 'nowhere-yet)))))
+            (+ 1 (eval 'nowhere-yet)))))
 (is (= :instead (handler-bind [norn.compiler/CompileError (fn [c] (invoke-restart 'use-value :instead))]
-               (eval '(missing-fn 1)))))
-
+                  (eval '(missing-fn 1)))))

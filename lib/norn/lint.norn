@@ -1,0 +1,297 @@
+;;;; norn.lint — finding likely mistakes without running the code.
+;;;;
+;;;; `norn lint [paths…]` reads each file form by form, expands macros, and
+;;;; walks the result (the compiler's special forms: quote if do def var fn*
+;;;; let* letrec* loop* recur). It reports:
+;;;;
+;;;; - :unresolved — a symbol that names no local, no definition earlier in
+;;;;   the file and no var;
+;;;; - :unused — a let or loop binding that is never used (names starting
+;;;;   with _ are exempt, as are bindings that macros introduce);
+;;;; - :arity — a call to a known function with a number of arguments none
+;;;;   of its arities takes;
+;;;; - :shadow — a definition named like a special form, or a local named
+;;;;   like a norn.core macro or special form that the same form also calls
+;;;;   (shadowing core functions such as `name` or `count` is common and
+;;;;   fine, so it isn't reported);
+;;;; - :def-in-fn — `def` inside a function body;
+;;;; - :method-shape — a defmethod whose parameter list doesn't fit its
+;;;;   generic function;
+;;;; - :macro — a macro call that fails to expand.
+;;;;
+;;;; Only `ns`, `in-ns`, `require` and `defmacro` forms are evaluated, so
+;;;; that later forms read and expand as they would when loaded. Warnings
+;;;; carry the line of the top-level form they're in.
+
+(ns norn.lint
+  (:require [norn.string :as str] [norn.fmt :as fmt]))
+
+(def ^:private specials #{'quote 'if 'do 'def 'var 'fn* 'let* 'letrec* 'loop* 'recur '&})
+
+(def ^:dynamic *warnings* nil)
+(def ^:dynamic *where* nil) ; {:file :line}
+(def ^:dynamic *source-syms* #{}) ; symbols written in the current top-level form
+(def ^:dynamic *source-heads* #{}) ; symbols written in call position in it
+(def ^:dynamic *exempt* #{}) ; catch bindings: unused is fine
+(def ^:dynamic *file-defs* nil) ; atom: name → arities ([nfixed variadic?] …) or :unknown
+(def ^:dynamic *file-generics* nil) ; atom: generic name → [nreq rest?]
+
+(defn- warn [kind & msg]
+  (swap! *warnings* conj (assoc *where* :kind kind :message (apply str msg)))
+  nil)
+
+;; ---- what names mean ------------------------------------------------------------------------
+
+(defn- core-macro? [sym]
+  (or (contains? specials sym)
+      (when-let [v (get (or (ns-publics 'norn.core) {}) sym)] (macro? v))))
+
+(defn- fn-shapes
+  "The arities of function f as [[nfixed variadic?] …], or nil if unknown."
+  [f]
+  (cond (generic? f) [[(%gf-get f :nreq) (%gf-get f :rest)]]
+        (and (fn? f) (not= :primitive (type f)))
+        (try (mapv (fn [p] (let [pp (%proto-parts p)] [(:nfixed pp) (:variadic pp)]))
+                   (:arities (%template-parts (%closure-template f))))
+             (catch Error _ nil))
+        :else nil))
+
+(defn- var-shapes [v]
+  (when (and v (not (macro? v)))
+    (fn-shapes (try (var-get v) (catch Error _ nil)))))
+
+(defn- fn*-shapes
+  "The arities of a (fn* …) form."
+  [form]
+  (let [xs (rest form)
+        xs (if (symbol? (first xs)) (rest xs) xs)
+        sigs (if (vector? (first xs)) [(first xs)] (map first xs))]
+    (mapv (fn [ps] (let [n (count (take-while (fn [p] (not= p '&)) ps))] [n (some (fn [p] (= p '&)) ps)])) sigs)))
+
+(defn- accepts? [shapes n]
+  (some (fn [[nfixed variadic]] (or (= n nfixed) (and variadic (>= n nfixed)))) shapes))
+
+(defn- describe-shapes [shapes]
+  (str/join " or " (map (fn [[n v]] (if v (str n " or more") (str n))) (sort-by first shapes))))
+
+;; ---- the walk -------------------------------------------------------------------------------
+
+(declare analyze case-head)
+
+(defn- boolean [x] (if x true false))
+
+(defn- bind
+  "env with sym bound as a local; checks the name."
+  [env sym]
+  (when (and (symbol? sym) (core-macro? sym) (contains? *source-heads* sym)
+             (not= "norn.core" (str (current-ns))))
+    (warn :shadow "local " sym " shadows norn.core's " sym))
+  (assoc-in env [:locals sym] (atom false)))
+
+(defn- check-unused [env syms]
+  (doseq [s syms]
+    (let [used (get-in env [:locals s])]
+      (when (and used (not (deref used)) (contains? *source-syms* s) (not (contains? *exempt* s))
+                 (not (str/starts-with? (name s) "_")))
+        (warn :unused "unused local " s)))))
+
+(defn- analyze-all [env xs] (doseq [x xs] (analyze env x)))
+
+(defn- analyze-symbol [env sym]
+  (if-let [used (get-in env [:locals sym])]
+    (reset! used true)
+    (when-not (or (contains? specials sym)
+                  (and (nil? (namespace sym)) (contains? (deref *file-defs*) sym))
+                  (resolve sym)
+                  (str/ends-with? (name sym) ".")) ; constructor-style names
+      (warn :unresolved "unresolved symbol " sym))))
+
+(defn- analyze-fn [env form]
+  (let [xs (rest form)
+        [env xs] (if (symbol? (first xs)) [(bind env (first xs)) (rest xs)] [env xs])
+        arities (if (vector? (first xs)) [xs] xs)
+        env (assoc env :in-fn true)]
+    (doseq [[params & body] arities]
+      (analyze-all (reduce (fn [e p] (if (= p '&) e (bind e p))) env params) body))))
+
+(defn- analyze-let [env form]
+  (let [[_ bindings & body] form
+        pairs (partition 2 bindings)
+        env' (reduce (fn [e [s init]] (analyze e init) (bind e s)) env pairs)]
+    (analyze-all env' body)
+    (check-unused env' (map first pairs))))
+
+(defn- analyze-letrec [env form]
+  (let [[_ bindings & body] form
+        pairs (partition 2 bindings)
+        env' (reduce (fn [e [s _]] (bind e s)) env pairs)]
+    (doseq [[_ init] pairs] (analyze env' init))
+    (analyze-all env' body)
+    (check-unused env' (map first pairs))))
+
+(defn- analyze-def [env form]
+  (let [[_ name & more] form
+        init (last more)
+        expanded (if (seq? init) (try (macroexpand init) (catch Error _ init)) init)]
+    (when (:in-fn env) (warn :def-in-fn "def of " name " inside a function"))
+    (when (and (contains? specials name) (not= "norn.core" (str (current-ns))))
+      (warn :shadow "definition of " name " shadows norn.core's " name))
+    (swap! *file-defs* assoc name (if (and (seq? expanded) (= 'fn* (first expanded))) (fn*-shapes expanded) :unknown))
+    (when (seq more) (analyze env init))))
+
+(defn- check-call [env head n]
+  (when (and (symbol? head) (not (get-in env [:locals head])))
+    (let [own (when (nil? (namespace head)) (get (deref *file-defs*) head))
+          shapes (cond (vector? own) own
+                       (some? own) nil
+                       :else (var-shapes (resolve head)))]
+      (when (and (seq shapes) (not (accepts? shapes n)))
+        (warn :arity head " called with " n " argument" (if (= n 1) "" "s")
+              "; it takes " (describe-shapes shapes))))))
+
+(defn- check-method [form]
+  (let [[_ gname & more] form
+        params (first (filter (fn [x] (or (vector? x) (list? x))) more))
+        params (if (and (vector? params) (vector? (second (drop-while (fn [x] (not= x params)) more))))
+                 (second (drop-while (fn [x] (not= x params)) more))
+                 params)
+        own (get (deref *file-generics*) gname)
+        g (when-let [v (resolve gname)] (try (var-get v) (catch Error _ nil)))
+        [gn gr] (cond own own
+                      (generic? g) [(%gf-get g :nreq) (%gf-get g :rest)]
+                      :else nil)]
+    (when (and params gn)
+      (let [nreq (count (take-while (fn [p] (not= p '&)) params))
+            rest? (boolean (some (fn [p] (= p '&)) params))]
+        (when-not (and (= nreq gn) (= rest? (boolean gr)))
+          (warn :method-shape "method for " gname " takes " nreq (when rest? " or more")
+                " arguments; the generic takes " gn (when gr " or more")))))))
+
+(defn- note-generic [form]
+  (let [params (first (filter (fn [x] (or (vector? x) (list? x))) (drop 2 form)))]
+    (when params
+      (swap! *file-generics* assoc (second form)
+             [(count (take-while (fn [p] (not= p '&)) params)) (boolean (some (fn [p] (= p '&)) params))]))))
+
+(defn- analyze-seq [env form]
+  (let [head (first form)]
+    (cond
+      (and (symbol? head) (not (get-in env [:locals head])) (contains? specials head))
+      (case-head head form env)
+
+      (and (symbol? head) (not (get-in env [:locals head]))
+           (when-let [v (resolve head)] (macro? v)))
+      (do (when (= (resolve head) (resolve 'norn.core/defmethod)) (check-method form))
+          (when (= (resolve head) (resolve 'norn.core/defgeneric)) (note-generic form))
+          (let [[ok expansion] (try [true (apply (var-get (resolve head)) (rest form))]
+                                    (catch Error e [false (condition-message e)]))]
+            (if ok
+              (analyze env expansion)
+              (warn :macro "expanding " head ": " expansion))))
+
+      :else
+      (do (analyze env head)
+          (analyze-all env (rest form))
+          (check-call env head (count (rest form)))))))
+
+(defn- case-head [head form env]
+  (cond (= head 'quote) nil
+        (= head 'var) (when (symbol? (second form)) (analyze-symbol {} (second form)))
+        (= head 'fn*) (analyze-fn env form)
+        (or (= head 'let*) (= head 'loop*)) (analyze-let env form)
+        (= head 'letrec*) (analyze-letrec env form)
+        (= head 'def) (analyze-def env form)
+        :else (analyze-all env (rest form))))
+
+(defn- analyze [env form]
+  (cond (symbol? form) (analyze-symbol env form)
+        (and (seq? form) (seq form)) (analyze-seq env form)
+        (map? form) (doseq [[k v] form] (analyze env k) (analyze env v))
+        (or (vector? form) (set? form)) (analyze-all env form)
+        :else nil))
+
+;; ---- files ----------------------------------------------------------------------------------
+
+(defn- top-level-lines
+  "The starting line of each top-level form in source text s, in order
+  (skipping #_ forms, as the reader does)."
+  [s]
+  (loop [nodes (seq (fmt/parse s)) line 1 out []]
+    (if-let [n (first nodes)]
+      (let [t (fmt/node-text n)
+            next-line (+ line (count (filter (fn [c] (= c \newline)) t)))
+            form? (and (contains? #{:token :coll :prefix} (first n))
+                       (not (and (= :prefix (first n)) (= "#_" (nth n 1))))
+                       (not (str/starts-with? t "#lang")))]
+        (recur (next nodes) next-line (if form? (conj out line) out)))
+      out)))
+
+(defn- symbols-in [form]
+  (cond (symbol? form) #{form}
+        (coll? form) (reduce (fn [acc x] (into acc (symbols-in x))) #{} (if (map? form) (mapcat identity form) form))
+        :else #{}))
+
+(defn- heads-in [form]
+  (cond (and (seq? form) (seq form))
+        (reduce (fn [acc x] (into acc (heads-in x))) (if (symbol? (first form)) #{(first form)} #{}) form)
+        (coll? form) (reduce (fn [acc x] (into acc (heads-in x))) #{} (if (map? form) (mapcat identity form) form))
+        :else #{}))
+
+(defn- catch-bindings
+  "Symbols bound by catch clauses, (catch Class e …), and by handler-case
+  clauses, (Class [e] …)."
+  [form]
+  (cond (and (seq? form) (= 'catch (first form)) (symbol? (nth form 2 nil))) #{(nth form 2)}
+        (and (seq? form) (= 'handler-case (first form)))
+        (into (catch-bindings (second form))
+              (mapcat (fn [c] (if (and (seq? c) (vector? (second c))) (concat (second c) (catch-bindings c)) (catch-bindings c)))
+                      (drop 2 form)))
+        (and (seq? form) (seq form)) (reduce (fn [acc x] (into acc (catch-bindings x))) #{} form)
+        (coll? form) (reduce (fn [acc x] (into acc (catch-bindings x))) #{} (if (map? form) (mapcat identity form) form))
+        :else #{}))
+
+(defn- evaluated-form? [form]
+  (and (seq? form) (contains? #{'ns 'in-ns 'require 'defmacro} (first form))))
+
+(defn lint-string
+  "Warnings for source text s (from file path, for the reports): a vector of
+  maps with :file :line :kind and :message."
+  ([s] (lint-string s "<string>"))
+  ([s path]
+   (let [lines (try (top-level-lines s) (catch Error _ []))
+         here (current-ns)
+         r (%reader s path)]
+     (binding [*warnings* (atom []) *file-defs* (atom {}) *file-generics* (atom {})]
+       (try
+         (loop [i 0]
+           (let [form (%read r)]
+             (when-not (%eof? form)
+               (binding [*where* {:file path :line (get lines i)} *source-syms* (symbols-in form)
+                         *source-heads* (heads-in form) *exempt* (catch-bindings form)]
+                 (if (evaluated-form? form)
+                   (when-not (and (= 'defmacro (first form))
+                                  (when-let [v (resolve (second form))] (macro? v)))
+                     (try (eval form) (catch Error e (warn :macro "evaluating " (first form) ": " (condition-message e)))))
+                   (analyze {} form)))
+               (recur (inc i)))))
+         (catch Error e (swap! *warnings* conj {:file path :line nil :kind :read :message (condition-message e)}))
+         (finally (in-ns (symbol (str here)))))
+       (vec (distinct (deref *warnings*)))))))
+
+(defn lint-file "Warnings for file path." [path] (lint-string (slurp path) path))
+
+(defn format-warning [{:keys [file line kind message]}]
+  (str file (when line (str ":" line)) ": " (name kind) ": " message))
+
+(defn main
+  "`norn lint [paths…]`: lint .norn files (default: the current directory,
+  recursively). Prints one line per warning; exits 1 if there are any."
+  [& args]
+  (let [files (vec (mapcat (fn [p] (if (str/ends-with? p ".norn")
+                                     [p]
+                                     (vec (sort (filter (fn [f] (and (str/ends-with? f ".norn") (not (str/includes? f "/target/"))))
+                                                        (%fs-walk p))))))
+                           (if (seq args) args ["."])))
+        ws (vec (mapcat lint-file files))]
+    (doseq [w ws] (println (format-warning w)))
+    (if (seq ws) 1 0)))

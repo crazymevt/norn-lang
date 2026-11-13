@@ -281,13 +281,13 @@
   (let [ts (vec (mapcat :tests files))]
     (str "TAP version 13\n1.." (count ts) "\n"
          (apply str (map-indexed
-                      (fn [i t]
-                        (let [ok (zero? (+ (:fail t) (:error t)))]
-                          (str (if ok "ok " "not ok ") (inc i) " - " (:ns t) "/" (:name t) "\n"
-                               (when-not ok
-                                 (apply str (map (fn [e] (str/join "\n" (map (fn [l] (str "  # " l)) (str/split-lines (describe-event e))))) (:events t))))
-                               (when-not ok "\n"))))
-                      ts)))))
+                     (fn [i t]
+                       (let [ok (zero? (+ (:fail t) (:error t)))]
+                         (str (if ok "ok " "not ok ") (inc i) " - " (:ns t) "/" (:name t) "\n"
+                              (when-not ok
+                                (apply str (map (fn [e] (str/join "\n" (map (fn [l] (str "  # " l)) (str/split-lines (describe-event e))))) (:events t))))
+                              (when-not ok "\n"))))
+                     ts)))))
 
 (defn- xml [s] (str/escape (str s) {\& "&amp;" \< "&lt;" \> "&gt;" \" "&quot;"}))
 
@@ -295,7 +295,7 @@
   (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites>\n"
        (apply str
               (map (fn [f]
-                     (let [t (totals [f])]
+                     (do
                        (str "  <testsuite name=\"" (xml (:file f)) "\" tests=\"" (count (:tests f))
                             "\" failures=\"" (count (filter (fn [x] (pos? (:fail x))) (:tests f)))
                             "\" errors=\"" (count (filter (fn [x] (pos? (:error x))) (:tests f))) "\">\n"

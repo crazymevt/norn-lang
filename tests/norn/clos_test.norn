@@ -168,7 +168,7 @@
 (is (= 1 (count (generic-methods speak))))
 (%remove-method speak [circle] nil)
 (is (= "No applicable method for clos-test/speak with arguments (#clos-test/circle{:radius 1})"
-    (error-of (fn [] (speak (circle))))))
+       (error-of (fn [] (speak (circle))))))
 
 ;;; class redefinition: identity kept, old instances follow the new definition
 (defclass point () ((x :initform 0) (y :initform 0)))
@@ -279,7 +279,6 @@
 (let [copy (with acct :holder "copy")]
   (is (= true (identical? (current-fiber) (owner copy))))
   (is (= [16 "copy"] [(:balance copy) (:holder copy)])))
-(is (= :needs-mutable (try (defclass bad () ((v :mutable true))) (catch Error e :needs-mutable))))
+(is (= :needs-mutable (try (eval '(defclass bad () ((v :mutable true)))) (catch Error e :needs-mutable))))
 (defclass savings (account) ((rate)))
 (is (= true (mutable? (savings :holder "s"))))
-

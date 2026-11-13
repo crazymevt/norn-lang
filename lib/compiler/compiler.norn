@@ -268,19 +268,19 @@
                        r))
                    pairs)
         fixups (reduce
-                 (fn [fx i]
-                   (let [init (macroexpand-in cs (second (nth pairs i)))]
-                     (when-not (and (cons? init) (symbol? (first init)) (= (name (first init)) "fn*"))
-                       (cerr "letrec* bindings must be functions"))
-                     (let [caps (compile-fn! cs (vec init) (nth regs i) NT)]
-                       (reduce (fn [fx j]
-                                 (let [cap (nth caps j)
-                                       r (bit-shift-right cap 2)]
-                                   (if (and (zero? (bit-and cap 3)) (some (fn [x] (= x r)) regs))
-                                     (conj fx [(nth regs i) j r])
-                                     fx)))
-                               fx (range (count caps))))))
-                 [] (range (count pairs)))]
+                (fn [fx i]
+                  (let [init (macroexpand-in cs (second (nth pairs i)))]
+                    (when-not (and (cons? init) (symbol? (first init)) (= (name (first init)) "fn*"))
+                      (cerr "letrec* bindings must be functions"))
+                    (let [caps (compile-fn! cs (vec init) (nth regs i) NT)]
+                      (reduce (fn [fx j]
+                                (let [cap (nth caps j)
+                                      r (bit-shift-right cap 2)]
+                                  (if (and (zero? (bit-and cap 3)) (some (fn [x] (= x r)) regs))
+                                    (conj fx [(nth regs i) j r])
+                                    fx)))
+                              fx (range (count caps))))))
+                [] (range (count pairs)))]
     (doseq [f fixups] (emit! cs (abc SETUP (nth f 0) (nth f 1) (nth f 2))))
     (compile-do! cs (drop 2 xs) dest pos)
     (truncate-locals! cs nlocals)

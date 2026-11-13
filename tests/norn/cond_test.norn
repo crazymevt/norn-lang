@@ -12,46 +12,46 @@
 (is (= "Divide by zero" (try (/ 1 0) (catch Error e (condition-message e)))))
 (is (= 3 (try (+ 1 2) (catch Error e :no))))
 (is (= [:body :finally] (let [log (atom [])]
-                       (try (swap! log conj :body) (finally (swap! log conj :finally)))
-                       @log)))
+                          (try (swap! log conj :body) (finally (swap! log conj :finally)))
+                          @log)))
 (is (= [:catch :finally] (let [log (atom [])]
-                        (try (error "x") (catch Error e (swap! log conj :catch)) (finally (swap! log conj :finally)))
-                        @log)))
+                           (try (error "x") (catch Error e (swap! log conj :catch)) (finally (swap! log conj :finally)))
+                           @log)))
 (is (= :outer (try (try (error "x") (catch Warning w :inner)) (catch Error e :outer))))
 (is (= "<string>:1: Divide by zero" (try (load-string "(/ 1 0)") (catch Error e (condition-text e)))))
 
 ;;; handler-case, custom condition classes
 (defclass parse-error (Error) ((line :initform nil)))
 (is (= [3 "bad token"] (handler-case (error parse-error :message "bad token" :line 3)
-                      (parse-error [e] [(:line e) (condition-message e)]))))
+                         (parse-error [e] [(:line e) (condition-message e)]))))
 (is (= :second (handler-case (error parse-error)
-              (Warning [] :first)
-              (Error [] :second))))
+                 (Warning [] :first)
+                 (Error [] :second))))
 (is (= "a b 3" (handler-case (error "a" 'b 3) (SimpleError [e] (condition-message e)))))
 (is (= true (instance? Error (handler-case (error "x") (Condition [e] e)))))
 (is (= nil (ignore-errors (error "x"))))
 
 ;;; handler-bind: runs before unwinding, can decline
 (is (= [:inner :outer :caught]
-    (let [log (atom [])]
-      (handler-case
-        (handler-bind [Error (fn [c] (swap! log conj :outer))]
-          (handler-bind [Error (fn [c] (swap! log conj :inner))]
-            (error "x")))
-        (Error [] (swap! log conj :caught)))
-      @log)))
+       (let [log (atom [])]
+         (handler-case
+           (handler-bind [Error (fn [c] (swap! log conj :outer))]
+             (handler-bind [Error (fn [c] (swap! log conj :inner))]
+               (error "x")))
+           (Error [] (swap! log conj :caught)))
+         @log)))
 (is (= nil (signal (make SimpleError :message "nobody listens"))))
 
 ;;; restarts on runtime errors: use-value, retry
 (is (= 100 (handler-bind [RuntimeError (fn [c] (invoke-restart 'use-value 99))]
-          (+ 1 (/ 1 0)))))
+             (+ 1 (/ 1 0)))))
 (defn tail-divide [x] (/ 10 x))
 (is (= 7 (handler-bind [RuntimeError (fn [c] (invoke-restart 'use-value 7))] (tail-divide 0))))
 (is (= 42 (handler-bind [RuntimeError (fn [c] (eval '(def late-var 41)) (invoke-restart 'retry))]
-         (+ 1 (eval 'late-var)))))
+            (+ 1 (eval 'late-var)))))
 (is (= ['use-value 'retry]
-    (handler-bind [RuntimeError (fn [c] (invoke-restart 'use-value (mapv :name (compute-restarts))))]
-      (/ 1 0))))
+       (handler-bind [RuntimeError (fn [c] (invoke-restart 'use-value (mapv :name (compute-restarts))))]
+         (/ 1 0))))
 
 ;;; restart-case
 (is (= 10 (restart-case (invoke-restart 'again 5) (again [n] (* n 2)))))
@@ -64,20 +64,20 @@
     (skip-entry [] nil)
     (use-default [v] v)))
 (is (= ["a" "c"] (handler-bind [parse-error (fn [c] (invoke-restart 'skip-entry))]
-                (vec (keep parse-entry ["a" "bad" "c"])))))
+                   (vec (keep parse-entry ["a" "bad" "c"])))))
 (is (= ["a" "?" "c"] (handler-bind [parse-error (fn [c] (invoke-restart 'use-default "?"))]
-                    (mapv parse-entry ["a" "bad" "c"]))))
+                       (mapv parse-entry ["a" "bad" "c"]))))
 (is (= "No active restart named nope" (handler-case (invoke-restart 'nope) (Error [e] (condition-message e)))))
 
 ;;; unwind-protect and non-local exits
 (is (= [:inner-cleanup :outer-cleanup :caught]
-    (let [log (atom [])]
-      (try
-        (unwind-protect
-          (unwind-protect (error "x") (swap! log conj :inner-cleanup))
-          (swap! log conj :outer-cleanup))
-        (catch Error e (swap! log conj :caught)))
-      @log)))
+       (let [log (atom [])]
+         (try
+           (unwind-protect
+             (unwind-protect (error "x") (swap! log conj :inner-cleanup))
+             (swap! log conj :outer-cleanup))
+           (catch Error e (swap! log conj :caught)))
+         @log)))
 (is (= [:result [:cleanup]] (let [log (atom [])] [(unwind-protect :result (swap! log conj :cleanup)) @log])))
 (is (= 7 (catch-tag :out (+ 1 (throw-tag :out 7)))))
 (is (= :inner (catch-tag :a (catch-tag :b (throw-tag :b :inner)))))
@@ -86,19 +86,19 @@
 (def ^:dynamic *depth* 0)
 (defn depth [] *depth*)
 (is (= [0 1 2 1 0] [(depth) (binding [*depth* 1] (depth))
-                 (binding [*depth* 1] (binding [*depth* 2] (depth)))
-                 (binding [*depth* 1] (binding [*depth* 2] :x) (depth))
-                 (depth)]))
+                    (binding [*depth* 1] (binding [*depth* 2] (depth)))
+                    (binding [*depth* 1] (binding [*depth* 2] :x) (depth))
+                    (depth)]))
 (is (= 0 (do (try (binding [*depth* 5] (error "x")) (catch Error e nil)) (depth))))
 (is (= 7 (binding [*depth* 7] (await (spawn-detached (depth))))))
 (is (= 0 (let [f (spawn-detached (do (sleep 5) (depth)))] (binding [*depth* 9] (await f)))))
 (is (= [:child-handled] (let [log (atom [])]
-                       (handler-bind [Error (fn [c] (swap! log conj :child-handled))]
-                         (settle (spawn-detached (error "in child"))))
-                       @log)))
+                          (handler-bind [Error (fn [c] (swap! log conj :child-handled))]
+                            (settle (spawn-detached (error "in child"))))
+                          @log)))
 ;; handler-case can't unwind into another fiber's stack: the child fails on its own.
 (is (= {:error "in child"} (handler-case (settle (spawn-detached (error "in child")))
-                          (Error [] :parent-caught))))
+                             (Error [] :parent-caught))))
 
 ;;; cancellation and stack overflow run cleanups
 (let [log (atom [])
@@ -144,4 +144,3 @@
   (is (= [:cleanup] @log)))
 ;; Without *debugger* bound, an unhandled error ends the fiber.
 (is (= {:error "plain"} (settle (spawn-detached (error "plain")))))
-

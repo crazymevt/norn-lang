@@ -296,6 +296,33 @@ Decisions for M7 are at the end, after M6's.
 - **`norn test [--only RE] [--serial] [--tap] [--junit FILE] [paths…]`**
   finds `*_test.norn` under `tests/` by default and exits 1 on any failure
   or error. The cargo harness runs each suite through `norn.test`.
+- **The comment-keeping reader is a separate Rust scanner** (7.8,
+  `cst.rs`): it returns a syntax tree as Norn data (tokens, spaces,
+  newlines, comments, collections, prefixes) whose text concatenates back
+  to the source exactly. The reader proper is unchanged.
+- **`norn fmt` keeps line breaks** (cljfmt-style), rather than reflowing
+  code (gofmt/zprint-style): it fixes spacing, blank lines, closing
+  brackets and indentation, and nothing else. Indentation: collections
+  align inside the bracket; calls align with their first argument, or
+  indent one when it's on the next line; `def…` forms and `fn` indent two;
+  block forms (`let`, `when`, `cond`…, `with-…`) indent their body two when
+  it starts on a new line. Macros declare `{:indent n}` (an attribute map
+  `defmacro` now accepts). Every rewrite is checked with `same-code?` and a
+  file is left alone if the tokens would change.
+- **`norn lint` is a static walk, not the compiler in analysis mode**: it
+  reads each top-level form, evaluates only `ns`, `in-ns`, `require` and
+  `defmacro`, expands macros (calling them in the linting fiber, so macros
+  that block work) and walks the special forms. Arity comes from the
+  runtime (`%proto-parts`, generics' `:nreq`/`:rest`) and from earlier
+  definitions in the file. Warnings carry the top-level form's line.
+- **Lint rules kept quiet where they'd be noise**: unused fn parameters,
+  catch bindings and macro-introduced bindings aren't reported; shadowing
+  core *functions* isn't; shadowing a core macro is only when the same
+  form also calls it.
+- **Found by the linter:** unused bindings in `norn.sync`, `norn.test` and
+  a test; a `defclass` inside a function in a test; a missing `juxt`
+  (added to core); `norn.regex/quote` renamed `literal` (a function named
+  like a special form can't be called unqualified in its own namespace).
 - **Follow-up noted:** a runaway recursion grows to the 256 MB stack limit
   (about 2.8 million frames) before `Stack overflow`, and every GC on the
   way rescans that stack, so it takes about a minute in a debug build

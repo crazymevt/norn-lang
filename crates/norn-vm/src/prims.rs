@@ -334,6 +334,7 @@ prims! {
     "%json-write" 3 Some(3) => crate::text::json_write;
     "%format" 2 Some(2) => crate::text::format;
     "%parse-number" 2 Some(2) => crate::text::parse_number;
+    "%read-cst" 1 Some(1) => crate::cst::read_cst;
     // math and randomness (math.rs): norn.math, norn.random, rand
     "%math1" 2 Some(2) => crate::math::math1;
     "%math2" 3 Some(3) => crate::math::math2;

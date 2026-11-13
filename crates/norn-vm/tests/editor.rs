@@ -128,3 +128,12 @@ fn fix_a_crashed_fiber_from_the_editor_and_resume_it() {
     let none = ed.request(":op :debugging");
     assert!(none.contains(":value []"), "{none}");
 }
+
+#[test]
+fn the_editor_formats_and_lints_code() {
+    let mut ed = Editor::connect();
+    let f = ed.request(&format!(":op :format :code {}", quote("(defn f [x]\n      (let [y   1]\n  (+ x y)))")));
+    assert!(f.contains(r#":value "(defn f [x]\n  (let [y 1]\n    (+ x y)))\n""#), "{f}");
+    let l = ed.request(&format!(":op :lint :file \"f.norn\" :code {}", quote("(ns lint-from-editor)\n(defn g [x] (let [unused 1] (h x)))")));
+    assert!(l.contains(":kind :unused") && l.contains(":kind :unresolved") && l.contains(":line 2"), "{l}");
+}

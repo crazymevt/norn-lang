@@ -36,9 +36,9 @@
 (defmacro let [bindings & body] `(let* ~bindings ~@body))
 (defmacro loop [bindings & body] `(loop* ~bindings ~@body))
 (defmacro declare [& names] `(do ~@(loop* [ns names acc ()]
-                                      (if (seq ns)
-                                        (recur (rest ns) (cons (list 'def (first ns)) acc))
-                                        acc))))
+                                     (if (seq ns)
+                                       (recur (rest ns) (cons (list 'def (first ns)) acc))
+                                       acc))))
 (defmacro comment [& _] nil)
 
 ;;; ---- basics -------------------------------------------------------------------
@@ -797,12 +797,12 @@
         nxt (gensym "next")
         call-next (if rest-sym `(apply ~nxt ~@pnames ~rest-sym) `(~nxt ~@pnames))
         bindings (concat
-                   (when (%uses? body 'call-next-method)
-                     [(symbol "call-next-method")
-                      `(fn* ([] (if ~nxt ~call-next (%no-next-method '~gname)))
-                            ([& args#] (if ~nxt (apply ~nxt args#) (%no-next-method '~gname))))])
-                   (when (%uses? body 'next-method?)
-                     [(symbol "next-method?") `(fn* [] (some? ~nxt))]))
+                  (when (%uses? body 'call-next-method)
+                    [(symbol "call-next-method")
+                     `(fn* ([] (if ~nxt ~call-next (%no-next-method '~gname)))
+                        ([& args#] (if ~nxt (apply ~nxt args#) (%no-next-method '~gname))))])
+                  (when (%uses? body 'next-method?)
+                    [(symbol "next-method?") `(fn* [] (some? ~nxt))]))
         shape (%lambda-shape params)
         mname (symbol (str (name gname) "-method"))
         ;; A generic function of another namespace (say norn.core's
@@ -1109,14 +1109,14 @@
   these restarts available; invoking one unwinds to here and runs its body."
   [form & clauses]
   `(%restart-case (fn* [] ~form)
-     [~@(map (fn [c]
-               (let [rname (first c)
-                     params (second c)
-                     body (drop 2 c)
-                     report (when (= (first body) :report) (second body))
-                     body (if report (drop 2 body) body)]
-                 `{:name '~rname :report ~report :fn (fn* ~params ~@body)}))
-             clauses)]))
+                  [~@(map (fn [c]
+                            (let [rname (first c)
+                                  params (second c)
+                                  body (drop 2 c)
+                                  report (when (= (first body) :report) (second body))
+                                  body (if report (drop 2 body) body)]
+                              `{:name '~rname :report ~report :fn (fn* ~params ~@body)}))
+                          clauses)]))
 
 (defn compute-restarts [] (vec (filter (fn [r] (%visible? (:owner r))) *restarts*)))
 
@@ -1262,6 +1262,12 @@
         all (distinct (concat (names (symbol nsname)) (names 'norn.core)))]
     (vec (sort (filter (fn [n] (and (>= (count n) (count prefix)) (= prefix (subs n 0 (count prefix))))) all)))))
 
+(defn- %tool-call
+  "Call library function lib/f (loading lib first): the editor's tool ops."
+  [lib f & args]
+  ((var-get (resolve 'norn.core/require)) lib)
+  (apply (var-get (resolve (symbol (name lib) (name f)))) args))
+
 (defn %serve-request
   "One editor-protocol request (a map, as a line of Norn data) → the response line."
   [line]
@@ -1281,6 +1287,8 @@
                    (= op :abort) {:value (pr-str (debug-abort (:fiber req)))}
                    (= op :eval-in-frame) {:value (pr-str (eval-in-frame (:fiber req) (:frame req) (read-string (:code req))))}
                    (= op :complete) {:completions (%complete (or (:prefix req) "") (or (:ns req) "user"))}
+                   (= op :format) {:value (%tool-call 'norn.fmt 'format-string (:code req))}
+                   (= op :lint) {:warnings (%tool-call 'norn.lint 'lint-string (:code req) (or (:file req) "<editor>"))}
                    :else {:error (str "Unknown op: " (pr-str op))})
                  (Error [e] {:error (condition-text e)})))]
     (pr-str (assoc resp :id (:id req)))))
@@ -1394,10 +1402,23 @@
   (let [body (if (string? (first body)) (rest body) body)]
     `(def ~fname (fn ~fname ~@body))))
 
-(defmacro defmacro [mname & body]
-  (let [body (if (string? (first body)) (rest body) body)]
+(def %indent-hints
+  "Macro name → its {:indent n} hint, for norn fmt: n arguments, then a body
+  indented by two."
+  (atom {}))
+
+(defn %set-indent! [sym n] (swap! %indent-hints assoc (name sym) n))
+
+(defmacro defmacro
+  "Define a macro. A docstring may follow the name, then an attribute map:
+  {:indent n} tells norn fmt to indent the body after n arguments by two."
+  [mname & body]
+  (let [body (if (string? (first body)) (rest body) body)
+        attrs (when (map? (first body)) (first body))
+        body (if attrs (rest body) body)]
     `(do (def ~mname (fn ~mname ~@body))
          (%set-macro! (var ~mname))
+         ~@(when (:indent attrs) [`(%set-indent! '~mname ~(:indent attrs))])
          (var ~mname))))
 
 (defmacro doseq
@@ -1474,7 +1495,7 @@
     (restart-case
       (error ResourceLost :resource r :message (str "Resource lost in an image restore: " (pr-str r)))
       (reconnect [] :report "Reconnect the resource and carry on"
-        (let [r2 (reconnect r)] (%mark-live! r) (if (some? r2) r2 r)))
+                 (let [r2 (reconnect r)] (%mark-live! r) (if (some? r2) r2 r)))
       (abort [] :report "End this fiber" (%abort-fiber "Resource lost in an image restore" [])))))
 
 (defn save-image
@@ -2016,6 +2037,11 @@
         (if (identical? hit memo)
           (let [v (apply f args)] (swap! memo assoc args v) v)
           hit)))))
+
+(defn juxt
+  "A function returning a vector of each f applied to its arguments."
+  [& fs]
+  (fn [& args] (mapv (fn [f] (apply f args)) fs)))
 
 (defn fnil
   "f with nil first arguments replaced by the defaults."

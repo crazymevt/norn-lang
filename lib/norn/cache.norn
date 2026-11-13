@@ -35,14 +35,14 @@
   ([c k not-found]
    (if (= :lru (:kind c))
      (let [hit (atom not-found)]
-            (swap! (:state c)
-                   (fn [st]
-                     (if-let [e (get (:entries st) k)]
-                       (do (reset! hit (first e)) (touch st k (first e)))
-                       (do (reset! hit not-found) st))))
-            (deref hit))
+       (swap! (:state c)
+              (fn [st]
+                (if-let [e (get (:entries st) k)]
+                  (do (reset! hit (first e)) (touch st k (first e)))
+                  (do (reset! hit not-found) st))))
+       (deref hit))
      (let [[v at] (get (:entries (deref (:state c))) k)]
-            (if (and at (< (- (now-ms) at) (:limit c))) v not-found)))))
+       (if (and at (< (- (now-ms) at) (:limit c))) v not-found)))))
 
 (defn store!
   "Cache v for k. Returns v."
@@ -50,14 +50,14 @@
   (if (= :lru (:kind c))
     (swap! (:state c) (fn [st] (evict (touch st k v) (:limit c))))
     (let [now (now-ms)]
-           (swap! (:state c)
-                  (fn [st]
-                    ;; drop expired entries now and then
-                    (let [es (:entries st)
-                          es (if (zero? (rem (count es) 64))
-                               (into {} (remove (fn [[_ [_ at]]] (>= (- now at) (:limit c)))) es)
-                               es)]
-                      (assoc st :entries (assoc es k [v now])))))))
+      (swap! (:state c)
+             (fn [st]
+               ;; drop expired entries now and then
+               (let [es (:entries st)
+                     es (if (zero? (rem (count es) 64))
+                          (into {} (remove (fn [[_ [_ at]]] (>= (- now at) (:limit c)))) es)
+                          es)]
+                 (assoc st :entries (assoc es k [v now])))))))
   v)
 
 (defn evict! "Forget k." [c k]

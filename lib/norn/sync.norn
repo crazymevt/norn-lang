@@ -60,7 +60,7 @@
   [b]
   (let [n (:parties b)
         [old _] (swap-vals! (:state b)
-                            (fn [{:keys [waiting gate] :as st}]
+                            (fn [{:keys [waiting] :as st}]
                               (if (= (inc waiting) n) {:waiting 0 :gate (chan)} (assoc st :waiting (inc waiting)))))]
     (if (= (inc (:waiting old)) n)
       (close! (:gate old))

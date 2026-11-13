@@ -40,11 +40,11 @@
 
 (defn- default-sink [{:keys [level ns msg data time]}]
   (%write-stderr
-    (str (norn.time/format time) " "
-         (norn.string/pad-right (norn.string/upper-case (name level)) 5) " "
-         ns ": " msg
-         (apply str (map (fn [[k v]] (str " " (name k) "=" (pr-str v))) data))
-         "\n")))
+   (str (norn.time/format time) " "
+        (norn.string/pad-right (norn.string/upper-case (name level)) 5) " "
+        ns ": " msg
+        (apply str (map (fn [[k v]] (str " " (name k) "=" (pr-str v))) data))
+        "\n")))
 
 (defn set-sink!
   "Send every event to f, a function of one map: :level :ns :msg :data (a
