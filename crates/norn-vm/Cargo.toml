@@ -6,3 +6,7 @@ edition.workspace = true
 
 [dependencies]
 norn-rt = { path = "../norn-rt" }
+cranelift-codegen = "0.137.1"
+cranelift-frontend = "0.137.1"
+cranelift-native = "0.137.1"
+libc = "0.2"

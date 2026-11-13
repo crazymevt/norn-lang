@@ -219,6 +219,7 @@ prims! {
     "%proto-parts" 1 Some(1) => proto_parts;
     "%seed-compile" 1 Some(1) => |vm, a| { vm.nested += 1; let r = crate::compiler::compile_toplevel(vm, a[0]); vm.nested -= 1; r };
     "%compiler-source" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, crate::eval::COMPILER_SRC));
+    "jit-stats" 0 Some(0) => |vm, _| { use std::sync::atomic::Ordering::Relaxed; let k = |vm: &mut Vm, n: &str| rt().keyword(&mut vm.m, None, n); let kvs = [k(vm, "tier"), Value::fix(if crate::jit::enabled() { 1 } else { 0 }), k(vm, "compiled"), Value::fix(crate::jit::COMPILED.load(Relaxed) as i64), k(vm, "rejected"), Value::fix(crate::jit::REJECTED.load(Relaxed) as i64), k(vm, "code-bytes"), Value::fix(crate::jit::CODE_BYTES.load(Relaxed) as i64)]; hash_map(vm, &kvs) };
     "%core-source" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, crate::eval::CORE_SRC));
     // classes, instances, generic functions (runtime half of CLOS; policy is in core.norn)
     "class-of" 1 Some(1) => |_, a| Ok(norn_rt::clos::class_of(a[0]));

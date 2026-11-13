@@ -159,11 +159,13 @@ pub(crate) struct St {
     pub pc: usize,
     code: *const u32,
     consts: *const Value,
+    /// Tier-1 entry of the current frame's proto (0 = not looked up yet).
+    native: usize,
 }
 
 impl St {
     fn at(seg: Value, fp: usize) -> St {
-        St { seg, base: seg.seg_data(), fp, pc: 0, code: std::ptr::null(), consts: std::ptr::null() }
+        St { seg, base: seg.seg_data(), fp, pc: 0, code: std::ptr::null(), consts: std::ptr::null(), native: 0 }
     }
     #[inline]
     unsafe fn frame(&self) -> *mut Value {
@@ -185,6 +187,7 @@ impl St {
             self.code = p.proto_code().code_ptr();
             self.consts = p.proto_consts().arr_ptr();
             self.pc = self.slot(F_RESUME).as_fixnum() as usize;
+            self.native = 0;
         }
     }
     #[inline]
@@ -238,6 +241,7 @@ pub struct Vm {
     key_buf: Vec<Value>,
     budget: i64,
     seen_attention: u64,
+    jit: crate::jit::JitCtx,
 }
 
 fn arity_error(f: Value, n: usize) -> Error {
@@ -274,6 +278,12 @@ impl Vm {
             key_buf: Vec::new(),
             budget: BUDGET,
             seen_attention: 0,
+            jit: crate::jit::JitCtx {
+                budget: std::ptr::null_mut(),
+                attention: safepoint::attention_ptr(),
+                seen: std::ptr::null(),
+                prims: [0; crate::jit::NPRIMS],
+            },
         }
     }
 
@@ -1023,10 +1033,40 @@ impl Vm {
         }
     }
 
-    /// The interpreter loop.
+    /// The tier-1 entry for `proto`, compiling it on first use. 1 = none.
+    fn native_for(&mut self, proto: Value) -> usize {
+        let n = proto.proto_native();
+        if n != 0 {
+            return n;
+        }
+        if self.jit.prims[0] == 0 {
+            for (i, name) in crate::jit::FAST_PRIMS.iter().enumerate() {
+                let sym = rt().symbol(&mut self.m, None, name);
+                self.jit.prims[i] = self.core.lookup(sym).map(|v| v.var_root().0).unwrap_or(u64::MAX);
+            }
+        }
+        let entry = crate::jit::compile(proto).unwrap_or(1);
+        if proto.proto_set_native(entry) { entry } else { proto.proto_native() }
+    }
+
+    /// The interpreter loop. With tier 1 on, each step first runs the frame's
+    /// native code from the current pc; it stops at the first instruction it
+    /// doesn't handle, which the interpreter then executes.
     unsafe fn run(&mut self, st: &mut St) -> Result<Exit> {
+        let tier1 = crate::jit::enabled();
         unsafe {
             loop {
+                if tier1 {
+                    if st.native == 0 {
+                        st.native = self.native_for(st.slot(F_PROTO));
+                    }
+                    if st.native > 1 {
+                        self.jit.budget = &mut self.budget;
+                        self.jit.seen = &self.seen_attention;
+                        let f: crate::jit::NativeFn = std::mem::transmute(st.native);
+                        st.pc = f(st.regs(), st.consts, &self.jit, st.pc as u64) as usize;
+                    }
+                }
                 let ins = *st.code.add(st.pc);
                 st.pc += 1;
                 let ra = a(ins);

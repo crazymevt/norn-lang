@@ -4,7 +4,7 @@
 //! ```text
 //! Var:        [ns: Symbol][name: Symbol][root][flags]
 //! Code:       [n_instructions][u32 instructions, packed two per word]
-//! Proto:      [name][nfixed][variadic][nregs][consts: Array][code: Code][locals: Array]
+//! Proto:      [name][nfixed][variadic][nregs][consts: Array][code: Code][locals: Array][native]
 //! FnTemplate: [name][arities: Array<Proto>][nups][captures: Array<fixnum>]
 //! Closure:    [template][nups][upval0 upval1 …]   (size readable without the template)
 //! Primitive:  [name: Symbol][index][min-args][max-args | -1]
@@ -105,7 +105,7 @@ pub struct ProtoInfo {
 }
 
 pub fn proto_new(m: &mut Mutator, p: ProtoInfo) -> Value {
-    let v = alloc(m, Kind::Proto, 7);
+    let v = alloc(m, Kind::Proto, 8);
     v.set_field(0, p.name);
     v.set_word(1, p.nfixed as u64);
     v.set_word(2, p.variadic as u64);
@@ -113,6 +113,7 @@ pub fn proto_new(m: &mut Mutator, p: ProtoInfo) -> Value {
     v.set_field(4, p.consts);
     v.set_field(5, p.code);
     v.set_field(6, p.locals);
+    v.set_word(7, 0);
     v
 }
 
@@ -142,6 +143,16 @@ impl Value {
     }
     pub fn proto_locals(self) -> Value {
         self.field(6)
+    }
+    /// Tier-1 entry point: 0 = not compiled yet, 1 = can't be compiled,
+    /// otherwise the address of the native function (runtime.md §8.2).
+    #[inline]
+    pub fn proto_native(self) -> usize {
+        self.atomic_word(7).load(Ordering::Acquire) as usize
+    }
+    /// Set the native entry if none is set yet (first compiler wins).
+    pub fn proto_set_native(self, entry: usize) -> bool {
+        self.atomic_word(7).compare_exchange(0, entry as u64, Ordering::AcqRel, Ordering::Acquire).is_ok()
     }
 }
 

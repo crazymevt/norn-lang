@@ -5,6 +5,7 @@ pub mod bytecode;
 pub mod compiler;
 pub mod conc;
 pub mod eval;
+pub mod jit;
 pub mod prims;
 pub mod reader;
 pub mod sched;

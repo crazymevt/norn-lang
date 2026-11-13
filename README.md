@@ -8,14 +8,15 @@ runtime built for many cores.
 - Language design: [docs/design.md](docs/design.md)
 - Runtime architecture and milestones: [docs/runtime.md](docs/runtime.md)
 
-**Status: M3** — a bytecode interpreter running millions of fibers on a
+**Status: M4** — a bytecode interpreter running millions of fibers on a
 work-stealing scheduler (one carrier per core), with channels, `alts!`,
 atoms, structured concurrency scopes and a parallel MMTk garbage collector;
 plus CLOS-style classes and generic functions (multiple dispatch, method
 combination, live redefinition across all cores), and a Common Lisp-style
 condition system with a debugger: an unhandled error parks the fiber with its
 stack intact, you fix the code, and resume it from the REPL or an editor
-(`norn --server`).
+(`norn --server`). The compiler is written in Norn and compiles itself; set `NORN_TIER=1`
+for Cranelift-generated native code (2–9× faster on the benchmarks so far).
 See [runtime.md §12](docs/runtime.md#12-revised-milestones) for what exists
 and what's next.
 

@@ -740,6 +740,10 @@ dependencies = [
 name = "norn-vm"
 version = "0.0.1"
 dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-native",
+ "libc",
  "norn-rt",
 ]
 

@@ -249,7 +249,7 @@ fn object_words(p: *const u64) -> usize {
         Kind::EmptyList => 2,
         Kind::Range => 5,
         Kind::Code => 3 + w(0).div_ceil(2),
-        Kind::Proto => 9,
+        Kind::Proto => 10,
         Kind::Closure => 4 + w(1),
         Kind::Segment => 2 + SEG_HEADER + w(0),
         Kind::Fiber => 2 + fiber::WORDS,

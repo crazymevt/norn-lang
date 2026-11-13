@@ -596,7 +596,54 @@ Consequences **[decided]**:
 - The dispatch loop is a Rust `loop { match op { … } }`. Threaded dispatch
   can come later if profiling says so.
 
-### 8.2 Tier 1 — Cranelift **[decided]**
+### 8.2 Tier 1 — Cranelift **[decided; first version built in M4]**
+
+**As built in M4** (`crates/norn-vm/src/jit.rs`):
+
+*Shape.*
+- A **native accelerator over the same frames**: each proto's bytecode
+  becomes one native function, `(regs, consts, ctx, pc) → pc`, with an entry
+  for every instruction (a jump table).
+- Registers stay in the heap frame. Native code runs from the current pc
+  until an instruction it doesn't handle, and returns that instruction's
+  index for the interpreter to execute.
+- Every exit leaves the frame exactly as the interpreter expects, so:
+  - mixed stacks, the GC, the debugger and frame restarts need nothing new;
+  - deoptimisation is simply interpreting from the current pc.
+
+*What runs natively.*
+- Moves, constants and upvalues.
+- Var reads, with a fast path that falls back to the interpreter for unbound
+  or dynamically bound vars.
+- Branches, and loop back-edges, with the same safepoint check as `Vm::poll`.
+- Calls to `+ - < > <= >= == = inc dec zero?` when the callee *is* that
+  primitive (compared at run time, so rebinding stays live) and the
+  arguments are fixnums. The overflow check is done on the raw tagged
+  values.
+
+*Compilation.*
+- On a proto's first execution when `NORN_TIER=1`. Tier 0 stays the default
+  until tier 1 has seen more use.
+- Code goes into `MAP_JIT` memory (§7.4) and is never freed.
+- No relocations: constants and runtime addresses arrive through the
+  arguments.
+
+*Measured* (release, Apple M-series):
+
+| Benchmark | Tier 0 | Tier 1 |
+|---|---|---|
+| counting loop, 10M iterations | 425 ms | 47 ms (9×) |
+| `(reduce + (range 1000000))` | 58 ms | 13 ms (4.5×) |
+| `(fib 27)` | 32 ms | 15 ms (2.1×) |
+
+The core test session compiled 627 protos (516 KB of code), none rejected.
+
+*Next.* Calls and returns still go through the interpreter (hence the
+smaller gain on call-heavy code). The full design below — the push-frame +
+`return_call` convention and inline caches — keeps the same frame layout, so
+it can replace this piece by piece.
+
+**Full design:**
 
 - **Input:** the compiler's ANF IR (design §8.3), lowered with the
   push-frame + `return_call` convention (§3.2).
@@ -621,6 +668,22 @@ Consequences **[decided]**:
 6. From here on: `norn` = norn-rt + base.lim. The seed compiler is used only
    to rebuild from scratch (and in CI, to prove we still can).
 ```
+
+**As built in M4:** steps 1–4.
+- The Norn compiler (`lib/compiler/compiler.norn`) is a faithful port of the
+  seed. Boot installs it as `eval`; `NORN_COMPILER=seed` keeps the seed.
+- **Byte-identical output.** On every form of the core library (235 forms,
+  11,549 instructions), the compiler and the test suites,
+  `compare-compilers` finds no difference from the seed.
+- **Self-hosting fixpoint.** The compiler compiled by the seed, by itself
+  and by that result produce identical code for every function
+  (`tests/norn/compiler_test.norn`).
+- Step 5 needs images (M5). Until then, each start recompiles the compiler
+  with the seed (a few ms).
+- **Macros run in the compiling fiber.** Since the compiler is Norn code,
+  macros are ordinary calls: they can block, and compilation no longer
+  inhibits the GC. The nested-run machinery remains only for boot and the
+  Rust `macroexpand` primitives.
 
 ---
 
@@ -681,7 +744,7 @@ together.
 | M1 ✅ | Fibers, scheduler, safepoints, MMTk GC (non-moving Immix), atoms, channels, scopes | 1M fibers ping-pong across all cores under GC stress |
 | M2 ✅ | CLOS in Norn: `defclass`, layouts, generic functions, method combination, dispatch caches | Live `defmethod` while 8 cores call the generic function |
 | M3 ✅ | Conditions, restarts, parked-fiber debugger, REPL protocol | Fix a crashed fiber from the editor and resume it |
-| M4 | Real compiler in Norn, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
+| M4 ✅ | Real compiler in Norn, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
 | M5 | Images: save/load, layers, parked fibers, `on-image-restore` | Under 50 ms startup; a saved fiber resumes after load |
 | M6 | Hygiene, modules/phases, `#lang`, sealing | Stdlib built as sealed modules |
 | M7 | Full MOP, STM, processes/supervisors, FFI, gradual types, contracts | — |
@@ -828,6 +891,32 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
   `cond_test.norn` (about 16M frames) doesn't finish in reasonable time at
   level 1. The rest of the suite passes at level 1 in under a second, and the
   whole suite passes at level 3 (839 forced collections).
+
+### 12.5 M4 status (2026-11-13)
+
+**Built:**
+- the Norn compiler, which is self-hosting and byte-identical to the seed
+  (§9);
+- destructuring in `let`, `loop`, `fn`, `defn`, `defmacro` and `doseq`;
+- compile errors as `CompileError` conditions with `retry` and `use-value`;
+- macros that can block;
+- tier 1 as a Cranelift accelerator (§8.2), with `jit-stats`.
+
+**Verified:**
+- `tests/norn/compiler_test.norn` (the fixpoint and seed agreement);
+- `crates/norn/tests/tiers.rs` (the done-check): every suite passes at tier 0
+  and tier 1 with identical results;
+- tier 1 on one carrier and under `NORN_GC_STRESS` 1 and 3.
+
+**Deviations from the plan:**
+- **Tier 1 isn't the full calling convention yet.** Calls and returns go
+  through the interpreter (§8.2).
+- **Deoptimisation is trivial** because frames are shared: there's no
+  inlining yet, so nothing needs undoing.
+- **No ANF IR or optimiser yet.** The compiler emits the same register
+  bytecode as the seed, which is what makes the byte-for-byte check
+  possible. The IR and optimisations (design §8.3) are the next step for
+  the compiler.
 
 ---
 

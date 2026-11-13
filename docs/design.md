@@ -470,6 +470,13 @@ deterministically from source. Dev images are "pets" (source-drift tracking,
 
 ### 8.3 Compilation pipeline **[open: implementation]**
 
+**Status (M4):**
+- **The compiler is written in Norn and self-hosts.** It emits the same
+  register bytecode as the seed (no IR or optimiser yet).
+- **Tier 1 is a Cranelift backend over the bytecode** with native fast
+  paths. See [runtime.md §8.2](runtime.md) and §9.
+- **Destructuring** is a set of macros (`destructure`).
+
 ```
 reader → expander (hygiene, phases) → core forms → Norn IR (CPS/ANF)
       → optimiser (inlining, type inference, unboxing, escape analysis)

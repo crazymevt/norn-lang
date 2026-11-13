@@ -29,6 +29,11 @@ struct State {
 static STATE: Mutex<State> = Mutex::new(State { running: 0, stopped: false, epoch: 0 });
 static CV: Condvar = Condvar::new();
 
+/// Address of the attention counter, for native code (tier 1) to poll.
+pub fn attention_ptr() -> *const u64 {
+    ATTENTION.as_ptr() as *const u64
+}
+
 /// Current attention epoch. Pollers compare it with the last value they saw.
 #[inline]
 pub fn attention() -> u64 {
