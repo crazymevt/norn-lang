@@ -1415,6 +1415,22 @@
     `(let* ~bindings ~@body)
     `(let* ~(destructure bindings) ~@body)))
 
+(defmacro if-let
+  "If the test is truthy, bind it (the binding may destructure) and do
+  then; else do else."
+  [binding then & else]
+  `(let* [temp# ~(second binding)]
+     (if temp#
+       (let [~(first binding) temp#] ~then)
+       (do ~@else))))
+
+(defmacro when-let
+  "When the test is truthy, bind it (the binding may destructure) and do
+  the body."
+  [binding & body]
+  `(let* [temp# ~(second binding)]
+     (when temp# (let [~(first binding) temp#] ~@body))))
+
 (defmacro loop [bindings & body]
   (if (%simple-bindings? bindings)
     `(loop* ~bindings ~@body)
