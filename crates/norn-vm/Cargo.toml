@@ -17,3 +17,6 @@ signal-hook = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
 libloading = "0.8"
+num-bigint = "0.4"
+num-rational = { version = "0.4", default-features = false, features = ["num-bigint-std"] }
+num-traits = "0.2"

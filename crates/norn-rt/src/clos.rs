@@ -113,7 +113,7 @@ builtins! {
     Keyword => "keyword", List => "list", Vector => "vector", Map => "map", Set => "set",
     Seq => "seq", Function => "function", Var => "var", Fiber => "fiber", Channel => "channel",
     Atom => "atom", Scope => "scope", Class => "class", Generic => "generic-function",
-    Bytes => "bytes", Handle => "handle", Other => "other",
+    Bytes => "bytes", Handle => "handle", Ratio => "ratio", Other => "other",
 }
 
 const NBUILTINS: usize = Builtin::Other as usize + 1;
@@ -180,6 +180,8 @@ fn builtin_id(v: Value) -> Builtin {
         Kind::Float => Builtin::Float,
         Kind::String => Builtin::String,
         Kind::Bytes => Builtin::Bytes,
+        Kind::BigInt => Builtin::Integer,
+        Kind::Ratio => Builtin::Ratio,
         Kind::Handle => Builtin::Handle,
         Kind::Symbol => Builtin::Symbol,
         Kind::Keyword => Builtin::Keyword,

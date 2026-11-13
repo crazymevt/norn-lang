@@ -267,6 +267,8 @@ pub(crate) fn size_words(kind: Kind, w: impl Fn(usize) -> usize) -> usize {
         Kind::Instance => 5 + w(2),
         Kind::Weak => 2 + crate::weak::layout::WORDS,
         Kind::Handle => 2 + crate::conc::handle::WORDS,
+        Kind::BigInt => 3 + (w(0) & !(1usize << 63)),
+        Kind::Ratio => 4,
     }
 }
 
@@ -339,7 +341,8 @@ pub(crate) fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
                 visit(slot_at(p.add(2)));
             }
         }
-        Kind::String | Kind::Bytes | Kind::Float | Kind::Range | Kind::Code | Kind::EmptyList | Kind::Claim => {}
+        Kind::String | Kind::Bytes | Kind::Float | Kind::Range | Kind::Code | Kind::EmptyList | Kind::Claim | Kind::BigInt => {}
+        Kind::Ratio => fields(&[0, 1], visit),
         Kind::Symbol | Kind::Keyword => fields(&[0, 1], visit),
         Kind::Array => (1..=w(0)).for_each(|i| visit(slot_at(field(i)))),
         Kind::Vector => fields(&[2, 3], visit),

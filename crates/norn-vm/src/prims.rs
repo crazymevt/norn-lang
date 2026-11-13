@@ -57,9 +57,9 @@ prims! {
     "-" 1 VAR => |vm, a| arith(vm, a, Op::Sub);
     "*" 0 VAR => |vm, a| arith(vm, a, Op::Mul);
     "/" 1 VAR => |vm, a| arith(vm, a, Op::Div);
-    "quot" 2 Some(2) => |_, a| int_op(a, "quot", i64::checked_div);
-    "rem" 2 Some(2) => |_, a| int_op(a, "rem", i64::checked_rem);
-    "mod" 2 Some(2) => |_, a| int_op(a, "mod", |x, y| x.checked_rem_euclid(y).map(|r| if y < 0 && r != 0 { r + y } else { r }));
+    "quot" 2 Some(2) => |vm, a| crate::numeric::int_div(&mut vm.m, a[0], a[1], IntDiv::Quot);
+    "rem" 2 Some(2) => |vm, a| crate::numeric::int_div(&mut vm.m, a[0], a[1], IntDiv::Rem);
+    "mod" 2 Some(2) => |vm, a| crate::numeric::int_div(&mut vm.m, a[0], a[1], IntDiv::Mod);
     "inc" 1 Some(1) => |vm, a| arith(vm, &[a[0], Value::fix(1)], Op::Add);
     "dec" 1 Some(1) => |vm, a| arith(vm, &[a[0], Value::fix(1)], Op::Sub);
     "<" 1 VAR => |_, a| compare_chain(a, |o| o == Ordering::Less);
@@ -67,8 +67,10 @@ prims! {
     "<=" 1 VAR => |_, a| compare_chain(a, |o| o != Ordering::Greater);
     ">=" 1 VAR => |_, a| compare_chain(a, |o| o != Ordering::Less);
     "==" 1 VAR => |_, a| compare_chain(a, |o| o == Ordering::Equal);
-    "float" 1 Some(1) => |vm, a| Ok(float_new(&mut vm.m, num(a[0])?.as_f64()));
-    "int" 1 Some(1) => |_, a| to_int(a[0]);
+    "float" 1 Some(1) => |vm, a| Ok(float_new(&mut vm.m, crate::numeric::num(a[0])?.as_f64()));
+    "int" 1 Some(1) => |vm, a| crate::numeric::to_int(&mut vm.m, a[0]);
+    "numerator" 1 Some(1) => |vm, a| crate::numeric::numerator(&mut vm.m, a[0]);
+    "denominator" 1 Some(1) => |_, a| crate::numeric::denominator(a[0]);
     // equality, identity, ordering
     "=" 1 VAR => |_, a| Ok(Value::bool(a.windows(2).all(|w| equal(w[0], w[1]))));
     "not=" 1 VAR => |_, a| Ok(Value::bool(!a.windows(2).all(|w| equal(w[0], w[1]))));
@@ -77,8 +79,10 @@ prims! {
     "compare" 2 Some(2) => |_, a| Ok(Value::fix(match compare(a[0], a[1])? { Ordering::Less => -1, Ordering::Equal => 0, Ordering::Greater => 1 }));
     // type predicates
     "nil?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_nil()));
-    "number?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_fixnum() || a[0].is_float()));
-    "integer?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_fixnum()));
+    "number?" 1 Some(1) => |_, a| Ok(Value::bool(norn_rt::numbers::is_number(a[0])));
+    "integer?" 1 Some(1) => |_, a| Ok(Value::bool(norn_rt::numbers::is_integer(a[0])));
+    "ratio?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Ratio)));
+    "rational?" 1 Some(1) => |_, a| Ok(Value::bool(norn_rt::numbers::is_integer(a[0]) || a[0].is(Kind::Ratio)));
     "float?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_float()));
     "string?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::String)));
     "symbol?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_symbol()));
@@ -332,12 +336,12 @@ prims! {
     "%class-get" 2 Some(2) => |vm, a| { expect(a[0], Kind::Class, "%class-get")?; let f = class_field(vm, a[1])?; let v = a[0].class_field(f); Ok(if f == norn_rt::clos::class::LAYOUT { vec_from_slice(&mut vm.m, norn_rt::clos::layout_keys(v)) } else { v }) };
     "%class-set-layout!" 3 Some(3) => |vm, a| { expect(a[0], Kind::Class, "%class-set-layout!")?; let k = to_vec(vm, a[1])?; let d = to_vec(vm, a[2])?; if k.len() != d.len() { return Err(Error::new("%class-set-layout!: keys and defaults differ in length")); } let l = norn_rt::clos::layout_new(&mut vm.m, &k, &d); a[0].class_set_field(norn_rt::clos::class::LAYOUT, l); Ok(a[0]) };
     "%bound-value" 1 Some(1) => |vm, a| { Ok(match vm.resolve(a[0]) { Some(v) if v.var_root() != Value::UNBOUND => v.var_root(), _ => Value::NIL }) };
-    "bit-and" 2 VAR => |_, a| bits(a, "bit-and", |x, y| x & y);
-    "bit-or" 2 VAR => |_, a| bits(a, "bit-or", |x, y| x | y);
-    "bit-xor" 2 VAR => |_, a| bits(a, "bit-xor", |x, y| x ^ y);
-    "bit-not" 1 Some(1) => |_, a| Ok(Value::fix(!int(a[0], "bit-not")?));
-    "bit-shift-left" 2 Some(2) => |_, a| { let (x, n) = (int(a[0], "bit-shift-left")?, int(a[1], "bit-shift-left")?); if !(0..62).contains(&n) { return Err(Error::new("shift out of range")); } Value::fixnum(x.checked_shl(n as u32).ok_or_else(overflow)?).ok_or_else(overflow) };
-    "bit-shift-right" 2 Some(2) => |_, a| { let (x, n) = (int(a[0], "bit-shift-right")?, int(a[1], "bit-shift-right")?); Ok(Value::fix(x >> n.clamp(0, 63))) };
+    "bit-and" 2 VAR => |vm, a| crate::numeric::bits(&mut vm.m, a, crate::numeric::Bit::And, "bit-and");
+    "bit-or" 2 VAR => |vm, a| crate::numeric::bits(&mut vm.m, a, crate::numeric::Bit::Or, "bit-or");
+    "bit-xor" 2 VAR => |vm, a| crate::numeric::bits(&mut vm.m, a, crate::numeric::Bit::Xor, "bit-xor");
+    "bit-not" 1 Some(1) => |vm, a| crate::numeric::bit_not(&mut vm.m, a[0]);
+    "bit-shift-left" 2 Some(2) => |vm, a| crate::numeric::shift(&mut vm.m, a[0], a[1], true);
+    "bit-shift-right" 2 Some(2) => |vm, a| crate::numeric::shift(&mut vm.m, a[0], a[1], false);
     "%class-set!" 3 Some(3) => class_set;
     "%register-builtin!" 2 Some(2) => |_, a| { expect(a[1], Kind::Class, "%register-builtin!")?; let n = text(a[0]); if norn_rt::clos::register_builtin(&n, a[1]) { Ok(a[1]) } else { Err(Error::new(format!("Unknown builtin class: {n}"))) } };
     "%bump-class-epoch" 0 Some(0) => |_, _| { norn_rt::clos::bump_class_epoch(); Ok(Value::NIL) };
@@ -410,84 +414,12 @@ fn to_vec(vm: &mut Vm, v: Value) -> Result<Vec<Value>> {
     Ok(seq::to_vec(&mut vm.m, v)?)
 }
 
-// ---- numbers -------------------------------------------------------------------
+// ---- numbers (the tower itself is in numeric.rs) ----------------------------------
 
-#[derive(Copy, Clone)]
-enum Num {
-    I(i64),
-    F(f64),
-}
-
-impl Num {
-    fn as_f64(self) -> f64 {
-        match self {
-            Num::I(i) => i as f64,
-            Num::F(f) => f,
-        }
-    }
-}
-
-fn num(v: Value) -> Result<Num> {
-    if v.is_fixnum() {
-        Ok(Num::I(v.as_fixnum()))
-    } else if v.is_float() {
-        Ok(Num::F(v.as_f64()))
-    } else {
-        Err(Error::new(format!("Expected a number, got {}: {}", v.type_name(), pr_str(v, true))))
-    }
-}
-
-fn overflow() -> Error {
-    Error::new("Integer overflow (bignums are not implemented yet)")
-}
-
-fn num_value(vm: &mut Vm, n: Num) -> Result<Value> {
-    match n {
-        Num::I(i) => Value::fixnum(i).ok_or_else(overflow),
-        Num::F(f) => Ok(float_new(&mut vm.m, f)),
-    }
-}
-
-#[derive(Copy, Clone)]
-enum Op {
-    Add,
-    Sub,
-    Mul,
-    Div,
-}
-
-fn arith2(x: Num, y: Num, op: Op) -> Result<Num> {
-    Ok(match (x, y) {
-        (Num::I(a), Num::I(b)) => Num::I(match op {
-            Op::Add => a.checked_add(b).ok_or_else(overflow)?,
-            Op::Sub => a.checked_sub(b).ok_or_else(overflow)?,
-            Op::Mul => a.checked_mul(b).ok_or_else(overflow)?,
-            Op::Div => {
-                if b == 0 {
-                    return Err(Error::new("Divide by zero"));
-                }
-                if a % b != 0 {
-                    return Err(Error::new(format!(
-                        "(/ {a} {b}) is a ratio, and ratios are not implemented yet; use quot, or a float argument"
-                    )));
-                }
-                a / b
-            }
-        }),
-        _ => {
-            let (a, b) = (x.as_f64(), y.as_f64());
-            Num::F(match op {
-                Op::Add => a + b,
-                Op::Sub => a - b,
-                Op::Mul => a * b,
-                Op::Div => a / b,
-            })
-        }
-    })
-}
+use crate::numeric::{IntDiv, Op};
 
 fn arith(vm: &mut Vm, a: &[Value], op: Op) -> Result<Value> {
-    // Fast path: two fixnums.
+    // Fast path: two fixnums that don't overflow.
     if let [x, y] = a
         && x.is_fixnum()
         && y.is_fixnum()
@@ -503,50 +435,7 @@ fn arith(vm: &mut Vm, a: &[Value], op: Op) -> Result<Value> {
             return Ok(v);
         }
     }
-    let (init, rest) = match (op, a.len()) {
-        (Op::Add, 0) => return Ok(Value::fix(0)),
-        (Op::Mul, 0) => return Ok(Value::fix(1)),
-        (Op::Sub, 1) => (Num::I(0), a),
-        (Op::Div, 1) => (Num::I(1), a),
-        _ => (num(a[0])?, &a[1..]),
-    };
-    let mut acc = init;
-    for &x in rest {
-        acc = arith2(acc, num(x)?, op)?;
-    }
-    num_value(vm, acc)
-}
-
-fn int_op(a: &[Value], name: &str, f: fn(i64, i64) -> Option<i64>) -> Result<Value> {
-    let (x, y) = (int(a[0], name)?, int(a[1], name)?);
-    if y == 0 {
-        return Err(Error::new("Divide by zero"));
-    }
-    Value::fixnum(f(x, y).ok_or_else(overflow)?).ok_or_else(overflow)
-}
-
-fn to_int(v: Value) -> Result<Value> {
-    if v.is_fixnum() {
-        return Ok(v);
-    }
-    if v.is_char() {
-        return Ok(Value::fix(v.as_char() as i64));
-    }
-    if v.is_float() {
-        let f = v.as_f64().trunc();
-        if f.is_finite() && f.abs() < (1u64 << 62) as f64 {
-            return Ok(Value::fix(f as i64));
-        }
-        return Err(overflow());
-    }
-    Err(type_err("int", "a number or character", v))
-}
-
-fn num_cmp(a: Num, b: Num) -> Ordering {
-    match (a, b) {
-        (Num::I(x), Num::I(y)) => x.cmp(&y),
-        _ => a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(Ordering::Equal),
-    }
+    crate::numeric::arith(&mut vm.m, a, op)
 }
 
 fn compare_chain(a: &[Value], ok: fn(Ordering) -> bool) -> Result<Value> {
@@ -556,26 +445,14 @@ fn compare_chain(a: &[Value], ok: fn(Ordering) -> bool) -> Result<Value> {
     {
         return Ok(Value::bool(ok(x.as_fixnum().cmp(&y.as_fixnum()))));
     }
-    let mut prev = num(a[0])?;
-    for &x in &a[1..] {
-        let n = num(x)?;
-        if !ok(num_cmp(prev, n)) {
-            // Still type-check the rest, as Clojure does.
-            for &y in a {
-                num(y)?;
-            }
-            return Ok(Value::FALSE);
-        }
-        prev = n;
-    }
-    Ok(Value::TRUE)
+    crate::numeric::compare_chain(a, ok)
 }
 
 /// Total order used by `compare` and `sort`.
 pub fn compare(a: Value, b: Value) -> Result<Ordering> {
-    let is_num = |v: Value| v.is_fixnum() || v.is_float();
-    if is_num(a) && is_num(b) {
-        return Ok(num_cmp(num(a)?, num(b)?));
+    use norn_rt::numbers::is_number;
+    if is_number(a) && is_number(b) {
+        return Ok(crate::numeric::cmp(&crate::numeric::num(a)?, &crate::numeric::num(b)?));
     }
     if a.is_nil() || b.is_nil() {
         return Ok(a.is_nil().cmp(&b.is_nil()).reverse());
@@ -1206,14 +1083,6 @@ fn gf_cache_put(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let key: Vec<Value> = (0..a[2].vec_count()).map(|i| a[2].vec_nth(i)).collect();
     let (e, ce) = (tok.vec_nth(0).as_fixnum() as u64, tok.vec_nth(1).as_fixnum() as u64);
     Ok(Value::bool(norn_rt::clos::cache_put(&mut vm.m, a[0], e, ce, &key, a[3])))
-}
-
-fn bits(a: &[Value], op: &str, f: fn(i64, i64) -> i64) -> Result<Value> {
-    let mut acc = int(a[0], op)?;
-    for &x in &a[1..] {
-        acc = f(acc, int(x, op)?);
-    }
-    Ok(Value::fix(acc))
 }
 
 // ---- conditions and the debugger ---------------------------------------------------

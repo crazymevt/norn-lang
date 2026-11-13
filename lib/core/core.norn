@@ -542,6 +542,7 @@
 (def Number (%defbuiltin 'Number [Object] nil))
 (def Integer (%defbuiltin 'Integer [Number] "integer"))
 (def Float (%defbuiltin 'Float [Number] "float"))
+(def Ratio (%defbuiltin 'Ratio [Number] "ratio"))
 (def String (%defbuiltin 'String [Object] "string"))
 (def Bytes (%defbuiltin 'Bytes [Object] "bytes"))
 (def Handle (%defbuiltin 'Handle [Object] "handle"))

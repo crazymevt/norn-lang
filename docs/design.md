@@ -156,10 +156,10 @@ even inside a parallel fold (runtime.md §2.3).
   compares with newer ones through the class's current layout. A slot it
   lacks counts as that slot's default.
 
-*Status:* structural equality, identity types and Clojure-style number
-categories exist today. Still to build in M7: the `:equality` and
-`:compare` declarations, reflexive NaN (today `(= ##NaN ##NaN)` is false,
-though `(let [x ##NaN] (= x x))` is true), and the numeric-tower rules.
+*Status:* structural equality, identity types, number categories,
+reflexive NaN and the numeric-tower rules are built (M7, runtime.md §2.5).
+The `:equality` and `:compare` declarations come with mutable objects
+(M7).
 
 ---
 

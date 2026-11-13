@@ -31,6 +31,8 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
 
 ## M7: numbers, collections, the pure stdlib and tooling
 
+Decisions for M7 are at the end, after M6's.
+
 | Part | Work |
 |---|---|
 | 7.1 | **The numeric tower**: bignums (a heap kind holding limbs in the Norn heap) and ratios; automatic promotion in the primitives; tier 1's overflow takes the slow path; the equality rules of design §3.4 (reflexive NaN, normalisation, categories) |
@@ -154,3 +156,19 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
   - Library and function handles reconnect automatically after an image
     restore (no `ResourceLost`), since a library has no session state.
   - Libraries are never unloaded while one of their functions exists.
+
+### M7
+
+- **The numeric tower** (runtime.md §2.5) uses `num-bigint` and
+  `num-rational` for the arithmetic. `BigInt` and `Ratio` are heap kinds,
+  always normalised.
+  - Bignums share the `Integer` class; `Ratio` has a builtin class of its
+    own.
+  - `numerator`, `denominator`, `ratio?` and `rational?` are added.
+  - Bit operations work at any size: `bit-shift-left` promotes instead of
+    overflowing.
+- **NaN:** `=` treats it as equal to itself (so maps and sets find it).
+  `<`, `==` and the like are false with NaN, as IEEE says. `sort` puts it
+  last.
+- **The FFI's 64-bit results** now come back as bignums when they don't fit
+  a fixnum, and `:u64` arguments accept bignums.

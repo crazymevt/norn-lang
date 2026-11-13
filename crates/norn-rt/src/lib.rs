@@ -12,6 +12,7 @@ pub mod heap;
 pub mod image;
 pub mod list;
 pub mod map;
+pub mod numbers;
 pub mod object;
 pub mod print;
 pub mod runtime;

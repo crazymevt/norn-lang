@@ -51,9 +51,12 @@ pub fn hash(v: Value) -> u64 {
         Kind::Symbol | Kind::Keyword => v.sym_hash(),
         Kind::Float => {
             let f = v.as_f64();
-            let f = if f == 0.0 { 0.0 } else { f }; // -0.0 == 0.0
+            // -0.0 = 0.0, and every NaN = every NaN (design §3.4).
+            let f = if f == 0.0 { 0.0 } else if f.is_nan() { f64::NAN } else { f };
             mix64(f.to_bits() ^ 0xf10a7)
         }
+        Kind::BigInt => crate::numbers::big_hash(v),
+        Kind::Ratio => mix64(hash(v.field(0)) ^ hash(v.field(1)).rotate_left(23) ^ 0x7a710),
         Kind::Vector | Kind::VecSeq | Kind::Range | Kind::EmptyList => hash_sequential(v),
         Kind::Map => {
             let mut h = MAP_SEED;
@@ -121,7 +124,13 @@ pub fn equal(a: Value, b: Value) -> bool {
     match a.obj_kind() {
         Kind::String => a.as_str() == b.as_str(),
         Kind::Bytes => a.as_bytes() == b.as_bytes(),
-        Kind::Float => a.as_f64() == b.as_f64(),
+        // `=` is an equivalence: NaN equals NaN (`==` keeps IEEE).
+        Kind::Float => {
+            let (x, y) = (a.as_f64(), b.as_f64());
+            x == y || (x.is_nan() && y.is_nan())
+        }
+        Kind::BigInt => crate::numbers::big_equal(a, b),
+        Kind::Ratio => equal(a.field(0), b.field(0)) && equal(a.field(1), b.field(1)),
         Kind::Map => {
             a.map_count() == b.map_count()
                 && a.map_for_each(|k, v| matches!(b.map_get(k), Some(w) if equal(v, w)))

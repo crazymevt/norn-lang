@@ -121,6 +121,29 @@ functions: they may allocate but never invoke Norn code. Consequences:
 Rust gives them speed while everything runs on the bytecode interpreter.
 Once the native compiler is good, moving more into Norn is an option.
 
+
+### 2.5 The numeric tower **[built in M7]**
+
+`norn-rt/src/numbers.rs` (representation) and `norn-vm/src/numeric.rs`
+(arithmetic, using `num-bigint` and `num-rational`).
+
+- **Fixnums:** 63-bit, unboxed. Arithmetic that overflows them promotes to
+  a bignum instead of failing.
+- **`BigInt`:** a heap kind, `[sign | limb count][64-bit limbs]`.
+- **`Ratio`:** `[numerator][denominator]`, each a fixnum or a bignum.
+- **Floats:** boxed `f64`.
+- **Always normalised**, which is what keeps `=` and `hash` structural:
+  - a bignum never holds a value that fits a fixnum;
+  - a ratio is in lowest terms with a denominator above 1, otherwise it is
+    an integer.
+- **Mixed operations** promote to the wider type: fixnum, then bignum,
+  then ratio, then float. Dividing integers gives a ratio unless it divides
+  exactly.
+- **Comparison:** `<` and `==` are exact for integers and ratios. With a
+  float they compare as floats, and are false when either side is NaN.
+  `compare` and `sort` put NaN after every other number.
+- **Tier 1** keeps its fixnum fast paths. On overflow it bails out to the
+  interpreter, whose primitive promotes.
 ---
 
 ## 3. Stacks, frames and fibers

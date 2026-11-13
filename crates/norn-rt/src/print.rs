@@ -231,6 +231,12 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
         }
         Kind::Scope => out.push_str("#<scope>"),
         Kind::Weak => out.push_str("#<weak-ref>"),
+        Kind::BigInt => out.push_str(&crate::numbers::big_string(v)),
+        Kind::Ratio => {
+            write_value(out, v.field(0), readably);
+            out.push('/');
+            write_value(out, v.field(1), readably);
+        }
         Kind::Handle => {
             out.push_str("#<");
             write_value(out, v.field(crate::conc::handle::KIND), false);

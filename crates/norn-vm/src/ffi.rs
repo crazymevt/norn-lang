@@ -242,6 +242,11 @@ pub(crate) fn function(vm: &mut Vm, lib: Value, name: &str, params: Value, ret: 
 }
 
 fn int_arg(v: Value, t: CType) -> Result<u64> {
+    // A 64-bit unsigned value above the fixnum range arrives as a bignum.
+    if v.is(Kind::BigInt) && t == CType::U64 {
+        use num_traits::ToPrimitive;
+        return norn_rt::numbers::int_of(v).and_then(|b| b.to_u64()).ok_or_else(|| Error::new("The integer doesn't fit a C u64"));
+    }
     if !v.is_fixnum() {
         return Err(Error::new(format!("Expected an integer argument, got {}", v.type_name())));
     }
@@ -325,8 +330,8 @@ fn result(m: &mut Mutator, ret: (CType, bool), r: u64, outs: Vec<Vec<u8>>) -> st
         }
         (CType::F64, _) => float_new(m, f64::from_bits(r)),
         (CType::F32, _) => float_new(m, f32::from_bits(r as u32) as f64),
-        (CType::U64, _) if r > (1u64 << 61) => return Err(format!("The result {r} doesn't fit a Norn integer")),
-        (CType::I64, _) if (r as i64) > (1i64 << 61) || (r as i64) < -(1i64 << 61) => return Err(format!("The result {} doesn't fit a Norn integer", r as i64)),
+        (CType::U64, _) => norn_rt::numbers::int_value(m, &num_bigint::BigInt::from(r)),
+        (CType::I64, _) => norn_rt::numbers::int_value(m, &num_bigint::BigInt::from(r as i64)),
         _ => Value::fix(r as i64),
     };
     if outs.is_empty() {

@@ -522,42 +522,35 @@ impl<'a> Reader<'a> {
 }
 
 fn parse_number(vm: &mut Vm, tok: &str) -> RResult<Value> {
-    let too_big = || ReadError::Syntax(format!("Integer literal too large: {tok} (bignums are not implemented yet)"));
-    let fixnum = |n: i64| Value::fixnum(n).ok_or_else(too_big);
-    let parse_int = |s: &str| -> RResult<i64> {
+    let invalid = || ReadError::Syntax(format!("Invalid number: {tok}"));
+    // An integer of any size: decimal, or hex with 0x.
+    let parse_int = |s: &str| -> RResult<num_bigint::BigInt> {
         let (neg, body) = match s.strip_prefix('-') {
             Some(b) => (true, b),
             None => (false, s.strip_prefix('+').unwrap_or(s)),
         };
-        let mag = if let Some(h) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
-            i64::from_str_radix(h, 16)
-        } else {
-            body.parse::<i64>()
+        let (digits, radix) = match body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+            Some(h) => (h, 16),
+            None => (body, 10),
         };
-        match mag {
-            Ok(n) => Ok(if neg { -n } else { n }),
-            Err(e) if matches!(e.kind(), std::num::IntErrorKind::PosOverflow) => Err(too_big()),
-            Err(_) => Err(ReadError::Syntax(format!("Invalid number: {tok}"))),
+        if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+            return Err(invalid());
         }
+        let n = norn_rt::numbers::parse_int(digits, radix).ok_or_else(invalid)?;
+        Ok(if neg { -n } else { n })
     };
     if let Some((n, d)) = tok.split_once('/') {
         let (n, d) = (parse_int(n)?, parse_int(d)?);
-        if d == 0 {
+        if norn_rt::numbers::is_zero(&d) {
             return Err(ReadError::Syntax(format!("Divide by zero in ratio: {tok}")));
         }
-        if n % d == 0 {
-            return fixnum(n / d);
-        }
-        return Err(ReadError::Syntax(format!("Ratios are not supported yet: {tok}")));
+        return Ok(norn_rt::numbers::make_ratio(&mut vm.m, &n, &d));
     }
     let is_hex = tok.contains("0x") || tok.contains("0X");
     if !is_hex && (tok.contains('.') || tok.contains('e') || tok.contains('E')) {
-        return tok
-            .parse::<f64>()
-            .map(|f| norn_rt::string::float_new(&mut vm.m, f))
-            .map_err(|_| ReadError::Syntax(format!("Invalid number: {tok}")));
+        return tok.parse::<f64>().map(|f| norn_rt::string::float_new(&mut vm.m, f)).map_err(|_| invalid());
     }
-    fixnum(parse_int(tok)?)
+    Ok(norn_rt::numbers::int_value(&mut vm.m, &parse_int(tok)?))
 }
 
 // ---- syntax-quote ---------------------------------------------------------------
