@@ -245,6 +245,7 @@ and `:time` (milliseconds).
 | `:context-menu` | a right click (ctrl-click on macOS) on a node asking for it: `:x` `:y` in the window |
 | `:dismiss` | a popup should close: a press in its owner, or Escape |
 | `:tooltip` | the pointer rested on a node with `:tooltip`: `:node` `:text` `:x` `:y`; `:node nil` hides it |
+| `:drag-start`, `:drag`, `:drag-end` | dragging a node that asks for `:drag`, after a 3-pixel threshold: `:drag` has `:dx` `:dy` (since the last, coalesced), `:x` `:y` in the window and `:local-x` `:local-y` in the node |
 | `:drag-select` | a drag in an editor: `:anchor [line col]`, `:line`, `:col` |
 | `:drop` | `:data` and `:kind`, on the nearest node under the pointer that asks for `:drop` (else the window); files from the OS have `:kind :files` and `:paths` (files dropped together arrive as one event) |
 | `:resize` | a window's new `:size` and `:scale` (coalesced) |
