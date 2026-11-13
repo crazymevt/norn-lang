@@ -36,6 +36,14 @@ pub const LIBS: &[(&str, &str)] = &[
     ("norn.edn", include_str!("../../../lib/norn/edn.norn")),
     ("norn.format", include_str!("../../../lib/norn/format.norn")),
     ("norn.pprint", include_str!("../../../lib/norn/pprint.norn")),
+    ("norn.math", include_str!("../../../lib/norn/math.norn")),
+    ("norn.set", include_str!("../../../lib/norn/set.norn")),
+    ("norn.walk", include_str!("../../../lib/norn/walk.norn")),
+    ("norn.random", include_str!("../../../lib/norn/random.norn")),
+    ("norn.async", include_str!("../../../lib/norn/async.norn")),
+    ("norn.sync", include_str!("../../../lib/norn/sync.norn")),
+    ("norn.cache", include_str!("../../../lib/norn/cache.norn")),
+    ("norn.log", include_str!("../../../lib/norn/log.norn")),
 ];
 
 /// `(%find-lib "a.b-c")`: the source of library `a.b-c` and where it came

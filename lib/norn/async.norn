@@ -1,0 +1,160 @@
+;;;; norn.async — more ways to connect channels.
+;;;;
+;;;; Channels, put!/take! (>!/<!), offer!/poll!, alts!, timeout and close!
+;;;; are in norn.core; (chan n :dropping) and (chan n :sliding) make
+;;;; channels whose puts never wait (dropping the newest or the oldest value
+;;;; when full). Everything here is built on those: each connector runs in
+;;;; detached fibers that stop when their source closes.
+
+(ns norn.async)
+
+(defn onto-chan!
+  "Put coll's items on ch, then close ch (unless close? is false).
+  Returns a fiber that finishes when done."
+  ([ch coll] (onto-chan! ch coll true))
+  ([ch coll close?]
+   (spawn-detached
+     (loop [xs (seq coll)]
+       (if (and xs (put! ch (first xs))) (recur (next xs)) (when close? (close! ch)))))))
+
+(defn to-chan! "A channel holding coll's items, closed after the last." [coll]
+  (let [ch (chan (max 1 (min 1024 (count coll))))] (onto-chan! ch coll) ch))
+
+(defn reduce
+  "f reduced over everything taken from ch until it closes (blocks the
+  calling fiber)."
+  [f init ch]
+  (loop [acc init]
+    (let [v (take! ch)] (if (nil? v) acc (recur (f acc v))))))
+
+(defn into "coll with everything taken from ch until it closes." [coll ch] (reduce conj coll ch))
+
+(defn pipe
+  "Take from from and put on to until from closes; then close to (unless
+  close? is false). Returns to."
+  ([from to] (pipe from to true))
+  ([from to close?]
+   (spawn-detached
+     (loop []
+       (let [v (take! from)]
+         (if (nil? v) (when close? (close! to)) (if (put! to v) (recur) nil)))))
+   to))
+
+(defn map
+  "A channel of (f v) for each v taken from ch (closed when ch closes)."
+  [f ch & {:keys [buffer] :or {buffer 0}}]
+  (let [out (chan buffer)]
+    (spawn-detached
+      (loop [] (let [v (take! ch)] (if (nil? v) (close! out) (do (put! out (f v)) (recur))))))
+    out))
+
+(defn filter "A channel of the values from ch for which pred is true." [pred ch & {:keys [buffer] :or {buffer 0}}]
+  (let [out (chan buffer)]
+    (spawn-detached
+      (loop [] (let [v (take! ch)] (cond (nil? v) (close! out) (pred v) (do (put! out v) (recur)) :else (recur)))))
+    out))
+
+(defn transduce-chan
+  "A channel of what transducer xf makes of the values from ch."
+  [xf ch & {:keys [buffer] :or {buffer 0}}]
+  (let [out (chan buffer)
+        rf (xf (fn ([o] o) ([o v] (if (put! o v) o (reduced o)))))]
+    (spawn-detached
+      (loop [acc out]
+        (let [v (take! ch)]
+          (if (nil? v)
+            (do (rf acc) (close! out))
+            (let [r (rf acc v)] (if (reduced? r) (do (rf (unreduced r)) (close! out)) (recur r)))))))
+    out))
+
+(defn merge
+  "One channel carrying the values of all chs, closed once they all close."
+  [chs & {:keys [buffer] :or {buffer 0}}]
+  (let [out (chan buffer) left (atom (count chs))]
+    (doseq [ch chs]
+      (spawn-detached
+        (loop []
+          (let [v (take! ch)]
+            (if (nil? v)
+              (when (zero? (swap! left dec)) (close! out))
+              (do (put! out v) (recur)))))))
+    (when (empty? chs) (close! out))
+    out))
+
+(defn split
+  "Two channels: the values from ch for which pred is true, and the rest."
+  [pred ch]
+  (let [yes (chan) no (chan)]
+    (spawn-detached
+      (loop []
+        (let [v (take! ch)]
+          (if (nil? v) (do (close! yes) (close! no)) (do (put! (if (pred v) yes no) v) (recur))))))
+    [yes no]))
+
+(defn pipeline
+  "Apply f to each value from from, n at a time in parallel, putting the
+  results on to in the original order. Closes to when from closes (unless
+  close? is false)."
+  ([n to f from] (pipeline n to f from true))
+  ([n to f from close?]
+   (let [jobs (chan n)]
+     ;; a reader starts each job in its own fiber and queues the fiber, so
+     ;; at most n run at once and results leave in order
+     (spawn-detached
+       (loop []
+         (let [v (take! from)]
+           (if (nil? v) (close! jobs) (do (put! jobs (spawn-detached (f v))) (recur))))))
+     (spawn-detached
+       (loop []
+         (let [job (take! jobs)]
+           (if (nil? job) (when close? (close! to)) (do (put! to (await job)) (recur))))))
+     to)))
+
+;; ---- mult: one source, many taps ------------------------------------------------------------
+
+(defclass Mult () ((source) (taps)))
+
+(defn mult
+  "Copy every value from ch to each tap (see tap). A slow tap holds up the
+  others; give it a buffer or a :dropping channel."
+  [ch]
+  (let [m (Mult :source ch :taps (atom {}))]
+    (spawn-detached
+      (loop []
+        (let [v (take! ch)]
+          (if (nil? v)
+            (doseq [[t close?] (deref (:taps m))] (when close? (close! t)))
+            (do (doseq [[t _] (deref (:taps m))]
+                  (when-not (put! t v) (swap! (:taps m) dissoc t)))
+                (recur))))))
+    m))
+
+(defn tap "Start copying m's values to ch (closing it when the source closes, unless close? is false). Returns ch."
+  ([m ch] (tap m ch true))
+  ([m ch close?] (swap! (:taps m) assoc ch close?) ch))
+
+(defn untap "Stop copying to ch." [m ch] (swap! (:taps m) dissoc ch) nil)
+
+;; ---- pub/sub: values routed by topic --------------------------------------------------------
+
+(defclass Pub () ((source) (topic-fn) (subs)))
+
+(defn pub
+  "Route each value v from ch to the channels subscribed to (topic-fn v)."
+  [ch topic-fn]
+  (let [p (Pub :source ch :topic-fn topic-fn :subs (atom {}))]
+    (spawn-detached
+      (loop []
+        (let [v (take! ch)]
+          (if (nil? v)
+            (doseq [[_ chs] (deref (:subs p))] (doseq [[c close?] chs] (when close? (close! c))))
+            (do (doseq [[c _] (get (deref (:subs p)) (topic-fn v))]
+                  (when-not (put! c v) (swap! (:subs p) update (topic-fn v) dissoc c)))
+                (recur))))))
+    p))
+
+(defn sub "Subscribe ch to topic on p. Returns ch."
+  ([p topic ch] (sub p topic ch true))
+  ([p topic ch close?] (swap! (:subs p) update topic (fn [m] (assoc (or m {}) ch close?))) ch))
+
+(defn unsub "Unsubscribe ch from topic." [p topic ch] (swap! (:subs p) update topic dissoc ch) nil)

@@ -852,6 +852,7 @@ dependencies = [
  "norn-rt",
  "notify",
  "num-bigint",
+ "num-integer",
  "num-rational",
  "num-traits",
  "regex",

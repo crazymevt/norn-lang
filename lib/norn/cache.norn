@@ -1,0 +1,89 @@
+;;;; norn.cache — caches and memoization with limits.
+;;;;
+;;;; A cache is a value-like object holding its entries in an atom, so any
+;;;; fiber can use it. lru evicts the least recently used entry beyond a
+;;;; size; ttl forgets entries after a time. memoize in norn.core keeps
+;;;; everything; memo-lru and memo-ttl here bound it.
+
+(ns norn.cache)
+
+(defclass Cache () ((kind) (limit) (state)))
+
+(defn lru "An empty cache holding at most n entries, evicting the least recently used." [n]
+  (Cache :kind :lru :limit n :state (atom {:entries {} :order (sorted-map) :tick 0})))
+
+(defn ttl "An empty cache whose entries expire ms milliseconds after they're stored." [ms]
+  (Cache :kind :ttl :limit ms :state (atom {:entries {}})))
+
+(defn- now-ms [] (quot (nano-time) 1000000))
+
+(defn- touch [st k v]
+  (let [tick (inc (:tick st))
+        old (get (:entries st) k)
+        order (if old (dissoc (:order st) (second old)) (:order st))]
+    (assoc st :entries (assoc (:entries st) k [v tick]) :order (assoc order tick k) :tick tick)))
+
+(defn- evict [st n]
+  (if (> (count (:entries st)) n)
+    (let [[tick k] (first (:order st))]
+      (recur (assoc st :entries (dissoc (:entries st) k) :order (dissoc (:order st) tick)) n))
+    st))
+
+(defn lookup
+  "The value cached for k, or not-found (default nil). A hit counts as a use."
+  ([c k] (lookup c k nil))
+  ([c k not-found]
+   (if (= :lru (:kind c))
+     (let [hit (atom not-found)]
+            (swap! (:state c)
+                   (fn [st]
+                     (if-let [e (get (:entries st) k)]
+                       (do (reset! hit (first e)) (touch st k (first e)))
+                       (do (reset! hit not-found) st))))
+            (deref hit))
+     (let [[v at] (get (:entries (deref (:state c))) k)]
+            (if (and at (< (- (now-ms) at) (:limit c))) v not-found)))))
+
+(defn store!
+  "Cache v for k. Returns v."
+  [c k v]
+  (if (= :lru (:kind c))
+    (swap! (:state c) (fn [st] (evict (touch st k v) (:limit c))))
+    (let [now (now-ms)]
+           (swap! (:state c)
+                  (fn [st]
+                    ;; drop expired entries now and then
+                    (let [es (:entries st)
+                          es (if (zero? (rem (count es) 64))
+                               (into {} (remove (fn [[_ [_ at]]] (>= (- now at) (:limit c)))) es)
+                               es)]
+                      (assoc st :entries (assoc es k [v now])))))))
+  v)
+
+(defn evict! "Forget k." [c k]
+  (swap! (:state c) (fn [st]
+                      (if-let [e (and (= :lru (:kind c)) (get (:entries st) k))]
+                        (assoc st :entries (dissoc (:entries st) k) :order (dissoc (:order st) (second e)))
+                        (assoc st :entries (dissoc (:entries st) k)))))
+  nil)
+
+(defn clear! "Forget everything." [c]
+  (swap! (:state c) (fn [st] (assoc st :entries {} :order (sorted-map))))
+  nil)
+
+(defn size "How many entries the cache holds (expired ttl entries may still count)." [c]
+  (count (:entries (deref (:state c)))))
+
+(def ^:private miss (atom ::miss))
+
+(defn through
+  "The cached value for k, computing it with (f k) and storing it on a miss."
+  [c k f]
+  (let [v (lookup c k miss)]
+    (if (identical? v miss) (store! c k (f k)) v)))
+
+(defn memo-lru "f memoized, keeping the results of the n most recently used argument lists." [f n]
+  (let [c (lru n)] (fn [& args] (through c (vec args) (fn [a] (apply f a))))))
+
+(defn memo-ttl "f memoized, each result kept for ms milliseconds." [f ms]
+  (let [c (ttl ms)] (fn [& args] (through c (vec args) (fn [a] (apply f a))))))

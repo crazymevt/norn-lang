@@ -173,7 +173,10 @@ pub fn waiter_new(m: &mut Mutator, fiber: Value, value: Value, claim: Value, cha
 
 pub mod chan {
     pub const LOCK: usize = 0; // raw spinlock
-    pub const CAP: usize = 1; // raw buffer capacity
+    pub const CAP: usize = 1; // raw buffer capacity, plus a policy bit:
+    pub const DROPPING: u64 = 1 << 62; // full: a put succeeds, dropping the new value
+    pub const SLIDING: u64 = 1 << 61; //  full: a put succeeds, dropping the oldest value
+    pub const CAP_MASK: u64 = (1 << 61) - 1;
     pub const CLOSED: usize = 2; // raw 0/1
     pub const BUF: usize = 3; // Array ring buffer, or nil when CAP == 0
     pub const HEAD: usize = 4; // raw

@@ -1,0 +1,78 @@
+;;;; norn.log — leveled, structured logging.
+;;;;
+;;;;   (log/info "listening" :port 8080)
+;;;;   2026-11-13T07:05:00.123Z INFO  my.server: listening port=8080
+;;;;
+;;;; Levels, lowest first: :trace :debug :info :warn :error. A message below
+;;;; the current level costs only the level check: its arguments aren't
+;;;; evaluated. The level is global (set-level!), can be set per namespace
+;;;; (set-level! level ns-name), and is bindable per fiber (*level*). The
+;;;; sink, a function of one event map, writes a line to stderr unless
+;;;; replaced (set-sink!), e.g. to write JSON lines or collect events in a
+;;;; test.
+
+(ns norn.log
+  (:require [norn.string] [norn.time]))
+
+(def ^:private levels {:trace 0 :debug 1 :info 2 :warn 3 :error 4})
+
+(def ^:dynamic *level* "The level in effect when no namespace level applies (nil: the global one)." nil)
+
+(def ^:private config (atom {:level :info :ns-levels {} :sink nil}))
+
+(defn set-level!
+  "Log at level and above: globally, or for namespace ns (a symbol or
+  string) and the namespaces under it."
+  ([level] (swap! config assoc :level level) nil)
+  ([level ns] (swap! config assoc-in [:ns-levels (str ns)] level) nil))
+
+(defn- level-for [ns]
+  (let [{:keys [level ns-levels]} (deref config)]
+    (or (when (seq ns-levels)
+          (loop [n (str ns)]
+            (or (get ns-levels n)
+                (when-let [i (norn.string/last-index-of n ".")] (recur (subs n 0 i))))))
+        *level*
+        level)))
+
+(defn enabled? "Would a message at level from namespace ns be logged?" [level ns]
+  (>= (get levels level 0) (get levels (level-for ns) 2)))
+
+(defn- default-sink [{:keys [level ns msg data time]}]
+  (%write-stderr
+    (str (norn.time/format time) " "
+         (norn.string/pad-right (norn.string/upper-case (name level)) 5) " "
+         ns ": " msg
+         (apply str (map (fn [[k v]] (str " " (name k) "=" (pr-str v))) data))
+         "\n")))
+
+(defn set-sink!
+  "Send every event to f, a function of one map: :level :ns :msg :data (a
+  vector of [key value] pairs) and :time (an instant). nil restores the
+  default."
+  [f]
+  (swap! config assoc :sink f)
+  nil)
+
+(defn emit
+  "Log msg with key-value pairs kvs at level from namespace ns (the macros
+  call this after checking the level)."
+  [level ns msg kvs]
+  (let [event {:level level :ns ns :msg (str msg) :data (vec (partition-all 2 kvs)) :time (norn.time/now)}]
+    ((or (:sink (deref config)) default-sink) event)
+    nil))
+
+(defmacro log
+  "Log at level: (log :info \"message\" :key value …)."
+  [level msg & kvs]
+  (let [ns-name (str (current-ns))]
+    `(when (enabled? ~level ~ns-name) (emit ~level ~ns-name ~msg [~@kvs]))))
+
+(defmacro trace [msg & kvs] `(log :trace ~msg ~@kvs))
+(defmacro debug [msg & kvs] `(log :debug ~msg ~@kvs))
+(defmacro info [msg & kvs] `(log :info ~msg ~@kvs))
+(defmacro warn [msg & kvs] `(log :warn ~msg ~@kvs))
+(defmacro error [msg & kvs] `(log :error ~msg ~@kvs))
+
+(defmacro spy "Log form and its value at :debug, and return the value." [form]
+  `(let [v# ~form] (log :debug (pr-str '~form) :value v#) v#))

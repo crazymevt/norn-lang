@@ -20,6 +20,7 @@ libloading = "0.8"
 num-bigint = "0.4"
 num-rational = { version = "0.4", default-features = false, features = ["num-bigint-std"] }
 num-traits = "0.2"
+num-integer = "0.1"
 regex = "1"
 unicode-segmentation = "1"
 unicode-width = "0.2"

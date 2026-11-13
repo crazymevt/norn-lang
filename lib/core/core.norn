@@ -1987,3 +1987,45 @@
 (defn parse-double "The floating-point number written in s, or nil." [s] (%parse-number s false))
 (defn parse-boolean "true for \"true\", false for \"false\", else nil." [s]
   (cond (= s "true") true (= s "false") false :else nil))
+
+;;; ---- small utilities (M7 part 6) ------------------------------------------------------------
+
+(defn swap-vals!
+  "As swap!, but returns [old new]."
+  [a f & args]
+  (loop []
+    (let [old (deref a) new (apply f old args)]
+      (if (compare-and-set! a old new) [old new] (recur)))))
+
+(defn reset-vals! "As reset!, but returns [old new]." [a v]
+  (loop [] (let [old (deref a)] (if (compare-and-set! a old v) [old v] (recur)))))
+
+(defn memoize
+  "f remembering every result by its arguments (see norn.cache for
+  bounded versions)."
+  [f]
+  (let [memo (atom {})]
+    (fn [& args]
+      (let [hit (get (deref memo) args memo)]
+        (if (identical? hit memo)
+          (let [v (apply f args)] (swap! memo assoc args v) v)
+          hit)))))
+
+(defn fnil
+  "f with nil first arguments replaced by the defaults."
+  ([f a] (fn [x & more] (apply f (if (nil? x) a x) more)))
+  ([f a b] (fn [x y & more] (apply f (if (nil? x) a x) (if (nil? y) b y) more))))
+
+(defn repeatedly
+  "n results of calling f (a vector), or with no n an endless stream."
+  ([f] (lazy-seq (cons (f) (repeatedly f))))
+  ([n f] (loop [i 0 out []] (if (< i n) (recur (inc i) (conj out (f))) out))))
+
+(defn rand "A random float in [0, 1), or in [0, n)." ([] (%rand 1)) ([n] (* n (%rand 1))))
+(defn rand-int "A random integer in [0, n)." [n] (%rand-below n))
+(defn rand-nth "A random item of coll." [coll] (let [v (vec coll)] (nth v (%rand-below (count v)))))
+(defn shuffle "coll's items in a random order, as a vector." [coll]
+  (loop [i (dec (count coll)) v (vec coll)]
+    (if (pos? i)
+      (let [j (%rand-below (inc i)) a (nth v i)] (recur (dec i) (assoc v i (nth v j) j a)))
+      v)))

@@ -82,11 +82,22 @@ fn try_put_locked(m: &mut Mutator, c: Value, v: Value) -> Option<bool> {
         deliver(w, v, c);
         return Some(true);
     }
-    let (cap, len) = (c.word(chan::CAP), c.word(chan::LEN));
+    let (word, len) = (c.word(chan::CAP), c.word(chan::LEN));
+    let cap = word & chan::CAP_MASK;
+    let buf = c.field(chan::BUF);
     if len < cap {
-        let buf = c.field(chan::BUF);
         buf.arr_set(((c.word(chan::HEAD) + len) % cap) as usize, v);
         c.set_word(chan::LEN, len + 1);
+        return Some(true);
+    }
+    if word & chan::DROPPING != 0 {
+        return Some(true);
+    }
+    if word & chan::SLIDING != 0 {
+        // Overwrite the oldest value and move the head past it.
+        let head = c.word(chan::HEAD);
+        buf.arr_set(head as usize, v);
+        c.set_word(chan::HEAD, (head + 1) % cap);
         return Some(true);
     }
     None
@@ -95,7 +106,7 @@ fn try_put_locked(m: &mut Mutator, c: Value, v: Value) -> Option<bool> {
 /// Try to take without blocking. `None`: would block. A closed, drained
 /// channel yields `nil`.
 fn try_take_locked(m: &mut Mutator, c: Value) -> Option<Value> {
-    let (cap, len) = (c.word(chan::CAP), c.word(chan::LEN));
+    let (cap, len) = (c.word(chan::CAP) & chan::CAP_MASK, c.word(chan::LEN));
     if len > 0 {
         let buf = c.field(chan::BUF);
         let head = c.word(chan::HEAD);

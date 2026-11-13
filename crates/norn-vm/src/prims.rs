@@ -208,7 +208,17 @@ prims! {
     "fiber?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Fiber)));
     "done?" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "done?")?; Ok(Value::bool(a[0].fiber_state().load(std::sync::atomic::Ordering::Acquire) == norn_rt::conc::fiber::DONE)) };
     "cancel!" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "cancel!")?; crate::sched::cancel(a[0], norn_rt::conc::fiber::CANCELLED); Ok(Value::NIL) };
-    "chan" 0 Some(1) => |vm, a| { let n = match a.first() { Some(&v) => int(v, "chan")?.max(0) as usize, None => 0 }; Ok(norn_rt::conc::chan_new(&mut vm.m, n)) };
+    "chan" 0 Some(2) => |vm, a| {
+        let n = match a.first() { Some(&v) => int(v, "chan")?.max(0) as usize, None => 0 };
+        let c = norn_rt::conc::chan_new(&mut vm.m, n);
+        if let Some(&p) = a.get(1) {
+            let policy = if p.is_keyword() { p.sym_name() } else { "" };
+            let bits = match policy { "dropping" => norn_rt::conc::chan::DROPPING, "sliding" => norn_rt::conc::chan::SLIDING, "fixed" => 0, _ => return Err(Error::new(format!("chan: the buffer policy must be :fixed, :dropping or :sliding, got {}", pr_str(p, true)))) };
+            if bits != 0 && n == 0 { return Err(Error::new("chan: a :dropping or :sliding channel needs a buffer size above 0")); }
+            c.set_word(norn_rt::conc::chan::CAP, n as u64 | bits);
+        }
+        Ok(c)
+    };
     "put!" 2 Some(2) => |vm, a| crate::conc::put(vm, a[0], a[1]);
     "take!" 1 Some(1) => |vm, a| crate::conc::take(vm, a[0]);
     "offer!" 2 Some(2) => |vm, a| crate::conc::offer(vm, a[0], a[1]);
@@ -324,6 +334,19 @@ prims! {
     "%json-write" 3 Some(3) => crate::text::json_write;
     "%format" 2 Some(2) => crate::text::format;
     "%parse-number" 2 Some(2) => crate::text::parse_number;
+    // math and randomness (math.rs): norn.math, norn.random, rand
+    "%math1" 2 Some(2) => crate::math::math1;
+    "%math2" 3 Some(3) => crate::math::math2;
+    "%round" 2 Some(2) => crate::math::round;
+    "%gcd" 2 Some(2) => crate::math::gcd;
+    "%isqrt" 1 Some(1) => crate::math::isqrt;
+    "%float-class" 1 Some(1) => crate::math::float_class;
+    "%rand" 1 Some(1) => crate::math::rand;
+    "%rand-below" 1 Some(1) => crate::math::rand_below;
+    "%rand-at" 3 Some(3) => crate::math::rand_at;
+    "%rand-below-at" 3 Some(3) => crate::math::rand_below_at;
+    "%rand-seed" 0 Some(0) => crate::math::rand_seed;
+    "%write-stderr" 1 Some(1) => |_, a| { use std::io::Write; expect(a[0], Kind::String, "%write-stderr")?; let mut e = std::io::stderr().lock(); let _ = e.write_all(a[0].as_str().as_bytes()); let _ = e.flush(); Ok(Value::NIL) };
     "%split-lines" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "lines")?; let ls: Vec<Value> = a[0].as_str().lines().map(|l| str_new(&mut vm.m, l)).collect(); Ok(vec_from_slice(&mut vm.m, &ls)) };
     // sockets and TLS (net.rs; norn.net)
     "%resolve" 2 Some(2) => |vm, a| { let port = int(a[1], "resolve")?; crate::net::resolve(vm, text(a[0]), port.clamp(0, 65535) as u16) };

@@ -4,7 +4,10 @@
                        [norn.process :as proc] [norn.time :as t] [norn.signal :as sig]
                        [norn.net :as net] [norn.ffi :as ffi] [norn.rope :as rope]
                        [norn.string :as str] [norn.regex :as re] [norn.json :as json]
-                       [norn.edn :as edn] [norn.format :as fmt] [norn.pprint :as pp]))
+                       [norn.edn :as edn] [norn.format :as fmt] [norn.pprint :as pp]
+                       [norn.math :as math] [norn.set :as set] [norn.walk :as walk]
+                       [norn.random :as random] [norn.async :as as] [norn.sync :as sync]
+                       [norn.cache :as cache] [norn.log :as log]))
 
 (def failures 0)
 (def checks 0)
@@ -435,6 +438,179 @@
   (is big (read-string out))
   (is true (every? (fn [l] (<= (str/width l) 40)) (remove (fn [l] (str/includes? l "(range")) (str/split-lines out))))
   (is true (> (count (str/split-lines out)) 3)))
+
+;;; ---- norn.math ----
+(is 1.5 (math/sqrt 2.25))
+(is 3.0 (math/cbrt 27))
+(is true (math/approx= 1.0 (math/exp 0)))
+(is 3.0 (math/log 2 8))
+(is 2.0 (math/log10 100))
+(is true (math/approx= 1.0 (math/sin (/ math/PI 2))))
+(is true (math/approx= (/ math/PI 4) (math/atan 1 1)))
+(is 5.0 (math/hypot 3 4))
+(is 1024.0 (math/pow 2 10))
+(is [2 -3 3 -2] [(math/floor 2.7) (math/floor -2.1) (math/ceil 2.1) (math/ceil -2.7)])
+(is [2 -2 3 -3] [(math/trunc 2.7) (math/trunc -2.7) (math/round 2.5) (math/round -2.5)])
+(is [2 4] [(math/round 2.5 :even) (math/round 3.5 :even)])
+(is 1 (math/floor 3/2))
+(is 2 (math/round 3/2))
+(is 100000000000000000000 (math/floor 1e20))
+(is :error (fails (math/floor ##NaN)))
+(is 1267650600228229401496703205376 (math/expt 2 100))
+(is 1/8 (math/expt 2 -3))
+(is 8/27 (math/expt 2/3 3))
+(is 1.5 (math/round-to 1.4999 2))
+(is [6 0 3] [(math/gcd 12 18) (math/gcd) (math/gcd -3)])
+(is 36 (math/lcm 12 18))
+(is 1000000000000 (math/gcd 1000000000000000000000000 1000000000000))
+(is 3 (math/isqrt 15))
+(is 1000000000000000000000 (math/isqrt 1000000000000000000000000000000000000000000))
+(is [-1 0 1 -1.0] [(math/signum -5) (math/signum 0) (math/signum 1/2) (math/signum -0.5)])
+(is [true false false] [(math/nan? ##NaN) (math/nan? 1) (math/nan? ##Inf)])
+(is [true true false] [(math/infinite? ##-Inf) (math/finite? 1/3) (math/finite? ##NaN)])
+(is 5 (math/clamp 9 0 5))
+(is 2.5 (math/lerp 0 10 0.25))
+(is 2 (math/mean [1 2 3]))
+(is 5/2 (math/median [4 1 3 2]))
+(is 2/3 (math/variance [1 2 3]))
+;;; ---- norn.set ----
+(is #{1 2 3} (set/union #{1} #{2} #{3 1}))
+(is #{2} (set/intersection #{1 2} #{2 3}))
+(is #{1} (set/difference #{1 2} #{2 3}))
+(is [true false] [(set/subset? #{1} #{1 2}) (set/subset? #{3} #{1 2})])
+(is true (set/superset? #{1 2} #{2}))
+(is true (sorted? (set/union (sorted-set 3 1) #{2})))
+(is #{2 4} (set/select even? #{1 2 3 4}))
+(is {1 :a} (set/map-invert {:a 1}))
+(is {:x 1 :b 2} (set/rename-keys {:a 1 :b 2} {:a :x}))
+(def people #{{:name "ann" :city 1} {:name "bo" :city 2}})
+(def cities #{{:city 1 :cname "Oslo"} {:city 2 :cname "Rome"}})
+(is #{{:name "ann" :city 1 :cname "Oslo"} {:name "bo" :city 2 :cname "Rome"}} (set/join people cities))
+(is #{{:name "ann"} {:name "bo"}} (set/project people [:name]))
+(is {{:city 1} #{{:name "ann" :city 1}}} (select-keys (set/index people [:city]) [{:city 1}]))
+;;; ---- norn.walk ----
+(is [2 [3 {:a 4}] '(5)] (walk/postwalk (fn [x] (if (number? x) (inc x) x)) [1 [2 {:a 3}] '(4)]))
+(is true (list? (walk/postwalk identity '(1 2))))
+(is true (sorted? (walk/postwalk identity (sorted-map 1 2))))
+(is {:a {:b 1}} (walk/keywordize-keys {"a" {"b" 1}}))
+(is {"a" [{"b" 1}]} (walk/stringify-keys {:a [{:b 1}]}))
+(is '(+ x (* x 2)) (walk/postwalk-replace {'y 'x} '(+ y (* y 2))))
+(is [1 :a 2 3 4] (walk/leaves [1 {:a 2} #{3} '(4)]))
+(is false (contains? (set (walk/leaves (walk/macroexpand-all '(when a (when b c))))) 'when))
+;;; ---- norn.random ----
+(let [g1 (random/generator 42) g2 (random/generator 42)]
+  (is (mapv (fn [_] (random/int g1 1000)) (range 20)) (mapv (fn [_] (random/int g2 1000)) (range 20))))
+(is false (= (random/int (random/generator 1) 1000000000) (random/int (random/generator 2) 1000000000)))
+(is true (every? (fn [x] (and (<= 0 x) (< x 10))) (repeatedly 200 (fn [] (random/int 10)))))
+(is #{0 1 2 3} (set (repeatedly 200 (fn [] (random/int 4)))))
+(is true (every? (fn [x] (and (<= 5 x) (< x 8))) (repeatedly 100 (fn [] (random/int nil 5 8)))))
+(is true (let [x (random/float)] (and (<= 0.0 x) (< x 1.0))))
+(is true (let [x (random/int (math/expt 10 30))] (and (<= 0 x) (< x (math/expt 10 30)))))
+(is (set (range 20)) (set (random/shuffle (range 20))))
+(is (random/shuffle (random/generator 7) (range 20)) (random/shuffle (random/generator 7) (range 20)))
+(is 5 (count (set (random/sample (range 100) 5))))
+(is true (contains? #{:a :b} (random/choice [:a :b])))
+(is :b (random/weighted {:a 0 :b 1}))
+(is true (re/matches? #"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}" (random/uuid)))
+(is 2 (count (set (map (fn [g] (random/int g 1000000000)) (random/split (random/generator 3))))))
+(is true (math/approx= 0.0 (math/mean (repeatedly 4000 random/gaussian)) 0.1))
+(is true (< 0.4 (/ (count (filter true? (repeatedly 400 random/boolean))) 400.0) 0.6))
+(is true (<= 0 (rand-int 5) 4))
+(is (set (range 10)) (set (shuffle (range 10))))
+;;; ---- norn.async ----
+(is [1 2 3] (as/into [] (as/to-chan! [1 2 3])))
+(is 6 (as/reduce + 0 (as/to-chan! [1 2 3])))
+(is [2 3 4] (as/into [] (as/map inc (as/to-chan! [1 2 3]))))
+(is [2] (as/into [] (as/filter even? (as/to-chan! [1 2 3]))))
+(is [1 3] (as/into [] (as/transduce-chan (comp (filter odd?) (take 2)) (as/to-chan! [1 2 3 4 5]))))
+(is #{1 2 3 4} (set (as/into [] (as/merge [(as/to-chan! [1 2]) (as/to-chan! [3 4])]))))
+(let [[evens odds] (as/split even? (as/to-chan! (range 6)))
+      e (spawn-detached (as/into [] evens))]
+  (is [1 3 5] (as/into [] odds))
+  (is [0 2 4] (await e)))
+(is (mapv (fn [x] (* x x)) (range 20)) (as/into [] (as/pipeline 4 (chan) (fn [x] (sleep (rand-int 3)) (* x x)) (as/to-chan! (range 20)))))
+(let [src (chan) m (as/mult src) a (as/tap m (chan 10)) b (as/tap m (chan 10))]
+  (as/onto-chan! src [1 2])
+  (is [[1 2] [1 2]] [(as/into [] a) (as/into [] b)]))
+(let [src (chan) p (as/pub src :topic) x (as/sub p :x (chan 10)) y (as/sub p :y (chan 10))]
+  (as/onto-chan! src [{:topic :x :v 1} {:topic :y :v 2} {:topic :x :v 3}])
+  (is [[1 3] [2]] [(mapv :v (as/into [] x)) (mapv :v (as/into [] y))]))
+(let [d (chan 2 :dropping)]
+  (is [true true true] [(put! d 1) (put! d 2) (put! d 3)])
+  (close! d)
+  (is [1 2] (as/into [] d)))
+(let [s (chan 2 :sliding)]
+  (put! s 1) (put! s 2) (put! s 3)
+  (close! s)
+  (is [2 3] (as/into [] s)))
+;;; ---- norn.sync ----
+(let [s (sync/semaphore 2) active (atom 0) peak (atom 0)]
+  (with-scope [sc]
+    (dotimes [_ 8]
+      (spawn sc (sync/with-permit s
+                  (let [n (swap! active inc)] (swap! peak max n))
+                  (sleep 5)
+                  (swap! active dec)))))
+  (is 2 (deref peak))
+  (is 2 (sync/available s)))
+(let [s (sync/semaphore 1)]
+  (is [true false] [(sync/try-acquire! s) (sync/try-acquire! s)]))
+(let [l (sync/latch 3) done (atom 0)]
+  (dotimes [_ 3] (spawn-detached (sleep 2) (swap! done inc) (sync/count-down! l)))
+  (is true (sync/await-latch l))
+  (is 3 (deref done))
+  (is false (sync/await-latch (sync/latch 1) 10)))
+(let [b (sync/barrier 3) log (atom [])]
+  (with-scope [sc]
+    (dotimes [i 3]
+      (spawn sc (swap! log conj [:a i]) (sync/arrive! b) (swap! log conj [:b i]) (sync/arrive! b))))
+  (is true (every? (fn [e] (= :a (first e))) (take 3 (deref log)))))
+(let [rl (sync/rate-limiter 1000 5)]
+  (is 5 (count (filter true? (repeatedly 5 (fn [] (sync/try-take! rl))))))
+  (is false (sync/try-take! rl 3))
+  (sync/take-token! rl 2)
+  (is true true))
+(let [calls (atom 0) f (sync/once (fn [] (swap! calls inc) (sleep 5) :v))]
+  (is [:v :v :v] (mapv await (mapv (fn [_] (spawn-detached (f))) (range 3))))
+  (is 1 (deref calls)))
+;;; ---- norn.cache ----
+(let [c (cache/lru 2)]
+  (cache/store! c :a 1) (cache/store! c :b 2)
+  (is 1 (cache/lookup c :a))
+  (cache/store! c :c 3)
+  (is [1 nil 3] [(cache/lookup c :a) (cache/lookup c :b) (cache/lookup c :c)])
+  (is 2 (cache/size c))
+  (cache/evict! c :a)
+  (is :none (cache/lookup c :a :none))
+  (cache/clear! c)
+  (is 0 (cache/size c)))
+(let [c (cache/ttl 20)]
+  (cache/store! c :a 1)
+  (is 1 (cache/lookup c :a))
+  (sleep 30)
+  (is nil (cache/lookup c :a)))
+(let [calls (atom 0) f (cache/memo-lru (fn [x] (swap! calls inc) (* x 2)) 10)]
+  (is [2 2 4] [(f 1) (f 1) (f 2)])
+  (is 2 (deref calls)))
+(let [calls (atom 0) f (memoize (fn [x] (swap! calls inc) x))]
+  (f 1) (f 1)
+  (is 1 (deref calls)))
+;;; ---- norn.log ----
+(let [events (atom [])]
+  (log/set-sink! (fn [e] (swap! events conj e)))
+  (log/info "hello" :port 80)
+  (log/debug "hidden" :x (swap! events conj :evaluated))
+  (log/set-level! :debug 'lib-test)
+  (log/debug "shown")
+  (log/set-level! :info 'lib-test)
+  (binding [log/*level* :error] (log/warn "unseen?"))
+  (log/set-sink! nil)
+  (is ["hello" "shown" "unseen?"] (mapv :msg (filter map? (deref events))))
+  (is [[:port 80]] (:data (first (deref events))))
+  (is :info (:level (first (deref events))))
+  (is "lib-test" (:ns (first (deref events))))
+  (is nil (some (fn [e] (= e :evaluated)) (deref events))))
+(is 3 (log/spy (+ 1 2)))
 
 (println (str "lib_test: " checks " checks, " failures " failures"))
 (when (pos? failures) (error failures "library tests failed"))

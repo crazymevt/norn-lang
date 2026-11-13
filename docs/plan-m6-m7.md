@@ -253,6 +253,32 @@ Decisions for M7 are at the end, after M6's.
   earlier. Everything else is in M7.6, and its done-check is unchanged.
   `norn.ui` 0.1 still plans the cell-grid and virtualized-grid widgets,
   which may slip to a later 0.x.
+- **Rounding is exact** (7.6): `norn.math`'s `floor`, `ceil`, `round` and
+  `trunc` return integers of any size, and never pass ratios through
+  floating point; `expt` is exact for an exact base and integer exponent.
+  `round` rounds halves away from zero, with `:even` for banker's rounding.
+- **Random numbers use SplitMix64, counter-based**: output n of seed s is
+  `mix(s + n·γ)`, so a seeded generator is a seed plus an atom counter
+  (deterministic, fiber-safe, cheap to split). The default generator is
+  per carrier, needing no lock. Bounded integers use Lemire's method (no
+  modulo bias) and work at any size. `rand`, `rand-int`, `rand-nth` and
+  `shuffle` are in core.
+- **Dropping and sliding channels are in Rust**: `(chan n :dropping)` and
+  `(chan n :sliding)` set a policy bit in the capacity word, so puts on a
+  full channel succeed without parking. `norn.async`'s connectors (pipe,
+  map, filter, merge, split, pipeline, mult, pub/sub) are Norn fibers over
+  ordinary channels.
+- **`norn.sync` parks fibers, never carriers**: semaphores are channels of
+  tokens, latches close a channel at zero, barriers swap a gate channel,
+  the rate limiter is a token bucket in an atom, and `once` runs its
+  function once while late callers wait.
+- **`norn.cache`'s LRU uses a sorted map** of use tick → key, so eviction is
+  O(log n). Caches live in an atom; `memoize` (unbounded) is in core.
+- **`norn.log`'s macros check the level before evaluating arguments**.
+  Levels are global, per namespace prefix, or bound per fiber; the sink is
+  replaceable (for JSON lines or tests).
+- **Added to core:** `swap-vals!`, `reset-vals!`, `memoize`, `fnil`,
+  `repeatedly`.
 - **Found and fixed:** `class-of` gave `Object` for sorted maps and sets
   and for streams; they're now `Map`, `Set` and `Seq`, so methods on those
   classes apply.
