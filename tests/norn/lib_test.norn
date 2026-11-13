@@ -8,6 +8,7 @@
                        [norn.math :as math] [norn.set :as set] [norn.walk :as walk]
                        [norn.random :as random] [norn.async :as as] [norn.sync :as sync]
                        [norn.cache :as cache] [norn.log :as log] [norn.fmt :as codefmt] [norn.lint :as lint]
+                       [norn.bench :as bench] [norn.doc :as ndoc] [norn.image :as image] [norn.check :as check]
                        [norn.test :refer [is deftest testing]]))
 
 (defmacro fails [expr]
@@ -623,6 +624,58 @@
 (is (= :read (:kind (first (lint/lint-string "(a")))))
 (is (= "f.norn:3: unused: unused local x" (lint/format-warning {:file "f.norn" :line 3 :kind :unused :message "unused local x"})))
 (is (= [] (lint/lint-file (io/path here "../../lib/norn/lint.norn"))))
+
+;;; ---- documentation and REPL tools ----
+(defn documented
+  "Adds one."
+  {:since "0.7" :see-also [inc] :examples [[(documented 1) 2]] :deprecated "use inc"}
+  [x]
+  (inc x))
+(let [d (definition 'documented)]
+  (is (= "Adds one." (:doc d)))
+  (is (= '([x]) (:arglists d)))
+  (is (= "0.7" (:since d)))
+  (is (= "lib-test" (:ns d)))
+  (is (str/ends-with? (:file d) "lib_test.norn")))
+(is (= "norn.core" (:ns (definition 'map))))
+(is (= '([f] [f coll] [f c1 c2] [f c1 c2 c3]) (:arglists (definition 'map))))
+(is (= '([test & body]) (:arglists (definition 'when))))
+(is (nil? (definition 'no-such-thing-anywhere)))
+(is (str/starts-with? (source-text 'documented) "(defn documented\n  \"Adds one.\""))
+(is (str/starts-with? (source-text 'rope/insert) "(defn insert"))
+(is (str/starts-with? (source-text 'juxt) "(defn juxt"))
+(let [t (%doc-text 'documented)]
+  (is (str/includes? t "lib-test/documented"))
+  (is (str/includes? t "DEPRECATED: use inc"))
+  (is (str/includes? t "(documented 1) ;=> 2")))
+(is (contains? (set (apropos "rope")) 'norn.rope/rope))
+(is (= 'norn.core/swap-vals! (first (apropos #"^swap-v"))))
+(is (contains? (set (find-doc "grapheme")) 'norn.string/graphemes))
+(is (str/includes? (ndoc/ns-summary "norn.rope") "insert"))
+(is (not (str/includes? (ndoc/ns-summary "norn.rope") "branch?")))
+(is (= [] (check/example-failures)))
+(is (= [[:deprecated "lib-test/documented is deprecated: use inc"]]
+       (mapv (juxt :kind :message) (lint/lint-string "(ns lint-dep)\n(lib-test/documented 1)\n"))))
+(defclass inspected () ((a :initform 1) (b)))
+(is (= {:type "lib-test/inspected" :value "#lib-test/inspected{:a 1, :b 2}" :items [[:a "1"] [:b "2"]]}
+       (inspect (inspected :b 2))))
+(is (= {:type "norn.core/Vector" :value "[1 2]" :count 2 :items [[0 "1"] [1 "2"]]} (inspect [1 2])))
+(is (= 1 (count (:items (inspect (vec (range 10)) 1)))))
+(defn traced-add [a b] (+ a b))
+(defn traced-twice [x] (traced-add x x))
+(trace traced-add traced-twice)
+(def trace-out (%with-out-str (fn [] (traced-twice 2))))
+(untrace)
+(is (= "→ (lib-test/traced-twice 2)\n  → (lib-test/traced-add 2 2)\n  ← lib-test/traced-add 4\n← lib-test/traced-twice 4\n" trace-out))
+(is (= "" (%with-out-str (fn [] (traced-twice 2)))))
+(let [r (bench/run (fn [] (+ 1 2)) :warmup-ms 5 :ms 20)]
+  (is (pos? (:runs r)))
+  (is (<= (:min-ns r) (:mean-ns r)))
+  (is (str/includes? (bench/report "x" r) " runs, ")))
+(is (= "no differences\n" (image/diff-text {"a" {"x" 1}} {"a" {"x" 1}})))
+(is (= "~ a/x\n- a/y\n+ a/z\n+ namespace b (1 vars)\n"
+       (image/diff-text {"a" {"x" 1 "y" 2}} {"a" {"x" 3 "z" 4} "b" {"q" 1}})))
+(is (contains? (image/summary) "norn.core"))
 
 ;;; ---- norn.log ----
 (let [events (atom [])]

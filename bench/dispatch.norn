@@ -35,7 +35,7 @@
                      (range workers))]
     (sleep ms)
     (let [t-switch (nano-time)]
-      (defmethod area ((c circle)) :v2)
+      (eval '(defmethod area ((c circle)) :v2)) ; a live redefinition, as from the REPL
       (sleep ms)
       (reset! stop true)
       (let [results (mapv await fibers)
@@ -44,5 +44,5 @@
         (assert (every? second results) "a caller never saw the new method")
         (println workers "fibers on" (carrier-count) "carriers:" calls "generic calls in" (* 2 ms) "ms ="
                  (quot (* calls 1000) (* 2 ms)) "calls/s; every caller saw the redefinition within" lag "µs; GCs:" (gc-count))
-        (defmethod area ((c circle)) (* 3 (:r c) (:r c)))
+        (eval '(defmethod area ((c circle)) (* 3 (:r c) (:r c))))
         :ok))))

@@ -26,7 +26,10 @@ const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --ser
        norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]
        norn test [--only REGEX] [--serial] [--tap] [--junit FILE] [PATH…]
        norn fmt [--check] [PATH…]
-       norn lint [PATH…]";
+       norn lint [PATH…]
+       norn check [PATH…]
+       norn doc NAMESPACE | NAME | NS/NAME …
+       norn image info IMG.nimg | norn image diff A.nimg B.nimg";
 
 /// Ticket of the root fiber the REPL is waiting on (0 = none), for Ctrl-C.
 static CURRENT: AtomicU64 = AtomicU64::new(0);
@@ -35,6 +38,9 @@ fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("build") {
         exit(build(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("image") {
+        exit(image_tool(&args[1..]));
     }
     let image = match args.as_slice() {
         [flag, path, ..] if flag == "--image" => {
@@ -74,7 +80,7 @@ fn main() {
         });
     }
 
-    if let Some(tool @ ("test" | "fmt" | "lint")) = args.first().map(String::as_str) {
+    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check")) = args.first().map(String::as_str) {
         // `norn test …`, `norn fmt …`: the library's main returns the exit status.
         let call = format!(
             "(do (require 'norn.{tool}) (norn.{tool}/main {}))",
@@ -122,6 +128,58 @@ fn main() {
         }
     };
     exit(if done { 0 } else { 1 })
+}
+
+/// Run `norn --image img -e code` as a child process; its stdout's first
+/// line (the code prints what it wants and the value line follows).
+fn in_image(img: &str, code: &str) -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let out = std::process::Command::new(exe).args(["--image", img, "-e", code]).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("{img}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `norn image info IMG` and `norn image diff A B`.
+fn image_tool(args: &[String]) -> i32 {
+    let result = match args {
+        [op, img] if op == "info" => in_image(img, "(do (require 'norn.image) (print (norn.image/info-text)) nil)")
+            .map(|out| out.strip_suffix("nil\n").unwrap_or(&out).to_owned()),
+        [op, a, b] if op == "diff" => {
+            let summary = "(do (require 'norn.image) (prn (norn.image/summary)) nil)";
+            match (in_image(a, summary), in_image(b, summary)) {
+                (Ok(sa), Ok(sb)) => {
+                    let first = |s: &str| s.lines().next().unwrap_or("{}").to_owned();
+                    let norn = start_with(None).unwrap_or_else(|e| {
+                        eprintln!("{e}");
+                        exit(1)
+                    });
+                    let code = format!(
+                        "(do (require 'norn.image) (norn.image/diff-text (read-string {}) (read-string {})))",
+                        norn_string(&first(&sa)),
+                        norn_string(&first(&sb))
+                    );
+                    match norn.run(RootTask::Eval(code), "user").result {
+                        Ok(v) => Ok(v.trim_matches('"').replace("\\n", "\n")),
+                        Err(e) => Err(e.to_string()),
+                    }
+                }
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        }
+        _ => Err("usage: norn image info IMG.nimg | norn image diff A.nimg B.nimg".into()),
+    };
+    match result {
+        Ok(text) => {
+            print!("{text}");
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
 }
 
 /// `s` as a Norn string literal.
@@ -273,14 +331,106 @@ fn repl(norn: &'static norn_vm::Norn) {
     }
     let events = norn_vm::subscribe();
     let mut ns = "user".to_owned();
+    let mut line_editor = LineEditor::new(norn);
     loop {
-        let Some(src) = read_form(&format!("{ns}=> "), ns.len()) else { return };
+        let src = match line_editor.as_mut() {
+            Some(ed) => ed.read(&ns),
+            None => read_form(&format!("{ns}=> "), ns.len()),
+        };
+        let Some(src) = src else { return };
         let t = norn.submit(RootTask::Repl(src), &ns);
         let done = wait_root(norn, &events, t, &ns);
         if let Err(e) = done.result {
             eprintln!("Error: {e}");
         }
         ns = done.ns;
+    }
+}
+
+/// The terminal line editor (rustyline): history, multi-line input and
+/// completion of names. Only when stdin is a terminal.
+struct LineEditor {
+    ed: rustyline::Editor<NornHelper, rustyline::history::DefaultHistory>,
+    history: Option<std::path::PathBuf>,
+}
+
+struct NornHelper {
+    norn: &'static norn_vm::Norn,
+    ns: std::cell::RefCell<String>,
+}
+
+impl rustyline::completion::Completer for NornHelper {
+    type Candidate = String;
+    fn complete(&self, line: &str, pos: usize, _: &rustyline::Context<'_>) -> rustyline::Result<(usize, Vec<String>)> {
+        let start = line[..pos].rfind(|c: char| c.is_whitespace() || "()[]{}'`~@\"".contains(c)).map_or(0, |i| i + 1);
+        let prefix = &line[start..pos];
+        if prefix.is_empty() {
+            return Ok((start, Vec::new()));
+        }
+        let ns = self.ns.borrow().clone();
+        let names = eval_raw(
+            self.norn,
+            &format!("(apply str (interpose \" \" (norn.core/%complete {} {})))", norn_string(prefix), norn_string(&ns)),
+            "user",
+        );
+        let names = names.trim_matches('"');
+        Ok((start, names.split_whitespace().map(str::to_owned).collect()))
+    }
+}
+
+impl rustyline::validate::Validator for NornHelper {
+    fn validate(&self, ctx: &mut rustyline::validate::ValidationContext) -> rustyline::Result<rustyline::validate::ValidationResult> {
+        Ok(if needs_more(ctx.input()) {
+            rustyline::validate::ValidationResult::Incomplete
+        } else {
+            rustyline::validate::ValidationResult::Valid(None)
+        })
+    }
+}
+
+impl rustyline::hint::Hinter for NornHelper {
+    type Hint = String;
+}
+impl rustyline::highlight::Highlighter for NornHelper {}
+impl rustyline::Helper for NornHelper {}
+
+impl LineEditor {
+    fn new(norn: &'static norn_vm::Norn) -> Option<LineEditor> {
+        use std::io::IsTerminal;
+        if !io::stdin().is_terminal() {
+            return None;
+        }
+        let mut ed = rustyline::Editor::new().ok()?;
+        ed.set_helper(Some(NornHelper { norn, ns: std::cell::RefCell::new("user".into()) }));
+        let history = std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".norn_history"));
+        if let Some(h) = &history {
+            let _ = ed.load_history(h);
+        }
+        Some(LineEditor { ed, history })
+    }
+
+    /// One complete input, or None at end of input (Ctrl-D).
+    fn read(&mut self, ns: &str) -> Option<String> {
+        if let Some(h) = self.ed.helper() {
+            *h.ns.borrow_mut() = ns.to_owned();
+        }
+        loop {
+            match self.ed.readline(&format!("{ns}=> ")) {
+                Ok(line) if line.trim().is_empty() => continue,
+                Ok(line) => {
+                    let _ = self.ed.add_history_entry(line.as_str());
+                    if let Some(h) = &self.history {
+                        let _ = self.ed.save_history(h);
+                    }
+                    return Some(line);
+                }
+                Err(rustyline::error::ReadlineError::Interrupted) => continue,
+                Err(_) => {
+                    println!();
+                    return None;
+                }
+            }
+        }
     }
 }
 

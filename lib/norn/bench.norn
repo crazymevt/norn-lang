@@ -1,0 +1,52 @@
+;;;; norn.bench — measuring how long code takes.
+;;;;
+;;;;   (bench/bench (reduce + (range 1000)))
+;;;;   (reduce + (range 1000)): 41.2 µs ± 1.3 µs (24,108 runs, 3 GCs)
+;;;;
+;;;; A run warms up (so tier-1 code is compiled), then times batches until a
+;;;; time budget is spent, and reports per-run statistics over the batches.
+
+(ns norn.bench
+  (:require [norn.math :as math]))
+
+(defn- now [] (nano-time))
+
+(defn- time-batch [f n]
+  (let [t0 (now)]
+    (dotimes [_ n] (f))
+    (- (now) t0)))
+
+(defn run
+  "Time thunk f. Options: :warmup-ms (default 200), :ms (time budget,
+  default 1000). Returns {:mean-ns :stddev-ns :min-ns :runs :batches :gcs}."
+  [f & {:keys [warmup-ms ms] :or {warmup-ms 200 ms 1000}}]
+  (let [warm-end (+ (now) (* warmup-ms 1000000))]
+    (loop [] (f) (when (< (now) warm-end) (recur))))
+  ;; a batch size that takes about a hundredth of the budget
+  (let [batch (loop [n 1] (let [t (time-batch f n)] (if (and (< t (* ms 10000)) (< n 100000000)) (recur (* n 2)) n)))
+        g0 (gc-count)
+        end (+ (now) (* ms 1000000))
+        per-run (loop [xs []] (if (< (now) end) (recur (conj xs (/ (time-batch f batch) (float batch)))) xs))]
+    {:mean-ns (math/mean per-run)
+     :stddev-ns (math/std-dev per-run)
+     :min-ns (reduce min per-run)
+     :runs (* batch (count per-run))
+     :batches (count per-run)
+     :gcs (- (gc-count) g0)}))
+
+(defn- show-time [ns]
+  (cond (< ns 1000) (format "%.1f ns" ns)
+        (< ns 1e6) (format "%.1f µs" (/ ns 1e3))
+        (< ns 1e9) (format "%.1f ms" (/ ns 1e6))
+        :else (format "%.2f s" (/ ns 1e9))))
+
+(defn report "One line describing result r of run, labelled label." [label r]
+  (format "%s: %s ± %s (%,d runs, %d GCs)" label (show-time (:mean-ns r)) (show-time (:stddev-ns r)) (:runs r) (:gcs r)))
+
+(defmacro bench
+  "Time expr (see run for the options) and print one line; returns the
+  statistics."
+  [expr & opts]
+  `(let [r# (run (fn [] ~expr) ~@opts)]
+     (println (report ~(pr-str expr) r#))
+     r#))

@@ -154,10 +154,10 @@ prims! {
     "char" 1 Some(1) => |_, a| { let n = int(a[0], "char")?; char::from_u32(n as u32).map(Value::char).ok_or_else(|| Error::new(format!("Invalid code point: {n}"))) };
     // printing and I/O
     "pr-str" 0 VAR => |vm, a| { forced(a)?; Ok(str_new(&mut vm.m, &join(a, true))) };
-    "print" 0 VAR => |_, a| { forced(a)?; out(&join(a, false), false) };
-    "println" 0 VAR => |_, a| { forced(a)?; out(&join(a, false), true) };
-    "pr" 0 VAR => |_, a| { forced(a)?; out(&join(a, true), false) };
-    "prn" 0 VAR => |_, a| { forced(a)?; out(&join(a, true), true) };
+    "print" 0 VAR => |vm, a| { forced(a)?; out_to(vm, &join(a, false), false) };
+    "println" 0 VAR => |vm, a| { forced(a)?; out_to(vm, &join(a, false), true) };
+    "pr" 0 VAR => |vm, a| { forced(a)?; out_to(vm, &join(a, true), false) };
+    "prn" 0 VAR => |vm, a| { forced(a)?; out_to(vm, &join(a, true), true) };
     // streams (design §3.3) and reduced (early exit from reduce)
     "%stream" 1 Some(1) => |vm, a| Ok(seq::stream_new(&mut vm.m, a[0]));
     "%stream-thunk" 1 Some(1) => |_, a| { expect(a[0], Kind::Stream, "%stream-thunk")?; Ok(if a[0].stream_realized() { Value::NIL } else { a[0].stream_value() }) };
@@ -323,6 +323,7 @@ prims! {
     "%str-width" 1 Some(1) => crate::text::width;
     "%str-reverse" 1 Some(1) => crate::text::reverse;
     "%str-truncate" 2 Some(2) => crate::text::truncate;
+    "%instance?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Instance)));
     "regex?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Regex)));
     "re-pattern" 1 Some(1) => crate::text::re_pattern;
     "re-quote" 1 Some(1) => crate::text::re_quote;
@@ -335,6 +336,7 @@ prims! {
     "%format" 2 Some(2) => crate::text::format;
     "%parse-number" 2 Some(2) => crate::text::parse_number;
     "%read-cst" 1 Some(1) => crate::cst::read_cst;
+    "%form-at" 2 Some(2) => |vm, a| { expect(a[0], Kind::String, "%form-at")?; let line = int(a[1], "%form-at")?.max(1) as usize; crate::eval::form_at(vm, a[0].as_str(), line) };
     // math and randomness (math.rs): norn.math, norn.random, rand
     "%math1" 2 Some(2) => crate::math::math1;
     "%math2" 3 Some(3) => crate::math::math2;
@@ -480,6 +482,28 @@ fn join(a: &[Value], readably: bool) -> String {
         write_value(&mut s, x, readably);
     }
     s
+}
+
+/// Printed output goes to stdout, unless `*out*` is bound to an atom of a
+/// vector: then each piece of text is added to it (with-out-str).
+fn out_to(vm: &mut Vm, s: &str, newline: bool) -> Result<Value> {
+    let sym = rt().symbol(&mut vm.m, None, "*out*");
+    let capture = vm.core.lookup(sym).and_then(|var| if vm.dyn_env.is(Kind::Map) { vm.dyn_env.map_get(var) } else { None });
+    if let Some(buf) = capture.filter(|b| b.is(Kind::Atom)) {
+        let text = if newline { format!("{s}\n") } else { s.to_owned() };
+        let piece = str_new(&mut vm.m, &text);
+        loop {
+            let old = buf.atom_get();
+            if !old.is(Kind::Vector) {
+                return Err(Error::new("*out* must be bound to an atom holding a vector"));
+            }
+            let new = norn_rt::vector::vec_conj(&mut vm.m, old, piece);
+            if buf.atom_cas(old, new) {
+                return Ok(Value::NIL);
+            }
+        }
+    }
+    out(s, newline)
 }
 
 fn out(s: &str, newline: bool) -> Result<Value> {

@@ -1230,6 +1230,34 @@
 
 ;;; ---- loading, the REPL, and the editor protocol -------------------------------------------
 
+(def %definitions
+  "Every top-level definition read so far, for doc and source: \"ns/name\"
+  → {:name :ns :kind :doc :arglists :file :line …attributes}."
+  (atom {}))
+
+(defn %note-definition!
+  "Record top-level form f, read from file at line, if it defines something
+  (its head starts with def and a name follows)."
+  [f file line]
+  (when (and (seq? f) (symbol? (first f)) (symbol? (second f)))
+    (let [head (name (first f))]
+      (when (and (>= (count head) 3) (= "def" (subs head 0 3)))
+        (let [nm (second f)
+              more (nnext f)
+              doc (when (and (string? (first more)) (next more)) (first more))
+              more (if doc (rest more) more)
+              attrs (when (map? (first more)) (first more))
+              more (if attrs (rest more) more)
+              params (first more)
+              arglists (cond (contains? #{"defn" "defn-" "defmacro"} head)
+                             (cond (vector? params) (list params)
+                                   (and (seq? params) (vector? (first params))) (map first more))
+                             (= head "defgeneric") (when (or (seq? params) (vector? params)) (list (vec params))))
+              typed? (contains? #{"<repl>" "<string>" "<editor>"} file)]
+          (swap! %definitions assoc (str (current-ns) "/" nm)
+                 (merge attrs {:name nm :ns (str (current-ns)) :kind (first f) :doc doc :arglists arglists
+                               :file file :line line :form (when typed? f)})))))))
+
 (defn %eval-reader [r]
   (let [src (%reader-name r)
         saved (%location)]
@@ -1238,6 +1266,7 @@
         (if (%eof? f)
           (do (%set-location! saved) last)
           (do (%set-location! (str src ":" (%reader-line r)))
+              (%note-definition! f src (%reader-line r))
               (recur (eval f))))))))
 
 (defn %repl-eval [s]
@@ -1399,7 +1428,8 @@
   "Define a named function. A docstring may follow the name. Parameters
   destructure."
   [fname & body]
-  (let [body (if (string? (first body)) (rest body) body)]
+  (let [body (if (string? (first body)) (rest body) body)
+        body (if (map? (first body)) (rest body) body)]
     `(def ~fname (fn ~fname ~@body))))
 
 (def %indent-hints
@@ -2061,3 +2091,176 @@
     (if (pos? i)
       (let [j (%rand-below (inc i)) a (nth v i)] (recur (dec i) (assoc v i (nth v j) j a)))
       v)))
+
+;;; ---- documentation (M7.9) ---------------------------------------------------------------------
+;;;
+;;; Every top-level definition read is noted (%note-definition!), so doc and
+;;; source work for code from files, libraries, the REPL and the editor.
+;;; Docstrings are Markdown. After the docstring a definition may carry an
+;;; attribute map: :since "0.7", :deprecated "use y instead", :see-also
+;;; [other names], :examples [[(expr) expected] …] (`norn check` runs them).
+
+(def ^:private %core-indexed (atom false))
+
+(defn %index-source!
+  "Note every definition in source text src (named file) as if read in
+  namespace ns-name, without evaluating anything."
+  [src file ns-name]
+  (let [here (current-ns)
+        r (%reader src file)]
+    (in-ns ns-name)
+    (loop []
+      (let [f (%read r)]
+        (when-not (%eof? f)
+          (%note-definition! f file (%reader-line r))
+          (recur))))
+    (in-ns (symbol (str here)))
+    nil))
+
+(defn- %ensure-core-indexed! []
+  (when (compare-and-set! %core-indexed false true)
+    (%index-source! (%core-source) "<norn.core>" 'norn.core)
+    (%index-source! (%compiler-source) "<norn.compiler>" 'norn.compiler)))
+
+(defn %source-of
+  "The source text a definition was read from, when it can be found again."
+  [file]
+  (cond (nil? file) nil
+        (= file "<norn.core>") (%core-source)
+        (= file "<norn.compiler>") (%compiler-source)
+        (= "<" (subs file 0 1)) (first (%find-lib (subs file 1 (dec (count file)))))
+        :else (try (slurp file) (catch Error _ nil))))
+
+(defn %var-name "\"ns/name\" of var v." [v] (subs (pr-str v) 2))
+
+(defn definition
+  "What is known about sym's definition (a symbol resolved in the current
+  namespace, or a var): :name :ns :doc :arglists :kind :file :line and any
+  attributes. nil when sym isn't defined."
+  [sym]
+  (%ensure-core-indexed!)
+  (let [v (if (var? sym) sym (resolve sym))]
+    (when v
+      (let [n (%var-name v) i (%str-index n "/" nil true)]
+        (or (get (deref %definitions) n)
+            {:name (symbol (subs n (inc i))) :ns (subs n 0 i)})))))
+
+(defn %doc-text
+  "sym's documentation as text, as doc prints it."
+  [sym]
+  (let [d (definition sym)]
+    (if (nil? d)
+      (str "No definition of " sym "\n")
+      (str "-------------------------\n"
+           (:ns d) "/" (:name d)
+           (when (= 'defmacro (:kind d)) "  (macro)")
+           "\n"
+           (when (:arglists d) (str (pr-str (apply list (:arglists d))) "\n"))
+           (when (:deprecated d) (str "  DEPRECATED: " (:deprecated d) "\n"))
+           (when (:since d) (str "  Since " (:since d) "\n"))
+           (if (:doc d)
+             (str "  " (:doc d) "\n")
+             "  (no docstring)\n")
+           (when (seq (:see-also d)) (str "  See also: " (apply str (interpose ", " (map str (:see-also d)))) "\n"))
+           (when (seq (:examples d))
+             (str "  Examples:\n"
+                  (apply str (map (fn [[e r]] (str "    " (pr-str e) " ;=> " (pr-str r) "\n")) (:examples d)))))))))
+
+(defmacro doc "Print the documentation of sym." [sym] `(print (%doc-text '~sym)))
+
+(defn source-text
+  "The source of sym's definition, as text; nil when it can't be found."
+  [sym]
+  (let [d (definition sym)]
+    (cond (nil? d) nil
+          (:form d) (pr-str (:form d))
+          :else (when-let [src (%source-of (:file d))] (%form-at src (:line d))))))
+
+(defmacro source "Print the source of sym's definition." [sym]
+  `(println (or (source-text '~sym) (str "No source for " '~sym))))
+
+(defn apropos
+  "The public names, in every loaded namespace, whose name contains s (a
+  string) or matches it (a regex): a sorted vector of qualified symbols."
+  [s]
+  (let [match? (if (regex? s) (fn [n] (some? (re-find s n))) (fn [n] (some? (%str-index n s nil false))))]
+    (vec (sort-by str
+                  (mapcat (fn [ns]
+                            (keep (fn [k] (when (match? (name k)) (symbol (str ns) (name k))))
+                                  (keys (or (ns-publics ns) {}))))
+                          (all-ns))))))
+
+(defn find-doc
+  "The definitions whose docstring or name contains s (case-insensitive):
+  a sorted vector of qualified symbols."
+  [s]
+  (%ensure-core-indexed!)
+  (let [needle (%str-case (str s) 1)]
+    (vec (sort-by str
+                  (keep (fn [[k d]]
+                          (when (or (some? (%str-index (%str-case (or (:doc d) "") 1) needle nil false))
+                                    (some? (%str-index (%str-case k 1) needle nil false)))
+                            (symbol k)))
+                        (deref %definitions))))))
+
+;;; ---- REPL tools: inspect, trace -------------------------------------------------------------
+
+(defn inspect
+  "A description of x for looking inside it: {:type :value :count :items},
+  where :items lists up to limit (default 100) entries as [key value-text]
+  (indexes for sequences, keys for maps, slots for instances)."
+  ([x] (inspect x 100))
+  ([x limit]
+   (let [short (fn [v] (let [t (pr-str v)] (if (> (count t) 200) (str (subs t 0 197) "...") t)))
+         items (cond (%instance? x)
+                     (mapv (fn [k] [k (short (slot-value x k))]) (%class-get (class-of x) :layout))
+                     (map? x) (mapv (fn [[k v]] [(short k) (short v)]) (take limit x))
+                     (or (coll? x) (string? x)) (vec (map-indexed (fn [i v] [i (short v)]) (take limit (seq x))))
+                     :else nil)
+         base {:type (str (class-name (class-of x))) :value (short x)}
+         base (if (or (coll? x) (string? x)) (assoc base :count (count x)) base)]
+     (if items (assoc base :items items) base))))
+
+(def *out*
+  "nil: printing goes to stdout. Bound to an atom holding a vector, printed
+  text is added to the vector instead (see with-out-str)."
+  nil)
+
+(defn %with-out-str [f]
+  (let [buf (atom [])]
+    (binding [*out* buf] (f))
+    (apply str (deref buf))))
+
+(defmacro with-out-str "What body prints, as a string." [& body] `(%with-out-str (fn [] ~@body)))
+
+(def ^:dynamic *trace-depth* 0)
+(def ^:private %traced (atom {}))
+
+(defn trace-var!
+  "Print every call to var v and what it returns, indented by depth, until
+  untrace-var!."
+  [v]
+  (when-not (contains? (deref %traced) v)
+    (let [f (var-get v) label (%var-name v)]
+      (swap! %traced assoc v f)
+      (%set-root! v (fn [& args]
+                      (let [pad (apply str (repeat (* 2 *trace-depth*) " "))]
+                        (println (str pad "→ (" label (apply str (map (fn [a] (str " " (pr-str a))) args)) ")"))
+                        (let [r (binding [*trace-depth* (inc *trace-depth*)] (apply f args))]
+                          (println (str pad "← " label " " (pr-str r)))
+                          r))))))
+  v)
+
+(defn untrace-var! "Stop tracing var v." [v]
+  (when-let [f (get (deref %traced) v)]
+    (%set-root! v f)
+    (swap! %traced dissoc v))
+  v)
+
+(defmacro trace "Trace calls to the named functions." [& syms] `(do ~@(map (fn [s] `(trace-var! (var ~s))) syms)))
+(defn untrace-all! "Stop tracing everything." [] (doseq [v (keys (deref %traced))] (untrace-var! v)))
+
+(defmacro untrace "Stop tracing the named functions (all of them with no names)." [& syms]
+  (if (seq syms)
+    `(do ~@(map (fn [s] `(untrace-var! (var ~s))) syms))
+    `(untrace-all!)))

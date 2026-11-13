@@ -47,6 +47,10 @@ pub const LIBS: &[(&str, &str)] = &[
     ("norn.test", include_str!("../../../lib/norn/test.norn")),
     ("norn.fmt", include_str!("../../../lib/norn/fmt.norn")),
     ("norn.lint", include_str!("../../../lib/norn/lint.norn")),
+    ("norn.bench", include_str!("../../../lib/norn/bench.norn")),
+    ("norn.doc", include_str!("../../../lib/norn/doc.norn")),
+    ("norn.image", include_str!("../../../lib/norn/image.norn")),
+    ("norn.check", include_str!("../../../lib/norn/check.norn")),
 ];
 
 /// `(%find-lib "a.b-c")`: the source of library `a.b-c` and where it came
@@ -189,6 +193,27 @@ impl Vm {
 }
 
 /// `(%read r)`: the next form from a reader object, or the EOF marker.
+/// `(%form-at src line)`: the source text of the first form starting on or
+/// after line `line` (1-based) of `src`, or nil. For `source`.
+pub(crate) fn form_at(vm: &mut Vm, src: &str, line: usize) -> Result<Value> {
+    let mut off = 0;
+    for _ in 1..line.max(1) {
+        match src[off..].find('\n') {
+            Some(i) => off += i + 1,
+            None => return Ok(Value::NIL),
+        }
+    }
+    let mut rd = Reader::new_at(src, off);
+    if rd.at_end() {
+        return Ok(Value::NIL);
+    }
+    let start = rd.pos();
+    match rd.read(vm) {
+        Ok(_) => Ok(norn_rt::string::str_new(&mut vm.m, &src[start..rd.pos()])),
+        Err(_) => Ok(Value::NIL),
+    }
+}
+
 pub(crate) fn read_next(vm: &mut Vm, r: Value) -> Result<Value> {
     let src = r.field(0).as_str();
     let pos = r.word(1) as usize;

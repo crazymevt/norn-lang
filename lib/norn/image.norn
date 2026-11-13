@@ -1,0 +1,55 @@
+;;;; norn.image — looking at images: `norn image info` and `norn image diff`.
+
+(ns norn.image
+  (:require [norn.string :as str] [norn.io :as io]))
+
+(defn- value-hash
+  "A hash that changes when a definition changes: for functions, their code
+  and constants; for other values, the value."
+  [v]
+  (cond (and (fn? v) (not= :primitive (type v)))
+        (try (hash (mapv (fn [p] (let [pp (%proto-parts p)] [(:code pp) (pr-str (:consts pp))]))
+                         (:arities (%template-parts (%closure-template v)))))
+             (catch Error _ (hash (pr-str v))))
+        ;; printed form: stable across processes, unlike identity hashes
+        :else (try (hash (pr-str v)) (catch Error _ 0))))
+
+(defn summary
+  "The running image's namespaces, each a map of var name → value hash."
+  []
+  (into (sorted-map)
+        (map (fn [ns]
+               [(str ns) (into (sorted-map)
+                               (map (fn [[k v]] [(str k) (value-hash (try (var-get v) (catch Error _ nil)))]))
+                               (or (ns-publics ns) {}))])
+             (all-ns))))
+
+(defn info-text
+  "A description of the running image: its file(s), sizes and contents."
+  []
+  (let [info (image-info)
+        s (summary)]
+    (str "image:      " (:image info) "\n"
+         (when (> (count (:chain info)) 1)
+           (str "layers:     " (str/join " ← " (:chain info)) "\n"))
+         "size:       " (str/join " + " (map (fn [p] (str (:size (io/info p)) " bytes")) (:chain info))) "\n"
+         "entry:      " (if %image-entry (pr-str %image-entry) "none") "\n"
+         "namespaces: " (count s) "\n"
+         "vars:       " (reduce + 0 (map count (vals s))) "\n"
+         (apply str (map (fn [[n vs]] (format "  %-28s %5d vars%n" n (count vs))) s)))))
+
+(defn diff-text
+  "What changed from summary a to summary b: namespaces and vars added,
+  removed or changed."
+  [a b]
+  (let [lines (atom [])
+        out (fn [& xs] (swap! lines conj (apply str xs)))]
+    (doseq [n (sort (into (set (keys a)) (keys b)))]
+      (let [va (get a n) vb (get b n)]
+        (cond (nil? va) (out "+ namespace " n " (" (count vb) " vars)")
+              (nil? vb) (out "- namespace " n " (" (count va) " vars)")
+              :else (doseq [k (sort (into (set (keys va)) (keys vb)))]
+                      (cond (not (contains? va k)) (out "+ " n "/" k)
+                            (not (contains? vb k)) (out "- " n "/" k)
+                            (not= (get va k) (get vb k)) (out "~ " n "/" k))))))
+    (if (empty? (deref lines)) "no differences\n" (str (str/join "\n" (deref lines)) "\n"))))

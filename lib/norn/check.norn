@@ -1,0 +1,41 @@
+;;;; norn.check — every check in one command: `norn check`.
+;;;;
+;;;; Runs, in order: formatting (norn fmt --check), lint (norn lint), the
+;;;; tests (norn test), and the documentation examples — every definition's
+;;;; {:examples [[expr expected] …]} loaded by then is evaluated and compared.
+;;;; Exits 1 if any step finds a problem; each step still runs.
+
+(ns norn.check
+  (:require [norn.fmt :as fmt] [norn.lint :as lint] [norn.test :as test] [norn.string :as str]))
+
+(defn example-failures
+  "The documentation examples that don't hold: a vector of
+  {:name :expr :expected :actual}."
+  []
+  (let [here (current-ns)
+        run (fn [d expr] (in-ns (symbol (:ns d)))
+              (let [r (try (eval expr) (catch Error e (str "error: " (condition-message e))))]
+                (in-ns (symbol (str here)))
+                r))]
+    (vec (keep (fn [[k d expr expected]]
+                 (let [actual (run d expr) want (run d expected)]
+                   (when (not= want actual) {:name k :expr expr :expected want :actual actual})))
+               (mapcat (fn [[k d]] (map (fn [[e x]] [k d e x]) (:examples d)))
+                       (sort-by first (deref %definitions)))))))
+
+(defn main
+  "`norn check [paths…]`: fmt --check, lint and test over paths (default
+  the current directory, and tests/ for the tests), then the doc examples."
+  [& args]
+  (let [paths (if (seq args) args ["."])
+        step (fn [label f] (println (str "== " label)) (let [r (f)] (println (if (zero? r) "ok" "FAILED")) r))
+        fmt-r (step "fmt" (fn [] (apply fmt/main "--check" paths)))
+        lint-r (step "lint" (fn [] (apply lint/main paths)))
+        test-r (step "test" (fn [] (apply test/main (if (seq args) args ["tests"]))))
+        ex-r (step "doc examples"
+                   (fn [] (let [bad (example-failures)]
+                            (doseq [b bad]
+                              (println (str "  " (:name b) ": " (pr-str (:expr b)) " gave " (pr-str (:actual b))
+                                            ", expected " (pr-str (:expected b)))))
+                            (if (seq bad) 1 0))))]
+    (if (every? zero? [fmt-r lint-r test-r ex-r]) 0 1)))

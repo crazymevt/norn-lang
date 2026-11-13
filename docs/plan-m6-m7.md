@@ -323,6 +323,32 @@ Decisions for M7 are at the end, after M6's.
   a test; a `defclass` inside a function in a test; a missing `juxt`
   (added to core); `norn.regex/quote` renamed `literal` (a function named
   like a special form can't be called unqualified in its own namespace).
+- **Definitions are indexed as they're read** (7.9), not by changing
+  `defn`: `%eval-reader` notes every top-level `def…` form (docstring,
+  arglists, attribute map, file, start line) in `%definitions`, so `doc`,
+  `source`, `apropos`, `find-doc` and `definition` work for code from
+  files, embedded libraries, the REPL and the editor. Core and the compiler
+  are indexed from their embedded source on the first lookup, keeping
+  startup unchanged. `source` re-reads the text (`%form-at`); only
+  definitions typed at the REPL or editor keep their form.
+- **Docstring convention:** Markdown; then an optional attribute map
+  (`defn` and `defmacro` accept one) with `:since`, `:deprecated`,
+  `:see-also` and `:examples [[expr expected] …]`. Deprecation is reported
+  by `norn lint` (`:deprecated`), not at compile time; `norn check` runs
+  the examples.
+- **Privacy isn't tracked yet**: the reader drops `^:private`, so `norn doc`
+  hides `defn-` definitions only. Proper var metadata is later work.
+- **`trace` sees calls through the var**: a self-recursive `defn` calls
+  itself through its local name, so only the outer call shows.
+- **Printing can be captured**: binding `*out*` to an atom of a vector
+  collects printed text; `with-out-str` uses it.
+- **Image tools run each image in its own process** (`norn image info`,
+  `norn image diff`); the diff compares functions by code and constants
+  and other values by printed form, which is stable across processes.
+- **The terminal REPL uses rustyline** when stdin is a terminal: history in
+  `~/.norn_history`, multi-line input, Tab completion of names.
+- **Coverage is deferred**: counting bytecode executions needs interpreter
+  and tier-1 support, which isn't cheap; it waits for the profiler (M9).
 - **Follow-up noted:** a runaway recursion grows to the 256 MB stack limit
   (about 2.8 million frames) before `Stack overflow`, and every GC on the
   way rescans that stack, so it takes about a minute in a debug build

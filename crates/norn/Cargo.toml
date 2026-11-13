@@ -13,3 +13,4 @@ path = "src/main.rs"
 norn-rt = { path = "../norn-rt" }
 norn-vm = { path = "../norn-vm" }
 ctrlc = "3"
+rustyline = "15"

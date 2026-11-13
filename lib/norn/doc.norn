@@ -1,0 +1,36 @@
+;;;; norn.doc — documentation from the command line: `norn doc`.
+
+(ns norn.doc
+  (:require [norn.string :as str]))
+
+(defn- lib? [n] (or (some? (%find-lib n)) (some (fn [ns] (= (str ns) n)) (all-ns))))
+
+(defn- first-line [s] (when s (first (str/split-lines s))))
+
+(defn ns-summary
+  "One line per public definition of namespace ns-name: name and the first
+  line of its docstring."
+  [ns-name]
+  (require (symbol ns-name))
+  (let [names (sort (keep (fn [k] (when-not (= 'defn- (:kind (definition (symbol ns-name (str k))))) (str k)))
+                          (keys (or (ns-publics (symbol ns-name)) {}))))
+        width (reduce max 0 (map count names))]
+    (str ns-name "\n"
+         (apply str (map (fn [n]
+                           (let [d (definition (symbol ns-name n))]
+                             (str "  " (str/pad-right n width) "  " (or (first-line (:doc d)) "") "\n")))
+                         names)))))
+
+(defn main
+  "`norn doc NAME…`: for a namespace, list its definitions; for a symbol
+  (qualified, or in norn.core), print its documentation."
+  [& args]
+  (if (empty? args)
+    (do (println "usage: norn doc NAMESPACE | NAME | NS/NAME …") 2)
+    (do (doseq [a args]
+          (cond (lib? a) (print (ns-summary a))
+                (str/includes? a "/") (let [ns (first (str/split a "/" 2))]
+                                        (when (lib? ns) (require (symbol ns)))
+                                        (print (%doc-text (symbol a))))
+                :else (print (%doc-text (symbol "norn.core" a)))))
+        0)))

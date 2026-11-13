@@ -17,7 +17,8 @@
 ;;;; - :def-in-fn — `def` inside a function body;
 ;;;; - :method-shape — a defmethod whose parameter list doesn't fit its
 ;;;;   generic function;
-;;;; - :macro — a macro call that fails to expand.
+;;;; - :macro — a macro call that fails to expand;
+;;;; - :deprecated — a use of a definition marked {:deprecated "…"}.
 ;;;;
 ;;;; Only `ns`, `in-ns`, `require` and `defmacro` forms are evaluated, so
 ;;;; that later forms read and expand as they would when loaded. Warnings
@@ -104,7 +105,9 @@
                   (and (nil? (namespace sym)) (contains? (deref *file-defs*) sym))
                   (resolve sym)
                   (str/ends-with? (name sym) ".")) ; constructor-style names
-      (warn :unresolved "unresolved symbol " sym))))
+      (warn :unresolved "unresolved symbol " sym))
+    (when-let [d (when (resolve sym) (definition sym))]
+      (when (:deprecated d) (warn :deprecated sym " is deprecated: " (:deprecated d))))))
 
 (defn- analyze-fn [env form]
   (let [xs (rest form)
