@@ -231,6 +231,11 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
         }
         Kind::Scope => out.push_str("#<scope>"),
         Kind::Weak => out.push_str("#<weak-ref>"),
+        Kind::Handle => {
+            out.push_str("#<");
+            write_value(out, v.field(crate::conc::handle::KIND), false);
+            let _ = write!(out, " {}>", v.word(crate::conc::handle::ID));
+        }
         Kind::Bytes => {
             // Readable as a literal: #bytes "68656c6c6f"
             out.push_str("#bytes \"");

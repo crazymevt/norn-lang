@@ -72,3 +72,14 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
   lines, tested against RFC 4648's examples) rather than a crate.
 - **Standard-library tests** live in one suite, `tests/norn/lib_test.norn`,
   which runs in process, at both tiers, and from an image.
+- **I/O waits use event counts, not readiness flags** (runtime.md §5.5).
+  The wrapper reads the count before trying the operation and waits only if
+  it hasn't changed, so an event between "would block" and parking is never
+  lost.
+- **Handles carry the process epoch.** A handle restored from an image
+  reports "resource lost" rather than reaching a reused descriptor number.
+- **Spare carriers** live in extra scheduler slots (`n..2n`). The monitor
+  starts one when carriers are stuck in native code for over 20 ms while
+  work waits; it retires when idle.
+- **Fibers waiting on I/O or the blocking pool are saved dead in images.**
+- **`mio` 1.x** for the reactor; no async runtime (no Tokio) is involved.

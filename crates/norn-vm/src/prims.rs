@@ -229,6 +229,21 @@ prims! {
     "%hex-decode" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "unhex")?; let b = crate::codec::hex_decode(a[0].as_str()).map_err(Error::new)?; Ok(norn_rt::string::bytes_new(&mut vm.m, &b)) };
     "%base64-encode" 2 Some(2) => |vm, a| { expect(a[0], Kind::Bytes, "base64")?; Ok(str_new(&mut vm.m, &crate::codec::base64_encode(a[0].as_bytes(), a[1].truthy()))) };
     "%base64-decode" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "unbase64")?; let b = crate::codec::base64_decode(a[0].as_str()).map_err(Error::new)?; Ok(norn_rt::string::bytes_new(&mut vm.m, &b)) };
+    // I/O handles (the reactor and the blocking pool; runtime.md §5.5)
+    "%pipe" 0 Some(0) => |vm, _| { let (tx, rx) = mio::unix::pipe::new().map_err(|e| Error::new(e.to_string()))?; let r = crate::reactor::register(&mut vm.m, crate::reactor::Io::PipeIn(rx), "pipe-in", Value::NIL).map_err(Error::new)?; let w = crate::reactor::register(&mut vm.m, crate::reactor::Io::PipeOut(tx), "pipe-out", Value::NIL).map_err(Error::new)?; Ok(vec_from_slice(&mut vm.m, &[r, w])) };
+    "%io-seq" 2 Some(2) => |_, a| Ok(Value::fix(crate::reactor::seq(a[0], io_dir(a[1])?)? as i64));
+    "%io-wait" 3 Some(3) => |vm, a| crate::reactor::wait(vm, a[0], io_dir(a[1])?, int(a[2], "%io-wait")? as u64);
+    "%io-read" 2 Some(2) => |vm, a| io_read(vm, a[0], int(a[1], "read")?);
+    "%io-write" 3 Some(3) => |vm, a| io_write(vm, a[0], a[1], int(a[2], "write")?);
+    "%io-close" 1 Some(1) => |_, a| crate::reactor::close(a[0]);
+    "%io-close-id" 1 Some(1) => |_, a| { crate::reactor::close_id(int(a[0], "%io-close-id")? as u64); Ok(Value::NIL) };
+    "handle?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Handle)));
+    "%handle-id" 1 Some(1) => |_, a| { expect(a[0], Kind::Handle, "%handle-id")?; Ok(Value::fix(a[0].word(norn_rt::conc::handle::ID) as i64)) };
+    "%handle-live?" 1 Some(1) => |_, a| Ok(Value::bool(crate::reactor::entry(a[0]).is_ok()));
+    "%io-stats" 0 Some(0) => |vm, _| { let kv = [rt().keyword(&mut vm.m, None, "handles"), Value::fix(crate::reactor::open_count() as i64), rt().keyword(&mut vm.m, None, "blocking-threads"), Value::fix(crate::blocking::threads() as i64), rt().keyword(&mut vm.m, None, "carrier-threads"), Value::fix(crate::sched::carrier_threads() as i64)]; hash_map(vm, &kv) };
+    // test helpers: a native call that blocks its carrier, and one on the pool
+    "%native-stall" 1 Some(1) => |vm, a| { let ms = int(a[0], "%native-stall")?.max(0) as u64; vm.native_region(&[], || std::thread::sleep(std::time::Duration::from_millis(ms))); Ok(Value::fix(ms as i64)) };
+    "%blocking-sleep" 1 Some(1) => |vm, a| { let ms = int(a[0], "%blocking-sleep")?.max(0) as u64; crate::blocking::run(vm, move || { std::thread::sleep(std::time::Duration::from_millis(ms)); Box::new(move |_: &mut norn_rt::Mutator| Ok(Value::fix(ms as i64))) }) };
     // weak references and cleanups
     "weak-ref" 1 Some(1) => |vm, a| Ok(norn_rt::weak::weak_new(&mut vm.m, a[0], Value::NIL));
     "weak-get" 1 Some(1) => |_, a| { expect(a[0], Kind::Weak, "weak-get")?; Ok(a[0].weak_get()) };
@@ -546,6 +561,59 @@ pub(crate) fn hash_map(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 
 fn index_of(k: Value) -> Option<usize> {
     (k.is_fixnum() && k.as_fixnum() >= 0).then(|| k.as_fixnum() as usize)
+}
+
+/// `:read` → 0, `:write` → 1.
+fn io_dir(k: Value) -> Result<usize> {
+    if k.is_keyword() {
+        match k.sym_name() {
+            "read" => return Ok(crate::reactor::READ),
+            "write" => return Ok(crate::reactor::WRITE),
+            _ => {}
+        }
+    }
+    Err(Error::new(format!("Expected :read or :write, got {}", pr_str(k, true))))
+}
+
+/// The value I/O primitives return when they would block.
+fn again(vm: &mut Vm) -> Value {
+    rt().keyword(&mut vm.m, None, "again")
+}
+
+/// `(%io-read h n)`: up to n bytes, nil at end of input, or :again.
+fn io_read(vm: &mut Vm, h: Value, n: i64) -> Result<Value> {
+    use std::io::Read;
+    let mut buf = vec![0u8; n.clamp(1, 1 << 20) as usize];
+    let r = crate::reactor::with_io(h, |io| match io {
+        crate::reactor::Io::PipeIn(r) => r.read(&mut buf),
+        crate::reactor::Io::Tcp(s) => s.read(&mut buf),
+        _ => Err(std::io::Error::other("this handle can't be read")),
+    })?;
+    match r {
+        Ok(0) => Ok(Value::NIL),
+        Ok(k) => Ok(norn_rt::string::bytes_new(&mut vm.m, &buf[..k])),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(again(vm)),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(again(vm)),
+        Err(e) => Err(Error::new(format!("read failed: {e}"))),
+    }
+}
+
+/// `(%io-write h bytes start)`: bytes written from index start, or :again.
+fn io_write(vm: &mut Vm, h: Value, b: Value, start: i64) -> Result<Value> {
+    use std::io::Write;
+    expect(b, Kind::Bytes, "write")?;
+    let data = b.as_bytes().get(start.max(0) as usize..).unwrap_or(&[]);
+    let r = crate::reactor::with_io(h, |io| match io {
+        crate::reactor::Io::PipeOut(w) => w.write(data),
+        crate::reactor::Io::Tcp(s) => s.write(data),
+        _ => Err(std::io::Error::other("this handle can't be written")),
+    })?;
+    match r {
+        Ok(k) => Ok(Value::fix(k as i64)),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(again(vm)),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(again(vm)),
+        Err(e) => Err(Error::new(format!("write failed: {e}"))),
+    }
 }
 
 /// `(bytes x)`: UTF-8 of a string, a seqable of integers 0–255, or bytes.

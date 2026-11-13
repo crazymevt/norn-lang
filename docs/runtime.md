@@ -389,9 +389,8 @@ that is only the seed compiler holding forms while it calls a macro.
 - **Claims:** every wait is a heap `Waiter` with a `Claim`. Whoever CASes the
   claim first (a channel partner, a timer, a canceller, a finishing fiber)
   delivers the wake-up. An `alts!` shares one claim across its channels.
-- **Not built yet:** the I/O reactor (`mio`) and the monitor thread for
-  blocking FFI arrive with I/O and FFI (M7). The debugger park reason arrives
-  in M3.
+- **The reactor, the blocking pool and the monitor thread** were built in
+  M6 (§5.5).
 - **Preemption** via the reduction budget (§4.2): 2000 reductions per slice.
 
 ### 5.2 Dynamic bindings and conveyance **[decided]**
@@ -474,6 +473,54 @@ operation and parking used to sleep forever. See the handshake in `cancel`
   down the channel.
 - The terminal REPL and the editor server (`server.rs`) are both clients of
   the event bus.
+
+### 5.5 I/O: the reactor, the blocking pool, native regions **[built in M6]**
+
+**The reactor** (`norn-vm/src/reactor.rs`):
+- One thread runs `mio` (kqueue or epoll).
+- Each open pipe or socket is an entry in a handle table. The Norn `Handle`
+  object (a heap kind) holds its number and the process epoch, so a handle
+  restored from an image reports "resource lost" instead of reaching
+  whatever now has that number.
+- **Waiting without lost wake-ups.** Sources are registered edge-triggered,
+  and each entry counts readiness events per direction.
+  - An I/O primitive that would block returns `:again`.
+  - The wrapper then calls `(%io-wait h dir seen)` with the count it read
+    *before* trying. If an event arrived meanwhile the count differs, and it
+    retries at once.
+  - Otherwise it parks on a waiter that the reactor wakes, as the timer
+    thread does.
+- Waiters parked on the reactor are GC roots.
+- Closing a handle drops the source (closing the descriptor) and wakes its
+  waiters, which then find it closed.
+
+**The blocking pool** (`blocking.rs`): threads for calls that block in the
+OS (files, DNS, blocking FFI), so carriers never do.
+- A job's blocking half runs without touching the heap. Its `Finish` turns
+  the result into a Norn value on the pool thread. The thread allocates with
+  its own mutator, as a running participant, and hands the value to the
+  parked fiber.
+- The pool grows on demand to 64 threads; idle threads above 2 exit after
+  30 s.
+- A job can't be interrupted: a cancel takes effect when it ends.
+
+**Native regions and spare carriers** (`sched.rs`):
+- `Vm::native_region` saves the stack, roots the values it's given (a
+  tail call's arguments live only in a Rust vector), and marks the carrier
+  safe for the GC while native code runs. The code it runs must not touch
+  the heap.
+- The **monitor thread** checks every 10 ms. When carriers have been in a
+  native region for more than 20 ms while fibers wait, it starts a spare
+  carrier in one of the extra slots (`n..2n`). A spare retires when it's
+  idle and enough regular carriers are back. All run queues, including the
+  spares', can be stolen from.
+
+**Images.**
+- An image save holds off the timer thread, the reactor and the pool
+  together (`sched::delivering` takes a shared lock; the save takes it
+  exclusively).
+- Fibers waiting on I/O or the pool are saved dead, since what they wait for
+  doesn't exist in the restored process.
 
 ### 5.3 Sync primitives **[M1: atoms, channels, scopes built]**
 

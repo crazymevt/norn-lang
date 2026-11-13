@@ -16,6 +16,12 @@
 //! **Roots.** Run queues, timers, root fibers and each carrier's current fiber
 //! are the GC roots that live outside the heap (`for_each_root`).
 //!
+//! **Native regions and spare carriers.** A carrier inside a long native call
+//! (an FFI call, a heavy primitive) counts as safe for the GC (`enter_native`).
+//! The monitor thread watches for carriers stuck there while work is queued,
+//! and starts a spare carrier in one of the extra slots (`n..2n`). A spare
+//! retires once it's idle and enough regular carriers are back.
+//!
 //! **Pausing.** Saving an image needs every fiber stopped at a resume point.
 //! `pause_all` sets `paused` and waits until no carrier is doing work: a
 //! carrier counts itself `in_flight` before it picks a fiber or handles
@@ -100,7 +106,17 @@ struct Timers {
 // ---- the scheduler ------------------------------------------------------------------
 
 pub struct Sched {
+    /// Configured carriers (NORN_THREADS, or one per core).
     pub n: usize,
+    /// Carrier slots: the `n` regular carriers, then `n` spares.
+    slots: usize,
+    /// Per slot: when its carrier entered a native region (ms since start,
+    /// plus one), or 0.
+    native_since: Vec<AtomicU64>,
+    /// Per slot: is a carrier thread running there?
+    active: Vec<AtomicBool>,
+    /// Values native code is using (tail-call arguments live only in Rust).
+    native_keep: Mutex<HashMap<u64, Vec<Value>>>,
     locals: Vec<Mutex<VecDeque<Value>>>,
     injector: Mutex<VecDeque<Value>>,
     idle: Mutex<()>,
@@ -132,9 +148,14 @@ pub fn sched() -> &'static Sched {
 
 impl Sched {
     fn new(n: usize) -> Sched {
+        let slots = 2 * n;
         Sched {
             n,
-            locals: (0..n).map(|_| Mutex::new(VecDeque::new())).collect(),
+            slots,
+            native_since: (0..slots).map(|_| AtomicU64::new(0)).collect(),
+            active: (0..slots).map(|i| AtomicBool::new(i < n)).collect(),
+            native_keep: Mutex::new(HashMap::new()),
+            locals: (0..slots).map(|_| Mutex::new(VecDeque::new())).collect(),
             injector: Mutex::new(VecDeque::new()),
             idle: Mutex::new(()),
             idle_cv: Condvar::new(),
@@ -143,7 +164,7 @@ impl Sched {
             timer_cv: Condvar::new(),
             external: Mutex::new(VecDeque::new()),
             external_len: AtomicUsize::new(0),
-            currents: (0..n).map(|_| AtomicU64::new(Value::NIL.0)).collect(),
+            currents: (0..slots).map(|_| AtomicU64::new(Value::NIL.0)).collect(),
             roots: Mutex::new(HashMap::new()),
             notifies: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
@@ -173,6 +194,8 @@ impl Sched {
         self.injector.lock().unwrap().iter().for_each(|&v| f(v));
         self.timers.lock().unwrap().entries.values().for_each(|(_, v)| f(*v));
         self.roots.lock().unwrap().values().for_each(|&v| f(v));
+        self.native_keep.lock().unwrap().values().flatten().for_each(|&v| f(v));
+        crate::reactor::for_each_root(f);
         for c in &self.currents {
             let v = Value(c.load(Ordering::Acquire));
             if !v.is_nil() {
@@ -186,7 +209,7 @@ impl Sched {
 pub fn schedule(f: Value) {
     let s = sched();
     let me = CARRIER.with(|c| c.get());
-    if me < s.n {
+    if me < s.slots {
         s.locals[me].lock().unwrap().push_back(f);
     } else {
         s.injector.lock().unwrap().push_back(f);
@@ -227,8 +250,8 @@ fn next_fiber(me: usize) -> Option<Value> {
     if let Some(f) = s.injector.lock().unwrap().pop_front() {
         return Some(f);
     }
-    for k in 1..s.n {
-        let victim = (me + k) % s.n;
+    for k in 1..s.slots {
+        let victim = (me + k) % s.slots;
         if let Some(f) = s.locals[victim].lock().unwrap().pop_back() {
             return Some(f);
         }
@@ -239,7 +262,94 @@ fn next_fiber(me: usize) -> Option<Value> {
 /// Is anything else waiting to run? (Decides whether a time slice yields.)
 pub fn has_other_work(me: usize) -> bool {
     let s = sched();
-    (me < s.n && !s.locals[me].lock().unwrap().is_empty()) || !s.injector.lock().unwrap().is_empty()
+    (me < s.slots && !s.locals[me].lock().unwrap().is_empty()) || !s.injector.lock().unwrap().is_empty()
+}
+
+// ---- native regions, the monitor thread and spare carriers ----------------------------
+
+fn now_ms() -> u64 {
+    static T0: OnceLock<Instant> = OnceLock::new();
+    T0.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// A native region of carrier `me` starts: it stops counting as running for
+/// the GC (the caller has saved its stack and must not touch the heap).
+pub(crate) fn enter_native(me: usize) {
+    let s = sched();
+    if me < s.slots {
+        s.native_since[me].store(now_ms(), Ordering::Release);
+    }
+    safepoint::enter_safe();
+}
+
+/// The native region ends (waits out a GC in progress).
+pub(crate) fn leave_native(me: usize) {
+    safepoint::leave_safe();
+    let s = sched();
+    if me < s.slots {
+        s.native_since[me].store(0, Ordering::Release);
+    }
+}
+
+/// Keep `vs` alive until `unroot_many` (values only native code holds).
+pub(crate) fn root_many(vs: &[Value]) -> u64 {
+    let s = sched();
+    let k = s.next_id();
+    s.native_keep.lock().unwrap().insert(k, vs.to_vec());
+    k
+}
+
+pub(crate) fn unroot_many(k: u64) {
+    sched().native_keep.lock().unwrap().remove(&k);
+}
+
+/// How long a carrier may sit in a native region before it counts as stuck.
+const STUCK_MS: u64 = 20;
+
+fn stuck_carriers(s: &Sched) -> usize {
+    let now = now_ms();
+    (0..s.slots)
+        .filter(|&i| {
+            let t = s.native_since[i].load(Ordering::Acquire);
+            s.active[i].load(Ordering::Acquire) && t != 0 && now - t > STUCK_MS
+        })
+        .count()
+}
+
+fn active_carriers(s: &Sched) -> usize {
+    s.active.iter().filter(|a| a.load(Ordering::Acquire)).count()
+}
+
+fn work_waiting(s: &Sched) -> bool {
+    !s.injector.lock().unwrap().is_empty() || s.locals.iter().any(|q| !q.lock().unwrap().is_empty())
+}
+
+/// Every 10 ms: if carriers are stuck in native code while fibers wait, start
+/// a spare so that `n` carriers are running fibers again.
+fn monitor_main() {
+    let s = sched();
+    loop {
+        std::thread::sleep(Duration::from_millis(10));
+        let stuck = stuck_carriers(s);
+        if stuck == 0 || active_carriers(s) - stuck >= s.n || !work_waiting(s) {
+            continue;
+        }
+        if let Some(slot) = (s.n..s.slots).find(|&i| !s.active[i].load(Ordering::Acquire)) {
+            s.active[slot].store(true, Ordering::Release);
+            start_carrier(slot, None, None);
+        }
+    }
+}
+
+/// Should spare carrier `me` retire? (It's idle, and the regular carriers
+/// can cope again.)
+fn should_retire(s: &Sched, me: usize) -> bool {
+    me >= s.n && active_carriers(s) - stuck_carriers(s) > s.n
+}
+
+/// Number of carrier threads running now (regular and spare).
+pub fn carrier_threads() -> usize {
+    active_carriers(sched())
 }
 
 // ---- pausing (image saves) ---------------------------------------------------------
@@ -310,10 +420,23 @@ pub(crate) struct SavedTimer {
     pub target: Value,
 }
 
-/// Run `f` with the timer thread held off (it wakes fibers, which would
-/// change the heap under an image save), given the pending timers in due order.
+/// Threads outside the carriers (the reactor, the blocking pool) wake fibers
+/// inside `delivering`; an image save holds them all off at once.
+static DELIVERIES: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// Run `f` (which wakes fibers) as a running participant, unless an image
+/// save is in progress, in which case wait for it.
+pub(crate) fn delivering<R>(f: impl FnOnce() -> R) -> R {
+    let _g = DELIVERIES.read().unwrap();
+    safepoint::while_running(f)
+}
+
+/// Run `f` with the timer thread, the reactor and the blocking pool held
+/// off (they wake fibers, which would change the heap under an image save),
+/// given the pending timers in due order.
 pub(crate) fn with_timers_held<R>(f: impl FnOnce(Vec<SavedTimer>) -> R) -> R {
     let s = sched();
+    let _deliveries = DELIVERIES.write().unwrap();
     let t = s.timers.lock().unwrap();
     let now = Instant::now();
     let mut due: Vec<(Instant, u64)> = t.heap.iter().map(|r| r.0).collect();
@@ -831,7 +954,47 @@ fn carrier_loop(vm: &mut Vm) {
         s.idle_count.fetch_sub(1, Ordering::AcqRel);
         drop(g);
         safepoint::leave_safe();
+        if should_retire(s, me) {
+            // Hand back anything queued here, then stop.
+            let left: Vec<Value> = s.locals[me].lock().unwrap().drain(..).collect();
+            s.injector.lock().unwrap().extend(left);
+            s.active[me].store(false, Ordering::Release);
+            s.wake_idle();
+            return;
+        }
     }
+}
+
+/// Start the carrier thread for `slot`. Carrier 0 boots (or restores an
+/// image) first and reports through `boot`.
+fn start_carrier(slot: usize, restore: Option<crate::image::Restore>, boot: Option<mpsc::Sender<Result<(), String>>>) {
+    std::thread::Builder::new()
+        .name(format!("norn-carrier-{slot}"))
+        .stack_size(16 << 20)
+        .spawn(move || {
+            CARRIER.with(|c| c.set(slot));
+            safepoint::register();
+            let mut vm = crate::eval::carrier_vm(slot);
+            if let Some(boot_tx) = boot {
+                let r = match restore {
+                    Some(r) => {
+                        crate::image::restore(&mut vm, r);
+                        Ok(())
+                    }
+                    None => crate::eval::boot(&mut vm).map_err(|e| e.to_string()),
+                };
+                let ok = r.is_ok();
+                let _ = boot_tx.send(r);
+                if !ok {
+                    safepoint::unregister();
+                    return;
+                }
+            }
+            carrier_loop(&mut vm);
+            drop(vm);
+            safepoint::unregister();
+        })
+        .expect("failed to start carrier thread");
 }
 
 // ---- start-up and the public API ----------------------------------------------------------
@@ -883,35 +1046,12 @@ pub fn start_with(image: Option<&std::path::Path>) -> Result<&'static Norn, Erro
         let (boot_tx, boot_rx) = mpsc::channel::<Result<(), String>>();
         let mut restore = Some(restore);
         for id in 0..n {
-            let boot_tx = boot_tx.clone();
-            let restore = if id == 0 { restore.take().flatten() } else { None };
-            std::thread::Builder::new()
-                .name(format!("norn-carrier-{id}"))
-                .stack_size(16 << 20)
-                .spawn(move || {
-                    CARRIER.with(|c| c.set(id));
-                    safepoint::register();
-                    let mut vm = crate::eval::carrier_vm(id);
-                    if id == 0 {
-                        let r = match restore {
-                            Some(r) => {
-                                crate::image::restore(&mut vm, r);
-                                Ok(())
-                            }
-                            None => crate::eval::boot(&mut vm).map_err(|e| e.to_string()),
-                        };
-                        let ok = r.is_ok();
-                        let _ = boot_tx.send(r);
-                        if !ok {
-                            safepoint::unregister();
-                            return;
-                        }
-                    }
-                    carrier_loop(&mut vm);
-                })
-                .expect("failed to start carrier thread");
+            let boot = (id == 0).then(|| boot_tx.clone());
+            start_carrier(id, if id == 0 { restore.take().flatten() } else { None }, boot);
         }
         std::thread::Builder::new().name("norn-timers".into()).spawn(timer_main).expect("failed to start timer thread");
+        std::thread::Builder::new().name("norn-monitor".into()).spawn(monitor_main).expect("failed to start monitor thread");
+        crate::reactor::start();
         match boot_rx.recv() {
             Ok(Ok(())) => {
                 // From here on the GC may run: register the roots that live

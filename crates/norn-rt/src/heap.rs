@@ -266,6 +266,7 @@ pub(crate) fn size_words(kind: Kind, w: impl Fn(usize) -> usize) -> usize {
         Kind::Generic => 2 + generic::WORDS,
         Kind::Instance => 5 + w(2),
         Kind::Weak => 2 + crate::weak::layout::WORDS,
+        Kind::Handle => 2 + crate::conc::handle::WORDS,
     }
 }
 
@@ -380,6 +381,7 @@ pub(crate) fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
         }
         // The referent is weak: only the cleanup is traced.
         Kind::Weak => fields(&[crate::weak::layout::CLEANUP], visit),
+        Kind::Handle => fields(crate::conc::handle::VALUE_FIELDS, visit),
     }
 }
 

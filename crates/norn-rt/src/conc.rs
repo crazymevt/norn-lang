@@ -249,6 +249,38 @@ impl Value {
     }
 }
 
+// ---- OS handles ------------------------------------------------------------------------
+
+/// `Handle: [id][epoch][kind: keyword][info]` — a file, socket or pipe held by
+/// the VM's handle table under `id`. `epoch` is the process that made it: a
+/// handle restored from an image belongs to a process that no longer exists.
+pub mod handle {
+    pub const ID: usize = 0; //    raw
+    pub const EPOCH: usize = 1; // raw
+    pub const KIND: usize = 2;
+    pub const INFO: usize = 3;
+    pub const WORDS: usize = 4;
+    pub const VALUE_FIELDS: &[usize] = &[KIND, INFO];
+}
+
+/// A number unique to this process, stamped on every handle it makes.
+pub fn process_epoch() -> u64 {
+    static E: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+        crate::equal::mix64(t ^ (std::process::id() as u64).rotate_left(32)) | 1
+    })
+}
+
+pub fn handle_new(m: &mut Mutator, id: u64, kind: Value, info: Value) -> Value {
+    let h = alloc(m, Kind::Handle, handle::WORDS);
+    h.set_word(handle::ID, id);
+    h.set_word(handle::EPOCH, process_epoch());
+    h.set_field(handle::KIND, kind);
+    h.set_field(handle::INFO, info);
+    h
+}
+
 // ---- reader state --------------------------------------------------------------------
 
 /// `Reader: [source string][byte position][source name][spare]` — lets Norn

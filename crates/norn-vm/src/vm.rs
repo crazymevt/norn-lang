@@ -242,6 +242,9 @@ pub struct Vm {
     budget: i64,
     seen_attention: u64,
     jit: crate::jit::JitCtx,
+    /// The interpreter state of the innermost `run`, so a primitive can save
+    /// the stack before a native region (null outside `run`).
+    cur_st: *mut St,
 }
 
 fn arity_error(f: Value, n: usize) -> Error {
@@ -278,6 +281,7 @@ impl Vm {
             key_buf: Vec::new(),
             budget: BUDGET,
             seen_attention: 0,
+            cur_st: std::ptr::null_mut(),
             jit: crate::jit::JitCtx {
                 budget: std::ptr::null_mut(),
                 attention: safepoint::attention_ptr(),
@@ -1057,6 +1061,33 @@ impl Vm {
     /// native code from the current pc; it stops at the first instruction it
     /// doesn't handle, which the interpreter then executes.
     unsafe fn run(&mut self, st: &mut St) -> Result<Exit> {
+        let prev = std::mem::replace(&mut self.cur_st, st as *mut St);
+        // SAFETY: as for run_inner.
+        let r = unsafe { self.run_inner(st) };
+        self.cur_st = prev;
+        r
+    }
+
+    /// Run `f` in a native region: other carriers may collect meanwhile, so
+    /// `f` must not touch the heap. The stack is saved first, so the current
+    /// frame (and the arguments in it) stays alive; `keep` holds values the
+    /// frame doesn't (tail-call arguments live in a Rust vector).
+    pub(crate) fn native_region<R>(&mut self, keep: &[Value], f: impl FnOnce() -> R) -> R {
+        if !self.cur_st.is_null() {
+            // SAFETY: cur_st points at the live state of the enclosing run.
+            unsafe { self.save(&*self.cur_st) };
+        }
+        let key = (!keep.is_empty()).then(|| crate::sched::root_many(keep));
+        crate::sched::enter_native(self.carrier);
+        let r = f();
+        crate::sched::leave_native(self.carrier);
+        if let Some(k) = key {
+            crate::sched::unroot_many(k);
+        }
+        r
+    }
+
+    unsafe fn run_inner(&mut self, st: &mut St) -> Result<Exit> {
         let tier1 = crate::jit::enabled();
         unsafe {
             loop {

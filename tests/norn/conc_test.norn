@@ -177,5 +177,34 @@
 (is nil (first (alts! [not-cleaned (timeout 100)])))
 (is false (cancel-cleanup! c))
 
+;;; the reactor: fibers parked on pipes (many pairs at once, to shake out
+;;; lost wake-ups between "would block" and parking)
+(defn- io-retry [h dir f]
+  (loop [] (let [s (%io-seq h dir) r (f)] (if (= r :again) (do (%io-wait h dir s) (recur)) r))))
+(defn- send-all [w b]
+  (loop [i 0] (when (< i (count b)) (recur (+ i (io-retry w :write (fn [] (%io-write w b i))))))))
+(defn- recv-n [r n]
+  (loop [got 0 acc []]
+    (if (>= got n) acc
+      (let [b (io-retry r :read (fn [] (%io-read r (- n got))))]
+        (if b (recur (+ got (count b)) (into acc (seq b))) acc)))))
+(defn- pipe-pair-echo [rounds]
+  (let [ab (%pipe) ba (%pipe)
+        echo (spawn-detached (dotimes [_ rounds] (send-all (nth ba 1) (bytes (recv-n (nth ab 0) 4)))))
+        sum (loop [i 0 acc 0]
+              (if (< i rounds)
+                (do (send-all (nth ab 1) (bytes [1 2 3 (mod i 256)]))
+                    (recur (inc i) (+ acc (reduce + (recv-n (nth ba 0) 4)))))
+                acc))]
+    (await echo)
+    (doseq [h (concat ab ba)] (%io-close h))
+    sum))
+(is (* 50 (+ (* 200 6) (reduce + (map (fn [i] (mod i 256)) (range 200)))))
+    (reduce + (mapv await (mapv (fn [_] (spawn-detached (pipe-pair-echo 200))) (range 50)))))
+(is 0 (:handles (%io-stats)))
+
+;;; (Timing-sensitive checks of the blocking pool and spare carriers run in
+;;; their own process: crates/norn/tests/io.rs.)
+
 (println (str "conc_test: " checks " checks, " failures " failures"))
 (when (pos? failures) (error failures "concurrency tests failed"))

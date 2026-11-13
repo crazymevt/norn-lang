@@ -60,6 +60,7 @@ kinds! {
     Instance => "Instance",
     Weak => "WeakRef",
     Bytes => "Bytes",
+    Handle => "Handle",
 }
 
 /// Static per-kind descriptor. From M2 layouts become heap objects that also
