@@ -13,6 +13,7 @@ pub mod jit;
 pub mod net;
 pub mod numeric;
 pub mod os;
+pub mod owned;
 pub mod prims;
 pub mod reactor;
 pub mod reader;

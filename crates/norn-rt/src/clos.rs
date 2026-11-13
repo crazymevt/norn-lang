@@ -8,11 +8,14 @@
 //! locks or allocation.
 //!
 //! ```text
-//! Class:    [name][supers][cpl][slots][layout][builtin][unused][meta][subclasses]
+//! Class:    [name][supers][cpl][slots][layout][builtin][policy][meta][subclasses]
+//! policy:   nil, or [flags, keys left out of = and hash, settable keys] (a vector)
 //! layout:   Array [k0 … kn-1, d0 … dn-1]: slot keywords, then the values that
 //!           instances made under an older layout get for slots they lack.
 //!           One array, so a redefinition swaps keys and defaults atomically.
 //! Instance: [class][layout][n][slot0 … slotn-1]      immutable
+//!           [class][layout][n | MUTABLE][slots…][owner]   mutable (design §4.2):
+//!           owner = a fiber, nil (free), or [lock-channel holder-atom] (shared)
 //! Generic:  [name][methods][state][epoch][nreq][rest][dispatch][combination][lock][meta]
 //! state:    Array [mask, eqls, cache, class-epoch]   immutable, swapped atomically
 //! cache:    Array [nkeys, cap, count, (k0 … kn-1, em) × cap]   open addressing
@@ -34,12 +37,17 @@ pub mod class {
     pub const SLOTS: usize = 3; // vector of effective slot definitions (maps)
     pub const LAYOUT: usize = 4; // Array [keys…, defaults…] (current class version)
     pub const BUILTIN: usize = 5; // raw: builtin id, or NOT_BUILTIN
-    pub const DEFAULTS: usize = 6; // unused (defaults live in LAYOUT)
+    pub const POLICY: usize = 6; // nil, or vector [flags, excluded keys, mutable keys]
     pub const META: usize = 7; // map: :doc …
     pub const SUBCLASSES: usize = 8; // vector of direct subclasses
     pub const WORDS: usize = 9;
-    pub const VALUE_FIELDS: &[usize] = &[NAME, SUPERS, CPL, SLOTS, LAYOUT, DEFAULTS, META, SUBCLASSES];
+    pub const VALUE_FIELDS: &[usize] = &[NAME, SUPERS, CPL, SLOTS, LAYOUT, POLICY, META, SUBCLASSES];
     pub const NOT_BUILTIN: u64 = u64::MAX;
+    /// Policy flags: instances compare by identity (`(:equality :identity)`,
+    /// and every mutable class).
+    pub const IDENTITY: i64 = 1;
+    /// Policy flags: instances are mutable and owned (`(:mutable)`).
+    pub const MUTABLE: i64 = 2;
 }
 
 pub fn class_new(m: &mut Mutator, name: Value) -> Value {
@@ -52,7 +60,7 @@ pub fn class_new(m: &mut Mutator, name: Value) -> Value {
     }
     let arr = crate::runtime::rt().empty_array;
     c.set_field(LAYOUT, arr);
-    c.set_field(DEFAULTS, arr);
+    c.set_field(POLICY, Value::NIL);
     c.set_word(BUILTIN, NOT_BUILTIN);
     c.set_field(META, crate::runtime::rt().empty_map);
     c
@@ -235,16 +243,50 @@ pub fn layout_new(m: &mut Mutator, keys: &[Value], defaults: &[Value]) -> Value 
     array_from(m, &v)
 }
 
+/// The slot-count word's mark for a mutable instance (it has an owner word
+/// after its slots).
+pub const MUTABLE_INSTANCE: u64 = 1 << 62;
+
+/// A class's policy flags (`class::IDENTITY`, `class::MUTABLE`).
+pub fn policy_flags(c: Value) -> i64 {
+    let p = c.class_field(class::POLICY);
+    if p.is(Kind::Vector) { p.vec_nth(0).as_fixnum() } else { 0 }
+}
+
+/// Is `key` one of the policy's keys at `index` (1: excluded, 2: mutable)?
+fn policy_has(c: Value, index: usize, key: Value) -> bool {
+    let p = c.class_field(class::POLICY);
+    p.is(Kind::Vector) && {
+        let ks = p.vec_nth(index);
+        ks.is(Kind::Vector) && (0..ks.vec_count()).any(|i| ks.vec_nth(i) == key)
+    }
+}
+
+/// Is slot `key` left out of `=` and `hash` (`:compare false`)?
+pub fn slot_excluded(c: Value, key: Value) -> bool {
+    policy_has(c, 1, key)
+}
+
+/// May slot `key` be set (`:mutable true`)?
+pub fn slot_mutable(c: Value, key: Value) -> bool {
+    policy_has(c, 2, key)
+}
+
 /// A new instance of `class` with `vals` in the order of its current layout.
-pub fn instance_new(m: &mut Mutator, class: Value, vals: &[Value]) -> Value {
+/// A mutable class's instance gets `owner` (the creating fiber).
+pub fn instance_new(m: &mut Mutator, class: Value, vals: &[Value], owner: Value) -> Value {
     let layout = class.class_field(class::LAYOUT);
     debug_assert_eq!(layout_len(layout), vals.len());
-    let o = alloc(m, Kind::Instance, 3 + vals.len());
+    let mutable = policy_flags(class) & class::MUTABLE != 0;
+    let o = alloc(m, Kind::Instance, 3 + vals.len() + usize::from(mutable));
     o.set_field(0, class);
     o.set_field(1, layout);
-    o.set_word(2, vals.len() as u64);
+    o.set_word(2, vals.len() as u64 | if mutable { MUTABLE_INSTANCE } else { 0 });
     for (i, &v) in vals.iter().enumerate() {
         o.set_field(3 + i, v);
+    }
+    if mutable {
+        o.set_field(3 + vals.len(), owner);
     }
     o
 }
@@ -257,10 +299,21 @@ impl Value {
         self.field(1)
     }
     pub fn instance_len(self) -> usize {
-        self.word(2) as usize
+        (self.word(2) & !MUTABLE_INSTANCE) as usize
+    }
+    pub fn instance_mutable(self) -> bool {
+        self.word(2) & MUTABLE_INSTANCE != 0
+    }
+    /// The owner word of a mutable instance (atomic: other fibers claim it).
+    pub fn instance_owner(self) -> &'static AtomicU64 {
+        self.atomic_word(3 + self.instance_len())
+    }
+    /// Set slot `i` of the instance's own layout (mutable instances only).
+    pub fn instance_set_raw(self, i: usize, v: Value) {
+        self.atomic_word(3 + i).store(v.0, Ordering::Release)
     }
     pub fn instance_raw(self, i: usize) -> Value {
-        self.field(3 + i)
+        Value(self.atomic_word(3 + i).load(Ordering::Acquire))
     }
 }
 
@@ -289,7 +342,8 @@ pub fn instance_values(inst: Value) -> Vec<Value> {
 }
 
 /// `(with inst :k v …)`: a copy (in the current layout) with slots replaced.
-pub fn instance_with(m: &mut Mutator, inst: Value, kvs: &[Value]) -> Result<Value, String> {
+/// A copy of a mutable instance belongs to `owner`.
+pub fn instance_with(m: &mut Mutator, inst: Value, kvs: &[Value], owner: Value) -> Result<Value, String> {
     let class = inst.instance_class();
     let layout = class.class_field(class::LAYOUT);
     let mut vals = instance_values(inst);
@@ -305,7 +359,7 @@ pub fn instance_with(m: &mut Mutator, inst: Value, kvs: &[Value]) -> Result<Valu
             }
         }
     }
-    Ok(instance_new(m, class, &vals))
+    Ok(instance_new(m, class, &vals, owner))
 }
 
 // ---- generic functions -------------------------------------------------------------

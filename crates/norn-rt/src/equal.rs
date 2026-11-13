@@ -75,8 +75,13 @@ pub fn hash(v: Value) -> u64 {
             mix64(h)
         }
         Kind::Instance => {
-            let mut h = v.instance_class().identity_hash();
-            for x in crate::clos::instance_values(v) {
+            let class = v.instance_class();
+            if crate::clos::policy_flags(class) & crate::clos::class::IDENTITY != 0 {
+                return v.identity_hash();
+            }
+            let mut h = class.identity_hash();
+            for (k, x) in compared_slots(v) {
+                let _ = k;
                 h = h.wrapping_mul(31).wrapping_add(hash(x));
             }
             mix64(h)
@@ -97,6 +102,18 @@ fn hash_sequential(v: Value) -> u64 {
 
 pub fn is_sequential(v: Value) -> bool {
     v.is_cons() || (v.is_obj() && matches!(v.obj_kind(), Kind::Vector | Kind::VecSeq | Kind::Range | Kind::EmptyList))
+}
+
+/// The slots `=` and `hash` look at: the current layout's, less any marked
+/// `:compare false` (design §3.4).
+fn compared_slots(inst: Value) -> Vec<(Value, Value)> {
+    let class = inst.instance_class();
+    let layout = class.class_field(crate::clos::class::LAYOUT);
+    crate::clos::layout_keys(layout)
+        .iter()
+        .filter(|&&k| !crate::clos::slot_excluded(class, k))
+        .map(|&k| (k, crate::clos::slot_get(inst, k).unwrap_or(Value::NIL)))
+        .collect()
 }
 
 pub fn equal(a: Value, b: Value) -> bool {
@@ -137,10 +154,13 @@ pub fn equal(a: Value, b: Value) -> bool {
         }
         Kind::Set => a.set_count() == b.set_count() && a.set_for_each(|k| b.set_contains(k)),
         Kind::Instance => {
-            a.instance_class() == b.instance_class() && {
-                let (x, y) = (crate::clos::instance_values(a), crate::clos::instance_values(b));
-                x.iter().zip(&y).all(|(&p, &q)| equal(p, q))
-            }
+            let class = a.instance_class();
+            class == b.instance_class()
+                && crate::clos::policy_flags(class) & crate::clos::class::IDENTITY == 0
+                && {
+                    let (x, y) = (compared_slots(a), compared_slots(b));
+                    x.iter().zip(&y).all(|(&(_, p), &(_, q))| equal(p, q))
+                }
         }
         _ => false,
     }

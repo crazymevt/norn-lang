@@ -515,8 +515,10 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
             return Err(bad("unknown object kind"));
         }
         let kind = LAYOUTS[k].kind;
-        // Clamp raw size fields so a damaged one can't overflow.
-        let n = size_words(kind, |i| area.get(off + 2 + i).map_or(0, |&x| x.min(1 << 40) as usize));
+        // Mask raw size fields (keeping the mutable-instance mark, bit 62)
+        // so a damaged one can't overflow the size arithmetic.
+        let mask = ((1u64 << 48) - 1) | crate::clos::MUTABLE_INSTANCE;
+        let n = size_words(kind, |i| area.get(off + 2 + i).map_or(0, |&x| (x & mask) as usize));
         if off + n > area.len() || n < 2 {
             return Err(bad("object overruns the image"));
         }

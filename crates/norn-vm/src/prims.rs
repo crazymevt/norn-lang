@@ -114,7 +114,7 @@ prims! {
     "seq" 1 Some(1) => |vm, a| Ok(seq::seq(&mut vm.m, a[0])?);
     "count" 1 Some(1) => |_, a| Ok(Value::fix(seq::count(a[0])? as i64));
     "nth" 2 Some(3) => nth;
-    "get" 2 Some(3) => |_, a| Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL)));
+    "get" 2 Some(3) => |vm, a| { crate::owned::check(vm, a[0], false)?; Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) };
     "assoc" 3 VAR => assoc;
     "dissoc" 1 VAR => |vm, a| { let mut m = a[0]; if m.is_nil() { return Ok(m); } expect(m, Kind::Map, "dissoc")?; for &k in &a[1..] { m = map_dissoc(&mut vm.m, m, k); } Ok(m) };
     "conj" 0 VAR => conj;
@@ -346,8 +346,14 @@ prims! {
     "%register-builtin!" 2 Some(2) => |_, a| { expect(a[1], Kind::Class, "%register-builtin!")?; let n = text(a[0]); if norn_rt::clos::register_builtin(&n, a[1]) { Ok(a[1]) } else { Err(Error::new(format!("Unknown builtin class: {n}"))) } };
     "%bump-class-epoch" 0 Some(0) => |_, _| { norn_rt::clos::bump_class_epoch(); Ok(Value::NIL) };
     "%instance" 2 Some(2) => instance_new;
-    "slot-value" 2 Some(2) => |_, a| slot_value(a[0], a[1]);
-    "with" 1 VAR => |vm, a| { expect(a[0], Kind::Instance, "with")?; if a.len() % 2 != 1 { return Err(Error::new("with expects an instance and slot/value pairs")); } Ok(norn_rt::clos::instance_with(&mut vm.m, a[0], &a[1..])?) };
+    "slot-value" 2 Some(2) => |vm, a| slot_value(vm, a[0], a[1]);
+    "with" 1 VAR => |vm, a| { expect(a[0], Kind::Instance, "with")?; if a.len() % 2 != 1 { return Err(Error::new("with expects an instance and slot/value pairs")); } crate::owned::check(vm, a[0], false)?; Ok(norn_rt::clos::instance_with(&mut vm.m, a[0], &a[1..], vm.current)?) };
+    // owned mutable objects (owned.rs; design §4.2)
+    "%set-slot!" 3 Some(3) => |vm, a| crate::owned::set_slot(vm, a[0], a[1], a[2]);
+    "%release!" 1 Some(1) => |vm, a| crate::owned::release(vm, a[0]);
+    "%share!" 2 Some(2) => |vm, a| crate::owned::share(vm, a[0], a[1]);
+    "%owner" 1 Some(1) => |_, a| Ok(crate::owned::owner(a[0]));
+    "mutable?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Instance) && a[0].instance_mutable()));
     "%gf-new" 5 Some(5) => |vm, a| { let nreq = int(a[1], "%gf-new")?.max(0) as usize; Ok(norn_rt::clos::generic_new(&mut vm.m, a[0], nreq, a[2].truthy(), a[3], a[4])) };
     "%gf-get" 2 Some(2) => gf_get;
     "%gf-set!" 3 Some(3) => gf_set;
@@ -728,7 +734,10 @@ fn assoc(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     }
     for kv in a[1..].chunks(2) {
         c = if c.is(Kind::Instance) {
-            norn_rt::clos::instance_with(&mut vm.m, c, kv)?
+            {
+                crate::owned::check(vm, c, false)?;
+                norn_rt::clos::instance_with(&mut vm.m, c, kv, vm.current)?
+            }
         } else if c.is(Kind::Map) {
             map_assoc(&mut vm.m, c, kv[0], kv[1])
         } else if c.is(Kind::Vector) {
@@ -987,7 +996,7 @@ fn class_field(vm: &mut Vm, k: Value) -> Result<usize> {
         "cpl" => CPL,
         "slots" => SLOTS,
         "layout" => LAYOUT,
-        "defaults" => DEFAULTS,
+        "policy" => POLICY,
         "meta" => META,
         "subclasses" => SUBCLASSES,
         _ => return Err(type_err("%class-get", "a class field keyword", k)),
@@ -998,7 +1007,7 @@ fn class_set(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     use norn_rt::clos::class::*;
     expect(a[0], Kind::Class, "%class-set!")?;
     let f = class_field(vm, a[1])?;
-    if f == LAYOUT || f == DEFAULTS {
+    if f == LAYOUT {
         return Err(Error::new("use %class-set-layout! to change a class's layout"));
     }
     a[0].class_set_field(f, a[2]);
@@ -1012,11 +1021,12 @@ fn instance_new(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     if vals.len() != n {
         return Err(Error::new(format!("%instance: expected {n} slot values, got {}", vals.len())));
     }
-    Ok(norn_rt::clos::instance_new(&mut vm.m, a[0], &vals))
+    Ok(norn_rt::clos::instance_new(&mut vm.m, a[0], &vals, vm.current))
 }
 
-fn slot_value(inst: Value, k: Value) -> Result<Value> {
+fn slot_value(vm: &mut Vm, inst: Value, k: Value) -> Result<Value> {
     expect(inst, Kind::Instance, "slot-value")?;
+    crate::owned::check(vm, inst, false)?;
     norn_rt::clos::slot_get(inst, k).ok_or_else(|| {
         Error::new(format!("{} has no slot {}", pr_str(inst.instance_class().class_field(norn_rt::clos::class::NAME), true), pr_str(k, true)))
     })

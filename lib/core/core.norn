@@ -509,6 +509,18 @@
       ;; Instances made before this definition get these values for the
       ;; slots they lack (initforms evaluated now).
       (%class-set-layout! c keys (mapv (fn [sd] (let [f (:initform sd)] (if f (f) nil))) slots)))
+    ;; The policy the runtime reads (design §3.4, §4.2): identity equality,
+    ;; mutability (inherited from any class in the precedence list), slots
+    ;; left out of = and hash, and settable slots.
+    (let [opts (map (fn [k] (dissoc (%class-get k :meta) :direct-slots)) cpl)
+          mutable (some (fn [o] (:mutable o)) opts)
+          identity (or mutable (some (fn [o] (= :identity (:equality o))) opts))
+          flags (+ (if identity 1 0) (if mutable 2 0))
+          excluded (mapv :name (filter (fn [sd] (= false (:compare sd))) slots))
+          settable (mapv :name (filter :mutable slots))]
+      (when (and (seq settable) (not mutable))
+        (error (pr-str (%class-get c :name)) "has :mutable slots, so it needs the (:mutable) class option"))
+      (%class-set! c :policy (if (and (zero? flags) (empty? excluded)) nil [flags excluded settable])))
     (doseq [sub (%class-get c :subclasses)] (%finalize-class sub))
     c))
 
@@ -581,17 +593,26 @@
         sd (if (:reader o) (assoc sd :reader (list 'quote (:reader o))) sd)
         sd (if (:required o) (assoc sd :required true) sd)
         sd (if (:type o) (assoc sd :type (list 'quote (:type o))) sd)
-        sd (if (:doc o) (assoc sd :doc (:doc o)) sd)]
+        sd (if (:doc o) (assoc sd :doc (:doc o)) sd)
+        sd (if (:mutable o) (assoc sd :mutable true) sd)
+        sd (if (contains? o :compare) (assoc sd :compare (:compare o)) sd)]
     sd))
 
 (defmacro defclass
   "(defclass name (supers…) (slot | (slot :initform x :reader r :initarg :k
-  :required true :type t :doc \"…\")…) (:doc \"…\")…)
+  :required true :type t :doc \"…\" :compare false :mutable true)…)
+  (:doc \"…\") (:equality :identity) (:mutable)…)
 
   Instances are immutable values: build them with (name :k v…) or
   (make name :k v…), read with readers, (:k obj) or slot-value, and update
   with (with obj :k v…). Re-evaluating defclass redefines the class in place;
-  existing instances see the new definition."
+  existing instances see the new definition.
+
+  Equality is structural unless (:equality :identity); a slot with
+  :compare false is left out of = and hash. A (:mutable) class's instances
+  are owned by the fiber that made them, compare by identity, and have
+  their :mutable true slots changed with set-slot! and update-slot!
+  (design §4.2)."
   [cname supers slots & options]
   (let [qname (symbol (name (current-ns)) (name cname))
         specs (mapv %slot-spec slots)
@@ -1101,8 +1122,15 @@
 
 ;; A runtime error raised by Rust code is turned into a call to this, in place
 ;; of the failed operation: its value becomes the operation's value.
+(declare OwnershipError)
+
 (defn %runtime-error [msg trace]
-  (let* [r (restart-case (error (make RuntimeError :message msg :trace trace))
+  ;; Errors from Rust carry only a message; "Ownership: …" ones are
+  ;; OwnershipErrors (owned mutable objects, design §4.2).
+  (let* [cls (if (and (string? msg) (>= (count msg) 11) (= "Ownership: " (subs msg 0 11)))
+               (var-get (var OwnershipError))
+               RuntimeError)
+         r (restart-case (error (make cls :message msg :trace trace))
              (use-value [v] :report "Return a value from the failed operation instead" v)
              (retry [] :report "Try the failed operation again (e.g. after defining or fixing something)"
                     (%retry-marker)))]
@@ -1180,12 +1208,15 @@
   (put! (:chan (%debug-entry id)) [:abort])
   :ok)
 
+(declare *inspecting*)
+
 (defn eval-in-frame
   "Evaluate form with frame i's locals of fiber id bound."
   [id i form]
   (let [fr (nth (%frames (:fiber (%debug-entry id))) i)
         bs (reduce-kv (fn [acc k v] (conj (conj acc k) (list 'quote v))) [] (:locals fr))]
-    (eval (list 'let* bs form))))
+    (binding [*inspecting* true]
+      (eval (list 'let* bs form)))))
 
 ;;; ---- loading, the REPL, and the editor protocol -------------------------------------------
 
@@ -1526,3 +1557,71 @@
     `(do (in-ns '~name)
          ~@(map (fn [r] `(require '~r)) reqs)
          nil)))
+
+;;; ---- owned mutable objects (design §4.2) ---------------------------------------------------
+;;;
+;;; A (:mutable) class's instance belongs to the fiber that made it: another
+;;; fiber touching it gets an OwnershipError. Hand it over with release! (or
+;;; by sending it on a channel: the receiver claims it on first touch), or
+;;; share it: then any fiber may read it, and changes happen inside
+;;; (locking obj …), which parks rather than spins.
+
+(defclass OwnershipError (RuntimeError) ())
+
+;; Bound true while the debugger or the inspector reads objects that belong
+;; to other fibers (allowed for reading only).
+(def *inspecting* false)
+
+(defn owner
+  "The fiber that owns mutable object o, :shared, or nil when it is free."
+  [o]
+  (let [w (%owner o)]
+    (if (vector? w) :shared w)))
+
+(defn- %lock-of [o] (let [w (%owner o)] (when (vector? w) w)))
+
+(defn %with-lock
+  "Run (thunk) holding shared object o's lock (reentrant)."
+  [o thunk]
+  (let [[ch holder] (or (%lock-of o) (error "locking needs a shared object (see share):" (pr-str o)))
+        me (current-fiber)]
+    (if (identical? @holder me)
+      (thunk)
+      (do (take! ch)
+          (reset! holder me)
+          (try (thunk)
+               (finally (reset! holder nil) (put! ch :token)))))))
+
+(defmacro locking
+  "(locking obj body…): body runs holding shared object obj's lock, so its
+  changes are atomic to every other fiber."
+  [o & body]
+  `(%with-lock ~o (fn [] ~@body)))
+
+(defn share
+  "Make mutable object o shared: any fiber may read it, and changes take its
+  lock (set-slot! and update-slot! do so themselves). Returns o."
+  [o]
+  (let [ch (chan 1)]
+    (put! ch :token)
+    (%share! o [ch (atom nil)])))
+
+(defn release!
+  "Give up ownership of mutable object o: the next fiber to touch it claims
+  it. Returns o."
+  [o]
+  (%release! o))
+
+(defn set-slot!
+  "Set :mutable slot k of mutable object o to v. Returns v."
+  [o k v]
+  (if (%lock-of o)
+    (locking o (%set-slot! o k v))
+    (%set-slot! o k v)))
+
+(defn update-slot!
+  "Set :mutable slot k of o to (f old args…), atomically for shared objects.
+  Returns the new value."
+  [o k f & args]
+  (let [step (fn [] (%set-slot! o k (apply f (slot-value o k) args)))]
+    (if (%lock-of o) (locking o (step)) (step))))

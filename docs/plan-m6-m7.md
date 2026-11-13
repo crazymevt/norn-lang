@@ -172,3 +172,17 @@ Decisions for M7 are at the end, after M6's.
   last.
 - **The FFI's 64-bit results** now come back as bignums when they don't fit
   a fixnum, and `:u64` arguments accept bignums.
+- **Class policy.** The unused class field 6 became `POLICY`:
+  `[flags excluded-keys settable-keys]`, computed by `defclass` over the
+  whole class precedence list, so subclasses inherit mutability and
+  identity equality. `=` and `hash` read it in Rust; no user code runs.
+- **Mutable instances** carry one extra owner word after their slots,
+  marked by bit 62 of the slot-count word, so the GC and images size them
+  correctly. The image loader masks raw size fields rather than clamping
+  them, keeping that bit.
+- **Rust errors only carry a message**, so `Ownership: …` messages become
+  `OwnershipError`s in `%runtime-error`. A general mechanism for typed
+  errors from Rust is left for later.
+- **Shared objects:** reads skip the lock and writes take it (design §4.2).
+  The lock is a one-token channel plus a holder atom, so it parks; it's
+  reentrant.

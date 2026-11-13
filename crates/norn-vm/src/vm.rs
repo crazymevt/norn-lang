@@ -594,6 +594,7 @@ impl Vm {
                 return Err(arity_error(f, args.len()));
             }
             let d = args.get(1).copied().unwrap_or(Value::NIL);
+            crate::owned::check(self, args[0], false)?;
             return Ok(crate::prims::get(args[0], f).unwrap_or(d));
         }
         if !f.is_obj() {

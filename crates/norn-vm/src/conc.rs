@@ -131,6 +131,7 @@ pub fn put(vm: &mut Vm, c: Value, v: Value) -> Result<Value> {
     if v.is_nil() {
         return Err(Error::new("Can't put nil on a channel"));
     }
+    crate::owned::release_on_send(vm, v);
     let _g = spin_lock(c, chan::LOCK);
     if let Some(r) = try_put_locked(&mut vm.m, c, v) {
         return Ok(Value::bool(r));
@@ -168,6 +169,7 @@ pub fn offer(vm: &mut Vm, c: Value, v: Value) -> Result<Value> {
     if v.is_nil() {
         return Err(Error::new("Can't put nil on a channel"));
     }
+    crate::owned::release_on_send(vm, v);
     let _g = spin_lock(c, chan::LOCK);
     Ok(Value::bool(try_put_locked(&mut vm.m, c, v).unwrap_or(false)))
 }

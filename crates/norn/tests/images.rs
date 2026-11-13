@@ -272,3 +272,21 @@ fn foreign_functions_work_again_after_a_restore() {
     // The library reloads and the symbol re-resolves without a ResourceLost.
     assert_eq!(eval(Some(&img), r#"[(c-strlen "hello") (c-strlen "")]"#), "[5 0]");
 }
+
+#[test]
+fn mutable_objects_owned_by_the_saver_are_free_after_a_restore() {
+    let d = scratch("owned");
+    let img = d.join("owned.nimg");
+    eval(
+        None,
+        &format!(
+            r#"(do (defclass counter () ((n :mutable true :initform 0)) (:mutable))
+                   (def c (counter))
+                   (set-slot! c :n 5)
+                   (:objects (save-image "{}")))"#,
+            img.display()
+        ),
+    );
+    // The saving fiber didn't survive, so the object is free to claim.
+    assert_eq!(eval(Some(&img), "(do (update-slot! c :n inc) [(:n c) (identical? (owner c) (current-fiber))])"), "[6 true]");
+}

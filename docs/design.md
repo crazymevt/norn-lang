@@ -156,10 +156,10 @@ even inside a parallel fold (runtime.md §2.3).
   compares with newer ones through the class's current layout. A slot it
   lacks counts as that slot's default.
 
-*Status:* structural equality, identity types, number categories,
-reflexive NaN and the numeric-tower rules are built (M7, runtime.md §2.5).
-The `:equality` and `:compare` declarations come with mutable objects
-(M7).
+*Status:* built in M7: structural equality, identity types, number
+categories, reflexive NaN, the numeric-tower rules (runtime.md §2.5), and
+the `:equality` and `:compare` declarations, which the runtime reads from a
+policy kept in each class.
 
 ---
 
@@ -282,8 +282,17 @@ Mutable objects are opt-in and **owned** **[decided, 2026-11-13]**:
   races into clear errors, for one load and compare per access.
 - **Cost:** a hidden owner word, on instances of mutable classes only.
 
-*Status:* to build in M7. Instances are immutable today; there is no way to
-set a slot.
+*Status:* built in M7 (`norn-vm/src/owned.rs`). Details decided while
+building:
+- A shared object's single-slot reads don't take its lock; only changes
+  do. A read is one atomic word; use `locking` when several reads must
+  agree.
+- Bulk views (`keys`, `vals`, `seq`, the printer) only observe, and aren't
+  checked.
+- `owner` reports the owning fiber, `:shared` or nil.
+- `with` on a mutable object makes a copy owned by the caller.
+- `OwnershipError` is a subclass of `RuntimeError`.
+- Subclasses of a `(:mutable)` class are mutable too.
 
 ### 4.3 Meta-object protocol **[decided]**
 

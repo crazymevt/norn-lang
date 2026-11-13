@@ -264,7 +264,7 @@ pub(crate) fn size_words(kind: Kind, w: impl Fn(usize) -> usize) -> usize {
         Kind::Scope => 2 + scope::WORDS,
         Kind::Class => 2 + class::WORDS,
         Kind::Generic => 2 + generic::WORDS,
-        Kind::Instance => 5 + w(2),
+        Kind::Instance => 5 + (w(2) & !(crate::clos::MUTABLE_INSTANCE as usize)) + usize::from(w(2) & crate::clos::MUTABLE_INSTANCE as usize != 0),
         Kind::Weak => 2 + crate::weak::layout::WORDS,
         Kind::Handle => 2 + crate::conc::handle::WORDS,
         Kind::BigInt => 3 + (w(0) & !(1usize << 63)),
@@ -380,7 +380,10 @@ pub(crate) fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
         Kind::Generic => fields(generic::VALUE_FIELDS, visit),
         Kind::Instance => {
             fields(&[0, 1], visit);
-            (3..3 + w(2)).for_each(|i| visit(slot_at(field(i))));
+            // The slots, then a mutable instance's owner word.
+            let n = (w(2) as u64 & !crate::clos::MUTABLE_INSTANCE) as usize;
+            let owner = usize::from(w(2) as u64 & crate::clos::MUTABLE_INSTANCE != 0);
+            (3..3 + n + owner).for_each(|i| visit(slot_at(field(i))));
         }
         // The referent is weak: only the cleanup is traced.
         Kind::Weak => fields(&[crate::weak::layout::CLEANUP], visit),

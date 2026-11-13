@@ -237,5 +237,60 @@
 (defmethod norn.core/reconnect ((g gadget)) :again)
 (is :again (norn.core/reconnect (gadget)))
 
+;;; ---- equality declarations (design §3.4) ----
+(defclass tagged () ((v) (note :compare false)))
+(defclass entity () ((id)) (:equality :identity))
+(is true (= (tagged :v 1 :note "a") (tagged :v 1 :note "b")))
+(is true (= (hash (tagged :v 1 :note "a")) (hash (tagged :v 1 :note "b"))))
+(is false (= (tagged :v 1) (tagged :v 2)))
+(is false (= (entity :id 1) (entity :id 1)))
+(is true (let [e (entity :id 1)] (= e e)))
+(is 2 (count (set [(entity :id 1) (entity :id 1)])))
+(defclass entity-child (entity) ((name)))
+(is false (= (entity-child :id 1) (entity-child :id 1)))
+
+;;; ---- owned mutable objects (design §4.2) ----
+(defclass account () ((holder) (balance :mutable true :initform 0)) (:mutable))
+(def acct (account :holder "jo"))
+(is true (mutable? acct))
+(is false (mutable? (tagged :v 1)))
+(is true (identical? (current-fiber) (owner acct)))
+(is false (= (account :holder "x") (account :holder "x")))
+(is 10 (set-slot! acct :balance 10))
+(is 15 (update-slot! acct :balance + 5))
+(is 15 (:balance acct))
+(is :error (try (set-slot! acct :holder "x") (catch Error e :error)))
+(is :error (try (set-slot! (tagged :v 1) :v 2) (catch Error e :error)))
+(is :not-yours (await (spawn-detached (try (:balance acct) (catch OwnershipError e :not-yours)))))
+(is :not-yours (await (spawn-detached (try (set-slot! acct :balance 0) (catch OwnershipError e :not-yours)))))
+(is 15 (await (spawn-detached (binding [*inspecting* true] (:balance acct)))))
+;; release!: the next fiber to touch it claims it
+(release! acct)
+(is nil (owner acct))
+(def taker (spawn-detached (update-slot! acct :balance inc) (current-fiber)))
+(is true (identical? (await taker) (owner acct)))
+;; its owner has finished, so it is free again
+(is 16 (:balance acct))
+(is true (identical? (current-fiber) (owner acct)))
+;; sent on a channel: the receiver claims it
+(let [c (account :holder "ch") ch (chan 1)]
+  (put! ch c)
+  (is nil (owner c))
+  (is 99 (await (spawn-detached (let [x (take! ch)] (set-slot! x :balance 99) (:balance x))))))
+;; shared: every fiber may use it; changes take its lock
+(let [b (share (account :holder "kim"))]
+  (is :shared (owner b))
+  (mapv await (mapv (fn [_] (spawn-detached (dotimes [_ 100] (update-slot! b :balance inc)))) (range 10)))
+  (is 1000 (:balance b))
+  (is [1000 1000] (locking b [(:balance b) (locking b (:balance b))])))
+(is :error (try (locking (account) 1) (catch Error e :error)))
+;; with on a mutable object: a copy that the caller owns
+(let [copy (with acct :holder "copy")]
+  (is true (identical? (current-fiber) (owner copy)))
+  (is [16 "copy"] [(:balance copy) (:holder copy)]))
+(is :needs-mutable (try (defclass bad () ((v :mutable true))) (catch Error e :needs-mutable)))
+(defclass savings (account) ((rate)))
+(is true (mutable? (savings :holder "s")))
+
 (println (str "clos_test: " checks " checks, " failures " failures"))
 (when (pos? failures) (error failures "CLOS tests failed"))
