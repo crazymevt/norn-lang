@@ -32,6 +32,11 @@ fn conc_suite() {
 }
 
 #[test]
+fn clos_suite() {
+    suite("clos_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [

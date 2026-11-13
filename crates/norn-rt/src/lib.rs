@@ -4,6 +4,7 @@
 //! collections, structural equality/hashing, printer, namespaces and vars.
 
 pub mod array;
+pub mod clos;
 pub mod conc;
 pub mod equal;
 pub mod func;

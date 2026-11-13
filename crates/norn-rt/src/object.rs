@@ -55,6 +55,9 @@ kinds! {
     Scope => "Scope",
     Atom => "Atom",
     Reader => "Reader",
+    Class => "Class",
+    Generic => "GenericFunction",
+    Instance => "Instance",
 }
 
 /// Static per-kind descriptor. From M2 layouts become heap objects that also
@@ -193,6 +196,7 @@ impl Value {
                 Kind::EmptyList => "List",
                 Kind::Closure => "Function",
                 Kind::Fiber => "Fiber",
+                Kind::Instance => self.field(0).class_field(crate::clos::class::NAME).sym_name(),
                 k => LAYOUTS[k as usize].name,
             }
         } else if self.is_nil() {

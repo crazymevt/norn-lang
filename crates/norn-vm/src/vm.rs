@@ -163,6 +163,7 @@ pub struct Vm {
     pub(crate) want_gc: bool,
     spare: Value,
     scratch: Vec<Value>,
+    key_buf: Vec<Value>,
     budget: i64,
     seen_attention: u64,
 }
@@ -197,6 +198,7 @@ impl Vm {
             want_gc: false,
             spare: Value::NIL,
             scratch: Vec::new(),
+            key_buf: Vec::new(),
             budget: BUDGET,
             seen_attention: 0,
         }
@@ -423,6 +425,58 @@ impl Vm {
 
     // ---- calls ----
 
+    /// A loom.core function the interpreter redirects to (resolved once).
+    fn core_fn(&mut self, name: &str, cell: &'static std::sync::OnceLock<Value>) -> Value {
+        *cell.get_or_init(|| {
+            let sym = rt().symbol(&mut self.m, None, name);
+            self.core.lookup(sym).unwrap_or(Value::NIL)
+        })
+    }
+
+    /// Generic functions and classes are callable. Work out what to call
+    /// instead: `(target, None)` calls target with the same arguments;
+    /// `(target, Some(args))` with new ones.
+    ///
+    /// The dispatch hot path (runtime.md §6): compute the key from the
+    /// specialised arguments' classes and probe the generic function's
+    /// cache, lock-free. A hit calls the cached effective method directly; a
+    /// miss calls `%gf-miss` (Norn) in this fiber, which computes the
+    /// effective method, caches it and calls it.
+    fn redirect(&mut self, f: Value, args: &[Value]) -> Result<(Value, Option<Vec<Value>>)> {
+        use norn_rt::clos::generic;
+        static MAKE: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        static MISS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        static CUSTOM: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        let with_self = |target: Value| {
+            let mut v = Vec::with_capacity(args.len() + 1);
+            v.push(f);
+            v.extend_from_slice(args);
+            (target, Some(v))
+        };
+        if f.is(Kind::Class) {
+            let make = self.core_fn("make", &MAKE);
+            return Ok(with_self(make));
+        }
+        let nreq = f.gf_nreq();
+        if args.len() < nreq || (!f.gf_rest() && args.len() != nreq) {
+            return Err(arity_error(f, args.len()));
+        }
+        if !f.field(generic::DISPATCH).is_nil() {
+            let custom = self.core_fn("%gf-dispatch-custom", &CUSTOM);
+            return Ok(with_self(custom));
+        }
+        let mut key = std::mem::take(&mut self.key_buf);
+        let hit = norn_rt::clos::dispatch_cached(f, args, &mut key);
+        self.key_buf = key;
+        match hit {
+            Some(em) => Ok((em, None)),
+            None => {
+                let miss = self.core_fn("%gf-miss", &MISS);
+                Ok(with_self(miss))
+            }
+        }
+    }
+
     /// Call a primitive after checking its arity.
     pub(crate) fn call_prim(&mut self, f: Value, args: &[Value]) -> Result<Value> {
         if args.len() < f.prim_min() || args.len() > f.prim_max() {
@@ -503,6 +557,15 @@ impl Vm {
                 if f.is(Kind::Var) {
                     f = Self::deref_var(f)?;
                     continue;
+                }
+                if f.is(Kind::Generic) || f.is(Kind::Class) {
+                    match self.redirect(f, args)? {
+                        (g, None) => {
+                            f = g;
+                            continue;
+                        }
+                        (g, Some(v)) => return self.invoke(st, g, &v, dest),
+                    }
                 }
                 let val = if f.is(Kind::Primitive) {
                     match f.prim_index() {
@@ -622,6 +685,15 @@ impl Vm {
             if f.is(Kind::Var) {
                 f = Self::deref_var(f)?;
                 continue;
+            }
+            if f.is(Kind::Generic) || f.is(Kind::Class) {
+                match self.redirect(f, args)? {
+                    (g, None) => {
+                        f = g;
+                        continue;
+                    }
+                    (g, Some(v)) => return self.apply_inner(g, &v),
+                }
             }
             if f.is(Kind::Primitive) {
                 if f.prim_index() == APPLY {

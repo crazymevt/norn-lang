@@ -105,6 +105,12 @@ type-preserving** (`(map inc [1 2])` → `[2 3]`); laziness is explicit via
 Note: CLOS is Common Lisp's. Clojure's analogues (protocols and
 multimethods) are folded in here as special cases.
 
+**Status (M2):** §4.1, §4.2 (immutable instances) and §4.4 are implemented;
+see [runtime.md §6](runtime.md#6-generic-function-dispatch). Not yet built:
+`define-method-combination`, protocol sugar, mutable owned instances, the
+full MOP (§4.3), `print-object`, and `initialize-instance`. Slot readers are
+plain functions for now, not generic functions.
+
 ### 4.1 The basics **[decided]**
 
 ```clojure
@@ -136,9 +142,23 @@ multimethods) are folded in here as special cases.
 
 - Multiple inheritance with C3 linearization (CL's CPL is close; C3 is
   more predictable).
+- **Every value has a class.** The builtin classes are capitalised vars in
+  `norn.core`, so they never clash with functions of the same name:
+  `Object`, `Number`, `Integer`, `Float`, `String`, `Symbol`, `Keyword`,
+  `Null`, `Boolean`, `Character`, `Collection`, `Sequential`, `List`,
+  `Vector`, `Seq`, `Map`, `Set`, `Function`, `GenericFunction`, `Class`,
+  `Var`, `Fiber`, `Channel`, `Atom`, `Scope`. User classes inherit from
+  `StandardObject`. `(defmethod describe ((x Integer)) …)` extends a builtin
+  class directly.
 - Specializers: classes, `(eql value)`, and **custom dispatch**
-  (`(defgeneric render (x) (:dispatch (fn [x] (:format x))))`) — which gives
-  Clojure multimethods for free.
+  (`(defgeneric render (x) (:dispatch :format))`), which gives Clojure
+  multimethods for free:
+
+  ```clojure
+  (defmethod render :html [x] …)        ; dispatch value, then [params]
+  (defmethod render [:md :fancy] [x] …) ; vector dispatch values work too
+  (defmethod render :default [x] …)
+  ```
 - Method combinations: `standard` (`:before :after :around`), `+`, `and`,
   `or`, `list`, `progn`, plus `define-method-combination`.
 - **Protocols** are sugar: a named bundle of generic functions you can
@@ -185,11 +205,17 @@ hooks haven't been specialised.
   cache tagged with that epoch, so a check costs one load and one compare.
   `defmethod` bumps the epoch → every core sees the new method on its next
   call.
-- **Class redefinition** keeps CL semantics: each instance header points at a
-  class *version*; on first access after a redefinition the instance is
-  migrated (`update-instance-for-redefined-class`) under a per-object CAS.
-  Because instances are immutable from the program's point of view, migrating
-  them in place is invisible.
+- **Class redefinition** keeps the class object (and so every reference to it)
+  and gives it a new *layout*. Instances are never rewritten. Each one keeps
+  the layout it was made with and is read *through* it, as the class is now
+  defined:
+  - a slot the class added reads as that slot's initform, evaluated at
+    redefinition time;
+  - a slot the class removed is gone;
+  - `with` produces an instance in the current layout.
+
+  (As built in M2. This replaces the in-place migration first proposed here:
+  for immutable values there is nothing to migrate.)
 
 ---
 

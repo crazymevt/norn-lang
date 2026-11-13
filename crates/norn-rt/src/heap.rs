@@ -16,6 +16,7 @@
 //! (run queues, timers, running fibers). Fiber stacks are scanned as part of
 //! their fiber object, up to each segment's live top.
 
+use crate::clos::{class, generic};
 use crate::conc::{chan, fiber, scope, waiter};
 use crate::func::SEG_HEADER;
 use crate::object::{Kind, Layout};
@@ -255,6 +256,9 @@ fn object_words(p: *const u64) -> usize {
         Kind::Chan => 2 + chan::WORDS,
         Kind::Waiter => 2 + waiter::WORDS,
         Kind::Scope => 2 + scope::WORDS,
+        Kind::Class => 2 + class::WORDS,
+        Kind::Generic => 2 + generic::WORDS,
+        Kind::Instance => 5 + w(2),
     }
 }
 
@@ -361,6 +365,12 @@ fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
         Kind::Waiter => fields(&[0, 1, 2, 3], visit),
         Kind::Scope => fields(scope::VALUE_FIELDS, visit),
         Kind::Reader => fields(&[0, 2], visit),
+        Kind::Class => fields(class::VALUE_FIELDS, visit),
+        Kind::Generic => fields(generic::VALUE_FIELDS, visit),
+        Kind::Instance => {
+            fields(&[0, 1], visit);
+            (3..3 + w(2)).for_each(|i| visit(slot_at(field(i))));
+        }
     }
 }
 

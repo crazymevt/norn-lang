@@ -390,22 +390,59 @@ finalisers or extra root tables.
 
 ## 6. Generic function dispatch
 
-**[proposed]**
+**[implemented in M2]** — `norn-rt/src/clos.rs` holds the shapes and the hot
+path; `lib/core/core.norn` holds the policy.
 
-- A generic function object holds an atomically swappable pointer to an
-  immutable **dispatch cache**, itself a Norn persistent map: our own data
-  structures, used for our own runtime.
-- Cache key: the tuple of layouts (not classes — this also catches obsolete
-  instances) of the *specialised* argument positions only. Cache value: the
-  compiled **effective method** (method combination already applied).
-- **Lookup tiers** (borrowed from PCL/SBCL "dfun states"): one entry →
-  monomorphic check; 2–8 → linear probe; more → hash. Custom-dispatch generic
-  functions key the cache on the dispatch value.
-- **Redefinition** (`defmethod`, `defclass`, MOP changes) computes the
-  invalidation set, swaps in empty caches and bumps the generic function's
-  epoch. Tier-1 call-site inline caches compare the epoch, so a fiber on
-  another core sees the change on its next call. No locks are taken on the
-  read path.
+**Objects.**
+
+```
+Class:    [name][supers][cpl][slots][layout][builtin][-][meta][subclasses]
+Instance: [class][layout][n][slot0 … slotn-1]          immutable
+layout:   Array [k0 … kn-1, d0 … dn-1]                 slot keywords, then defaults
+Generic:  [name][methods][state][epoch][nreq][rest][dispatch][combination][lock][meta]
+state:    Array [mask, eqls, cache, class-epoch]        immutable, swapped atomically
+cache:    Array [nkeys, cap, count, (k0 … kn-1, em) × cap]
+```
+
+**Hot path** (in the interpreter; Rust never calls Norn):
+
+1. Load the generic function's `state` (one acquire load).
+2. If its class epoch isn't the current global class epoch, it's a miss.
+3. For each specialised position in `mask`, the key part is the argument
+   itself if it's in that position's `eql` set, otherwise its class.
+4. Probe the open-addressed cache (no allocation, no locks).
+5. On a hit, the interpreter *continues its call loop* with the cached
+   effective method, so the generic function adds no frame of its own.
+6. On a miss, it calls `%gf-miss` (Norn) in the same fiber, which computes the
+   applicable methods, sorts them by specificity, and builds the effective
+   method. The effective method is a fixed-arity function compiled with
+   `eval`, with the method functions embedded as constants. `%gf-miss` caches
+   it and tail-calls it.
+
+**Correctness under redefinition.**
+- `defmethod` replaces the methods with a CAS and swaps in a fresh `state` (empty
+  cache) under the generic function's spinlock, then bumps its epoch.
+- A miss records the epoch and class epoch *before* reading the methods, and
+  installs its result only if neither has changed: a CAS on `state` from the
+  snapshot it started from. A stale effective method can therefore never be
+  cached.
+- `defclass` bumps the global class epoch, which invalidates every cache at
+  once (class precedence may have changed anywhere below the class).
+- Because mask, `eql` sets, cache and epoch live in one immutable object,
+  readers always see a consistent snapshot.
+
+**Methods** take the next-method function as a hidden first argument;
+`call-next-method` and `next-method?` are bound only if the body uses them.
+Custom-dispatch generic functions compute the dispatch value in Norn and key
+the cache on it.
+
+**Measured** (release, tier 0, Apple M-series): a generic call costs about
+39 ns more than a plain call (107 vs 68 ns). 8 fibers on 8 cores sustain
+about 37.8M generic calls per second, and after a live `defmethod` every one
+of them saw the new method within 167 µs.
+
+**Later:** tier-1 call-site inline caches keyed on the same epochs; readers
+as generic functions; `define-method-combination`; the full MOP.
 
 ---
 
@@ -571,7 +608,7 @@ together.
 |---|---|---|
 | M0 ✅ | Workspace, `Value`/object model, cons/vector/map/string, reader, printer, seed compiler, tier-0 VM on heap stacks, REPL; NoGC heap | `(reduce + (range 1000000))` at the REPL; macOS JIT spike works |
 | M1 ✅ | Fibers, scheduler, safepoints, MMTk GC (non-moving Immix), atoms, channels, scopes | 1M fibers ping-pong across all cores under GC stress |
-| M2 | CLOS in Norn: `defclass`, layouts, generic functions, method combination, dispatch caches | Live `defmethod` while 8 cores call the generic function |
+| M2 ✅ | CLOS in Norn: `defclass`, layouts, generic functions, method combination, dispatch caches | Live `defmethod` while 8 cores call the generic function |
 | M3 | Conditions, restarts, parked-fiber debugger, REPL protocol | Fix a crashed fiber from the editor and resume it |
 | M4 | Real compiler in Norn, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
 | M5 | Images: save/load, layers, parked fibers, `on-image-restore` | Under 50 ms startup; a saved fiber resumes after load |
@@ -651,6 +688,38 @@ together.
 | Error locations (`file:line`) for code loaded through `load-file`, which now runs in Norn | M3 |
 | I/O reactor, FFI monitor thread | M7 |
 | Generational GC (needs write barriers) | — |
+
+### 12.3 M2 status (2026-11-13)
+
+**Built:**
+- **Classes and instances:**
+  - builtin class hierarchy (every value has a class);
+  - `defclass` with multiple inheritance (C3), slot options `:initform`, `:initarg`, `:reader`, `:required`, `:type` and `:doc`;
+  - `make`, and calling a class as its constructor;
+  - immutable instances with `with`/`assoc`, keyword and `get` access, structural `=`/`hash`, and printing as `#ns/class{…}`.
+- **Generic functions:**
+  - `defgeneric`/`defmethod` with multiple dispatch and `eql` specializers;
+  - the standard method combination (`:before`, `:after`, `:around`, `call-next-method`, `next-method?`) and the `+ and or list progn max min vector` combinations;
+  - `& rest` lambda lists;
+  - custom dispatch (multimethod style), `%remove-method`.
+- **Live redefinition:** of methods and of classes (including superclasses, with subclasses recomputed); old instances are read through their own layout.
+- **Bit operations:** `bit-and`, `bit-or`, and the rest.
+
+**Verified:**
+- `tests/norn/clos_test.norn` (91 checks), also under `NORN_GC_STRESS=1` (1,379 GCs) and at 1, 2, 3 and 10 carriers.
+- `bench/dispatch.norn` (the done-check): 8 fibers, a live `defmethod` seen by all within 167 µs; under `NORN_GC_STRESS=1`, 1,895 GCs and still correct.
+
+**Found along the way:** a lost wake-up from M1. A fiber cancelled between
+starting a blocking operation and parking slept forever with its cancel
+flag set. It showed up as a rare `cargo test` hang once the CLOS suite
+loaded the machine, and was reproduced deterministically by cancelling
+20,000 freshly spawned fibers blocked on `take!`. The fix is a store-then-
+load handshake on PARK/CANCEL with sequentially consistent ordering (see
+`cancel` in sched.rs). It has its own commit and regression tests.
+
+**Known gaps:**
+- A miss compiles the effective method with `eval`, which takes about 21 µs per new argument-class combination (measured with one primary and one `:before` method).
+- Class redefinition invalidates every generic function's cache.
 
 ---
 

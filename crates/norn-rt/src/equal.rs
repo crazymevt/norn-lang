@@ -64,6 +64,13 @@ pub fn hash(v: Value) -> u64 {
             });
             mix64(h)
         }
+        Kind::Instance => {
+            let mut h = v.instance_class().identity_hash();
+            for x in crate::clos::instance_values(v) {
+                h = h.wrapping_mul(31).wrapping_add(hash(x));
+            }
+            mix64(h)
+        }
         _ => v.identity_hash(),
     }
 }
@@ -112,6 +119,12 @@ pub fn equal(a: Value, b: Value) -> bool {
                 && a.map_for_each(|k, v| matches!(b.map_get(k), Some(w) if equal(v, w)))
         }
         Kind::Set => a.set_count() == b.set_count() && a.set_for_each(|k| b.set_contains(k)),
+        Kind::Instance => {
+            a.instance_class() == b.instance_class() && {
+                let (x, y) = (crate::clos::instance_values(a), crate::clos::instance_values(b));
+                x.iter().zip(&y).all(|(&p, &q)| equal(p, q))
+            }
+        }
         _ => false,
     }
 }

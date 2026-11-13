@@ -202,6 +202,33 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
             out.push('>');
         }
         Kind::Chan => out.push_str("#<channel>"),
+        Kind::Class => {
+            out.push_str("#<class ");
+            write_value(out, v.class_field(crate::clos::class::NAME), readably);
+            out.push('>');
+        }
+        Kind::Generic => {
+            out.push_str("#<generic ");
+            write_value(out, v.field(crate::clos::generic::NAME), readably);
+            out.push('>');
+        }
+        Kind::Instance => {
+            // #user/circle{:radius 3}, like a Clojure record.
+            let class = v.instance_class();
+            out.push('#');
+            write_value(out, class.class_field(crate::clos::class::NAME), readably);
+            out.push('{');
+            let layout = class.class_field(crate::clos::class::LAYOUT);
+            for (i, (&k, x)) in crate::clos::layout_keys(layout).iter().zip(crate::clos::instance_values(v)).enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_value(out, k, readably);
+                out.push(' ');
+                write_value(out, x, readably);
+            }
+            out.push('}');
+        }
         Kind::Scope => out.push_str("#<scope>"),
         k => {
             let _ = write!(out, "#<{k:?}>");

@@ -445,3 +445,436 @@
   "M0: switch to (creating) a namespace. :require arrives with modules (M6)."
   [name & _]
   `(in-ns '~name))
+
+;;; ---- classes (design.md §4) --------------------------------------------------------
+;;;
+;;; The runtime provides the shapes and the dispatch hot path (norn-rt clos.rs);
+;;; the policy lives here: C3 linearisation, slot inheritance, applicable
+;;; methods, specificity and method combination.
+
+(defn- %index-of [v x]
+  (loop [i 0 s (seq v)]
+    (cond (nil? s) nil
+          (identical? (first s) x) i
+          :else (recur (inc i) (next s)))))
+
+(defn- %c3-merge [seqs]
+  (loop [seqs (filter seq seqs) out []]
+    (if (empty? seqs)
+      out
+      (let [head-ok (fn [h] (not-any? (fn [s] (%index-of (vec (rest s)) h)) seqs))
+            cand (some (fn [s] (let [h (first s)] (when (head-ok h) h))) seqs)]
+        (when (nil? cand)
+          (error "Inconsistent class precedence (no C3 linearisation)"))
+        (recur (filter seq (map (fn [s] (if (identical? (first s) cand) (vec (rest s)) s)) seqs))
+               (conj out cand))))))
+
+(defn- %compute-cpl [c supers]
+  (into [c] (%c3-merge (conj (mapv (fn [s] (%class-get s :cpl)) supers) (vec supers)))))
+
+(defn- %slot-index [slots k]
+  (loop [i 0]
+    (cond (>= i (count slots)) nil
+          (= (:name (nth slots i)) k) i
+          :else (recur (inc i)))))
+
+;; Least specific class first, so inherited slots lead the layout; a more
+;; specific class's definition of the same slot is merged over the inherited one.
+(defn- %effective-slots [cpl]
+  (reduce (fn [acc c]
+            (reduce (fn [acc sd]
+                      (let [i (%slot-index acc (:name sd))]
+                        (if i (assoc acc i (merge (nth acc i) sd)) (conj acc sd))))
+                    acc
+                    (get (%class-get c :meta) :direct-slots [])))
+          []
+          (reverse cpl)))
+
+(defn- %finalize-class [c]
+  (let [cpl (%compute-cpl c (%class-get c :supers))
+        slots (%effective-slots cpl)
+        keys (mapv :name slots)]
+    (%class-set! c :cpl cpl)
+    (%class-set! c :slots slots)
+    (when (not= keys (%class-get c :layout))
+      ;; Instances made before this definition get these values for the
+      ;; slots they lack (initforms evaluated now).
+      (%class-set-layout! c keys (mapv (fn [sd] (let [f (:initform sd)] (if f (f) nil))) slots)))
+    (doseq [sub (%class-get c :subclasses)] (%finalize-class sub))
+    c))
+
+(defn %ensure-class
+  "Create class `cname`, or redefine `existing` in place (its identity, and so
+  every reference to it, stays valid)."
+  [existing cname supers direct-slots opts]
+  (let [c (if (class? existing) existing (%class-new cname))
+        supers (vec supers)]
+    (doseq [s (%class-get c :supers)]
+      (%class-set! s :subclasses (vec (remove (fn [x] (identical? x c)) (%class-get s :subclasses)))))
+    (doseq [s supers]
+      (when-not (class? s) (error "Not a class:" (pr-str s)))
+      (%class-set! s :subclasses (conj (vec (remove (fn [x] (identical? x c)) (%class-get s :subclasses))) c)))
+    (%class-set! c :supers supers)
+    (%class-set! c :meta (assoc opts :direct-slots direct-slots))
+    (%finalize-class c)
+    (%bump-class-epoch)
+    c))
+
+(defn- %defbuiltin [sym supers builtin]
+  (let [c (%ensure-class nil (symbol "norn.core" (name sym)) supers [] {})]
+    (when builtin (%register-builtin! builtin c))
+    c))
+
+(def Object (%defbuiltin 'Object [] "object"))
+(%register-builtin! "other" Object)
+(def Null (%defbuiltin 'Null [Object] "null"))
+(def Boolean (%defbuiltin 'Boolean [Object] "boolean"))
+(def Character (%defbuiltin 'Character [Object] "character"))
+(def Number (%defbuiltin 'Number [Object] nil))
+(def Integer (%defbuiltin 'Integer [Number] "integer"))
+(def Float (%defbuiltin 'Float [Number] "float"))
+(def String (%defbuiltin 'String [Object] "string"))
+(def Symbol (%defbuiltin 'Symbol [Object] "symbol"))
+(def Keyword (%defbuiltin 'Keyword [Object] "keyword"))
+(def Collection (%defbuiltin 'Collection [Object] nil))
+(def Sequential (%defbuiltin 'Sequential [Collection] nil))
+(def List (%defbuiltin 'List [Sequential] "list"))
+(def Vector (%defbuiltin 'Vector [Sequential] "vector"))
+(def Seq (%defbuiltin 'Seq [Sequential] "seq"))
+(def Map (%defbuiltin 'Map [Collection] "map"))
+(def Set (%defbuiltin 'Set [Collection] "set"))
+(def Function (%defbuiltin 'Function [Object] "function"))
+(def GenericFunction (%defbuiltin 'GenericFunction [Function] "generic-function"))
+(def Var (%defbuiltin 'Var [Object] "var"))
+(def Fiber (%defbuiltin 'Fiber [Object] "fiber"))
+(def Channel (%defbuiltin 'Channel [Object] "channel"))
+(def Atom (%defbuiltin 'Atom [Object] "atom"))
+(def Scope (%defbuiltin 'Scope [Object] "scope"))
+(def Class (%defbuiltin 'Class [Object] "class"))
+(def StandardObject (%defbuiltin 'StandardObject [Object] nil))
+
+(defn class-name [c] (%class-get c :name))
+(defn class-precedence-list [c] (%class-get c :cpl))
+(defn class-direct-superclasses [c] (%class-get c :supers))
+(defn class-direct-subclasses [c] (%class-get c :subclasses))
+(defn class-slots [c] (%class-get c :slots))
+
+(defn- %slot-spec [s]
+  (let [s (if (symbol? s) (list s) s)
+        sname (first s)
+        o (apply hash-map (rest s))
+        k (keyword (name sname))
+        sd {:name k :initarg (get o :initarg k)}
+        sd (if (contains? o :initform) (assoc sd :initform (list 'fn* [] (:initform o))) sd)
+        sd (if (:reader o) (assoc sd :reader (list 'quote (:reader o))) sd)
+        sd (if (:required o) (assoc sd :required true) sd)
+        sd (if (:type o) (assoc sd :type (list 'quote (:type o))) sd)
+        sd (if (:doc o) (assoc sd :doc (:doc o)) sd)]
+    sd))
+
+(defmacro defclass
+  "(defclass name (supers…) (slot | (slot :initform x :reader r :initarg :k
+  :required true :type t :doc \"…\")…) (:doc \"…\")…)
+
+  Instances are immutable values: build them with (name :k v…) or
+  (make name :k v…), read with readers, (:k obj) or slot-value, and update
+  with (with obj :k v…). Re-evaluating defclass redefines the class in place;
+  existing instances see the new definition."
+  [cname supers slots & options]
+  (let [qname (symbol (name (current-ns)) (name cname))
+        specs (mapv %slot-spec slots)
+        opts (reduce (fn [m o] (if (seq? o) (assoc m (first o) (if (next o) (second o) true)) m)) {} options)
+        supers (if (seq supers) (vec supers) ['norn.core/StandardObject])
+        readers (keep (fn [s]
+                        (let [s (if (symbol? s) (list s) s)
+                              r (get (apply hash-map (rest s)) :reader)]
+                          (when r `(defn ~r [o#] (slot-value o# ~(keyword (name (first s))))))))
+                      slots)]
+    `(do (def ~cname (%ensure-class (%bound-value '~cname) '~qname ~supers ~specs ~opts))
+         ~@readers
+         (var ~cname))))
+
+(defn make
+  "Make an instance of class c from :initarg value pairs. (c :k v…) does the same."
+  [c & initargs]
+  (when-not (and (class? c) (subclass? c StandardObject))
+    (error "Can't make an instance of" (pr-str (if (class? c) (class-name c) c))))
+  (when (odd? (count initargs))
+    (error "make expects :initarg value pairs, got" (pr-str initargs)))
+  (let [slots (%class-get c :slots)
+        args (apply hash-map initargs)]
+    (doseq [k (keys args)]
+      (when-not (some (fn [sd] (= k (:initarg sd))) slots)
+        (error (pr-str (class-name c)) "has no initarg" (pr-str k))))
+    (%instance c (mapv (fn [sd]
+                         (let [k (:initarg sd)]
+                           (cond (contains? args k) (get args k)
+                                 (:initform sd) ((:initform sd))
+                                 (:required sd) (error "Missing required slot" (pr-str (:name sd))
+                                                       "for" (pr-str (class-name c)))
+                                 :else nil)))
+                       slots))))
+
+(defn instance->map [o] (zipmap (keys o) (vals o)))
+
+;;; ---- generic functions ---------------------------------------------------------------
+
+(defn %eql
+  "An eql specializer: the method applies when the argument equals v."
+  [v]
+  [:eql v])
+
+(defn- %eql-spec? [s] (and (vector? s) (= 2 (count s)) (= :eql (first s))))
+
+(defn- %lambda-shape [params]
+  (loop [ps (seq params) n 0]
+    (cond (nil? ps) [n false]
+          (= (first ps) '&) [n true]
+          :else (recur (next ps) (inc n)))))
+
+(defn %ensure-generic [existing gname nreq rest? combination dispatch]
+  (if (and (generic? existing)
+           (or (and (= nreq (%gf-get existing :nreq)) (= rest? (%gf-get existing :rest)))
+               (seq (%gf-get existing :methods))))
+    (do (when-not (and (= nreq (%gf-get existing :nreq)) (= rest? (%gf-get existing :rest)))
+          (error "Lambda list doesn't match the existing generic function" (pr-str gname)))
+        (when-not (= combination (%gf-get existing :combination))
+          (%gf-set! existing :combination combination))
+        (when-not (= dispatch (%gf-get existing :dispatch))
+          (%gf-set! existing :dispatch dispatch))
+        existing)
+    (%gf-new gname nreq rest? combination dispatch)))
+
+(defmacro defgeneric
+  "(defgeneric name (params…) \"doc\"? (:method-combination +)? (:dispatch f)?)
+
+  Without :dispatch, methods dispatch on the classes of all required
+  arguments (and eql specializers). With (:dispatch f), on the value of
+  (apply f args), Clojure-multimethod style."
+  [gname params & options]
+  (let [options (if (string? (first options)) (rest options) options)
+        opt (fn [k] (some (fn [o] (when (and (seq? o) (= (first o) k)) (second o))) options))
+        shape (%lambda-shape params)
+        comb (or (opt :method-combination) :standard)
+        comb (if (symbol? comb) (keyword (name comb)) comb)]
+    `(def ~gname (%ensure-generic (%bound-value '~gname) '~(symbol (name (current-ns)) (name gname))
+                                  ~(first shape) ~(second shape) ~comb ~(opt :dispatch)))))
+
+(defn %generic-for-method
+  "The generic function a defmethod adds to: the existing one (options kept),
+  or a new standard one."
+  [existing gname nreq rest?]
+  (if (generic? existing)
+    (if (and (= nreq (%gf-get existing :nreq)) (= rest? (%gf-get existing :rest)))
+      existing
+      (error "Method lambda list doesn't match the generic function" (pr-str gname)))
+    (%gf-new gname nreq rest? :standard nil)))
+
+(defn- %spec-mask [methods]
+  (reduce (fn [mask m]
+            (loop [i 0 mask mask s (seq (:specs m))]
+              (if s
+                (recur (inc i) (if (identical? (first s) Object) mask (bit-or mask (bit-shift-left 1 i))) (next s))
+                mask)))
+          0 methods))
+
+(defn- %eql-sets [methods nreq]
+  (let [sets (reduce (fn [acc m]
+                       (loop [i 0 acc acc s (seq (:specs m))]
+                         (if s
+                           (recur (inc i)
+                                  (if (%eql-spec? (first s)) (assoc acc i (conj (or (nth acc i) #{}) (second (first s)))) acc)
+                                  (next s))
+                           acc)))
+                     (vec (repeat nreq nil)) methods)]
+    (when (some some? sets) sets)))
+
+(defn %add-method [gf specs qualifier f]
+  (let [m {:specs specs :qualifier qualifier :fn f}]
+    (loop []
+      (let [old (%gf-get gf :methods)
+            new (conj (vec (remove (fn [x] (and (= (:specs x) specs) (= (:qualifier x) qualifier))) old)) m)]
+        (if (%gf-cas-methods! gf old new (%spec-mask new) (%eql-sets new (%gf-get gf :nreq)))
+          gf
+          (recur))))))
+
+(defn %remove-method [gf specs qualifier]
+  (loop []
+    (let [old (%gf-get gf :methods)
+          new (vec (remove (fn [x] (and (= (:specs x) specs) (= (:qualifier x) qualifier))) old))]
+      (if (%gf-cas-methods! gf old new (%spec-mask new) (%eql-sets new (%gf-get gf :nreq)))
+        gf
+        (recur)))))
+
+(defn generic-methods [gf] (%gf-get gf :methods))
+
+(defn %dv-spec
+  "Specializer for a custom-dispatch method's dispatch value."
+  [dv]
+  (cond (= dv :default) Object
+        (class? dv) dv
+        :else (%eql dv)))
+
+(defn- %uses? [form sym]
+  (cond (= form sym) true
+        (coll? form) (some (fn [x] (%uses? x sym)) form)
+        :else false))
+
+(defn %no-next-method [gname]
+  (error "No next method for" (pr-str gname)))
+
+(defmacro defmethod
+  "CLOS style:  (defmethod name qualifier? ((x Class) (y (eql v)) z) body…)
+  Custom dispatch (gf defined with :dispatch):
+                (defmethod name qualifier? dispatch-value [params…] body…)
+  Qualifiers: :before :after :around, or the combination's name (+, and, …).
+  In the body, (call-next-method) and (next-method?) are available."
+  [gname & more]
+  (let [i (loop [i 0 s more]
+            (cond (nil? s) (error "defmethod" gname "has no parameter list")
+                  (or (list? (first s)) (vector? (first s))) i
+                  :else (recur (inc i) (next s))))
+        clos? (list? (nth more i))
+        ;; Custom style: dispatch-value then [params]; the dispatch value may itself be a vector.
+        two-vecs? (and (not clos?) (vector? (nth more (inc i) nil)))
+        pi (if two-vecs? (inc i) i)
+        dv-i (cond clos? nil two-vecs? i :else (dec i))
+        _ (when (and (not clos?) (neg? dv-i)) (error "defmethod" gname "needs a dispatch value before [params]"))
+        quals (take (if clos? i dv-i) more)
+        qualifier (when (seq quals) (let [q (first quals)] (if (symbol? q) (keyword (name q)) q)))
+        params (nth more pi)
+        body (drop (inc pi) more)
+        req (take-while (fn [p] (not= p '&)) params)
+        rest-part (drop-while (fn [p] (not= p '&)) params)
+        pnames (mapv (fn [p] (if (seq? p) (first p) p)) req)
+        specs (if clos?
+                (mapv (fn [p]
+                        (if (seq? p)
+                          (let [s (second p)]
+                            (if (and (seq? s) (= (first s) 'eql)) `(%eql ~(second s)) s))
+                          'norn.core/Object))
+                      req)
+                [`(%dv-spec ~(nth more dv-i))])
+        lam (into pnames rest-part)
+        rest-sym (second rest-part)
+        nxt (gensym "next")
+        call-next (if rest-sym `(apply ~nxt ~@pnames ~rest-sym) `(~nxt ~@pnames))
+        bindings (concat
+                   (when (%uses? body 'call-next-method)
+                     [(symbol "call-next-method")
+                      `(fn* ([] (if ~nxt ~call-next (%no-next-method '~gname)))
+                            ([& args#] (if ~nxt (apply ~nxt args#) (%no-next-method '~gname))))])
+                   (when (%uses? body 'next-method?)
+                     [(symbol "next-method?") `(fn* [] (some? ~nxt))]))
+        shape (%lambda-shape params)
+        mname (symbol (str (name gname) "-method"))]
+    `(def ~gname
+       (%add-method (%generic-for-method (%bound-value '~gname) '~(symbol (name (current-ns)) (name gname))
+                                         ~(first shape) ~(second shape))
+                    ~specs ~qualifier
+                    (fn* ~mname [~nxt ~@lam] (let* [~@bindings] ~@body))))))
+
+;;; ---- dispatch: the miss path ------------------------------------------------------------
+;;;
+;;; The interpreter probes a generic function's cache itself (runtime.md §6).
+;;; On a miss it calls %gf-miss, which finds the applicable methods, sorts
+;;; them by specificity, compiles an effective method for this combination of
+;;; argument classes, and caches it.
+
+(defn- %spec-matches? [spec arg]
+  (if (%eql-spec? spec) (= arg (second spec)) (instance? spec arg)))
+
+;; Custom dispatch: methods specialise on the dispatch value.
+(defn- %dv-matches? [spec dv]
+  (cond (%eql-spec? spec) (= dv (second spec))
+        (identical? spec Object) true
+        (class? dv) (subclass? dv spec)
+        :else (instance? spec dv)))
+
+(defn- %spec-cmp [s1 s2 cpl]
+  (cond (= s1 s2) 0
+        (%eql-spec? s1) -1
+        (%eql-spec? s2) 1
+        :else (- (or (%index-of cpl s1) 1000000) (or (%index-of cpl s2) 1000000))))
+
+(defn- %method-cmp [cpls]
+  (fn [m1 m2]
+    (loop [c (seq cpls) x (seq (:specs m1)) y (seq (:specs m2))]
+      (if (and c x y)
+        (let [r (%spec-cmp (first x) (first y) (first c))]
+          (if (zero? r) (recur (next c) (next x) (next y)) r))
+        0))))
+
+(defn- %chain
+  "A next-method function: calls methods[0] with the chain of the rest, ending in final."
+  [methods final]
+  (if (seq methods)
+    (let [m (first methods) n (%chain (rest methods) final)]
+      (fn* [& args] (apply m n args)))
+    final))
+
+(def ^:private %combination-ops
+  {:+ 'norn.core/+ :and 'norn.core/and :or 'norn.core/or :list 'norn.core/list
+   :progn 'do :max 'norn.core/max :min 'norn.core/min :vector 'norn.core/vector})
+
+(defn- %no-applicable [gf]
+  (let [gname (%gf-get gf :name)]
+    (fn* [& args] (error "No applicable method for" (pr-str gname) "with arguments" (pr-str args)))))
+
+(defn %build-em
+  "Compile the effective method for `methods` (applicable, unsorted). cpls:
+  the class precedence lists to sort specificity by, one per dispatched position."
+  [gf methods cpls]
+  (let [gname (%gf-get gf :name)
+        comb (%gf-get gf :combination)
+        sorted (sort (%method-cmp cpls) methods)
+        q (fn [k] (mapv :fn (filter (fn [m] (= (:qualifier m) k)) sorted)))
+        arounds (q :around)
+        prims (if (= comb :standard) (q nil) (into (q nil) (q comb)))
+        nreq (%gf-get gf :nreq)
+        rest? (%gf-get gf :rest)
+        ps (mapv (fn [_] (gensym "a")) (range nreq))
+        r (gensym "rest")
+        lam (if rest? (conj ps '& r) ps)
+        call (fn [f nxt] (if rest? `(apply ~f ~nxt ~@ps ~r) `(~f ~nxt ~@ps)))
+        main (cond
+               (empty? prims) nil
+               (= comb :standard)
+               (let [pcall (call (first prims) (%chain (rest prims) nil))
+                     befores (q :before)
+                     afters (reverse (q :after))]
+                 (if (or (seq befores) (seq afters))
+                   `(do ~@(map (fn [f] (call f nil)) befores)
+                        (let* [result# ~pcall] ~@(map (fn [f] (call f nil)) afters) result#))
+                   pcall))
+               :else
+               (let [op (or (get %combination-ops comb) (error "Unknown method combination" comb))]
+                 `(~op ~@(map (fn [f] (call f nil)) prims))))
+        ename (symbol (str (name gname) "-effective"))]
+    (cond
+      (nil? main) (%no-applicable gf)
+      (seq arounds)
+      (let [inner (eval `(fn* [~@lam] ~main))]
+        (eval `(fn* ~ename [~@lam] ~(call (first arounds) (%chain (rest arounds) inner)))))
+      :else (eval `(fn* ~ename [~@lam] ~main)))))
+
+(defn %gf-miss [gf & args]
+  (let [token (%gf-token gf)
+        key (%gf-key gf args)
+        methods (filter (fn [m] (every? identity (map %spec-matches? (:specs m) args)))
+                        (%gf-get gf :methods))
+        em (%build-em gf methods (mapv (fn [a] (%class-get (class-of a) :cpl)) args))]
+    (%gf-cache-put! gf token key em)
+    (apply em args)))
+
+(defn %gf-dispatch-custom [gf & args]
+  (let [dv (apply (%gf-get gf :dispatch) args)
+        key [dv]
+        em (%gf-cache-get gf key)]
+    (if em
+      (apply em args)
+      (let [token (%gf-token gf)
+            methods (filter (fn [m] (%dv-matches? (first (:specs m)) dv)) (%gf-get gf :methods))
+            em (%build-em gf methods [(%class-get (if (class? dv) dv (class-of dv)) :cpl)])]
+        (%gf-cache-put! gf token key em)
+        (apply em args)))))

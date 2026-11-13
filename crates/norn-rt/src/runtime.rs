@@ -191,4 +191,5 @@ pub fn for_each_root(f: &mut dyn FnMut(Value)) {
     if let Some(r) = RT.get() {
         r.visit_roots(f);
     }
+    crate::clos::for_each_root(f);
 }

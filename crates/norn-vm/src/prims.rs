@@ -187,6 +187,36 @@ prims! {
     "compare-and-set!" 3 Some(3) => |_, a| { expect(a[0], Kind::Atom, "compare-and-set!")?; Ok(Value::bool(a[0].atom_cas(a[1], a[2]))) };
     "carrier-count" 0 Some(0) => |_, _| Ok(Value::fix(crate::sched::sched().n as i64));
     "fiber-stats" 0 Some(0) => fiber_stats;
+    // classes, instances, generic functions (runtime half of CLOS; policy is in core.norn)
+    "class-of" 1 Some(1) => |_, a| Ok(norn_rt::clos::class_of(a[0]));
+    "class?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Class)));
+    "generic?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Generic)));
+    "instance?" 2 Some(2) => |_, a| { expect(a[0], Kind::Class, "instance?")?; let c = norn_rt::clos::class_of(a[1]); Ok(Value::bool(!c.is_nil() && norn_rt::clos::is_subclass(c, a[0]))) };
+    "subclass?" 2 Some(2) => |_, a| { expect(a[0], Kind::Class, "subclass?")?; expect(a[1], Kind::Class, "subclass?")?; Ok(Value::bool(norn_rt::clos::is_subclass(a[0], a[1]))) };
+    "%class-new" 1 Some(1) => |vm, a| Ok(norn_rt::clos::class_new(&mut vm.m, a[0]));
+    "%class-get" 2 Some(2) => |vm, a| { expect(a[0], Kind::Class, "%class-get")?; let f = class_field(vm, a[1])?; let v = a[0].class_field(f); Ok(if f == norn_rt::clos::class::LAYOUT { vec_from_slice(&mut vm.m, norn_rt::clos::layout_keys(v)) } else { v }) };
+    "%class-set-layout!" 3 Some(3) => |vm, a| { expect(a[0], Kind::Class, "%class-set-layout!")?; let k = to_vec(vm, a[1])?; let d = to_vec(vm, a[2])?; if k.len() != d.len() { return Err(Error::new("%class-set-layout!: keys and defaults differ in length")); } let l = norn_rt::clos::layout_new(&mut vm.m, &k, &d); a[0].class_set_field(norn_rt::clos::class::LAYOUT, l); Ok(a[0]) };
+    "%bound-value" 1 Some(1) => |vm, a| { Ok(match vm.resolve(a[0]) { Some(v) if v.var_root() != Value::UNBOUND => v.var_root(), _ => Value::NIL }) };
+    "bit-and" 2 VAR => |_, a| bits(a, "bit-and", |x, y| x & y);
+    "bit-or" 2 VAR => |_, a| bits(a, "bit-or", |x, y| x | y);
+    "bit-xor" 2 VAR => |_, a| bits(a, "bit-xor", |x, y| x ^ y);
+    "bit-not" 1 Some(1) => |_, a| Ok(Value::fix(!int(a[0], "bit-not")?));
+    "bit-shift-left" 2 Some(2) => |_, a| { let (x, n) = (int(a[0], "bit-shift-left")?, int(a[1], "bit-shift-left")?); if !(0..62).contains(&n) { return Err(Error::new("shift out of range")); } Value::fixnum(x.checked_shl(n as u32).ok_or_else(overflow)?).ok_or_else(overflow) };
+    "bit-shift-right" 2 Some(2) => |_, a| { let (x, n) = (int(a[0], "bit-shift-right")?, int(a[1], "bit-shift-right")?); Ok(Value::fix(x >> n.clamp(0, 63))) };
+    "%class-set!" 3 Some(3) => class_set;
+    "%register-builtin!" 2 Some(2) => |_, a| { expect(a[1], Kind::Class, "%register-builtin!")?; let n = text(a[0]); if norn_rt::clos::register_builtin(&n, a[1]) { Ok(a[1]) } else { Err(Error::new(format!("Unknown builtin class: {n}"))) } };
+    "%bump-class-epoch" 0 Some(0) => |_, _| { norn_rt::clos::bump_class_epoch(); Ok(Value::NIL) };
+    "%instance" 2 Some(2) => instance_new;
+    "slot-value" 2 Some(2) => |_, a| slot_value(a[0], a[1]);
+    "with" 1 VAR => |vm, a| { expect(a[0], Kind::Instance, "with")?; if a.len() % 2 != 1 { return Err(Error::new("with expects an instance and slot/value pairs")); } Ok(norn_rt::clos::instance_with(&mut vm.m, a[0], &a[1..])?) };
+    "%gf-new" 5 Some(5) => |vm, a| { let nreq = int(a[1], "%gf-new")?.max(0) as usize; Ok(norn_rt::clos::generic_new(&mut vm.m, a[0], nreq, a[2].truthy(), a[3], a[4])) };
+    "%gf-get" 2 Some(2) => gf_get;
+    "%gf-set!" 3 Some(3) => gf_set;
+    "%gf-cas-methods!" 5 Some(5) => |vm, a| { expect(a[0], Kind::Generic, "%gf-cas-methods!")?; let mask = int(a[3], "%gf-cas-methods!")? as u64; Ok(Value::bool(norn_rt::clos::gf_set_methods(&mut vm.m, a[0], a[1], a[2], mask, a[4]))) };
+    "%gf-token" 1 Some(1) => |vm, a| { expect(a[0], Kind::Generic, "%gf-token")?; Ok(vec_from_slice(&mut vm.m, &[Value::fix(a[0].gf_epoch() as i64), Value::fix(norn_rt::clos::class_epoch() as i64)])) };
+    "%gf-key" 2 Some(2) => |vm, a| { expect(a[0], Kind::Generic, "%gf-key")?; let args = to_vec(vm, a[1])?; let mut key = Vec::new(); norn_rt::clos::dispatch_key(a[0].gf_state(), &args, &mut key); Ok(vec_from_slice(&mut vm.m, &key)) };
+    "%gf-cache-get" 2 Some(2) => gf_cache_get;
+    "%gf-cache-put!" 4 Some(4) => gf_cache_put;
     "exit" 0 Some(1) => |_, a| { let _ = std::io::stdout().flush(); std::process::exit(a.first().map(|v| v.as_fixnum() as i32).unwrap_or(0)) };
 }
 
@@ -466,6 +496,7 @@ pub fn get(coll: Value, key: Value) -> Option<Value> {
         return None;
     }
     match coll.obj_kind() {
+        Kind::Instance => norn_rt::clos::slot_get(coll, key),
         Kind::Map => coll.map_get(key),
         Kind::Set => coll.set_contains(key).then_some(key),
         Kind::Vector => index_of(key).filter(|&i| i < coll.vec_count()).map(|i| coll.vec_nth(i)),
@@ -493,7 +524,9 @@ fn assoc(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         c = map_empty();
     }
     for kv in a[1..].chunks(2) {
-        c = if c.is(Kind::Map) {
+        c = if c.is(Kind::Instance) {
+            norn_rt::clos::instance_with(&mut vm.m, c, kv)?
+        } else if c.is(Kind::Map) {
             map_assoc(&mut vm.m, c, kv[0], kv[1])
         } else if c.is(Kind::Vector) {
             match index_of(kv[0]).filter(|&i| i <= c.vec_count()) {
@@ -548,6 +581,8 @@ fn contains(_: &mut Vm, a: &[Value]) -> Result<Value> {
         false
     } else if c.is(Kind::Map) {
         c.map_get(k).is_some()
+    } else if c.is(Kind::Instance) {
+        norn_rt::clos::slot_get(c, k).is_some()
     } else if c.is(Kind::Set) {
         c.set_contains(k)
     } else if c.is(Kind::Vector) {
@@ -560,6 +595,11 @@ fn contains(_: &mut Vm, a: &[Value]) -> Result<Value> {
 fn map_part(vm: &mut Vm, m: Value, keys: bool) -> Result<Value> {
     if m.is_nil() {
         return Ok(Value::NIL);
+    }
+    if m.is(Kind::Instance) {
+        let layout = m.instance_class().class_field(norn_rt::clos::class::LAYOUT);
+        let xs: Vec<Value> = if keys { norn_rt::clos::layout_keys(layout).to_vec() } else { norn_rt::clos::instance_values(m) };
+        return Ok(if xs.is_empty() { Value::NIL } else { list_from(&mut vm.m, &xs) });
     }
     expect(m, Kind::Map, if keys { "keys" } else { "vals" })?;
     let mut xs = Vec::new();
@@ -730,4 +770,122 @@ fn fiber_stats(vm: &mut Vm, _: &[Value]) -> Result<Value> {
         Value::fix(spawned - finished),
     ];
     hash_map(vm, &kvs)
+}
+
+// ---- CLOS support ----------------------------------------------------------------------
+
+fn class_field(vm: &mut Vm, k: Value) -> Result<usize> {
+    use norn_rt::clos::class::*;
+    let name = if k.is_keyword() { k.sym_name().to_owned() } else { String::new() };
+    let _ = vm;
+    Ok(match name.as_str() {
+        "name" => NAME,
+        "supers" => SUPERS,
+        "cpl" => CPL,
+        "slots" => SLOTS,
+        "layout" => LAYOUT,
+        "defaults" => DEFAULTS,
+        "meta" => META,
+        "subclasses" => SUBCLASSES,
+        _ => return Err(type_err("%class-get", "a class field keyword", k)),
+    })
+}
+
+fn class_set(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    use norn_rt::clos::class::*;
+    expect(a[0], Kind::Class, "%class-set!")?;
+    let f = class_field(vm, a[1])?;
+    if f == LAYOUT || f == DEFAULTS {
+        return Err(Error::new("use %class-set-layout! to change a class's layout"));
+    }
+    a[0].class_set_field(f, a[2]);
+    Ok(a[2])
+}
+
+fn instance_new(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    expect(a[0], Kind::Class, "%instance")?;
+    let vals = to_vec(vm, a[1])?;
+    let n = norn_rt::clos::layout_len(a[0].class_field(norn_rt::clos::class::LAYOUT));
+    if vals.len() != n {
+        return Err(Error::new(format!("%instance: expected {n} slot values, got {}", vals.len())));
+    }
+    Ok(norn_rt::clos::instance_new(&mut vm.m, a[0], &vals))
+}
+
+fn slot_value(inst: Value, k: Value) -> Result<Value> {
+    expect(inst, Kind::Instance, "slot-value")?;
+    norn_rt::clos::slot_get(inst, k).ok_or_else(|| {
+        Error::new(format!("{} has no slot {}", pr_str(inst.instance_class().class_field(norn_rt::clos::class::NAME), true), pr_str(k, true)))
+    })
+}
+
+fn gf_field(k: Value) -> Result<usize> {
+    use norn_rt::clos::generic::*;
+    Ok(match if k.is_keyword() { k.sym_name() } else { "" } {
+        "name" => NAME,
+        "methods" => METHODS,
+        "dispatch" => DISPATCH,
+        "combination" => COMBINATION,
+        "meta" => META,
+        "nreq" => NREQ,
+        "rest" => REST,
+        _ => return Err(type_err("%gf-get", "a generic-function field keyword", k)),
+    })
+}
+
+fn gf_get(_: &mut Vm, a: &[Value]) -> Result<Value> {
+    use norn_rt::clos::generic::*;
+    expect(a[0], Kind::Generic, "%gf-get")?;
+    let f = gf_field(a[1])?;
+    Ok(match f {
+        NREQ => Value::fix(a[0].gf_nreq() as i64),
+        REST => Value::bool(a[0].gf_rest()),
+        _ => Value(a[0].atomic_word(f).load(std::sync::atomic::Ordering::Acquire)),
+    })
+}
+
+fn gf_set(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    use norn_rt::clos::generic::*;
+    expect(a[0], Kind::Generic, "%gf-set!")?;
+    let f = gf_field(a[1])?;
+    if !matches!(f, DISPATCH | COMBINATION | META) {
+        return Err(Error::new("%gf-set! can only change :dispatch, :combination or :meta"));
+    }
+    a[0].atomic_word(f).store(a[2].0, std::sync::atomic::Ordering::Release);
+    // Cached effective methods were built under the old options.
+    let methods = a[0].field(METHODS);
+    let state = a[0].gf_state();
+    let mask = state.arr_get(S_MASK).as_fixnum() as u64;
+    let _ = norn_rt::clos::gf_set_methods(&mut vm.m, a[0], methods, methods, mask, state.arr_get(S_EQLS));
+    Ok(a[2])
+}
+
+fn gf_cache_get(_: &mut Vm, a: &[Value]) -> Result<Value> {
+    use norn_rt::clos::generic::*;
+    expect(a[0], Kind::Generic, "%gf-cache-get")?;
+    let state = a[0].gf_state();
+    if state.arr_get(S_CLASS_EPOCH).as_fixnum() as u64 != norn_rt::clos::class_epoch() {
+        return Ok(Value::NIL);
+    }
+    let key: Vec<Value> = if a[1].is(Kind::Vector) { (0..a[1].vec_count()).map(|i| a[1].vec_nth(i)).collect() } else { vec![a[1]] };
+    Ok(norn_rt::clos::cache_lookup(state.arr_get(S_CACHE), &key).unwrap_or(Value::NIL))
+}
+
+fn gf_cache_put(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    expect(a[0], Kind::Generic, "%gf-cache-put!")?;
+    let tok = a[1];
+    if !tok.is(Kind::Vector) || tok.vec_count() != 2 {
+        return Err(Error::new("%gf-cache-put!: bad token"));
+    }
+    let key: Vec<Value> = (0..a[2].vec_count()).map(|i| a[2].vec_nth(i)).collect();
+    let (e, ce) = (tok.vec_nth(0).as_fixnum() as u64, tok.vec_nth(1).as_fixnum() as u64);
+    Ok(Value::bool(norn_rt::clos::cache_put(&mut vm.m, a[0], e, ce, &key, a[3])))
+}
+
+fn bits(a: &[Value], op: &str, f: fn(i64, i64) -> i64) -> Result<Value> {
+    let mut acc = int(a[0], op)?;
+    for &x in &a[1..] {
+        acc = f(acc, int(x, op)?);
+    }
+    Ok(Value::fix(acc))
 }

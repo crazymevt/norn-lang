@@ -8,9 +8,11 @@ runtime built for many cores.
 - Language design: [docs/design.md](docs/design.md)
 - Runtime architecture and milestones: [docs/runtime.md](docs/runtime.md)
 
-**Status: M1** — a bytecode interpreter running millions of fibers on a
+**Status: M2** — a bytecode interpreter running millions of fibers on a
 work-stealing scheduler (one carrier per core), with channels, `alts!`,
-atoms, structured concurrency scopes and a parallel MMTk garbage collector.
+atoms, structured concurrency scopes and a parallel MMTk garbage collector;
+plus CLOS-style classes and generic functions (multiple dispatch, method
+combination, live redefinition across all cores).
 See [runtime.md §12](docs/runtime.md#12-revised-milestones) for what exists
 and what's next.
 
@@ -27,6 +29,8 @@ cargo test                                  # Rust + Norn test suites
 cargo run -p jit-spike --release            # tier-1 platform checks
 ./target/release/norn -e '(do (load-file "bench/pingpong.norn") (ping-pong 500000 10))'
                                             # 1M fibers ping-pong
+./target/release/norn -e '(do (load-file "bench/dispatch.norn") (live-redefinition 8 300))'
+                                            # live defmethod under 8 cores
 NORN_GC_STRESS=1 ./target/release/norn tests/norn/conc_test.norn
                                             # force a GC at every slow-path poll
 ```
