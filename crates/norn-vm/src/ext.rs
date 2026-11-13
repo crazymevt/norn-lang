@@ -169,6 +169,12 @@ impl Drop for Port {
 // ---- building values ------------------------------------------------------------------------
 
 /// Small constructors for extension code building Norn values.
+/// Any Norn number (fixnum, float, bignum or ratio) as an `f64`; None for
+/// anything else.
+pub fn to_f64(v: Value) -> Option<f64> {
+    crate::numeric::num(v).ok().map(|n| n.as_f64())
+}
+
 pub mod build {
     use norn_rt::heap::Mutator;
     use norn_rt::runtime::rt;
