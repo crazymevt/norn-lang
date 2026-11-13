@@ -72,10 +72,10 @@ prims! {
     "numerator" 1 Some(1) => |vm, a| crate::numeric::numerator(&mut vm.m, a[0]);
     "denominator" 1 Some(1) => |_, a| crate::numeric::denominator(a[0]);
     // equality, identity, ordering
-    "=" 1 VAR => |_, a| Ok(Value::bool(a.windows(2).all(|w| equal(w[0], w[1]))));
-    "not=" 1 VAR => |_, a| Ok(Value::bool(!a.windows(2).all(|w| equal(w[0], w[1]))));
+    "=" 1 VAR => |_, a| { forced(a)?; Ok(Value::bool(a.windows(2).all(|w| equal(w[0], w[1])))) };
+    "not=" 1 VAR => |_, a| { forced(a)?; Ok(Value::bool(!a.windows(2).all(|w| equal(w[0], w[1])))) };
     "identical?" 2 Some(2) => |_, a| Ok(Value::bool(a[0] == a[1]));
-    "hash" 1 Some(1) => |_, a| Ok(Value::fix((hash(a[0]) >> 2) as i64));
+    "hash" 1 Some(1) => |_, a| { forced(a)?; Ok(Value::fix((hash(a[0]) >> 2) as i64)) };
     "compare" 2 Some(2) => |_, a| Ok(Value::fix(match compare(a[0], a[1])? { Ordering::Less => -1, Ordering::Equal => 0, Ordering::Greater => 1 }));
     // type predicates
     "nil?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_nil()));
@@ -137,11 +137,21 @@ prims! {
     "gensym" 0 Some(1) => |vm, a| { let p = if a.is_empty() { "G__".to_owned() } else { text(a[0]) }; Ok(rt().symbol(&mut vm.m, None, &format!("{p}{}", crate::reader::next_id()))) };
     "char" 1 Some(1) => |_, a| { let n = int(a[0], "char")?; char::from_u32(n as u32).map(Value::char).ok_or_else(|| Error::new(format!("Invalid code point: {n}"))) };
     // printing and I/O
-    "pr-str" 0 VAR => |vm, a| Ok(str_new(&mut vm.m, &join(a, true)));
-    "print" 0 VAR => |_, a| out(&join(a, false), false);
-    "println" 0 VAR => |_, a| out(&join(a, false), true);
-    "pr" 0 VAR => |_, a| out(&join(a, true), false);
-    "prn" 0 VAR => |_, a| out(&join(a, true), true);
+    "pr-str" 0 VAR => |vm, a| { forced(a)?; Ok(str_new(&mut vm.m, &join(a, true))) };
+    "print" 0 VAR => |_, a| { forced(a)?; out(&join(a, false), false) };
+    "println" 0 VAR => |_, a| { forced(a)?; out(&join(a, false), true) };
+    "pr" 0 VAR => |_, a| { forced(a)?; out(&join(a, true), false) };
+    "prn" 0 VAR => |_, a| { forced(a)?; out(&join(a, true), true) };
+    // streams (design §3.3) and reduced (early exit from reduce)
+    "%stream" 1 Some(1) => |vm, a| Ok(seq::stream_new(&mut vm.m, a[0]));
+    "%stream-thunk" 1 Some(1) => |_, a| { expect(a[0], Kind::Stream, "%stream-thunk")?; Ok(if a[0].stream_realized() { Value::NIL } else { a[0].stream_value() }) };
+    "%stream-set!" 2 Some(2) => |_, a| { expect(a[0], Kind::Stream, "%stream-set!")?; Ok(seq::stream_set(a[0], a[1])) };
+    "%first-unrealized" 1 Some(1) => |_, a| Ok(seq::first_unrealized(a[0]).unwrap_or(Value::NIL));
+    "stream?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Stream)));
+    "realized?" 1 Some(1) => |_, a| Ok(Value::bool(!a[0].is(Kind::Stream) || a[0].stream_realized()));
+    "reduced" 1 Some(1) => |vm, a| { let r = norn_rt::object::alloc(&mut vm.m, Kind::Reduced, 1); r.set_field(0, a[0]); Ok(r) };
+    "reduced?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Reduced)));
+    "unreduced" 1 Some(1) => |_, a| Ok(if a[0].is(Kind::Reduced) { a[0].field(0) } else { a[0] });
     "slurp" 1 Some(1) => |vm, a| crate::sys::read(vm, text(a[0]), true);
     "spit" 2 Some(2) => |vm, a| crate::sys::write(vm, text(a[0]), text(a[1]).into_bytes(), false);
     "read-string" 1 Some(1) => |vm, a| { let s = text(a[0]); let mut r = crate::reader::Reader::new(&s); match r.read(vm) { Ok(v) => Ok(v), Err(crate::reader::ReadError::Eof) => Ok(Value::NIL), Err(e) => Err(Error::new(e.to_string())) } };
@@ -675,6 +685,28 @@ fn tls_shutdown(vm: &mut Vm, h: Value) -> Result<Value> {
         Err(Ok(w)) => Ok(tls_wait(vm, w)),
         Err(Err(e)) => Err(Error::new(format!("TLS close failed: {e}"))),
     }
+}
+
+/// Ask for any unrealized stream among `a` to be realized first (for the
+/// operations that would otherwise just see it as unequal, or print it
+/// unrealized).
+fn forced(a: &[Value]) -> Result<()> {
+    match a.iter().find_map(|&x| deep_unrealized(x)) {
+        Some(s) => Err(Error::force(s, true)),
+        None => Ok(()),
+    }
+}
+
+/// An unrealized stream anywhere a print or comparison would look (in a
+/// seq chain, or one level inside a vector or map entry).
+fn deep_unrealized(x: Value) -> Option<Value> {
+    if let Some(s) = seq::first_unrealized(x) {
+        return Some(s);
+    }
+    if x.is(Kind::Vector) {
+        return (0..x.vec_count()).find_map(|i| seq::first_unrealized(x.vec_nth(i)));
+    }
+    None
 }
 
 /// `(bytes x)`: UTF-8 of a string, a seqable of integers 0–255, or bytes.

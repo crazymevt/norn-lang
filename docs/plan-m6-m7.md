@@ -186,3 +186,16 @@ Decisions for M7 are at the end, after M6's.
 - **Shared objects:** reads skip the lock and writes take it (design §4.2).
   The lock is a one-token channel plus a holder atom, so it parks; it's
   reentrant.
+- **Streams are realized by the interpreter** (runtime.md §5.4.1), not by
+  Norn wrappers around `first` and friends, so streams are real seqs and
+  the primitives keep their speed. `cons` keeps a stream tail unrealized.
+- **On a map:** the selecting functions keep a map; the ones that compute
+  new items give a vector (design §3.3).
+- **Transducers** are the sequence functions with one argument fewer;
+  `reduced`, `reduced?` and `unreduced` are primitives (a small `Reduced`
+  heap kind), so `reduce` checks for early exit cheaply.
+- **`norn -e`** realizes a stream result before printing it, as a REPL
+  prints a lazy seq in full.
+- **Found and fixed:** `comp` of three or more functions skipped the first
+  one. A `loop` binding shadowed the list it was reading, and it had gone
+  untested until transducers.

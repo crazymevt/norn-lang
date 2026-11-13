@@ -105,7 +105,7 @@ So:
   | vector | vector: `(map inc [1 2])` → `[2 3]` |
   | list | list, in the same order |
   | set | set |
-  | map | `filter`/`remove`/`take`/`drop` give a map. `map` gives a vector, since `f` needn't return entries; `update-vals` and `into {}` cover map-to-map |
+  | map | functions that select items (`filter`, `remove`, `take`, `drop`, `take-while`, `drop-while`, `distinct`) give a map. Functions that compute new items (`map`, `keep`, `mapcat`, `map-indexed`, `interpose`) give a vector, since the results needn't be entries; `into {}` covers map-to-map |
   | range, string or other seqable | vector |
 
 - **Laziness is explicit.** A `lazy` stream is a value you create on purpose:
@@ -115,8 +115,17 @@ So:
   stream you made. `vec`, `into` and `reduce` realise one.
 - **Heavy pipelines use transducers**, which also parallelise (§6.6).
 
-*Status:* today's core is eager but returns vectors for everything. Making it
-type-preserving, and adding streams, is part of M7 (runtime.md §12).
+*Status:* built in M7.
+- Streams are a heap kind realized by the interpreter (runtime.md §5.4).
+  `cons` keeps a stream tail unrealized.
+- `first`, `rest`, `next`, `seq` and `nth` realize one cell at a time, so
+  they work on infinite streams.
+- Anything else that needs a stream's items (`vec`, `count`, `=`,
+  printing) realizes all of it.
+- With one argument fewer, the sequence functions are transducers: `into`,
+  `transduce`, `sequence`, `completing`, `cat`, `reduced`.
+- Two fibers realizing the same cell may both run its thunk; the first
+  result is kept. Keep thunks free of side effects.
 
 ### 3.4 Equality and hashing **[decided, 2026-11-13]**
 

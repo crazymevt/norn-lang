@@ -45,6 +45,10 @@ pub enum ErrKind {
     Abort,
     /// End the fiber now (the condition system already ran, or can't run).
     Fatal,
+    /// An unrealized stream stands in the way: the interpreter calls
+    /// `%force-stream` on it (all of it, if the flag is set) in place of the
+    /// failed instruction, then runs the instruction again (design §3.3).
+    Force(Value, bool),
 }
 
 /// A Norn error as seen from Rust, with a Norn-level backtrace.
@@ -64,6 +68,10 @@ impl Error {
     }
     pub fn fatal(msg: impl Into<String>, trace: Vec<String>) -> Error {
         Error { msg: msg.into(), trace, kind: ErrKind::Fatal }
+    }
+    /// Ask the interpreter to realize stream `s` (one cell, or `all` of it).
+    pub fn force(s: Value, all: bool) -> Error {
+        Error { msg: "A stream had to be realized outside a fiber".into(), trace: Vec::new(), kind: ErrKind::Force(s, all) }
     }
 }
 
@@ -110,6 +118,9 @@ pub(crate) struct FrameKinds {
 }
 
 pub(crate) static FRAME_KINDS: std::sync::OnceLock<FrameKinds> = std::sync::OnceLock::new();
+
+/// The var of norn.core/%force-stream (its frame's return can mean "retry").
+static FORCE_VAR: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
 
 pub(crate) enum Target {
     Catch(Value),
@@ -426,10 +437,12 @@ impl Vm {
     #[inline]
     unsafe fn do_return(&mut self, st: &mut St, val: Value) -> Flow {
         unsafe {
-            // A `retry` restart returning through %runtime-error: re-execute
-            // the instruction that failed instead of delivering a value.
+            // A `retry` restart returning through %runtime-error, or
+            // %force-stream having realized a stream: re-execute the
+            // instruction that failed instead of delivering a value.
             let retry = val == Value::RETRY
-                && FRAME_KINDS.get().is_some_and(|k| st.slot(F_FN) == k.runtime_error);
+                && (FRAME_KINDS.get().is_some_and(|k| st.slot(F_FN) == k.runtime_error)
+                    || FORCE_VAR.get().is_some_and(|v| st.slot(F_FN) == v.var_root()));
             match st.slot(F_PREV).as_fixnum() {
                 PREV_BOUNDARY => {
                     self.give_segment(st.seg);
@@ -577,12 +590,24 @@ impl Vm {
         }
     }
 
-    /// Call a primitive after checking its arity.
+    /// Call a primitive after checking its arity. A primitive that fails
+    /// because an argument holds an unrealized stream gets the stream forced
+    /// and runs again: one cell for the one-step operations, which must
+    /// work on infinite streams, otherwise all of it.
     pub(crate) fn call_prim(&mut self, f: Value, args: &[Value]) -> Result<Value> {
         if args.len() < f.prim_min() || args.len() > f.prim_max() {
             return Err(arity_error(f, args.len()));
         }
-        (PRIMS[f.prim_index()].f)(self, args)
+        match (PRIMS[f.prim_index()].f)(self, args) {
+            Err(e) if e.kind == ErrKind::Runtime => match args.iter().find_map(|&a| norn_rt::seq::first_unrealized(a)) {
+                Some(s) => {
+                    let one_step = matches!(PRIMS[f.prim_index()].name, "first" | "rest" | "next" | "seq" | "nth" | "empty?");
+                    Err(Error::force(s, !one_step))
+                }
+                None => Err(e),
+            },
+            r => r,
+        }
     }
 
     /// Calling a non-function value: keywords, maps, sets and vectors are
@@ -874,6 +899,11 @@ impl Vm {
         let r = unsafe {
             match (e.kind, dest) {
                 (ErrKind::Runtime, Some(d)) => self.invoke(st, fk.runtime_error, &[msg, trace], d),
+                (ErrKind::Force(s, all), Some(d)) => {
+                    let var = self.core_fn("%force-stream", &FORCE_VAR);
+                    let force = if var.is(Kind::Var) { var.var_root() } else { var };
+                    self.invoke(st, force, &[s, Value::bool(all)], d)
+                }
                 _ => {
                     // Honoured: let cleanups run without being cancelled again.
                     self.current.atomic_word(fiber::CANCEL).store(0, std::sync::atomic::Ordering::SeqCst);

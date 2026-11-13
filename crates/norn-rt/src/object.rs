@@ -63,6 +63,8 @@ kinds! {
     Handle => "Handle",
     BigInt => "BigInt",
     Ratio => "Ratio",
+    Stream => "Stream",
+    Reduced => "Reduced",
 }
 
 /// Static per-kind descriptor. From M2 layouts become heap objects that also

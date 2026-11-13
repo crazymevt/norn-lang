@@ -231,6 +231,14 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
         }
         Kind::Scope => out.push_str("#<scope>"),
         Kind::Weak => out.push_str("#<weak-ref>"),
+        // Printing never forces: the print primitives force a stream first.
+        Kind::Stream if crate::seq::first_unrealized(v).is_some() => out.push_str("#<stream>"),
+        Kind::Stream => write_value(out, crate::seq::stream_items(v), readably),
+        Kind::Reduced => {
+            out.push_str("#<reduced ");
+            write_value(out, v.field(0), readably);
+            out.push('>');
+        }
         Kind::BigInt => out.push_str(&crate::numbers::big_string(v)),
         Kind::Ratio => {
             write_value(out, v.field(0), readably);

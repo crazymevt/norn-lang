@@ -192,10 +192,13 @@
   ([f] f)
   ([f g] (fn [& args] (f (apply g args))))
   ([f g & fs]
-   (let [fs (reverse* (cons f (cons g fs)))]
+   ;; Right to left: the last function first.
+   (let [fs (reverse* (cons f (cons g fs)))
+         innermost (first fs)
+         others (next fs)]
      (fn [& args]
-       (loop [fs (next fs) acc (apply (first fs) args)]
-         (if fs (recur (next fs) ((first fs) acc)) acc))))))
+       (loop [gs others acc (apply innermost args)]
+         (if gs (recur (next gs) ((first gs) acc)) acc))))))
 
 (defn partial [f & bound] (fn [& args] (apply f (concat bound args))))
 
@@ -1625,3 +1628,323 @@
   [o k f & args]
   (let [step (fn [] (%set-slot! o k (apply f (slot-value o k) args)))]
     (if (%lock-of o) (locking o (step)) (step))))
+
+;;; ---- sequences (design §3.3) --------------------------------------------------------------
+;;;
+;;; Sequence functions are eager and type-preserving: they run when called
+;;; and return the kind of collection they were given (vector → vector,
+;;; list → list, set → set; filter/remove/take/drop on a map → map; map
+;;; over a map, or over anything else, → vector).
+;;;
+;;; Laziness is explicit: a stream is made on purpose, with (lazy coll),
+;;; lazy-seq, or a generator (iterate, repeat x, cycle, (range)). Sequence
+;;; functions on a stream return a stream; vec, into, reduce and the like
+;;; realize it. A stream is realized by the interpreter: when an operation
+;;; meets an unrealized one, %force-stream runs its thunk and the operation
+;;; runs again (runtime.md §5.4).
+;;;
+;;; With one argument fewer, map, filter, take… return transducers:
+;;; (into [] (comp (filter odd?) (map inc)) coll), (transduce xf + coll).
+
+(defmacro lazy-seq
+  "A stream whose seq is the value of body, computed when first needed."
+  [& body]
+  `(%stream (fn* [] ~@body)))
+
+(defn %force-stream
+  "Called by the interpreter: realize stream s (all of the chain after it
+  too, if all?), then let the operation that needed it run again."
+  [s all?]
+  (loop [s s]
+    (when s
+      (let [thunk (%stream-thunk s)]
+        (when thunk (%stream-set! s (seq (thunk)))))
+      (when all? (recur (%first-unrealized s)))))
+  (%retry-marker))
+
+(defn lazy "A stream over coll, read as it is needed." [coll] (lazy-seq (seq coll)))
+
+(defn iterate "The infinite stream x, (f x), (f (f x))…" [f x] (lazy-seq (cons x (iterate f (f x)))))
+
+(def %repeat-n repeat)
+(defn repeat
+  "(repeat x): the infinite stream x x x…; (repeat n x): a vector of n x's."
+  ([x] (lazy-seq (cons x (repeat x))))
+  ([n x] (%repeat-n n x)))
+
+(defn- %cycle-from [v i] (lazy-seq (cons (nth v i) (%cycle-from v (mod (inc i) (count v))))))
+(defn cycle "The infinite stream of coll's items, over and over." [coll]
+  (let [v (vec coll)] (if (empty? v) () (%cycle-from v 0))))
+
+(def %range range)
+(defn range
+  "(range) is the infinite stream 0 1 2…; (range end), (range start end) and
+  (range start end step) are finite ranges."
+  ([] (iterate inc 0))
+  ([end] (%range end))
+  ([start end] (%range start end))
+  ([start end step] (%range start end step)))
+
+(defn ensure-reduced [x] (if (reduced? x) x (reduced x)))
+
+(defn reduce
+  "Reduce coll with f. (reduced x) from f stops early with x."
+  ([f coll]
+   (let [s (seq coll)]
+     (if s (reduce f (first s) (rest s)) (f))))
+  ([f init coll]
+   (if (%indexed? coll)
+     (let [n (count coll)]
+       (loop [i 0 acc init]
+         (cond (reduced? acc) (unreduced acc)
+               (< i n) (recur (inc i) (f acc (nth coll i)))
+               :else acc)))
+     (loop [s (seq coll) acc init]
+       (cond (reduced? acc) (unreduced acc)
+             s (recur (next s) (f acc (first s)))
+             :else acc)))))
+
+(defn completing
+  "A reducing function with a completion step (identity unless given)."
+  ([f] (completing f identity))
+  ([f cf] (fn ([] (f)) ([x] (cf x)) ([x y] (f x y)))))
+
+(defn transduce
+  "Reduce coll with (xf f), then complete: (transduce (map inc) + 0 [1 2])."
+  ([xf f coll] (transduce xf f (f) coll))
+  ([xf f init coll]
+   (let [rf (xf f)]
+     (rf (reduce rf init coll)))))
+
+(defn into
+  "conj everything in from onto to; with a transducer, through it."
+  ([] [])
+  ([to] to)
+  ([to from] (if (and (vector? to) (empty? to) (not (stream? from))) (vec from) (reduce conj to from)))
+  ([to xf from] (transduce xf conj to from)))
+
+(defn sequence "The items of coll through transducer xf, as a vector." [xf coll] (into [] xf coll))
+
+(defn- %like
+  "Items v (a vector), selected from coll, as the kind of collection coll is:
+  a map keeps its entries; anything not a vector, list, set or map gives a
+  vector."
+  [coll v]
+  (cond (vector? coll) v
+        (list? coll) (apply list v)
+        (set? coll) (set v)
+        (map? coll) (into {} v)
+        :else v))
+
+(defn- %like-made
+  "Items v (a vector), computed from coll's items, as the kind of collection
+  coll is: vectors, lists and sets keep their kind; anything else (a map
+  included: the results needn't be entries) gives a vector."
+  [coll v]
+  (cond (vector? coll) v
+        (list? coll) (apply list v)
+        (set? coll) (set v)
+        :else v))
+
+(defn- %eager [xf coll] (transduce xf conj [] coll))
+
+(defn- %stream-of [xf-step coll]
+  ;; A lazy stream applying a stateless one-in/at-most-one-out step.
+  (lazy-seq
+    (loop [s (seq coll)]
+      (when s
+        (let [r (xf-step (first s))]
+          (if (= r ::skip) (recur (next s)) (cons r (%stream-of xf-step (rest s)))))))))
+
+(defn map
+  "Apply f to each item (or, with several collections, to items side by
+  side). Type-preserving for vectors, lists and sets; a map gives a vector
+  of results; a stream gives a stream. (map f) is a transducer."
+  ([f] (fn [rf] (fn ([] (rf)) ([acc] (rf acc)) ([acc x] (rf acc (f x))))))
+  ([f coll]
+   (if (stream? coll)
+     (%stream-of f coll)
+     (%like-made coll (%eager (map f) coll))))
+  ([f c1 c2]
+   (if (or (stream? c1) (stream? c2))
+     (lazy-seq (let [a (seq c1) b (seq c2)]
+                 (when (and a b) (cons (f (first a) (first b)) (map f (rest a) (rest b))))))
+     (loop [a (seq c1) b (seq c2) acc []]
+       (if (and a b) (recur (next a) (next b) (conj acc (f (first a) (first b)))) (%like-made c1 acc)))))
+  ([f c1 c2 c3]
+   (loop [a (seq c1) b (seq c2) c (seq c3) acc []]
+     (if (and a b c)
+       (recur (next a) (next b) (next c) (conj acc (f (first a) (first b) (first c))))
+       (%like-made c1 acc)))))
+
+(defn mapv "map, always giving a vector." ([f coll] (%eager (map f) coll)) ([f c1 c2] (vec (map f c1 c2))))
+
+(defn filter
+  "The items for which (pred x) is true, as the same kind of collection
+  (a map keeps its entries). (filter pred) is a transducer."
+  ([pred] (fn [rf] (fn ([] (rf)) ([acc] (rf acc)) ([acc x] (if (pred x) (rf acc x) acc)))))
+  ([pred coll]
+   (if (stream? coll)
+     (%stream-of (fn [x] (if (pred x) x ::skip)) coll)
+     (%like coll (%eager (filter pred) coll)))))
+
+(defn filterv "filter, always giving a vector." [pred coll] (%eager (filter pred) coll))
+
+(defn remove
+  "The items for which (pred x) is false. (remove pred) is a transducer."
+  ([pred] (filter (complement pred)))
+  ([pred coll] (filter (complement pred) coll)))
+
+(defn keep
+  "The non-nil results of (f x). (keep f) is a transducer."
+  ([f] (fn [rf] (fn ([] (rf)) ([acc] (rf acc)) ([acc x] (let [y (f x)] (if (nil? y) acc (rf acc y)))))))
+  ([f coll]
+   (if (stream? coll)
+     (%stream-of (fn [x] (let [y (f x)] (if (nil? y) ::skip y))) coll)
+     (%like-made coll (%eager (keep f) coll)))))
+
+(defn map-indexed
+  "(f index item) for each item. (map-indexed f) is a transducer."
+  ([f] (fn [rf] (let [i (atom -1)] (fn ([] (rf)) ([acc] (rf acc)) ([acc x] (rf acc (f (swap! i inc) x)))))))
+  ([f coll]
+   (if (stream? coll)
+     (map f (iterate inc 0) coll)
+     (%like-made coll (%eager (map-indexed f) coll)))))
+
+(defn take
+  "The first n items. (take n) is a transducer."
+  ([n] (fn [rf]
+         (let [left (atom n)]
+           (fn ([] (rf)) ([acc] (rf acc))
+             ([acc x] (let [k @left]
+                        (reset! left (dec k))
+                        (cond (> k 1) (rf acc x)
+                              (= k 1) (ensure-reduced (rf acc x))
+                              :else (reduced acc))))))))
+  ([n coll]
+   (if (stream? coll)
+     (lazy-seq (when (pos? n) (when-let [s (seq coll)] (cons (first s) (take (dec n) (rest s))))))
+     (%like coll (%eager (take n) coll)))))
+
+(defn drop
+  "All but the first n items. (drop n) is a transducer."
+  ([n] (fn [rf]
+         (let [left (atom n)]
+           (fn ([] (rf)) ([acc] (rf acc))
+             ([acc x] (if (pos? @left) (do (swap! left dec) acc) (rf acc x)))))))
+  ([n coll]
+   (if (stream? coll)
+     (lazy-seq (loop [n n s (seq coll)] (if (and s (pos? n)) (recur (dec n) (next s)) s)))
+     (%like coll (%eager (drop n) coll)))))
+
+(defn take-while
+  "Items up to the first for which (pred x) is false. A transducer with one argument."
+  ([pred] (fn [rf] (fn ([] (rf)) ([acc] (rf acc)) ([acc x] (if (pred x) (rf acc x) (reduced acc))))))
+  ([pred coll]
+   (if (stream? coll)
+     (lazy-seq (when-let [s (seq coll)] (when (pred (first s)) (cons (first s) (take-while pred (rest s))))))
+     (%like coll (%eager (take-while pred) coll)))))
+
+(defn drop-while
+  "Items from the first for which (pred x) is false. A transducer with one argument."
+  ([pred] (fn [rf]
+            (let [dropping (atom true)]
+              (fn ([] (rf)) ([acc] (rf acc))
+                ([acc x] (if (and @dropping (pred x)) acc (do (reset! dropping false) (rf acc x))))))))
+  ([pred coll]
+   (if (stream? coll)
+     (lazy-seq (loop [s (seq coll)] (if (and s (pred (first s))) (recur (next s)) s)))
+     (%like coll (%eager (drop-while pred) coll)))))
+
+(defn cat
+  "A transducer that concatenates the collections it is given."
+  [rf]
+  (fn ([] (rf)) ([acc] (rf acc)) ([acc coll] (reduce rf acc coll))))
+
+(def %concat concat)
+(defn concat
+  "All the items of the collections, in order: a vector, or a stream if any
+  of them is one."
+  [& colls]
+  (if (some stream? colls)
+    (lazy-seq (when-let [cs (seq colls)]
+                (if-let [s (seq (first cs))]
+                  (cons (first s) (apply concat (rest s) (rest cs)))
+                  (apply concat (rest cs)))))
+    (apply %concat colls)))
+
+(defn mapcat
+  "map, then concatenate the results. (mapcat f) is a transducer."
+  ([f] (comp (map f) cat))
+  ([f coll]
+   (if (stream? coll)
+     (lazy-seq (when-let [s (seq coll)] (seq (concat (f (first s)) (mapcat f (rest s))))))
+     (%like-made coll (%eager (mapcat f) coll))))
+  ([f c1 c2] (%eager cat (map f c1 c2))))
+
+(defn distinct
+  "Items without repeats, first occurrences kept. A transducer with no collection."
+  ([] (fn [rf]
+        (let [seen (atom #{})]
+          (fn ([] (rf)) ([acc] (rf acc))
+            ([acc x] (if (contains? @seen x) acc (do (swap! seen conj x) (rf acc x))))))))
+  ([coll]
+   (if (stream? coll)
+     (let [step (fn step [s seen]
+                  (lazy-seq (loop [s (seq s)]
+                              (when s
+                                (let [x (first s)]
+                                  (if (contains? seen x) (recur (next s)) (cons x (step (rest s) (conj seen x)))))))))]
+       (step coll #{}))
+     (%like coll (%eager (distinct) coll)))))
+
+(defn dedupe
+  "Items without consecutive repeats. A transducer with no collection."
+  ([] (fn [rf]
+        (let [prev (atom ::none)]
+          (fn ([] (rf)) ([acc] (rf acc))
+            ([acc x] (let [p @prev] (reset! prev x) (if (= p x) acc (rf acc x))))))))
+  ([coll] (%like coll (%eager (dedupe) coll))))
+
+(defn interpose
+  "Items with sep between them. A transducer with one argument."
+  ([sep] (fn [rf]
+           (let [started (atom false)]
+             (fn ([] (rf)) ([acc] (rf acc))
+               ([acc x] (if @started
+                          (let [r (rf acc sep)] (if (reduced? r) r (rf r x)))
+                          (do (reset! started true) (rf acc x))))))))
+  ([sep coll] (%like-made coll (%eager (interpose sep) coll))))
+
+(defn partition-all
+  "Items in groups of n (the last may be shorter), as vectors. A transducer with one argument."
+  ([n] (fn [rf]
+         (let [buf (atom [])]
+           (fn ([] (rf))
+             ([acc] (let [b @buf] (reset! buf []) (rf (if (empty? b) acc (unreduced (rf acc b))))))
+             ([acc x] (let [b (conj @buf x)]
+                        (if (= (count b) n) (do (reset! buf []) (rf acc b)) (do (reset! buf b) acc))))))))
+  ([n coll] (%eager (partition-all n) coll)))
+
+(defn partition
+  "Items in groups of exactly n, as vectors (a short last group is dropped)."
+  [n coll]
+  (filterv (fn [g] (= (count g) n)) (partition-all n coll)))
+
+(defn interleave
+  "The first item of each collection, then the second of each…"
+  [& colls]
+  (loop [ss (mapv seq colls) acc []]
+    (if (every? some? ss)
+      (recur (mapv next ss) (into acc (map first ss)))
+      acc)))
+
+(defn doall "Realize stream s completely, and return it." [s] (when (stream? s) (count s)) s)
+(defn realize "A stream's items as a vector (anything else is returned as it is)." [x] (if (stream? x) (vec x) x))
+
+;; A root evaluation (norn -e, editor requests) prints its result from Rust,
+;; which can't run a stream's thunks: realize a stream result first, as a
+;; REPL prints a lazy seq in full.
+(defn %eval-root [s]
+  (let [v (%eval-reader (%reader s "<string>"))]
+    (if (stream? v) (doall v) v)))

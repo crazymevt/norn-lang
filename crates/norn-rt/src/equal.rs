@@ -57,7 +57,7 @@ pub fn hash(v: Value) -> u64 {
         }
         Kind::BigInt => crate::numbers::big_hash(v),
         Kind::Ratio => mix64(hash(v.field(0)) ^ hash(v.field(1)).rotate_left(23) ^ 0x7a710),
-        Kind::Vector | Kind::VecSeq | Kind::Range | Kind::EmptyList => hash_sequential(v),
+        Kind::Vector | Kind::VecSeq | Kind::Range | Kind::EmptyList | Kind::Stream => hash_sequential(v),
         Kind::Map => {
             let mut h = MAP_SEED;
             v.map_for_each(|k, val| {
@@ -101,7 +101,7 @@ fn hash_sequential(v: Value) -> u64 {
 }
 
 pub fn is_sequential(v: Value) -> bool {
-    v.is_cons() || (v.is_obj() && matches!(v.obj_kind(), Kind::Vector | Kind::VecSeq | Kind::Range | Kind::EmptyList))
+    v.is_cons() || (v.is_obj() && matches!(v.obj_kind(), Kind::Vector | Kind::VecSeq | Kind::Range | Kind::EmptyList | Kind::Stream))
 }
 
 /// The slots `=` and `hash` look at: the current layout's, less any marked

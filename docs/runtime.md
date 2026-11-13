@@ -497,6 +497,24 @@ operation and parking used to sleep forever. See the handshake in `cancel`
 - The terminal REPL and the editor server (`server.rs`) are both clients of
   the event bus.
 
+### 5.4.1 Realizing streams **[built in M7]**
+
+Streams (design §3.3) are lazy seqs: `Stream: [state][value]`, holding a
+thunk until realized, then the seq it produced. Rust never runs the thunk.
+- A seq operation that meets an unrealized stream fails with
+  `seq::NEEDS_FORCE`.
+- `Vm::call_prim` turns any primitive failure whose arguments hold an
+  unrealized stream into `ErrKind::Force(stream, all)`.
+  - `first`, `rest`, `next`, `seq`, `nth` and `empty?` ask for one cell.
+  - Every other primitive asks for all of it.
+  - `=`, `hash` and printing don't fail on unrealized streams, so they ask
+    up front.
+- `handle_error` calls `norn.core/%force-stream` in place of the failed
+  instruction, just as `%runtime-error` is called. When it returns the
+  retry marker, the instruction runs again.
+- `nth` steps along a chain cell by cell. Bulk iteration (`SeqIter`) first
+  checks that the whole chain is realized.
+
 ### 5.5 I/O: the reactor, the blocking pool, native regions **[built in M6]**
 
 **The reactor** (`norn-vm/src/reactor.rs`):
