@@ -278,6 +278,13 @@ pub(crate) fn enter_native(me: usize) {
     let s = sched();
     if me < s.slots {
         s.native_since[me].store(now_ms(), Ordering::Release);
+        // Wake the monitor if it parked while no carrier was in native code.
+        std::sync::atomic::fence(Ordering::SeqCst);
+        if MONITOR_PARKED.load(Ordering::Relaxed)
+            && let Some(t) = MONITOR.get()
+        {
+            t.unpark();
+        }
     }
     safepoint::enter_safe();
 }
@@ -324,11 +331,32 @@ fn work_waiting(s: &Sched) -> bool {
     !s.injector.lock().unwrap().is_empty() || s.locals.iter().any(|q| !q.lock().unwrap().is_empty())
 }
 
+/// The monitor thread, and whether it is parked (no carrier is in native
+/// code, so none can get stuck; enter_native wakes it).
+static MONITOR: OnceLock<std::thread::Thread> = OnceLock::new();
+static MONITOR_PARKED: AtomicBool = AtomicBool::new(false);
+
+fn in_native(s: &Sched) -> bool {
+    s.native_since.iter().any(|t| t.load(Ordering::Acquire) != 0)
+}
+
 /// Every 10 ms: if carriers are stuck in native code while fibers wait, start
-/// a spare so that `n` carriers are running fibers again.
+/// a spare so that `n` carriers are running fibers again. While no carrier is
+/// in native code it parks, so an idle process doesn't wake 100 times a
+/// second.
 fn monitor_main() {
     let s = sched();
+    let _ = MONITOR.set(std::thread::current());
     loop {
+        if !in_native(s) {
+            MONITOR_PARKED.store(true, Ordering::Relaxed);
+            std::sync::atomic::fence(Ordering::SeqCst);
+            if !in_native(s) {
+                std::thread::park();
+            }
+            MONITOR_PARKED.store(false, Ordering::Relaxed);
+            continue;
+        }
         std::thread::sleep(Duration::from_millis(10));
         let stuck = stuck_carriers(s);
         if stuck == 0 || active_carriers(s) - stuck >= s.n || !work_waiting(s) {

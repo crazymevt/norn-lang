@@ -350,7 +350,7 @@ fn needs_more(src: &str) -> bool {
 
 fn repl(norn: &'static norn_vm::Norn) {
     println!(
-        "Norn {} (M5: images; fibers on {} carriers)\nCtrl-C interrupts a running evaluation; Ctrl-D exits.",
+        "Norn {} (fibers on {} carriers)\nCtrl-C interrupts a running evaluation; Ctrl-D exits.",
         env!("CARGO_PKG_VERSION"),
         norn.carriers()
     );

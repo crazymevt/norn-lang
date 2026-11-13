@@ -58,7 +58,10 @@ Linux and Windows (M12) are mostly backend glue.
 - **Versioning:** a `[:hello version]` handshake; the spec is versioned with
   `norn-ui`.
 
-## Part 2 — `norn-ui` 0.1
+## Part 2 — `norn-ui` 0.1 (done, 2026-11-13)
+
+The done-check passed; what was built and what was carried over is in
+runtime.md §12.9.
 
 Built headless-first: every engine feature is testable without a window,
 and the macOS backend comes once the engine draws correctly to images.

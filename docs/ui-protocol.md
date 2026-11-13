@@ -88,9 +88,9 @@ native views and outside the parent window.
 | `[:focus id]` | Move keyboard focus. |
 | `[:scroll-to id]` | Scroll a node into view. |
 | `[:select id from to]` | Select text in a field or rich text. |
-| `[:menu window-id tree]` | The window's menu bar (on macOS, the app menu). A tree is `[[label command shortcut?] …]` with nested vectors for submenus. |
+| `[:menu tree]` | The app's menu bar (on macOS the first submenu is the application menu). A tree is a vector of items: `[label command shortcut?]` (command a keyword; shortcut like `"cmd+s"`, `cmd` meaning ctrl off macOS), `[label [items…]]` for a submenu, or `:separator`. The commands `:quit` and `:hide` are the system's own; `:copy` `:cut` `:paste` `:select-all` also act on a focused text field. |
 | `[:context-menu req tree]` | Show a context menu at the pointer; answered by `:command` or `:menu-dismissed`. |
-| `[:dialog req spec]` | A file dialog: `{:kind :open-file :multiple true :filters …}`; answered by `{:event :dialog :req req :paths […]}` (nil if cancelled). |
+| `[:dialog req spec]` | A file dialog: `{:kind k :title t :directory d :filters [[name [ext…]] …]}`, `k` one of `:open-file`, `:open-files`, `:folder`, `:save-file`; answered by `{:event :dialog :req req :paths […]}` (nil if cancelled). |
 | `[:clipboard-set text]`, `[:clipboard-get req]` | The clipboard; get answers `{:event :clipboard :req req :text …}`. |
 | `[:stats req]` | Counters (§10). |
 
@@ -234,7 +234,7 @@ and `:time` (milliseconds).
 | `:focus`, `:blur` | focus moved |
 | `:scroll` | `:x` `:y` scroll position (coalesced) |
 | `:command` | `:command` from a menu, a shortcut or a context menu |
-| `:drop` | `:data` and `:kind`, on a node that `:accept`s it; files from the OS have `:kind :files` and `:paths` |
+| `:drop` | `:data` and `:kind`, on the nearest node under the pointer that asks for `:drop` (else the window); files from the OS have `:kind :files` and `:paths` (files dropped together arrive as one event) |
 | `:resize` | a window's new `:size` and `:scale` (coalesced) |
 | `:close-requested` | the user asked to close a window (Norn decides) |
 | `:window-focus` | `:focused` true or false |
