@@ -1,0 +1,65 @@
+;;;; norn.ffi — calling C (the basic FFI; runtime.md §5.6).
+;;;;
+;;;; (def libc (library :c))
+;;;; (defcfun strlen libc "strlen" [:string] :usize)
+;;;; (strlen "hello")  ; => 5
+;;;;
+;;;; Types: :void :i8 :u8 :i16 :u16 :i32/:int :u32/:uint :i64/:long
+;;;; :u64/:ulong/:usize :f32/:float :f64/:double :pointer (an address, as an
+;;;; integer). Parameters also take :bytes (a pointer to a Bytes value's
+;;;; data), :string (a NUL-terminated copy) and :out (pass a size: C fills a
+;;;; fresh buffer, returned as Bytes alongside the result). A :string return
+;;;; copies the C string (nil for NULL).
+;;;;
+;;;; A function marked :blocking true runs on the blocking pool; others run
+;;;; on the carrier (keep them quick: one that takes long makes the runtime
+;;;; start a spare carrier). After an image restore, libraries reload and
+;;;; functions re-resolve by themselves: a library holds no session state.
+;;;;
+;;;; Unsafe: a wrong signature can crash the process. Not yet (M9):
+;;;; callbacks from C, structs, variadic functions such as printf.
+
+(ns norn.ffi)
+
+(defclass Library () ((path) (cell)))
+(defclass ForeignFunction () ((name) (lib) (params) (ret) (blocking) (cell)))
+
+(defn library
+  "Load a dynamic library: a path or name, or :c / :m for the C and math libraries."
+  [name]
+  (let [path (cond (= name :c) (%ffi-libc-path)
+                   (= name :m) (%ffi-libm-path)
+                   :else (str name))]
+    (Library :path path :cell (atom (%ffi-open path)))))
+
+(defn- live-lib [lib]
+  (let [h @(:cell lib)]
+    (if (%handle-current? h) h (reset! (:cell lib) (%ffi-open (:path lib))))))
+
+(defn function
+  "A C function of lib: (function libc \"strlen\" [:string] :usize). Option:
+  :blocking true runs calls on the blocking pool."
+  [lib name params ret & {:keys [blocking]}]
+  (let [b (if blocking true false)
+        ps (vec params)]
+    (ForeignFunction :name (str name) :lib lib :params ps :ret ret :blocking b
+                     :cell (atom (%ffi-fn (live-lib lib) (str name) ps ret b)))))
+
+(defn- live-fn [ff]
+  (let [h @(:cell ff)]
+    (if (%handle-current? h)
+      h
+      (reset! (:cell ff) (%ffi-fn (live-lib (:lib ff)) (:name ff) (:params ff) (:ret ff) (:blocking ff))))))
+
+(defn call
+  "Call a foreign function. With :out parameters, the result is
+  [return-value out-bytes…]."
+  [ff & args]
+  (apply %ffi-call (live-fn ff) args))
+
+(defmacro defcfun
+  "(defcfun name lib \"c_name\" [param-types] return-type & options): define
+  a Norn function calling a C function (options as for function)."
+  [name lib cname params ret & opts]
+  `(let [ff# (norn.ffi/function ~lib ~cname ~params ~ret ~@opts)]
+     (defn ~name [& args#] (apply norn.ffi/call ff# args#))))

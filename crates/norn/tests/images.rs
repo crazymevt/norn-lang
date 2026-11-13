@@ -255,3 +255,20 @@ fn a_file_handle_from_an_image_is_lost_until_reconnected() {
     );
     assert_eq!(eval(Some(&img), &check), r#"[:lost :ok "before\nafter\n"]"#);
 }
+
+#[test]
+fn foreign_functions_work_again_after_a_restore() {
+    let d = scratch("ffi");
+    let img = d.join("ffi.nimg");
+    eval(
+        None,
+        &format!(
+            r#"(do (require '[norn.ffi :as ffi])
+                   (ffi/defcfun c-strlen (ffi/library :c) "strlen" [:string] :usize)
+                   [(c-strlen "abc") (:objects (save-image "{}"))])"#,
+            img.display()
+        ),
+    );
+    // The library reloads and the symbol re-resolves without a ResourceLost.
+    assert_eq!(eval(Some(&img), r#"[(c-strlen "hello") (c-strlen "")]"#), "[5 0]");
+}

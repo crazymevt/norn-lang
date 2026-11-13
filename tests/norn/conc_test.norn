@@ -198,10 +198,12 @@
                 acc))]
     (await echo)
     (doseq [h (concat ab ba)] (%io-close h))
-    sum))
-(is (* 50 (+ (* 200 6) (reduce + (map (fn [i] (mod i 256)) (range 200)))))
-    (reduce + (mapv await (mapv (fn [_] (spawn-detached (pipe-pair-echo 200))) (range 50)))))
-(is 0 (:handles (%io-stats)))
+    [sum (mapv %handle-live? (concat ab ba))]))
+(let [rs (mapv await (mapv (fn [_] (spawn-detached (pipe-pair-echo 200))) (range 50)))]
+  (is (* 50 (+ (* 200 6) (reduce + (map (fn [i] (mod i 256)) (range 200))))) (reduce + (map first rs)))
+  ;; every pipe end is closed (other suites may hold handles meanwhile, so
+  ;; count these, not the process's total)
+  (is [] (vec (filter true? (mapcat second rs)))))
 
 ;;; (Timing-sensitive checks of the blocking pool and spare carriers run in
 ;;; their own process: crates/norn/tests/io.rs.)

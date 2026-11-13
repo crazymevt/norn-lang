@@ -536,6 +536,45 @@ heap under GC stress in M6; the fix and this rule came together.
 - Fibers waiting on I/O or the pool are saved dead, since what they wait for
   doesn't exist in the restored process.
 
+### 5.6 The basic FFI **[built in M6]**
+
+`crates/norn-vm/src/ffi.rs`, with `lib/norn/ffi.norn` (`library`,
+`function`, `call`, `defcfun`).
+
+- **Libraries** load with `libloading`. Each foreign function holds the
+  library, so it stays loaded while any of its functions exists.
+- **Call stubs.** For each signature, Cranelift compiles
+  `extern "C" fn(target, args, ret)` once (cached). The stub:
+  - loads each argument from an array of words as its C type, extending
+    narrow integers as the platform ABI requires;
+  - calls the target with the default C calling convention;
+  - stores the result.
+
+  Stubs live in the JIT's executable memory (`MAP_JIT` on macOS).
+- **Arguments:**
+  - integers are range-checked against their C type;
+  - floats;
+  - `:pointer` (an address as an integer; nil is NULL);
+  - `:bytes` (a pointer to a `Bytes` value's data; it never moves);
+  - `:string` (a NUL-terminated copy);
+  - `:out n` (a zeroed buffer that C fills, returned as `Bytes` after the
+    result).
+
+  A `:string` return copies the C string (NULL is nil). 64-bit results that
+  don't fit a fixnum are an error, until M7's bignums.
+- **Fast or blocking.** A fast call runs in a native region on the carrier:
+  the GC may run meanwhile, and the monitor starts a spare carrier if it
+  takes over 20 ms while work waits. A `:blocking` function runs on the
+  blocking pool. Either way, the `Bytes` it points into are rooted until it
+  returns.
+- **Images.** Library and function handles are dead after a restore. The
+  Norn objects hold their handle in an atom and reload and re-resolve by
+  themselves, with no `ResourceLost`, because a loaded library holds no
+  session state.
+- **Not yet (M9):** callbacks from C into Norn, struct layouts, typed
+  signatures, variadic functions (on Apple arm64 their arguments go on the
+  stack), and the module-level safety model.
+
 ### 5.3 Sync primitives **[M1: atoms, channels, scopes built]**
 
 All shared mutable state is in the heap, guarded by one-word spinlocks inside

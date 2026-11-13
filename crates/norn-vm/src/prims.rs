@@ -284,6 +284,12 @@ prims! {
     "%tls-server" 4 Some(4) => |vm, a| { let c = data_bytes(a[1])?; let k = data_bytes(a[2])?; crate::net::tls_server(vm, a[0], &c, &k, a[3]) };
     "%tls-shutdown" 1 Some(1) => |vm, a| tls_shutdown(vm, a[0]);
     "%tls-handshake" 1 Some(1) => |vm, a| tls_handshake(vm, a[0]);
+    // the basic FFI (ffi.rs; norn.ffi)
+    "%ffi-open" 1 Some(1) => |vm, a| crate::ffi::open(vm, &text(a[0]));
+    "%ffi-fn" 5 Some(5) => |vm, a| crate::ffi::function(vm, a[0], &text(a[1]), a[2], a[3], a[4].truthy());
+    "%ffi-call" 1 VAR => |vm, a| crate::ffi::call(vm, a[0], &a[1..]);
+    "%ffi-libc-path" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, if cfg!(target_os = "macos") { "/usr/lib/libSystem.B.dylib" } else { "libc.so.6" }));
+    "%ffi-libm-path" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, if cfg!(target_os = "macos") { "/usr/lib/libSystem.B.dylib" } else { "libm.so.6" }));
     // processes, time, signals, fiber dumps (os.rs; norn.process, norn.time, norn.signal)
     "%process-start" 6 Some(6) => |vm, a| process_start(vm, a);
     "%process-wait" 1 Some(1) => |vm, a| crate::os::wait(vm, a[0]);

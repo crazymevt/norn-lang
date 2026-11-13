@@ -7,6 +7,7 @@ pub mod codec;
 pub mod compiler;
 pub mod conc;
 pub mod eval;
+pub mod ffi;
 pub mod image;
 pub mod jit;
 pub mod net;

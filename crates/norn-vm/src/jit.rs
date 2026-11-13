@@ -64,7 +64,7 @@ pub fn enabled() -> bool {
     *ON.get_or_init(|| std::env::var("NORN_TIER").as_deref() == Ok("1"))
 }
 
-fn isa() -> Option<&'static OwnedTargetIsa> {
+pub(crate) fn isa() -> Option<&'static OwnedTargetIsa> {
     static ISA: OnceLock<Option<OwnedTargetIsa>> = OnceLock::new();
     ISA.get_or_init(|| {
         let mut flags = settings::builder();
@@ -92,7 +92,7 @@ unsafe extern "C" {
 
 /// Copy machine code into executable memory (MAP_JIT on macOS: runtime.md
 /// §7.4). Never freed: protos are rarely collected, and code is small.
-fn install_code(bytes: &[u8]) -> Option<usize> {
+pub(crate) fn install_code(bytes: &[u8]) -> Option<usize> {
     let len = bytes.len().div_ceil(16) * 16;
     let mut a = ARENA.lock().unwrap();
     if a.end - a.cur < len {

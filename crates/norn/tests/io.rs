@@ -40,3 +40,21 @@ fn a_spare_carrier_runs_fibers_while_carriers_are_stuck_in_native_code() {
     );
     assert_eq!(r, "[4999950000 true true 2]");
 }
+
+#[test]
+fn a_slow_fast_ffi_call_gets_a_spare_carrier() {
+    // usleep declared as a fast (non-blocking) call: both carriers sit in C
+    // for 1.5 s, and the worker still runs on a spare carrier.
+    let r = norn(
+        "2",
+        r#"(do (require '[norn.ffi :as ffi])
+               (ffi/defcfun slow-sleep (ffi/library :c) "usleep" [:uint] :int)
+               (let [stalls (mapv (fn [_] (spawn-detached (slow-sleep 1500000))) (range 2))
+                     _ (sleep 50)
+                     worker (spawn-detached (reduce + (range 100000)))
+                     v (await worker)
+                     early (if (some (fn [f] (not (done? f))) stalls) true false)]
+                 [v early (mapv await stalls)]))"#,
+    );
+    assert_eq!(r, "[4999950000 true [0 0]]");
+}

@@ -148,3 +148,9 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
 
   Also a deadlock: closing a handle on a carrier went through `delivering`.
   The rule now in runtime.md §5.5 covers all three.
+- **The basic FFI** (runtime.md §5.6):
+  - Cranelift call stubs per signature, so no `libffi`.
+  - `:bytes`, `:string` and `:out` cover buffers without struct support.
+  - Library and function handles reconnect automatically after an image
+    restore (no `ResourceLost`), since a library has no session state.
+  - Libraries are never unloaded while one of their functions exists.

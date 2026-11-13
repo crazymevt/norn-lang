@@ -41,6 +41,10 @@ pub(crate) enum Io {
     Watch(Box<dyn std::any::Any + Send>),
     /// A child process (norn.process): waited for on the blocking pool.
     Child(std::process::Child),
+    /// A loaded dynamic library (norn.ffi).
+    Library(std::sync::Arc<libloading::Library>),
+    /// A foreign function (norn.ffi).
+    Foreign(Box<crate::ffi::Foreign>),
 }
 
 impl Io {
@@ -53,7 +57,7 @@ impl Io {
             Io::Tcp(s) => (s, Interest::READABLE | Interest::WRITABLE),
             Io::Udp(s) => (s, Interest::READABLE | Interest::WRITABLE),
             Io::Tls(t) => (&mut t.sock, Interest::READABLE | Interest::WRITABLE),
-            Io::File(_) | Io::Watch(_) | Io::Child(_) => return None,
+            Io::File(_) | Io::Watch(_) | Io::Child(_) | Io::Library(_) | Io::Foreign(_) => return None,
         })
     }
 }

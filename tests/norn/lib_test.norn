@@ -2,7 +2,7 @@
 
 (ns lib-test (:require [norn.bytes :as b] [norn.io :as io] [norn.fs :as fs] [norn.sys :as sys]
                        [norn.process :as proc] [norn.time :as t] [norn.signal :as sig]
-                       [norn.net :as net]))
+                       [norn.net :as net] [norn.ffi :as ffi]))
 
 (def failures 0)
 (def checks 0)
@@ -230,6 +230,35 @@
 
 (is :error (fails (net/connect "127.0.0.1" 1)))
 (is true (pos? (count (net/resolve "localhost"))))
+
+;;; ---- norn.ffi ----
+(def libc (ffi/library :c))
+(def libm (ffi/library :m))
+(ffi/defcfun c-strlen libc "strlen" [:string] :usize)
+(ffi/defcfun c-abs libc "abs" [:int] :int)
+(ffi/defcfun c-getpid libc "getpid" [] :int)
+(ffi/defcfun c-sqrt libm "sqrt" [:double] :double)
+(ffi/defcfun c-sqrtf libm "sqrtf" [:float] :float)
+(ffi/defcfun c-getenv libc "getenv" [:string] :string)
+(ffi/defcfun c-memcpy libc "memcpy" [:out :bytes :usize] :pointer)
+(ffi/defcfun c-toupper libc "toupper" [:int] :int)
+(ffi/defcfun c-usleep libc "usleep" [:uint] :int :blocking true)
+(is 5 (c-strlen "hello"))
+(is 6 (c-strlen "héllo"))
+(is 42 (c-abs -42))
+(is (sys/pid) (c-getpid))
+(is 1.5 (c-sqrt 2.25))
+(is 1.5 (c-sqrtf 2.25))
+(is (sys/getenv "PATH") (c-getenv "PATH"))
+(is nil (c-getenv "NORN_SURELY_UNSET_VARIABLE"))
+(is (bytes [1 2 3]) (second (c-memcpy 3 (bytes [1 2 3]) 3)))
+(is 65 (c-toupper 97))
+(is [0 0 0 0] (mapv await (mapv (fn [_] (spawn-detached (c-usleep 20000))) (range 4))))
+(is :error (fails (ffi/function libc "no_such_symbol_xyz" [] :void)))
+(is :error (fails (c-abs 1 2)))
+(is :error (fails (c-abs 3000000000)))
+(is :error (fails (ffi/function libc "abs" [:widget] :int)))
+(is :error (fails (ffi/library "/no/such/library.dylib")))
 
 ;;; ---- fiber dumps ----
 (let [ch (chan)
