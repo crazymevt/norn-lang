@@ -431,6 +431,13 @@ pub(crate) fn delivering<R>(f: impl FnOnce() -> R) -> R {
     safepoint::while_running(f)
 }
 
+/// Run `f` with the reactor and the blocking pool held off (but not the
+/// timer thread: `f` may take the timer lock itself, e.g. to list roots).
+pub(crate) fn with_deliveries_held<R>(f: impl FnOnce() -> R) -> R {
+    let _g = DELIVERIES.write().unwrap();
+    f()
+}
+
 /// Run `f` with the timer thread, the reactor and the blocking pool held
 /// off (they wake fibers, which would change the heap under an image save),
 /// given the pending timers in due order.
@@ -454,6 +461,11 @@ pub(crate) fn with_timers_held<R>(f: impl FnOnce(Vec<SavedTimer>) -> R) -> R {
     let r = f(saved);
     drop(t);
     r
+}
+
+/// Is waiter `w` waiting for a timer (a sleeping fiber)?
+pub(crate) fn timer_holds(w: Value) -> bool {
+    sched().timers.lock().unwrap().entries.values().any(|(k, v)| matches!(k, TimerKind::Wake) && *v == w)
 }
 
 /// Re-arm a timer from an image.
@@ -1052,6 +1064,7 @@ pub fn start_with(image: Option<&std::path::Path>) -> Result<&'static Norn, Erro
         std::thread::Builder::new().name("norn-timers".into()).spawn(timer_main).expect("failed to start timer thread");
         std::thread::Builder::new().name("norn-monitor".into()).spawn(monitor_main).expect("failed to start monitor thread");
         crate::reactor::start();
+        crate::os::dump_on_sigquit();
         match boot_rx.recv() {
             Ok(Ok(())) => {
                 // From here on the GC may run: register the roots that live

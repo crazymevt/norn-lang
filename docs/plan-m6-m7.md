@@ -101,3 +101,27 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
   of them, and are dropped while it's full.
 - **`norn.sys` reads environment variables but doesn't set them**; children
   get their environment through `norn.process`.
+- **Child processes:**
+  - A child's pipes are ordinary reactor streams.
+  - Waiting runs on the blocking pool; `kill` signals by pid, so it never
+    waits for the waiter.
+  - `sh` takes options after the arguments, as Clojure's does:
+    `(sh "ls" "-l" :dir "/")`.
+- **Time:**
+  - `Instant` and `Duration` are classes holding nanoseconds, with
+    instants measured from the epoch in UTC. Text is RFC 3339.
+  - Zones are UTC, local time (from the OS, via `localtime_r`) or a fixed
+    offset in seconds. A time-zone database (named zones) waits for a
+    real need.
+  - Calendar arithmetic uses Howard Hinnant's civil-date algorithms (no
+    crate).
+- **Signals use `signal-hook`.** Each `listen` gets a channel buffering 64
+  signals. `:kill` and `:stop` can't be caught.
+- **Fiber dumps** (`(fiber-dump)`, or SIGQUIT / Ctrl-\ printing to stderr,
+  as the JVM does):
+  - Every fiber is paused while the dump walks the heap from the GC roots
+    (`norn-rt/src/walk.rs`). It lists each unfinished fiber's state, what
+    it waits for, its namespace and its frames.
+  - The walk holds off the reactor and the pool but not the timer thread.
+    Listing the roots takes the timer lock, and a timer firing can only move
+    a fiber to a run queue.

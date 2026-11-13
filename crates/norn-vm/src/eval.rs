@@ -24,6 +24,9 @@ pub const LIBS: &[(&str, &str)] = &[
     ("norn.io", include_str!("../../../lib/norn/io.norn")),
     ("norn.fs", include_str!("../../../lib/norn/fs.norn")),
     ("norn.sys", include_str!("../../../lib/norn/sys.norn")),
+    ("norn.process", include_str!("../../../lib/norn/process.norn")),
+    ("norn.time", include_str!("../../../lib/norn/time.norn")),
+    ("norn.signal", include_str!("../../../lib/norn/signal.norn")),
 ];
 
 /// `(%find-lib "a.b-c")`: the source of library `a.b-c` and where it came

@@ -1,0 +1,90 @@
+;;;; norn.time — instants, durations and calendar dates.
+;;;;
+;;;; An Instant is a point on the UTC time line (nanoseconds since
+;;;; 1970-01-01T00:00:00Z). A Duration is an amount of time in nanoseconds.
+;;;; Calendar fields and text use RFC 3339; zones are UTC, this machine's
+;;;; local time, or a fixed offset in seconds.
+
+(ns norn.time)
+
+(defclass Instant () ((nanos :initform 0)))
+(defclass Duration () ((nanos :initform 0)))
+
+(defn instant? [x] (instance? Instant x))
+(defn duration? [x] (instance? Duration x))
+
+(defn now "The current instant (wall clock)." [] (Instant :nanos (%now-nanos)))
+(defn instant "The instant n nanoseconds after the epoch." [n] (Instant :nanos n))
+(defn of-epoch-ms "The instant ms milliseconds after the epoch." [ms] (Instant :nanos (* ms 1000000)))
+(defn epoch-ms [i] (quot (:nanos i) 1000000))
+(defn epoch-nanos [i] (:nanos i))
+
+(defn duration
+  "(duration :hours 1 :minutes 30) — any of :days :hours :minutes :seconds :millis :nanos."
+  [& {:keys [days hours minutes seconds millis nanos]}]
+  (Duration :nanos (+ (* (or days 0) 86400000000000) (* (or hours 0) 3600000000000)
+                      (* (or minutes 0) 60000000000) (* (or seconds 0) 1000000000)
+                      (* (or millis 0) 1000000) (or nanos 0))))
+(defn nanos [d] (:nanos d))
+(defn millis [d] (quot (:nanos d) 1000000))
+(defn seconds [d] (quot (:nanos d) 1000000000))
+
+(defn plus
+  "An instant moved forward by a duration, or two durations added."
+  [x d]
+  (if (instant? x) (Instant :nanos (+ (:nanos x) (:nanos d))) (Duration :nanos (+ (:nanos x) (:nanos d)))))
+(defn minus
+  "An instant moved back by a duration, or one duration less another."
+  [x d]
+  (if (instant? x) (Instant :nanos (- (:nanos x) (:nanos d))) (Duration :nanos (- (:nanos x) (:nanos d)))))
+(defn between "The duration from instant a to instant b." [a b] (Duration :nanos (- (:nanos b) (:nanos a))))
+(defn before? [a b] (< (:nanos a) (:nanos b)))
+(defn after? [a b] (> (:nanos a) (:nanos b)))
+(defn compare-time "Like compare, for two instants or two durations." [a b] (compare (:nanos a) (:nanos b)))
+
+(defn- offset-at [i zone]
+  (cond (or (nil? zone) (= zone :utc)) 0
+        (= zone :local) (%local-offset (quot (:nanos i) 1000000000))
+        (integer? zone) zone
+        :else (error "Unknown zone (use :utc, :local or an offset in seconds):" (pr-str zone))))
+
+(defn local-offset
+  "This machine's UTC offset in seconds, now or at instant i."
+  ([] (local-offset (now)))
+  ([i] (offset-at i :local)))
+
+(defn fields
+  "Calendar fields of instant i: {:year :month :day :hour :minute :second
+  :nanos :weekday (1 = Monday) :yearday :offset}. zone: :utc (default),
+  :local or an offset in seconds."
+  ([i] (fields i :utc))
+  ([i zone]
+   (let [o (offset-at i zone)
+         [y mo d h mi s ns wd yd] (%civil (:nanos i) o)]
+     {:year y :month mo :day d :hour h :minute mi :second s :nanos ns :weekday wd :yearday yd :offset o})))
+
+(defn from-fields
+  "The instant of {:year :month :day :hour :minute :second :nanos :offset}
+  (missing time fields are 0; :offset in seconds, default 0 = UTC)."
+  [m]
+  (Instant :nanos (%from-civil [(:year m) (:month m) (:day m) (or (:hour m) 0) (or (:minute m) 0)
+                                (or (:second m) 0) (or (:nanos m) 0)]
+                               (or (:offset m) 0))))
+
+(defn format
+  "RFC 3339 text of instant i, e.g. 2026-11-13T07:05:00Z. zone as for fields."
+  ([i] (format i :utc))
+  ([i zone] (%format-iso (:nanos i) (offset-at i zone))))
+
+(defn parse
+  "The instant written as RFC 3339 text (2026-11-13T07:05:00Z,
+  2026-11-13T08:05:00.5+01:00, or a date alone for midnight UTC)."
+  [s]
+  (Instant :nanos (first (%parse-iso s))))
+
+(defn monotonic-nanos
+  "A clock for measuring elapsed time: it never jumps, but has no epoch."
+  []
+  (nano-time))
+
+(defn sleep-for "Sleep for a duration." [d] (sleep (millis d)))

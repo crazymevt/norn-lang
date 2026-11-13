@@ -1,6 +1,7 @@
 ;;;; The standard libraries (lib/norn/*.norn): loaded with require.
 
-(ns lib-test (:require [norn.bytes :as b] [norn.io :as io] [norn.fs :as fs] [norn.sys :as sys]))
+(ns lib-test (:require [norn.bytes :as b] [norn.io :as io] [norn.fs :as fs] [norn.sys :as sys]
+                       [norn.process :as proc] [norn.time :as t] [norn.signal :as sig]))
 
 (def failures 0)
 (def checks 0)
@@ -128,6 +129,60 @@
 
 (io/delete! dir :recursive true)
 (is false (io/exists? dir))
+
+;;; ---- norn.process ----
+(is {:exit 0 :signal nil :out "hello world\n" :err ""} (proc/sh "echo" "hello" "world"))
+(is "piped in" (:out (proc/sh "cat" :in "piped in")))
+(is [3 "err\n"] (let [r (proc/sh "sh" "-c" "echo err >&2; exit 3")] [(:exit r) (:err r)]))
+(is "/" (:out (proc/sh "sh" "-c" "cd . && pwd | tr -d '\\n'" :dir "/")))
+(is "yes" (:out (proc/sh "sh" "-c" "printf %s \"$NORN_TEST_VAR\"" :env {"NORN_TEST_VAR" "yes"})))
+(let [p (proc/start "sh" :args ["-c" "echo one; echo two; sleep 30"])
+      r (io/line-reader (:out p))]
+  (is ["one" "two"] [(io/read-line r) (io/read-line r)])
+  (proc/kill p)
+  (is {:exit nil :signal 15} (proc/wait p))
+  (doseq [k [:in :out :err :process]] (io/close (k p))))
+(is :error (fails (proc/sh "/no/such/program")))
+
+;;; ---- norn.time ----
+(is "1970-01-01T00:00:00Z" (t/format (t/of-epoch-ms 0)))
+(is "2026-11-13T07:05:00.500Z" (t/format (t/parse "2026-11-13T08:05:00.5+01:00")))
+(is "2026-11-13T08:05:00.500+01:00" (t/format (t/parse "2026-11-13T08:05:00.5+01:00") 3600))
+(is -1000 (t/epoch-ms (t/parse "1969-12-31T23:59:59Z")))
+(is {:year 2024 :month 2 :day 29 :hour 23 :minute 59 :second 59 :nanos 0 :weekday 4 :yearday 60 :offset 0}
+    (t/fields (t/parse "2024-02-29T23:59:59Z")))
+(is (t/parse "2026-03-01T12:00:00Z") (t/from-fields {:year 2026 :month 3 :day 1 :hour 13 :offset 3600}))
+(is :error (fails (t/from-fields {:year 2026 :month 2 :day 29})))
+(is :error (fails (t/parse "2026-13-01")))
+(is :error (fails (t/parse "yesterday")))
+(is 86400000 (t/millis (t/between (t/parse "2026-01-01") (t/parse "2026-01-02"))))
+(is 5400 (t/seconds (t/duration :hours 1 :minutes 30)))
+(is (t/parse "2026-01-01T01:30:00Z") (t/plus (t/parse "2026-01-01") (t/duration :minutes 90)))
+(is true (t/before? (t/parse "2026-01-01") (t/parse "2026-01-02")))
+(is true (integer? (t/local-offset)))
+(is true (let [a (t/now) _ (sleep 2) b (t/now)] (t/after? b a)))
+(is true (instance? t/Instant (t/now)))
+
+;;; ---- norn.signal ----
+(let [l (sig/listen :usr1)]
+  (sig/raise :usr1)
+  (is :usr1 (first (alts! [(:signals l) (timeout 5000)])))
+  (sig/stop l))
+(let [l (sig/listen :usr2)]
+  (proc/sh "kill" "-USR2" (str (sys/pid)))
+  (is :usr2 (first (alts! [(:signals l) (timeout 5000)])))
+  (sig/stop l))
+(is :error (fails (sig/listen :kill)))
+
+;;; ---- fiber dumps ----
+(let [ch (chan)
+      waiting (spawn-detached (take! ch))
+      _ (sleep 20)
+      dump (fiber-dump)]
+  (is true (string? dump))
+  (is true (> (count dump) 20))
+  (put! ch :done)
+  (is :done (await waiting)))
 
 (println (str "lib_test: " checks " checks, " failures " failures"))
 (when (pos? failures) (error failures "library tests failed"))

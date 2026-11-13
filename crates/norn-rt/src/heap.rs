@@ -393,6 +393,13 @@ pub fn set_extra_roots(f: RootFn) {
     let _ = EXTRA_ROOTS.set(f);
 }
 
+/// Visit the VM's out-of-heap roots.
+pub fn for_each_extra_root(f: &mut dyn FnMut(Value)) {
+    if let Some(r) = EXTRA_ROOTS.get() {
+        r(f);
+    }
+}
+
 impl Scanning<Norn> for Norn {
     fn scan_object<SV: SlotVisitor<NornSlot>>(_: VMWorkerThread, object: ObjectReference, sv: &mut SV) {
         scan(object.to_raw_address().to_mut_ptr(), &mut |s| sv.visit_slot(s));

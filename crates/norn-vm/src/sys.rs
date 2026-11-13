@@ -262,16 +262,23 @@ thread_local! {
     static FEED_M: std::cell::RefCell<Option<Mutator>> = const { std::cell::RefCell::new(None) };
 }
 
-/// From a non-carrier thread: build a value and offer it on channel `c`
-/// (dropped if the channel is full or closed).
-pub(crate) fn feed(c: Value, make: impl FnOnce(&mut Mutator) -> Value) {
+/// From a non-carrier thread: run `f` as a running participant with this
+/// thread's mutator (made on first use).
+pub(crate) fn on_feed_thread<R>(f: impl FnOnce(&mut Mutator) -> R) -> R {
     crate::sched::delivering(|| {
         FEED_M.with(|cell| {
             let mut slot = cell.borrow_mut();
-            let m = slot.get_or_insert_with(Mutator::new);
-            let v = make(m);
-            crate::conc::offer_from(m, c, v);
+            f(slot.get_or_insert_with(Mutator::new))
         })
+    })
+}
+
+/// From a non-carrier thread: build a value and offer it on channel `c`
+/// (dropped if the channel is full or closed).
+pub(crate) fn feed(c: Value, make: impl FnOnce(&mut Mutator) -> Value) {
+    on_feed_thread(|m| {
+        let v = make(m);
+        crate::conc::offer_from(m, c, v);
     });
 }
 

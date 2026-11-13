@@ -269,6 +269,19 @@ prims! {
     "%args" 0 Some(0) => |vm, _| Ok(crate::sys::args(&mut vm.m));
     "%sys-info" 0 Some(0) => |vm, _| Ok(crate::sys::system(&mut vm.m));
     "%split-lines" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "lines")?; let ls: Vec<Value> = a[0].as_str().lines().map(|l| str_new(&mut vm.m, l)).collect(); Ok(vec_from_slice(&mut vm.m, &ls)) };
+    // processes, time, signals, fiber dumps (os.rs; norn.process, norn.time, norn.signal)
+    "%process-start" 6 Some(6) => |vm, a| process_start(vm, a);
+    "%process-wait" 1 Some(1) => |vm, a| crate::os::wait(vm, a[0]);
+    "%process-kill" 2 Some(2) => |vm, a| { let n = signal_arg(a[1])?; crate::os::kill(vm, a[0], n) };
+    "%signal-listen" 1 Some(1) => |vm, a| { let names: Vec<String> = seq::SeqIter::new(a[0]).map(|it| it.map(|k| if k.is_keyword() { k.sym_name().to_owned() } else { text(k) }).collect()).unwrap_or_default(); crate::os::listen(vm, &names) };
+    "%raise-signal" 1 Some(1) => |_, a| { let n = signal_arg(a[0])?; unsafe { libc::raise(n) }; Ok(Value::NIL) };
+    "%now-nanos" 0 Some(0) => |_, _| Ok(Value::fix(crate::os::now_nanos()));
+    "%local-offset" 1 Some(1) => |_, a| Ok(Value::fix(crate::os::local_offset(int(a[0], "%local-offset")?)));
+    "%civil" 2 Some(2) => |vm, a| { let c = crate::os::civil(int(a[0], "civil")?, int(a[1], "civil")?); let vs: Vec<Value> = c.iter().map(|&x| Value::fix(x)).collect(); Ok(vec_from_slice(&mut vm.m, &vs)) };
+    "%from-civil" 2 Some(2) => |_, a| { let xs: Vec<i64> = seq::SeqIter::new(a[0]).map(|it| it.map(|v| if v.is_fixnum() { v.as_fixnum() } else { 0 }).collect()).unwrap_or_default(); if xs.len() != 7 { return Err(Error::new("%from-civil needs [y m d h mi s ns]")); } let f = [xs[0], xs[1], xs[2], xs[3], xs[4], xs[5], xs[6]]; Ok(Value::fix(crate::os::from_civil(f, int(a[1], "from-civil")?).map_err(Error::new)?)) };
+    "%format-iso" 2 Some(2) => |vm, a| Ok(str_new(&mut vm.m, &crate::os::format_iso(int(a[0], "format")?, int(a[1], "format")?)));
+    "%parse-iso" 1 Some(1) => |vm, a| { let (n, o) = crate::os::parse_iso(&text(a[0])).map_err(Error::new)?; Ok(vec_from_slice(&mut vm.m, &[Value::fix(n), Value::fix(o)])) };
+    "fiber-dump" 0 Some(0) => |vm, _| crate::os::fiber_dump(vm);
     // test helpers: a native call that blocks its carrier, and one on the pool
     "%native-stall" 1 Some(1) => |vm, a| { let ms = int(a[0], "%native-stall")?.max(0) as u64; vm.native_region(&[], || std::thread::sleep(std::time::Duration::from_millis(ms))); Ok(Value::fix(ms as i64)) };
     "%blocking-sleep" 1 Some(1) => |vm, a| { let ms = int(a[0], "%blocking-sleep")?.max(0) as u64; crate::blocking::run(vm, move || { std::thread::sleep(std::time::Duration::from_millis(ms)); Box::new(move |_: &mut norn_rt::Mutator| Ok(Value::fix(ms as i64))) }) };
@@ -589,6 +602,53 @@ pub(crate) fn hash_map(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 
 fn index_of(k: Value) -> Option<usize> {
     (k.is_fixnum() && k.as_fixnum() >= 0).then(|| k.as_fixnum() as usize)
+}
+
+/// A signal given as a keyword (:term) or a number.
+fn signal_arg(v: Value) -> Result<i32> {
+    if v.is_fixnum() {
+        return Ok(v.as_fixnum() as i32);
+    }
+    if v.is_keyword()
+        && let Some(n) = crate::os::signal_number(v.sym_name())
+    {
+        return Ok(n);
+    }
+    Err(Error::new(format!("Unknown signal {}", pr_str(v, true))))
+}
+
+/// `(%process-start cmd args dir env clear-env? [stdin stdout stderr])`.
+fn process_start(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let strs = |v: Value| -> Vec<String> { seq::SeqIter::new(v).map(|it| it.map(text).collect()).unwrap_or_default() };
+    let mut env = Vec::new();
+    if a[3].is(Kind::Map) {
+        a[3].map_for_each(|k, v| {
+            env.push((text(k), text(v)));
+            true
+        });
+    }
+    let modes: Vec<crate::os::Stdio> = seq::SeqIter::new(a[5])
+        .map(|it| {
+            it.map(|k| match if k.is_keyword() { k.sym_name() } else { "pipe" } {
+                "inherit" => crate::os::Stdio::Inherit,
+                "null" => crate::os::Stdio::Null,
+                _ => crate::os::Stdio::Pipe,
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+    let mode = |i: usize| modes.get(i).copied().unwrap_or(crate::os::Stdio::Pipe);
+    crate::os::start(
+        vm,
+        crate::os::Spawn {
+            cmd: text(a[0]),
+            args: strs(a[1]),
+            dir: if a[2].is_nil() { None } else { Some(text(a[2])) },
+            env,
+            clear_env: a[4].truthy(),
+            stdio: [mode(0), mode(1), mode(2)],
+        },
+    )
 }
 
 /// The bytes of a string (UTF-8) or of a Bytes value.

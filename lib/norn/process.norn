@@ -1,0 +1,53 @@
+;;;; norn.process — child processes. Their pipes are ordinary streams
+;;;; (norn.io read/write/close) on the reactor; waiting runs on the blocking
+;;;; pool, so a fiber waiting for a child never blocks a carrier.
+
+(ns norn.process (:require [norn.io :as io]))
+
+(defn start
+  "Start a program. Options:
+    :args [...]       its arguments
+    :dir path         its working directory
+    :env {name val}   environment variables to add or override
+    :clear-env true   start from an empty environment
+    :in :out :err     :pipe (default), :inherit or :null
+  Returns {:process h :pid n :in stream :out stream :err stream}; a stream is
+  nil unless piped."
+  [cmd & {:keys [args dir env clear-env in out err]}]
+  (%process-start (str cmd) (mapv str (or args [])) (when dir (str dir)) (or env {})
+                  (if clear-env true false) [(or in :pipe) (or out :pipe) (or err :pipe)]))
+
+(defn wait
+  "Wait for process p to end: {:exit code :signal n} (one of them nil)."
+  [p]
+  (%process-wait (:process p)))
+
+(defn kill
+  "Send p a signal: :term (default), :kill, :int, :hup, … or a number."
+  ([p] (kill p :term))
+  ([p sig] (%process-kill (:process p) sig)))
+
+(defn- split-opts [xs]
+  (loop [args [] xs (seq xs)]
+    (if (and xs (not (keyword? (first xs))))
+      (recur (conj args (first xs)) (next xs))
+      [args (apply hash-map xs)])))
+
+(defn sh
+  "Run cmd with arguments and wait for it: {:exit :signal :out :err}, with
+  output as text. Options may follow the arguments: :in (a string or bytes
+  to send), :dir, :env. E.g. (sh \"ls\" \"-l\" :dir \"/tmp\")."
+  [cmd & args]
+  (let [[args opts] (split-opts args)
+        p (start cmd :args args :dir (:dir opts) :env (:env opts))
+        out (spawn-detached (bytes->string (io/read-all (:out p)) true))
+        err (spawn-detached (bytes->string (io/read-all (:err p)) true))]
+    (when-let [in (:in opts)] (io/write (:in p) in))
+    (io/close (:in p))
+    (let [r (wait p)
+          o (await out)
+          e (await err)]
+      (io/close (:out p))
+      (io/close (:err p))
+      (io/close (:process p))
+      (assoc r :out o :err e))))
