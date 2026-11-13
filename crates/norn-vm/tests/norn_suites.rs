@@ -42,6 +42,11 @@ fn cond_suite() {
 }
 
 #[test]
+fn compiler_suite() {
+    suite("compiler_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [
@@ -62,7 +67,8 @@ fn printing_and_errors() {
         ("((fn [x] x))", "ERROR: <string>:1: Wrong number of args (0) passed to: #<fn fn>"),
         ("(loop [] (recur 1))", "ERROR: <string>:1: Mismatched argument count to recur, expected: 0 args, got: 1"),
         ("(fn [] (inc (recur)))", "ERROR: <string>:1: Can only recur from tail position"),
-        ("(defmacro blocks [] (take! (chan))) (blocks)", "ERROR: <string>:1: while expanding #'printing-test/blocks: Can't block here: not in a fiber, or inside macro expansion"),
+        ("(defmacro waits [] (sleep 1) :waited) (waits)", ":waited"),
+        ("(defmacro breaks [] (/ 1 0)) (breaks)", "ERROR: <string>:1: Divide by zero"),
         ("(", "ERROR: <string>:1: EOF while reading, expected )"),
     ];
     for (src, want) in cases {

@@ -348,7 +348,13 @@
     (let [f (%read r)]
       (if (%eof? f) last (recur (eval f))))))
 
-(defn load-string [s] (%eval-reader (%reader s "<string>")))
+(defn load-string
+  "Evaluate every form in s. Like load-file, it restores the current namespace."
+  [s]
+  (let [ns (current-ns)
+        v (%eval-reader (%reader s "<string>"))]
+    (in-ns ns)
+    v))
 
 (defn load-file [path]
   (let [ns (current-ns)
@@ -357,7 +363,8 @@
     v))
 
 ;; Root fibers started by the host (REPL, `norn -e`, tests).
-(defn %eval-root [s] (load-string s))
+;; Unlike load-string, keeps a namespace switch (the host reports it back).
+(defn %eval-root [s] (%eval-reader (%reader s "<string>")))
 (defn %repl-eval [s]
   (let [r (%reader s "<repl>")]
     (loop []

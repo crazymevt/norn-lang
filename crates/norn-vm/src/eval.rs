@@ -15,6 +15,7 @@ use norn_rt::seq::SeqIter;
 use norn_rt::{Mutator, Value};
 
 pub const CORE_SRC: &str = include_str!("../../../lib/core/core.norn");
+pub const COMPILER_SRC: &str = include_str!("../../../lib/compiler/compiler.norn");
 
 /// A VM for carrier `id`, positioned in norn.core.
 pub(crate) fn carrier_vm(id: usize) -> Vm {
@@ -29,6 +30,12 @@ pub(crate) fn carrier_vm(id: usize) -> Vm {
 pub(crate) fn boot(vm: &mut Vm) -> Result<()> {
     crate::prims::install(vm);
     vm.load_str(CORE_SRC, "core.norn")?;
+    // The real compiler, compiled by the seed compiler. From here on it
+    // compiles everything (unless NORN_COMPILER=seed, kept for comparison).
+    vm.load_str(COMPILER_SRC, "compiler.norn")?;
+    if std::env::var("NORN_COMPILER").as_deref() != Ok("seed") {
+        vm.load_str("(norn.compiler/%install!)", "<boot>")?;
+    }
     let user = vm.sym("user");
     rt().find_or_create_ns(user);
     Ok(())

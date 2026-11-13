@@ -208,6 +208,18 @@ prims! {
     "%set-location!" 1 Some(1) => |vm, a| { if !vm.current.is_nil() { vm.current.set_field(norn_rt::conc::fiber::LOC, a[0]); } Ok(a[0]) };
     "%reader-line" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-line")?; Ok(Value::fix(a[0].word(3) as i64)) };
     "%reader-name" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-name")?; Ok(a[0].field(2)) };
+    // building and inspecting compiled code (the Norn compiler, lib/compiler)
+    "%make-proto" 7 Some(7) => make_proto;
+    "%make-template" 3 Some(3) => |vm, a| { let ps = to_vec(vm, a[1])?; let cs = to_vec(vm, a[2])?; let arities = norn_rt::array::array_from(&mut vm.m, &ps); let caps = norn_rt::array::array_from(&mut vm.m, &cs); Ok(norn_rt::func::template_new(&mut vm.m, a[0], arities, caps)) };
+    "%make-closure" 1 Some(1) => |vm, a| { expect(a[0], Kind::FnTemplate, "%make-closure")?; Ok(norn_rt::func::closure_new(&mut vm.m, a[0])) };
+    "%intern" 2 Some(2) => |vm, a| { let ns = rt().find_or_create_ns(a[0]); Ok(ns.intern(&mut vm.m, a[1])) };
+    "%closure-template" 1 Some(1) => |_, a| { expect(a[0], Kind::Closure, "%closure-template")?; Ok(a[0].closure_template()) };
+    "%template?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::FnTemplate)));
+    "%template-parts" 1 Some(1) => template_parts;
+    "%proto-parts" 1 Some(1) => proto_parts;
+    "%seed-compile" 1 Some(1) => |vm, a| { vm.nested += 1; let r = crate::compiler::compile_toplevel(vm, a[0]); vm.nested -= 1; r };
+    "%compiler-source" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, crate::eval::COMPILER_SRC));
+    "%core-source" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, crate::eval::CORE_SRC));
     // classes, instances, generic functions (runtime half of CLOS; policy is in core.norn)
     "class-of" 1 Some(1) => |_, a| Ok(norn_rt::clos::class_of(a[0]));
     "class?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Class)));
@@ -966,4 +978,63 @@ fn frames(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         out.push(m);
     }
     Ok(vec_from_slice(&mut vm.m, &out))
+}
+
+// ---- compiled code as data ---------------------------------------------------------
+
+fn make_proto(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let nfixed = int(a[1], "%make-proto")? as usize;
+    let nregs = int(a[3], "%make-proto")? as usize;
+    let consts = to_vec(vm, a[4])?;
+    let code: Vec<u32> = to_vec(vm, a[5])?
+        .iter()
+        .map(|&i| if i.is_fixnum() && (0..=u32::MAX as i64).contains(&i.as_fixnum()) { Ok(i.as_fixnum() as u32) } else { Err(Error::new("%make-proto: bad instruction")) })
+        .collect::<Result<_>>()?;
+    let locals = to_vec(vm, a[6])?;
+    if nregs > 255 || nfixed > nregs {
+        return Err(Error::new("%make-proto: bad register count"));
+    }
+    let m = &mut vm.m;
+    let info = norn_rt::func::ProtoInfo {
+        name: a[0],
+        nfixed,
+        variadic: a[2].truthy(),
+        nregs,
+        consts: norn_rt::array::array_from(m, &consts),
+        code: norn_rt::func::code_new(m, &code),
+        locals: norn_rt::array::array_from(m, &locals),
+    };
+    Ok(norn_rt::func::proto_new(m, info))
+}
+
+fn template_parts(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    expect(a[0], Kind::FnTemplate, "%template-parts")?;
+    let t = a[0];
+    let k = |vm: &mut Vm, n: &str| rt().keyword(&mut vm.m, None, n);
+    let arities = vec_from_slice(&mut vm.m, t.template_arities().arr_slice());
+    let caps = vec_from_slice(&mut vm.m, t.template_captures().arr_slice());
+    let kvs = [k(vm, "name"), t.template_name(), k(vm, "arities"), arities, k(vm, "captures"), caps];
+    hash_map(vm, &kvs)
+}
+
+fn proto_parts(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    expect(a[0], Kind::Proto, "%proto-parts")?;
+    let p = a[0];
+    let code = p.proto_code();
+    // SAFETY: code_len instructions follow the length word.
+    let ins: Vec<Value> = (0..code.code_len()).map(|i| Value::fix(unsafe { *code.code_ptr().add(i) } as i64)).collect();
+    let k = |vm: &mut Vm, n: &str| rt().keyword(&mut vm.m, None, n);
+    let code_v = vec_from_slice(&mut vm.m, &ins);
+    let consts = vec_from_slice(&mut vm.m, p.proto_consts().arr_slice());
+    let locals = vec_from_slice(&mut vm.m, p.proto_locals().arr_slice());
+    let kvs = [
+        k(vm, "name"), p.proto_name(),
+        k(vm, "nfixed"), Value::fix(p.proto_nfixed() as i64),
+        k(vm, "variadic"), Value::bool(p.proto_variadic()),
+        k(vm, "nregs"), Value::fix(p.proto_nregs() as i64),
+        k(vm, "consts"), consts,
+        k(vm, "code"), code_v,
+        k(vm, "locals"), locals,
+    ];
+    hash_map(vm, &kvs)
 }
