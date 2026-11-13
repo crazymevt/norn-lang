@@ -23,7 +23,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --server [PORT] | ARGS…]
-       norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]";
+       norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]
+       norn test [--only REGEX] [--serial] [--tap] [--junit FILE] [PATH…]";
 
 /// Ticket of the root fiber the REPL is waiting on (0 = none), for Ctrl-C.
 static CURRENT: AtomicU64 = AtomicU64::new(0);
@@ -64,6 +65,25 @@ fn main() {
         exit(match done.result {
             // An integer result is the exit status.
             Ok(v) => v.parse::<i64>().map(|n| n.clamp(0, 255) as i32).unwrap_or(0),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                1
+            }
+        });
+    }
+
+    if args.first().map(String::as_str) == Some("test") {
+        // `norn test …`: norn.test/main returns the exit status.
+        let call = format!(
+            "(do (require 'norn.test) (norn.test/main {}))",
+            args[1..].iter().map(|a| norn_string(a)).collect::<Vec<_>>().join(" ")
+        );
+        let t = norn.submit(RootTask::Eval(call), "user");
+        CURRENT.store(t, Ordering::Release);
+        let done = norn.wait(t);
+        let _ = io::stdout().flush();
+        exit(match done.result {
+            Ok(v) => v.parse::<i64>().map(|n| n.clamp(0, 255) as i32).unwrap_or(1),
             Err(e) => {
                 eprintln!("Error: {e}");
                 1

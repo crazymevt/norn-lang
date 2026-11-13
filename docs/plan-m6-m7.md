@@ -279,6 +279,28 @@ Decisions for M7 are at the end, after M6's.
   replaceable (for JSON lines or tests).
 - **Added to core:** `swap-vals!`, `reset-vals!`, `memoize`, `fnil`,
   `repeatedly`.
+- **`norn.test` is Clojure-style** (7.7): `deftest`, `is` (with `=`,
+  `thrown?` and `thrown-with-msg?` forms), `testing`, `are` and fixtures.
+  The suites were ported mechanically: `(is expected actual)` became
+  `(is (= expected actual))`. They stay scripts of top-level checks, which
+  count as a test named `<load>`; splitting them into `deftest`s would
+  break their shared top-level definitions.
+- **`is` catches only errors that would reach the debugger**: it binds
+  `*debugger*` (which now accepts a function) rather than establishing a
+  handler, so a `signal` with no handler still returns nil inside a test.
+  A spawned fiber that dies ends as it would outside a test; its error
+  shows through `await`.
+- **Parallelism** (decided by the user, 2026-11-13): files run in parallel,
+  one fiber each. A namespace's tests run in order unless it calls
+  `(parallel-tests!)`; `norn test --serial` turns everything off.
+- **`norn test [--only RE] [--serial] [--tap] [--junit FILE] [paths…]`**
+  finds `*_test.norn` under `tests/` by default and exits 1 on any failure
+  or error. The cargo harness runs each suite through `norn.test`.
+- **Follow-up noted:** a runaway recursion grows to the 256 MB stack limit
+  (about 2.8 million frames) before `Stack overflow`, and every GC on the
+  way rescans that stack, so it takes about a minute in a debug build
+  (seconds in release). A lower limit would make it quick; not changed
+  here.
 - **Found and fixed:** `class-of` gave `Object` for sorted maps and sets
   and for streams; they're now `Map`, `Set` and `Seq`, so methods on those
   classes apply.

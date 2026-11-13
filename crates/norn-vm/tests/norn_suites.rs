@@ -6,11 +6,20 @@
 
 use norn_vm::{RootTask, start};
 
+/// Run one suite with norn.test; fail with its report if any check failed.
 fn suite(name: &str) {
     let norn = start().unwrap();
     let path = format!("{}/../../tests/norn/{name}", env!("CARGO_MANIFEST_DIR"));
-    if let Err(e) = norn.run(RootTask::Load(path), "user").result {
-        panic!("{e}");
+    let call = format!(
+        r#"(do (require 'norn.test)
+             (let [r (norn.test/run-files ["{path}"] :serial true)
+                   t (:totals r)]
+               (if (zero? (+ (:fail t) (:error t))) :ok (do (print (norn.test/%human r)) :failed))))"#
+    );
+    match norn.run(RootTask::Eval(call), "user").result {
+        Ok(v) if v == ":ok" => {}
+        Ok(_) => panic!("{name} failed (the report is above)"),
+        Err(e) => panic!("{e}"),
     }
 }
 
@@ -49,6 +58,11 @@ fn compiler_suite() {
 #[test]
 fn lib_suite() {
     suite("lib_test.norn");
+}
+
+#[test]
+fn test_suite() {
+    suite("test_test.norn");
 }
 
 #[test]

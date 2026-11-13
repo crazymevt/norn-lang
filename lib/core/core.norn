@@ -1018,8 +1018,14 @@
 
 (declare %debug-park)
 
-(defn invoke-debugger [c]
-  (if (= *debugger* :park) (%debug-park c) (%abort c)))
+(defn invoke-debugger
+  "Hand c to the debugger: *debugger* :park keeps the fiber waiting, a
+  function is called with c (a test runner records it), and otherwise the
+  fiber ends."
+  [c]
+  (cond (= *debugger* :park) (%debug-park c)
+        (fn? *debugger*) (do (*debugger* c) (%abort c))
+        :else (%abort c)))
 
 (defn error
   "Signal an error: (error \"message\" args…), (error SomeErrorClass :k v…) or

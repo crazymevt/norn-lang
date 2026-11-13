@@ -1,0 +1,112 @@
+;;;; norn.test itself: assertions, reports, fixtures and the runner.
+;;;; Sample test files with deliberate failures are written to a scratch
+;;;; directory and run with run-file, so their failures land in the
+;;;; results checked here, not in this file's report.
+
+(ns test-test
+  (:require [norn.test :as t :refer [is deftest testing are]]
+            [norn.io :as io] [norn.sys :as sys] [norn.string :as str]))
+
+(def dir (io/path (sys/temp-dir) (str "norn-test-test-" (sys/pid) "-" (nano-time))))
+(io/mkdirs! dir)
+
+(defn sample [name text]
+  (let [p (io/path dir name)] (io/write-text p text) p))
+
+(defn events [file-result] (vec (mapcat :events (:tests file-result))))
+(defn totals [file-result]
+  (let [ts (:tests file-result)] (mapv (fn [k] (reduce + 0 (map k ts))) [:pass :fail :error])))
+
+;;; a file of plain top-level checks counts as "<load>"
+(def plain (t/run-file (sample "plain_test.norn" "(ns plain-test (:require [norn.test :refer [is]]))\n(is (= 1 1))\n(is (= 2 (+ 1 2)))\n(is (odd? 2))\n")))
+(is (= [1 2 0] (totals plain)))
+(is (= ["<load>"] (mapv :name (:tests plain))))
+(let [[e1 e2] (events plain)]
+  (is (= :fail (:type e1)))
+  (is (= 2 (:expected e1)))
+  (is (= 3 (:actual e1)))
+  (is (= '(= 2 (+ 1 2)) (:form e1)))
+  (is (= '(odd? 2) (:form e2)))
+  (is (= false (:actual e2))))
+
+;;; deftest, testing, are, thrown?, errors inside is and inside a test
+(def rich
+  (t/run-file
+    (sample "rich_test.norn"
+            "(ns rich-test (:require [norn.test :refer [is deftest testing are]]))
+(deftest adds (testing \"small\" (testing \"really\" (is (= 5 (+ 2 2)) \"two and two\"))))
+(deftest raises (is (thrown? Error (error \"boom\"))) (is (thrown? OwnershipError (+ 1 :a))) (is (thrown-with-msg? Error #\"bo+m\" (error \"booom\"))))
+(deftest templates (are [x y] (= x (inc y)) 2 1 3 2 5 3))
+(deftest bad-is (is (= 1 (/ 1 0))) (is (= 1 1)))
+(deftest dies (error \"mid-test\") (is (= 1 1)))
+(deftest signal-alone (is (nil? (signal (make SimpleError :message \"nobody listens\")))))
+(deftest in-fibers (await (spawn-detached (is (= :a :b)))))
+")))
+(is (= ["adds" "raises" "templates" "bad-is" "dies" "signal-alone" "in-fibers"] (mapv :name (:tests rich))))
+(let [by-name (into {} (map (fn [x] [(:name x) x])) (:tests rich))
+      outcome (fn [n] (mapv (get by-name n) [:pass :fail :error]))]
+  (is (= [0 1 0] (outcome "adds")))
+  (is (= ["small" "really"] (:contexts (first (:events (get by-name "adds"))))))
+  (is (= "two and two" (:message (first (:events (get by-name "adds"))))))
+  (is (= [2 1 0] (outcome "raises")))
+  (is (= [2 1 0] (outcome "templates")))
+  (is (= '(= 5 (inc 3)) (:form (first (:events (get by-name "templates"))))))
+  (is (= [1 0 1] (outcome "bad-is")))
+  (is (= "Divide by zero" (:error (first (:events (get by-name "bad-is"))))))
+  (is (= [0 0 1] (outcome "dies")))
+  (is (= [1 0 0] (outcome "signal-alone")))
+  (is (= [0 1 0] (outcome "in-fibers"))))
+
+;;; fixtures and --only
+(def fx
+  (t/run-file
+    (sample "fixture_test.norn"
+            "(ns fixture-test (:require [norn.test :as t :refer [is deftest]]))
+(def log (atom []))
+(t/use-fixtures :once (fn [f] (swap! log conj :once-before) (f) (swap! log conj :once-after)))
+(t/use-fixtures :each (fn [f] (swap! log conj :before) (f) (swap! log conj :after)))
+(deftest one (swap! log conj :one) (is true))
+(deftest two (swap! log conj :two) (is true))
+")))
+(is (= [:once-before :before :one :after :before :two :after :once-after] (deref (var-get (resolve 'fixture-test/log)))))
+(is (= ["two"] (mapv :name (:tests (t/run-file (io/path dir "fixture_test.norn") :only #"tw")))))
+
+;;; parallel-tests!: the tests overlap in time
+(def par
+  (binding [t/*serial* false] (t/run-file
+    (sample "par_test.norn"
+            "(ns par-test (:require [norn.test :as t :refer [is deftest]]))
+(t/parallel-tests!)
+(def running (atom 0))
+(def peak (atom 0))
+(defn work [] (swap! peak max (swap! running inc)) (sleep 30) (swap! running dec))
+(deftest a (work) (is true))
+(deftest b (work) (is true))
+(deftest c (work) (is true))
+"))))
+(is (= ["a" "b" "c"] (mapv :name (:tests par))))
+(is (= 3 (deref (var-get (resolve 'par-test/peak)))))
+(binding [t/*serial* true]
+  (t/run-file (io/path dir "par_test.norn"))
+  (is (= 1 (deref (var-get (resolve 'par-test/peak))))))
+
+;;; run-files and the reporters
+(def all (t/run-files [(io/path dir "plain_test.norn") (io/path dir "rich_test.norn")]))
+(is (= {:tests 8 :pass 7 :fail 6 :error 2} (:totals all)))
+(let [human (t/%human all)]
+  (is (str/includes? human "FAIL in adds"))
+  (is (str/includes? human "small › really"))
+  (is (str/includes? human "expected: 5"))
+  (is (str/ends-with? human "8 tests, 15 checks: 7 passed, 6 failed, 2 errors\n")))
+(let [tap (t/%tap all)]
+  (is (str/starts-with? tap "TAP version 13\n1..8\n"))
+  (is (str/includes? tap "not ok 1 - plain-test/<load>"))
+  (is (str/includes? tap "ok 7 - rich-test/signal-alone")))
+(let [xml (t/%junit all)]
+  (is (str/includes? xml "<testcase classname=\"rich-test\" name=\"raises\""))
+  (is (str/includes? xml "failures=\"4\" errors=\"2\">"))
+  (is (str/includes? xml "&lt;load&gt;")))
+(is (= 1 (t/main (io/path dir "plain_test.norn") "--serial")))
+(is (= 0 (t/main (io/path dir "fixture_test.norn"))))
+
+(io/delete! dir :recursive true)

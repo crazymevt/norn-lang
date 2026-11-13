@@ -2,31 +2,22 @@
 ;;;; compiler, the self-hosting fixpoint, and what changes now that macros run
 ;;;; as ordinary code in the compiling fiber.
 
-(ns compiler-test)
+(ns compiler-test
+  (:require [norn.test :refer [is deftest testing]]))
 
-(def failures 0)
-(def checks 0)
-
-(defmacro is [expected expr]
-  `(let [e# ~expected a# ~expr]
-     (alter-var-root (var checks) inc)
-     (when-not (= e# a#)
-       (alter-var-root (var failures) inc)
-       (println "FAIL:" '~expr "\n  expected:" (pr-str e#) "\n  actual:  " (pr-str a#)))))
-
-(is norn.compiler/eval norn.core/eval)
+(is (= norn.compiler/eval norn.core/eval))
 
 ;;; Byte-identical output to the seed compiler on the whole core library
 ;;; (compiled in its own namespace) and on the compiler itself.
-(is [] (do (in-ns 'norn.core)
+(is (= [] (do (in-ns 'norn.core)
            (let [d (norn.compiler/compare-compilers (%compiler-source) "compiler.norn")]
              (in-ns 'compiler-test)
-             d)))
-(is [] (let [saved (current-ns)]
+             d))))
+(is (= [] (let [saved (current-ns)]
          (in-ns 'norn.core)
          (let [d (norn.compiler/compare-compilers (%core-source) "core.norn")]
            (in-ns saved)
-           d)))
+           d))))
 
 ;;; The self-hosting fixpoint: the compiler compiled by the seed (stage 1),
 ;;; by itself (stage 2) and by stage 2 (stage 3) are the same code.
@@ -42,24 +33,22 @@
 (load-string (%compiler-source))
 (norn.compiler/%install!)
 (def stage3 (snapshot))
-(is true (> (count stage1) 50))
-(is true (= stage1 stage2))
-(is true (= stage2 stage3))
-(is [] (vec (keep (fn [k] (when (not= (get stage1 k) (get stage3 k)) k)) (keys stage1))))
+(is (= true (> (count stage1) 50)))
+(is (= true (= stage1 stage2)))
+(is (= true (= stage2 stage3)))
+(is (= [] (vec (keep (fn [k] (when (not= (get stage1 k) (get stage3 k)) k)) (keys stage1)))))
 
 ;;; Macros are ordinary code in the compiling fiber: they can block.
 (defmacro after-a-wait [] (sleep 5) 42)
-(is 42 (after-a-wait))
+(is (= 42 (after-a-wait)))
 (defmacro from-a-fiber [] (await (spawn-detached (+ 40 2))))
-(is 42 (from-a-fiber))
+(is (= 42 (from-a-fiber)))
 
 ;;; Compile errors are conditions with restarts.
-(is "Unable to resolve symbol: nowhere in this context"
-    (handler-case (eval 'nowhere) (norn.compiler/CompileError [e] (condition-message e))))
-(is 42 (handler-bind [norn.compiler/CompileError (fn [c] (eval '(def nowhere-yet 41)) (invoke-restart 'retry))]
-         (+ 1 (eval 'nowhere-yet))))
-(is :instead (handler-bind [norn.compiler/CompileError (fn [c] (invoke-restart 'use-value :instead))]
-               (eval '(missing-fn 1))))
+(is (= "Unable to resolve symbol: nowhere in this context"
+    (handler-case (eval 'nowhere) (norn.compiler/CompileError [e] (condition-message e)))))
+(is (= 42 (handler-bind [norn.compiler/CompileError (fn [c] (eval '(def nowhere-yet 41)) (invoke-restart 'retry))]
+         (+ 1 (eval 'nowhere-yet)))))
+(is (= :instead (handler-bind [norn.compiler/CompileError (fn [c] (invoke-restart 'use-value :instead))]
+               (eval '(missing-fn 1)))))
 
-(println (str "compiler_test: " checks " checks, " failures " failures"))
-(when (pos? failures) (error failures "compiler tests failed"))
