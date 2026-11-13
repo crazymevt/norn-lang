@@ -17,7 +17,7 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
   (or from `NORN_PATH` for user code), and caches it.
 - An image includes whatever was loaded before the save.
 
-## M6: I/O, the system, and a basic FFI
+## M6: I/O, the system, and a basic FFI — done (2026-11-13)
 
 | Part | Work | Checked by |
 |---|---|---|

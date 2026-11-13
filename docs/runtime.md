@@ -1050,7 +1050,7 @@ each part needs from the runtime:
 | M3 ✅ | Conditions, restarts, parked-fiber debugger, REPL protocol | Fix a crashed fiber from the editor and resume it |
 | M4 ✅ | Real compiler in Norn, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
 | M5 ✅ | Images: save/load, layers, parked fibers, `on-image-restore` | Under 50 ms startup; a saved fiber resumes after load |
-| M6 | I/O: the reactor (`mio`) plus a blocking pool for files; byte arrays and buffers; `norn.io` (files, streams, paths), `norn.net` (TCP, UDP, TLS via `rustls`), `norn.process`, `norn.time`, `norn.sys` (environment variables (read-only), command-line arguments, exit, OS type and architecture, core count, memory, pid, directories, hostname, the Norn version and build; all read live, so a restored image sees the machine it runs on), `norn.fs` (walking directories, glob patterns, file watching), `norn.signal` (OS signals as channel messages); byte encodings (UTF-8, base64, hex); a basic FFI (load a dynamic library; call C functions with integer, float, pointer and byte-buffer arguments, either fast on the carrier or blocking on the pool; Cranelift-generated call stubs). Handles, including FFI handles, are image resources; weak references and finalizers in the GC binding (for resource registries, caches and freeing FFI handles); the monitor thread (replaces a carrier stuck in a long native call); fiber dumps (every fiber's stack, on a signal) | A TCP echo server holds 10,000 connections on fibers without blocking a carrier; a socket saved in an image comes back as `ResourceLost` and its `reconnect` restart works |
+| M6 ✅ | I/O: the reactor (`mio`) plus a blocking pool for files; byte arrays and buffers; `norn.io` (files, streams, paths), `norn.net` (TCP, UDP, TLS via `rustls`), `norn.process`, `norn.time`, `norn.sys` (environment variables (read-only), command-line arguments, exit, OS type and architecture, core count, memory, pid, directories, hostname, the Norn version and build; all read live, so a restored image sees the machine it runs on), `norn.fs` (walking directories, glob patterns, file watching), `norn.signal` (OS signals as channel messages); byte encodings (UTF-8, base64, hex); a basic FFI (load a dynamic library; call C functions with integer, float, pointer and byte-buffer arguments, either fast on the carrier or blocking on the pool; Cranelift-generated call stubs). Handles, including FFI handles, are image resources; weak references and finalizers in the GC binding (for resource registries, caches and freeing FFI handles); the monitor thread (replaces a carrier stuck in a long native call); fiber dumps (every fiber's stack, on a signal) | A TCP echo server holds 10,000 connections on fibers without blocking a carrier; a socket saved in an image comes back as `ResourceLost` and its `reconnect` restart works |
 | M7 | Numbers, collections and the pure stdlib: bignums and ratios with automatic promotion; sorted maps and sets, a persistent queue, transients; `norn.string`, `norn.math`, `norn.set`, `norn.walk`, `norn.regex`, `norn.json`, `norn.pprint`, `norn.random`, `norn.test`; type-preserving sequence functions and explicit `lazy` streams (design §3.3); transducers (one vocabulary for sequences, channels and `preduce`); `norn.format` (`cl-format` and `printf`); `norn.edn` (a safe reader for untrusted data); `norn.async` extras (`mult`, `pub`/`sub`, `pipeline`, `merge`, dropping and sliding buffers), `norn.sync` (semaphores, latches, a rate limiter), `norn.cache` (`memoize` with LRU and TTL variants); REPL tools (`doc`, `apropos`, `source`, an inspector, `trace`/`untrace`), `norn.bench` and `norn.log`; tooling: a reader mode that keeps comments and whitespace, `norn fmt` (one canonical style, no options; macros declare indentation, e.g. `{:indent 1}`), `norn lint` (the compiler in analysis mode, signalling `Warning`s: unresolved symbols, unused locals, wrong arity to known functions, shadowed core names, `def` inside a function, `defmethod` lambda lists that don't match), and `:format`/`:lint` editor ops; `norn doc` with a docstring convention (Markdown; `:since`, `:deprecated`, `:see-also`, runnable `:examples`) and deprecation warnings; `norn test` (discovers tests, runs them in parallel on fibers, filters, TAP and JUnit output); `norn check` (fmt, lint, test and docs in one command); a terminal REPL line editor (history, multi-line editing, completion); `norn image info` and image diff; code coverage from bytecode counters if it's cheap. equality per design §3.4 (`:equality :identity`, `:compare false`, reflexive NaN, numeric-tower rules); mutable objects per design §4.2 (`(:mutable)` classes, `set-slot!`/`update-slot!`, fiber ownership with `release!`, `share` and `locking`) | Every suite runs on `norn.test`; arithmetic promotes past 62 bits identically at tier 0 and tier 1; `norn fmt --check` and `norn lint` are clean on `lib/` and `tests/`, and formatting is idempotent and reads back to the same forms |
 | M7.5 | `norn.ui`, a native UI library (design §9.1). In Rust, the UI host: the main-thread event loop, windows, input (including IME), clipboard, accessibility, GPU drawing of display lists, text shaping and layout. In Norn: widgets, flex and grid layout, styling, focus, animation, and declarative views over atom state with tree diffing; windows as image resources | A widget gallery runs smoothly at the display's frame rate on macOS; redefining a view at the REPL updates the open window; a restored image reopens its windows |
 | M7.6 | The Norn editor, the first real program: a VS Code-style editor made for Norn, written in Norn on `norn.ui`, to test the stdlib before it is sealed. It lives in its own repository; until M8's packages exist it loads Norn sources from a local checkout of this one. Text buffers are persistent ropes; highlighting and structure come from M7's comment-keeping reader; the REPL, debugger and evaluation go through the editor protocol (M3) to a separate `norn` process; `norn fmt` and `norn lint` run in it | Norn's own development happens in the editor: editing, the REPL, the debugger, formatting and linting; what it needed is fixed or scheduled before M8 |
@@ -1280,6 +1280,51 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
   handles yet, so nothing in the runtime registers itself.
 - **Start-up:** the 50 ms target is met. The floor is now MMTk's
   initialisation, not Norn's.
+
+### 12.7 M6 status (2026-11-13)
+
+**Built** (plan: `docs/plan-m6-m7.md`):
+- **Library loading** before modules: `require` with `:as` and `:refer`,
+  `ns` `(:require …)`, embedded libraries, and `NORN_PATH`.
+- **Weak references and cleanups** (§4.5).
+- **`Bytes`** and `norn.bytes`.
+- **The reactor, the blocking pool, native regions and spare carriers**
+  (§5.5).
+- **The libraries:**
+  - `norn.io` (files, streams, paths), `norn.fs` (walk, glob, watch),
+    `norn.sys`;
+  - `norn.process`, `norn.time`, `norn.signal`;
+  - `norn.net` (TCP, UDP, TLS with rustls);
+  - `norn.ffi`, the basic FFI (§5.6).
+- **Fiber dumps:** `(fiber-dump)`, and SIGQUIT prints one.
+
+**Verified:**
+- **The done-check** (`crates/norn/tests/io.rs`):
+  - an echo server holds 10,000 TCP connections open at once on two
+    carriers (2.6 s in a debug build);
+  - a socket saved in an image comes back as `ResourceLost`, and the
+    `reconnect` restart opens a working connection to the same server.
+- `tests/norn/lib_test.norn` (122 checks) passes:
+  - in process, at tier 0 and tier 1, from an image;
+  - under `NORN_GC_STRESS=2` and on one carrier.
+- Image tests cover weak references, file handles and foreign functions;
+  `libs.rs` covers library loading.
+
+**Found and fixed along the way:**
+- **Heap corruption under GC stress:** threads outside the carriers held
+  heap values outside the GC roots. The rule is in §5.5.
+- **GC worker threads had a null thread handle,** which MMTk's debug build
+  rejects (this came up in M5).
+- **`try` didn't recognise `catch` and `finally`** when a macro's
+  syntax-quote had qualified them.
+- **`defmethod` on another namespace's generic function** defined a new
+  one (this came up in M5).
+
+**Deviations from the plan:**
+- **No `io_uring`** (Linux): the reactor is plain `mio`.
+- **Time zones** are UTC, local or a fixed offset; there's no tz database
+  yet.
+- **The FFI's 64-bit results** must fit a fixnum until M7's bignums.
 
 ---
 

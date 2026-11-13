@@ -8,7 +8,7 @@ runtime built for many cores.
 - Language design: [docs/design.md](docs/design.md)
 - Runtime architecture and milestones: [docs/runtime.md](docs/runtime.md)
 
-**Status: M5** — a bytecode interpreter running millions of fibers on a
+**Status: M6** — a bytecode interpreter running millions of fibers on a
 work-stealing scheduler (one carrier per core), with channels, `alts!`,
 atoms, structured concurrency scopes and a parallel MMTk garbage collector;
 plus CLOS-style classes and generic functions (multiple dispatch, method
@@ -18,7 +18,11 @@ stack intact, you fix the code, and resume it from the REPL or an editor
 (`norn --server`). The compiler is written in Norn and compiles itself; set `NORN_TIER=1`
 for Cranelift-generated native code (2–9× faster on the benchmarks so far).
 Images save the running heap, parked fibers included (even one waiting in
-the debugger), and start in about 35 ms.
+the debugger), and start in about 35 ms. I/O never blocks a carrier: files
+on a blocking pool, sockets (TCP, UDP, TLS) and pipes on a reactor, and C
+functions through a basic FFI. One process can hold 10,000 connections on
+two carriers. Libraries: `norn.io`, `norn.fs`, `norn.sys`, `norn.process`,
+`norn.time`, `norn.signal`, `norn.net`, `norn.ffi`, `norn.bytes`.
 See [runtime.md §12](docs/runtime.md#12-revised-milestones) for what exists
 and what's next.
 
@@ -43,15 +47,19 @@ NORN_GC_STRESS=1 ./target/release/norn tests/norn/conc_test.norn
 ./target/release/norn --image dev.nimg       # carry on from a saved image
 ./target/release/norn build app.nimg app.norn --entry app/main
 ./target/release/norn --image app.nimg ARGS… # run its entry function
+./target/release/norn -e "(do (require '[norn.process :as p]) (p/sh \"uname\" \"-a\"))"
 ```
 
 ## Layout
 
 ```
 crates/norn-rt   values, heap, objects, collections, printer, namespaces
-crates/norn-vm   reader, seed compiler, interpreter, scheduler, channels, primitives
+crates/norn-vm   reader, seed compiler, interpreter, scheduler, channels, primitives,
+                 reactor, blocking pool, sockets, FFI
 crates/norn      the `norn` binary
 lib/core         norn.core, written in Norn
+lib/compiler     the Norn compiler, written in Norn
+lib/norn         the standard libraries (norn.io, norn.net, …)
 tests/norn       Norn test suites
 bench/           benchmarks
 spikes/          throwaway platform experiments

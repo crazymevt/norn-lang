@@ -58,3 +58,118 @@ fn a_slow_fast_ffi_call_gets_a_spare_carrier() {
     );
     assert_eq!(r, "[4999950000 true [0 0]]");
 }
+
+// ---- M6 done-check ------------------------------------------------------------------------
+
+#[test]
+fn an_echo_server_holds_10000_connections_on_two_carriers() {
+    // Every connection is open at the same moment (the server counts them),
+    // and two carriers serve them all: a connection never blocks a carrier.
+    let r = norn(
+        "2",
+        r#"(do (require '[norn.net :as net] '[norn.io :as io])
+               (def n 10000)
+               (def l (net/listen "127.0.0.1" 0))
+               (def port (net/port (net/local-address l)))
+               (def open (atom 0))
+               (def peak (atom 0))
+               (def all-in (chan))
+               (def server
+                 (spawn-detached
+                   (dotimes [_ n]
+                     (let [c (net/accept l)]
+                       (spawn-detached
+                         (let [now (swap! open inc)]
+                           (swap! peak max now)
+                           (when (= now n) (close! all-in))
+                           (let [line (io/read-line (io/line-reader c))]
+                             (io/write c (str line "!\n"))
+                             ;; hold until all are connected (or give up)
+                             (alts! [all-in (timeout 120000)])
+                             (io/close c)                 ; the server closes first
+                             (swap! open dec))))))))
+               (defn talk [i c]
+                 (let [r (io/line-reader c)]
+                   (io/write c (str i "\n"))
+                   (let [reply (io/read-line r)
+                         eof (io/read-line r)]
+                     (io/close c)
+                     (and (= reply (str i "!")) (nil? eof)))))
+               ;; Connect in batches of 100, each established before the next
+               ;; (macOS caps the accept backlog at 128), then talk on all.
+               (def clients
+                 (loop [i 0 acc []]
+                   (if (< i n)
+                     (let [conns (mapv await (mapv (fn [_] (spawn-detached (net/connect "127.0.0.1" port))) (range 100)))]
+                       (recur (+ i 100) (into acc (map-indexed (fn [j c] (spawn-detached (talk (+ i j) c))) conns))))
+                     acc)))
+               (def ok (count (filter true? (mapv await clients))))
+               (await server)
+               [ok @peak (carrier-count)])"#,
+    );
+    assert_eq!(r, "[10000 10000 2]");
+}
+
+#[test]
+fn a_socket_saved_in_an_image_is_lost_until_reconnected() {
+    use std::io::BufRead;
+    let dir = std::env::temp_dir().join(format!("norn-io-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let img = dir.join("socket.nimg");
+    // An echo server in a process of its own, printing its port.
+    let mut server = Command::new(env!("CARGO_BIN_EXE_norn"))
+        .args([
+            "-e",
+            r#"(do (require '[norn.net :as net] '[norn.io :as io])
+                   (let [l (net/listen "127.0.0.1" 0)]
+                     (println (net/port (net/local-address l)))
+                     (loop []
+                       (let [c (net/accept l)]
+                         (spawn-detached
+                           (let [r (io/line-reader c)]
+                             (loop [] (when-let [line (io/read-line r)] (io/write c (str line "!\n")) (recur)))
+                             (io/close c))))
+                       (recur))))"#,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut port = String::new();
+    std::io::BufReader::new(server.stdout.take().unwrap()).read_line(&mut port).unwrap();
+    let port = port.trim().to_owned();
+
+    // A client connects, talks, and saves an image with the socket in it.
+    let saved = norn(
+        "2",
+        &format!(
+            r#"(do (require '[norn.net :as net] '[norn.io :as io])
+                   (def c (net/connect "127.0.0.1" {port}))
+                   (io/write c "before\n")
+                   (def reply (io/read-line (io/line-reader c)))
+                   (save-image "{}")
+                   reply)"#,
+            img.display()
+        ),
+    );
+    assert_eq!(saved, "\"before!\"");
+
+    // Restored: the socket is lost; the reconnect restart connects anew.
+    let out = Command::new(env!("CARGO_BIN_EXE_norn"))
+        .args([
+            "--image",
+            img.to_str().unwrap(),
+            "-e",
+            r#"[(try (norn.io/write c "x\n") :no-error (catch ResourceLost e :lost))
+                (handler-bind [ResourceLost (fn [e] (invoke-restart 'reconnect))]
+                  (let [c2 (ensure-live c)]
+                    (norn.io/write c2 "after\n")
+                    (norn.io/read-line (norn.io/line-reader c2))))]"#,
+        ])
+        .output()
+        .unwrap();
+    let _ = server.kill();
+    let _ = server.wait();
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    assert!(out.status.success(), "{text}{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(text, r#"[:lost "after!"]"#);
+}
