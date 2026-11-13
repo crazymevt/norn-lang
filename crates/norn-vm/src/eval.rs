@@ -17,6 +17,25 @@ use norn_rt::{Mutator, Value};
 pub const CORE_SRC: &str = include_str!("../../../lib/core/core.norn");
 pub const COMPILER_SRC: &str = include_str!("../../../lib/compiler/compiler.norn");
 
+/// The standard libraries (`lib/norn/*.norn`), embedded so `norn` is a
+/// single file. `(require 'norn.x)` loads one the first time it is needed.
+pub const LIBS: &[(&str, &str)] = &[];
+
+/// `(%find-lib "a.b-c")`: the source of library `a.b-c` and where it came
+/// from — embedded, or `a/b-c.norn` under a directory on `NORN_PATH`
+/// (colon-separated) or the current directory.
+pub(crate) fn find_lib(name: &str) -> Option<(String, String)> {
+    if let Some((_, src)) = LIBS.iter().find(|(n, _)| *n == name) {
+        return Some(((*src).to_owned(), format!("<{name}>")));
+    }
+    let rel = format!("{}.norn", name.replace('.', "/"));
+    let path = std::env::var("NORN_PATH").unwrap_or_default();
+    path.split(':').filter(|d| !d.is_empty()).chain(std::iter::once(".")).find_map(|dir| {
+        let p = std::path::Path::new(dir).join(&rel);
+        std::fs::read_to_string(&p).ok().map(|src| (src, p.to_string_lossy().into_owned()))
+    })
+}
+
 /// A VM for carrier `id`, positioned in norn.core.
 pub(crate) fn carrier_vm(id: usize) -> Vm {
     let mut m = Mutator::new();

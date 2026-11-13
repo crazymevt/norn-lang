@@ -27,7 +27,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// Version of the root layout below (part of the build fingerprint too).
-const ROOTS_VERSION: i64 = 1;
+const ROOTS_VERSION: i64 = 2;
 
 /// How long a save waits for running fibers to reach a resume point.
 const PAUSE_LIMIT: Duration = Duration::from_secs(10);
@@ -60,6 +60,10 @@ pub fn build_id() -> u64 {
         }
         eat(crate::eval::CORE_SRC.as_bytes());
         eat(crate::eval::COMPILER_SRC.as_bytes());
+        for (name, src) in crate::eval::LIBS {
+            eat(name.as_bytes());
+            eat(src.as_bytes());
+        }
         h
     })
 }
@@ -73,7 +77,7 @@ pub fn build_id() -> u64 {
 //   the five frame-kind closures (or nils)
 //   entry
 //   n, symbols…            n, keywords…
-//   n, then per namespace: name, m, (symbol var)…
+//   n, then per namespace: name, m, (symbol var)…, a, (alias namespace-name)…
 //   n, runnable fibers…
 //   n, then per timer: ms-left, wake?, target
 
@@ -102,10 +106,15 @@ fn collect_roots(entry: Value, keep_fibers: bool, timers: &[SavedTimer]) -> Vec<
         r.extend(list.iter().copied());
     }
     r.push(fix(t.namespaces.len() as u64));
-    for (name, maps) in &t.namespaces {
+    for (name, maps, aliases) in &t.namespaces {
         r.push(*name);
         r.push(fix(maps.len() as u64));
         for &(k, v) in maps {
+            r.push(k);
+            r.push(v);
+        }
+        r.push(fix(aliases.len() as u64));
+        for &(k, v) in aliases {
             r.push(k);
             r.push(v);
         }
@@ -203,7 +212,12 @@ pub(crate) fn load(path: &Path) -> std::result::Result<Restore, String> {
         for _ in 0..n {
             maps.push((r.of(Kind::Symbol)?, r.of(Kind::Var)?));
         }
-        namespaces.push((name, maps));
+        let na = r.count()?;
+        let mut aliases = Vec::with_capacity(na);
+        for _ in 0..na {
+            aliases.push((r.of(Kind::Symbol)?, r.of(Kind::Symbol)?));
+        }
+        namespaces.push((name, maps, aliases));
     }
     let queued = r.many(Kind::Fiber)?;
     let nt = r.count()?;
@@ -232,6 +246,10 @@ pub(crate) fn load(path: &Path) -> std::result::Result<Restore, String> {
     norn_rt::object::set_identity_hash_counter(ihash);
     crate::reader::set_gensym_counter(gensym);
     norn_rt::clos::CLASS_EPOCH.fetch_max(epoch, std::sync::atomic::Ordering::AcqRel);
+
+    for &w in &loaded.weaks {
+        norn_rt::weak::register(w);
+    }
 
     // Fibers saved their namespace by name.
     let mut dead = Vec::new();

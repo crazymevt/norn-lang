@@ -265,6 +265,7 @@ pub(crate) fn size_words(kind: Kind, w: impl Fn(usize) -> usize) -> usize {
         Kind::Class => 2 + class::WORDS,
         Kind::Generic => 2 + generic::WORDS,
         Kind::Instance => 5 + w(2),
+        Kind::Weak => 2 + crate::weak::layout::WORDS,
     }
 }
 
@@ -377,6 +378,8 @@ pub(crate) fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
             fields(&[0, 1], visit);
             (3..3 + w(2)).for_each(|i| visit(slot_at(field(i))));
         }
+        // The referent is weak: only the cleanup is traced.
+        Kind::Weak => fields(&[crate::weak::layout::CLEANUP], visit),
     }
 }
 
@@ -410,6 +413,13 @@ impl Scanning<Norn> for Norn {
             f(&mut add);
         }
         factory.create_process_pinning_roots_work(nodes);
+    }
+    fn process_weak_refs(
+        _: &mut mmtk::scheduler::GCWorker<Norn>,
+        _: impl mmtk::vm::ObjectTracerContext<Norn>,
+    ) -> bool {
+        crate::weak::process();
+        false
     }
     fn supports_return_barrier() -> bool {
         false

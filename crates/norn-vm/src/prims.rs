@@ -219,6 +219,16 @@ prims! {
     "%proto-parts" 1 Some(1) => proto_parts;
     "%seed-compile" 1 Some(1) => |vm, a| { vm.nested += 1; let r = crate::compiler::compile_toplevel(vm, a[0]); vm.nested -= 1; r };
     "%compiler-source" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, crate::eval::COMPILER_SRC));
+    // weak references and cleanups
+    "weak-ref" 1 Some(1) => |vm, a| Ok(norn_rt::weak::weak_new(&mut vm.m, a[0], Value::NIL));
+    "weak-get" 1 Some(1) => |_, a| { expect(a[0], Kind::Weak, "weak-get")?; Ok(a[0].weak_get()) };
+    "add-cleanup!" 2 Some(2) => |vm, a| Ok(norn_rt::weak::weak_new(&mut vm.m, a[0], a[1]));
+    "cancel-cleanup!" 1 Some(1) => |_, a| { expect(a[0], Kind::Weak, "cancel-cleanup!")?; Ok(Value::bool(a[0].weak_cancel())) };
+    // libraries and namespaces
+    "%find-lib" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "%find-lib")?; Ok(match crate::eval::find_lib(a[0].as_str()) { Some((src, origin)) => { let s = str_new(&mut vm.m, &src); let o = str_new(&mut vm.m, &origin); vec_from_slice(&mut vm.m, &[s, o]) } None => Value::NIL }) };
+    "%alias" 2 Some(2) => |vm, a| { expect(a[0], Kind::Symbol, "alias")?; expect(a[1], Kind::Symbol, "alias")?; if rt().find_ns(a[1]).is_none() { return Err(Error::new(format!("No namespace: {}", text(a[1])))); } vm.ns.add_alias(a[0], a[1]); Ok(Value::NIL) };
+    "%refer" 2 Some(2) => |vm, a| { expect(a[0], Kind::Symbol, "refer")?; expect(a[1], Kind::Var, "refer")?; vm.ns.refer(a[0], a[1]); Ok(Value::NIL) };
+    "ns-aliases" 1 Some(1) => |vm, a| { expect(a[0], Kind::Symbol, "ns-aliases")?; let pairs: Vec<Value> = rt().find_ns(a[0]).map(|ns| ns.aliases().into_iter().flat_map(|(k, v)| [k, v]).collect()).unwrap_or_default(); hash_map(vm, &pairs) };
     // images
     "%save-image" 4 Some(4) => |vm, a| { expect(a[0], Kind::String, "save-image")?; crate::image::save_image(vm, a[0], a[1], a[2].truthy(), a[3].truthy()) };
     "%save-image-outcome" 0 Some(0) => |vm, _| crate::image::save_outcome(vm);

@@ -683,6 +683,10 @@ fn submit(job: Job) {
 /// the slow safepoint path, so busy carriers still see cancellations.
 pub fn process_external(vm: &mut Vm) {
     let s = sched();
+    // Cleanups of collected objects (norn-rt weak.rs) each run in a fiber.
+    for f in norn_rt::weak::take_ready() {
+        spawn(vm, f, Value::NIL);
+    }
     if s.external_len.load(Ordering::Acquire) == 0 {
         return;
     }

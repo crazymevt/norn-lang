@@ -154,5 +154,28 @@
 (is (map inc (range 1000)) (pmap inc (range 1000)))
 (is 499500 (preduce + 0 (range 1000)))
 
+;;; weak references and cleanups. The objects are made, and the GC run, in
+;;; separate top-level forms: a register of a live frame can still hold a value
+;;; a finished call left there, which keeps it reachable a little longer.
+(defn- weak-to-garbage [] (weak-ref (vec (range 100))))
+(defn- cleanup-for-garbage [ch] (add-cleanup! (vec (range 100)) (fn [] (put! ch :cleaned))))
+(def kept (vec (range 10)))
+(def cleaned (chan 1))
+(def not-cleaned (chan 1))
+(def w (weak-to-garbage))
+(def k (weak-ref kept))
+(def c (cleanup-for-garbage cleaned))
+;; held until its cleanup is cancelled, so no collection can beat the cancel
+(def target (vec (range 100)))
+(def cancelled (add-cleanup! target (fn [] (put! not-cleaned :cleaned))))
+(is true (cancel-cleanup! cancelled))
+(def target nil)
+(gc)
+(is nil (weak-get w))
+(is kept (weak-get k))
+(is :cleaned (first (alts! [cleaned (timeout 5000)])))
+(is nil (first (alts! [not-cleaned (timeout 100)])))
+(is false (cancel-cleanup! c))
+
 (println (str "conc_test: " checks " checks, " failures " failures"))
 (when (pos? failures) (error failures "concurrency tests failed"))

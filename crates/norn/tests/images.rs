@@ -212,3 +212,22 @@ fn start_up_from_an_image_is_fast() {
         assert!(best < 50, "start-up took {best} ms");
     }
 }
+
+#[test]
+fn weak_references_keep_only_what_else_is_saved() {
+    let d = scratch("weak");
+    let img = d.join("weak.nimg");
+    eval(
+        None,
+        &format!(
+            r#"(do (def strong (vec (range 5)))
+                   (def w1 (weak-ref strong))
+                   (def w2 (weak-ref (vec (range 7))))
+                   (def c (add-cleanup! strong (fn [] :never)))
+                   (:objects (save-image "{}")))"#,
+            img.display()
+        ),
+    );
+    // The cleanup releases a per-process resource, so it isn't saved.
+    assert_eq!(eval(Some(&img), "[(weak-get w1) (weak-get w2) (cancel-cleanup! c)]"), "[[0 1 2 3 4] nil false]");
+}

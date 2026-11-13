@@ -21,6 +21,9 @@ type NameKey = (Option<String>, String);
 pub struct Namespace {
     pub name: Value,
     mappings: RwLock<HashMap<Value, Value>>,
+    /// alias symbol → the name of the namespace it stands for (`str` →
+    /// `norn.string`), from `(require '[norn.string :as str])`.
+    aliases: RwLock<HashMap<Value, Value>>,
 }
 
 impl Namespace {
@@ -45,6 +48,25 @@ impl Namespace {
     /// All (symbol, var) pairs, unordered.
     pub fn mappings(&self) -> Vec<(Value, Value)> {
         self.mappings.read().unwrap().iter().map(|(&k, &v)| (k, v)).collect()
+    }
+
+    /// Map `sym` in this namespace to `var` of another namespace (`:refer`).
+    pub fn refer(&self, sym: Value, var: Value) {
+        self.mappings.write().unwrap().insert(sym, var);
+    }
+
+    pub fn add_alias(&self, alias: Value, target: Value) {
+        self.aliases.write().unwrap().insert(alias, target);
+    }
+
+    /// The namespace name `alias` stands for here, if it is an alias.
+    pub fn alias_target(&self, alias: Value) -> Option<Value> {
+        self.aliases.read().unwrap().get(&alias).copied()
+    }
+
+    /// All (alias, namespace name) pairs, unordered.
+    pub fn aliases(&self) -> Vec<(Value, Value)> {
+        self.aliases.read().unwrap().iter().map(|(&k, &v)| (k, v)).collect()
     }
 }
 
@@ -91,11 +113,13 @@ pub fn init(m: &mut Mutator) {
 pub struct Tables {
     pub symbols: Vec<Value>,
     pub keywords: Vec<Value>,
-    /// (namespace name, [(symbol, var)…])
-    pub namespaces: Vec<(Value, Vec<(Value, Value)>)>,
+    /// (namespace name, [(symbol, var)…], [(alias, namespace name)…])
+    pub namespaces: Vec<NsTable>,
     /// empty list, vector, map, set, array
     pub empties: [Value; 5],
 }
+
+pub type NsTable = (Value, Vec<(Value, Value)>, Vec<(Value, Value)>);
 
 fn name_key(v: Value) -> NameKey {
     let ns = v.field(SYM_NS);
@@ -111,16 +135,18 @@ impl Runtime {
     pub fn tables(&self) -> Tables {
         let symbols = sorted_by_name(self.symbols.lock().unwrap().values().copied().collect());
         let keywords = sorted_by_name(self.keywords.lock().unwrap().values().copied().collect());
-        let mut namespaces: Vec<(Value, Vec<(Value, Value)>)> = self
+        let mut namespaces: Vec<NsTable> = self
             .all_namespaces()
             .into_iter()
             .map(|ns| {
                 let mut m = ns.mappings();
                 m.sort_by_cached_key(|&(k, _)| name_key(k));
-                (ns.name, m)
+                let mut a = ns.aliases();
+                a.sort_by_cached_key(|&(k, _)| name_key(k));
+                (ns.name, m, a)
             })
             .collect();
-        namespaces.sort_by_cached_key(|&(n, _)| name_key(n));
+        namespaces.sort_by_cached_key(|&(n, _, _)| name_key(n));
         Tables {
             symbols,
             keywords,
@@ -137,10 +163,11 @@ pub fn init_from_image(t: Tables) -> Result<(), String> {
     let namespaces = t
         .namespaces
         .iter()
-        .map(|(name, maps)| {
+        .map(|(name, maps, aliases)| {
             let ns: &'static Namespace = Box::leak(Box::new(Namespace {
                 name: *name,
                 mappings: RwLock::new(maps.iter().copied().collect()),
+                aliases: RwLock::new(aliases.iter().copied().collect()),
             }));
             (*name, ns)
         })
@@ -220,8 +247,13 @@ impl Runtime {
 
     pub fn find_or_create_ns(&self, name: Value) -> &'static Namespace {
         let mut t = self.namespaces.lock().unwrap();
-        t.entry(name)
-            .or_insert_with(|| Box::leak(Box::new(Namespace { name, mappings: RwLock::new(HashMap::new()) })))
+        t.entry(name).or_insert_with(|| {
+            Box::leak(Box::new(Namespace {
+                name,
+                mappings: RwLock::new(HashMap::new()),
+                aliases: RwLock::new(HashMap::new()),
+            }))
+        })
     }
 
     /// Visit every value the runtime tables keep alive (GC roots).
@@ -230,7 +262,7 @@ impl Runtime {
         self.keywords.lock().unwrap().values().for_each(|&v| f(v));
         for ns in self.namespaces.lock().unwrap().values() {
             f(ns.name);
-            for (k, v) in ns.mappings() {
+            for (k, v) in ns.mappings().into_iter().chain(ns.aliases()) {
                 f(k);
                 f(v);
             }
@@ -246,12 +278,14 @@ impl Runtime {
 
     /// Resolve `sym` to a var as seen from namespace `ns`.
     ///
-    /// Qualified symbols look in the named namespace. Unqualified symbols look
-    /// in `ns`, then fall back to `core` (every namespace refers norn.core).
+    /// Qualified symbols look in the named namespace, where the qualifier may
+    /// be an alias of `ns`. Unqualified symbols look in `ns`, then fall back
+    /// to `core` (every namespace refers norn.core).
     pub fn resolve(&self, m: &mut Mutator, ns: &Namespace, core: &Namespace, sym: Value) -> Option<Value> {
         match sym.sym_ns() {
             Some(q) => {
-                let target = self.find_ns(self.symbol(m, None, q))?;
+                let q = self.symbol(m, None, q);
+                let target = self.find_ns(ns.alias_target(q).unwrap_or(q))?;
                 let local = self.symbol(m, None, sym.sym_name());
                 target.lookup(local)
             }
@@ -266,4 +300,5 @@ pub fn for_each_root(f: &mut dyn FnMut(Value)) {
         r.visit_roots(f);
     }
     crate::clos::for_each_root(f);
+    crate::weak::for_each_root(f);
 }

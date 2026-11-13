@@ -48,3 +48,18 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
 
 - **2026-11-13: Emacs and VS Code plugins dropped from M7.** The Norn
   editor (M7.6) is the target; other editors can use `norn lsp` (M9).
+- **Library loading (before modules).**
+  - `(require 'a.b)` looks for an embedded library first, then
+    `a/b.norn` under `NORN_PATH` and the current directory. Dashes stay
+    dashes in file names.
+  - `ns` gained `(:require [lib :as x :refer [...]])`. Aliases also work
+    inside syntax-quote, where they expand to the full namespace name.
+  - When several fibers require the same library at once, one loads it and
+    the others wait. A circular require is an error.
+  - Images save aliases (root format version 2).
+- **Weak references are cleanups, not finalizers** (runtime.md §4.5): no
+  resurrection, and cleanups run in their own fibers. Cleanups aren't saved
+  in images. The resource registry is now weak.
+- **A known GC imprecision.** A finished call's registers stay reachable
+  until the caller reuses them, so weak references clear eventually rather
+  than at the first possible collection. The fix is in M11 (runtime.md §4.5).

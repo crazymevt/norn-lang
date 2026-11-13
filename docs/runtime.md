@@ -323,6 +323,37 @@ that is only the seed compiler holding forms while it calls a macro.
   objects with checks compiled out, and both are explicit opt-ins.
 - **Pinning** for objects handed to FFI uses Immix's pinning support.
 
+### 4.5 Weak references and cleanups **[built in M6]**
+
+`crates/norn-rt/src/weak.rs`.
+
+- **`(weak-ref x)`** makes a `Weak` object whose referent the GC doesn't
+  trace. `(weak-get w)` returns the referent, or nil once it's been
+  collected.
+- **`(add-cleanup! x f)`** runs `(f)` in a fiber of its own after `x` has
+  been collected; `(cancel-cleanup! w)` drops a pending cleanup. This follows
+  Java's `Cleaner` and JavaScript's `FinalizationRegistry`, not finalizers:
+  the dead object is never handed back, so nothing is resurrected. `f` must
+  not capture `x`, or `x` stays reachable through `f`.
+- **How it works.**
+  - Every `Weak` is in a registry.
+  - After each collection's transitive closure, MMTk calls the binding's
+    `process_weak_refs`, which clears dead referents and moves their
+    cleanups to a ready list.
+  - A `Weak` with a pending cleanup is itself a root, so its cleanup
+    function stays alive. Due cleanups are roots too, until a carrier spawns
+    them (in `process_external`).
+- **Images** save weak references, but a referent only if something else
+  saved reaches it. Cleanups are never saved: they release per-process
+  resources, such as an FFI handle that must never be freed by another
+  process.
+- **Imprecision.** Frames are scanned exactly, but registers aren't checked
+  for liveness. A callee's frame overlaps the top of its caller's register
+  window, so a value a finished call left there stays reachable until that
+  register is reused. Weak references therefore clear, and cleanups run,
+  *eventually* rather than at the first possible collection. Register
+  liveness maps (or clearing on return) belong to the GC work in M11.
+
 ---
 
 ## 5. Scheduler and I/O

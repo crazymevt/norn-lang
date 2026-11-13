@@ -150,6 +150,9 @@ struct Writer<'a> {
     dead_fibers: HashSet<u64>,
     area: Vec<u64>,
     relocs: Vec<u64>,
+    /// Still finding objects (weak referents aren't followed, and only count
+    /// if something else reaches them).
+    discovering: bool,
 }
 
 fn addr(v: Value) -> u64 {
@@ -185,6 +188,15 @@ impl<'a> Writer<'a> {
                 let ns = word(2 + fiber::NS).0 as *const Namespace;
                 // SAFETY: NS always holds a leaked namespace.
                 f(2 + fiber::NS, unsafe { (*ns).name });
+            }
+            Kind::Weak => {
+                // A cleanup releases a per-process resource: never saved.
+                f(2 + crate::weak::layout::CLEANUP, Value::NIL);
+                if !self.discovering {
+                    let r = word(2 + crate::weak::layout::REFERENT);
+                    let kept = !is_ref(r.0) || self.ids.contains_key(&addr(r));
+                    f(2 + crate::weak::layout::REFERENT, if kept { r } else { Value::NIL });
+                }
             }
             Kind::Segment => {
                 // The GC scans frames through the owning fiber; the image
@@ -321,8 +333,10 @@ pub fn save(path: &Path, spec: &Save) -> Result<Saved, String> {
         dead_fibers: HashSet::new(),
         area: Vec::new(),
         relocs: Vec::new(),
+        discovering: true,
     };
     w.discover();
+    w.discovering = false;
 
     let mut out = Saved::default();
     let reached = std::mem::take(&mut w.reached);
@@ -413,6 +427,8 @@ pub struct Loaded {
     /// Every fiber in the chain. Their NS word holds the namespace's name
     /// (a symbol) until the VM turns it back into a namespace pointer.
     pub fibers: Vec<Value>,
+    /// Every weak reference in the chain (re-registered with the GC).
+    pub weaks: Vec<Value>,
     /// Objects created.
     pub objects: usize,
 }
@@ -433,15 +449,16 @@ pub fn load(m: &mut Mutator, path: &Path, build: u64) -> Result<Loaded, String> 
         return Err("an image is already loaded".into());
     }
     let mut c = Chain::default();
-    let mut fibers = Vec::new();
+    let mut found = Vec::new();
     let path = std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let roots = load_layer(m, &path, build, &mut c, &mut fibers)?;
-    // A fiber patched by a delta was seen twice.
+    let roots = load_layer(m, &path, build, &mut c, &mut found)?;
+    // An object patched by a delta was seen twice.
     let mut seen = HashSet::new();
-    fibers.retain(|f| seen.insert(f.0));
+    found.retain(|f| seen.insert(f.0));
+    let (fibers, weaks) = found.into_iter().partition(|v| v.is(Kind::Fiber));
     let objects = c.objs.len();
     *chain = Some(c);
-    Ok(Loaded { roots, fibers, objects })
+    Ok(Loaded { roots, fibers, weaks, objects })
 }
 
 fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &mut Vec<Value>) -> Result<Vec<Value>, String> {
@@ -546,7 +563,7 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
     for &obj in &c.objs[first..first + new] {
         let (kind, n) = size_at(off)?;
         fill(off, n, kind, obj.ptr())?;
-        if kind == Kind::Fiber {
+        if matches!(kind, Kind::Fiber | Kind::Weak) {
             fibers.push(obj);
         }
         off += n;
@@ -567,7 +584,7 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
             return Err(bad("patch changes an object's shape"));
         }
         fill(off, n, kind, tp)?;
-        if kind == Kind::Fiber {
+        if matches!(kind, Kind::Fiber | Kind::Weak) {
             fibers.push(target);
         }
         patched.push((id, area_at + off));

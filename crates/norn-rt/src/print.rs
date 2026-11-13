@@ -230,6 +230,7 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
             out.push('}');
         }
         Kind::Scope => out.push_str("#<scope>"),
+        Kind::Weak => out.push_str("#<weak-ref>"),
         k => {
             let _ = write!(out, "#<{k:?}>");
         }

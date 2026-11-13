@@ -1377,6 +1377,8 @@
 
 (def %image-entry nil)
 (def %image-generation 0)
+;; [weak-ref generation-atom] per registered resource: registering a resource
+;; doesn't keep it alive.
 (def %resources (atom []))
 
 (defclass ResourceLost (Error) ((resource :initform nil)))
@@ -1391,13 +1393,14 @@
   "Re-open a resource lost in an image restore (the `reconnect` restart).")
 
 (defn register-resource!
-  "Track external resource r for image restores. Returns r."
+  "Track external resource r for image restores (weakly). Returns r."
   [r]
-  (swap! %resources conj [r (atom %image-generation)])
+  (let [e [(weak-ref r) (atom %image-generation)]]
+    (swap! %resources (fn [es] (conj (filterv (fn [e] (some? (weak-get (first e)))) es) e))))
   r)
 
 (defn- %resource-entry [r]
-  (some (fn [e] (when (identical? (first e) r) e)) @%resources))
+  (some (fn [e] (when (identical? (weak-get (first e)) r) e)) @%resources))
 
 (defn resource-live?
   "False for a registered resource lost in an image restore and not yet reconnected."
@@ -1440,7 +1443,7 @@
   []
   (alter-var-root (var %image-generation) inc)
   (doseq [e @%resources]
-    (let [r (first e)]
+    (when-let [r (weak-get (first e))]
       (handler-case (when (on-image-restore r) (%mark-live! r))
         (Error [c] (println "on-image-restore failed for" (pr-str r) "-" (condition-text c))))))
   nil)
@@ -1450,3 +1453,62 @@
   [& args]
   (let [e %image-entry]
     (apply (if (var? e) (var-get e) e) args)))
+
+;;; ---- libraries: require (until modules arrive, M8) --------------------------------------
+;;;
+;;; (require 'norn.io) loads a library once: embedded in the binary
+;;; (lib/norn/*.norn) or found as a/b.norn under NORN_PATH or the current
+;;; directory. (require '[norn.string :as str :refer [join]]) also aliases
+;;; and refers. Several fibers may require the same library at once: one
+;;; loads it, the others wait for it.
+
+(def *loading* #{})
+(def %libs (atom {}))
+
+(defn- %load-lib-source [lib]
+  (let [found (%find-lib (str lib))]
+    (when-not found
+      (error "Can't find library" (str lib) "(not embedded, and not on NORN_PATH)"))
+    (let [ns (current-ns)]
+      (try (%eval-reader (%reader (nth found 0) (nth found 1)))
+           (finally (in-ns ns))))))
+
+(defn %load-lib [lib]
+  (when (contains? *loading* lib)
+    (error "Circular require:" (str lib) "is already being loaded"))
+  (loop []
+    (let [m @%libs
+          e (get m lib)]
+      (cond (= e :loaded) nil
+            (some? e) (do (take! e) (recur))      ; a channel, closed when that load ends
+            :else (let [done (chan)]
+                    (if (compare-and-set! %libs m (assoc m lib done))
+                      (try (binding [*loading* (conj *loading* lib)] (%load-lib-source lib))
+                           (swap! %libs assoc lib :loaded)
+                           (catch Error c (swap! %libs dissoc lib) (throw c))
+                           (finally (close! done)))
+                      (recur)))))))
+
+(defn require
+  "Load libraries: (require 'norn.io '[norn.string :as str :refer [join]]).
+  :refer :all refers every public var."
+  [& specs]
+  (doseq [spec specs]
+    (let [[lib & opts] (if (vector? spec) spec [spec])
+          {:keys [as refer]} (apply hash-map opts)]
+      (%load-lib lib)
+      (when as (%alias as lib))
+      (when refer
+        (let [publics (ns-publics lib)]
+          (doseq [s (if (= refer :all) (keys publics) refer)]
+            (%refer s (or (get publics s) (error "No such var:" (str lib "/" s))))))))
+    nil))
+
+(defmacro ns
+  "(ns name (:require spec…)…): switch to (creating) a namespace, then
+  require libraries as in `require`."
+  [name & clauses]
+  (let [reqs (mapcat (fn [c] (when (and (seq? c) (= (first c) :require)) (rest c))) clauses)]
+    `(do (in-ns '~name)
+         ~@(map (fn [r] `(require '~r)) reqs)
+         nil)))

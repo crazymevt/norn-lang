@@ -574,7 +574,16 @@ pub fn syntax_quote(vm: &mut Vm, form: Value, gensyms: &mut HashMap<String, Valu
 
     if form.is_symbol() {
         let name = form.sym_name();
-        if form.sym_ns().is_some() || is_special(name) {
+        if let Some(q) = form.sym_ns() {
+            // An alias of the current namespace stands for its full name.
+            let qs = rt().symbol(&mut vm.m, None, q);
+            let full = match vm.ns.alias_target(qs) {
+                Some(target) => rt().symbol(&mut vm.m, Some(target.sym_name()), name),
+                None => form,
+            };
+            return Ok(quoted(vm, full));
+        }
+        if is_special(name) {
             return Ok(quoted(vm, form));
         }
         if let Some(base) = name.strip_suffix('#') {

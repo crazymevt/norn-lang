@@ -58,6 +58,7 @@ kinds! {
     Class => "Class",
     Generic => "GenericFunction",
     Instance => "Instance",
+    Weak => "WeakRef",
 }
 
 /// Static per-kind descriptor. From M2 layouts become heap objects that also

@@ -20,6 +20,7 @@ pub mod seq;
 pub mod string;
 pub mod value;
 pub mod vector;
+pub mod weak;
 
 pub use heap::Mutator;
 pub use object::Kind;
