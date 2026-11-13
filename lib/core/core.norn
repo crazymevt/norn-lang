@@ -410,11 +410,24 @@
   (let [e (fiber-error f)]
     (if e {:error e} {:value (await f)})))
 
+;; Atom watches: atom → {key f}. Changes through swap!, reset! and their
+;; -vals forms call (f key atom old new); compare-and-set! itself doesn't.
+(def %watches (atom {}))
+(def %watched (atom 0))
+
+(defn %fire-watches [a old new]
+  (loop [ws (seq (get (deref %watches) a))]
+    (when ws
+      (let [e (first ws)] ((second e) (first e) a old new))
+      (recur (next ws)))))
+
 (defn swap! [a f & args]
   (loop []
     (let [old (deref a)
           new (apply f old args)]
-      (if (compare-and-set! a old new) new (recur)))))
+      (if (compare-and-set! a old new)
+        (do (when (pos? (deref %watched)) (%fire-watches a old new)) new)
+        (recur)))))
 
 (def >! put!)
 (def <! take!)
@@ -1269,6 +1282,8 @@
               (%note-definition! f src (%reader-line r))
               (recur (eval f))))))))
 
+(declare %run-after-eval-hooks)
+
 (defn %repl-eval [s]
   (binding [*debugger* :park]
     (let [r (%reader s "<repl>")]
@@ -1276,6 +1291,7 @@
         (let [f (%read r)]
           (when-not (%eof? f)
             (prn (eval f))
+            (%run-after-eval-hooks)
             (recur)))))))
 
 (defn- %serve-eval [req]
@@ -1283,6 +1299,7 @@
   (binding [*debugger* :park]
     (restart-case
       (let [v (%eval-reader (%reader (:code req) "<editor>"))]
+        (%run-after-eval-hooks)
         {:value (pr-str v) :ns (str (current-ns))})
       (abort [] :report "Abort this evaluation" {:error "Aborted" :ns (str (current-ns))}))))
 
@@ -1564,7 +1581,8 @@
 ;;;
 ;;; (require 'norn.io) loads a library once: embedded in the binary
 ;;; (lib/norn/*.norn) or found as a/b.norn under NORN_PATH or the current
-;;; directory. (require '[norn.string :as str :refer [join]]) also aliases
+;;; directory, or a namespace that exists already with definitions (a
+;;; native extension's). (require '[norn.string :as str :refer [join]]) also aliases
 ;;; and refers. Several fibers may require the same library at once: one
 ;;; loads it, the others wait for it.
 
@@ -1573,11 +1591,14 @@
 
 (defn- %load-lib-source [lib]
   (let [found (%find-lib (str lib))]
-    (when-not found
-      (error "Can't find library" (str lib) "(not embedded, and not on NORN_PATH)"))
-    (let [ns (current-ns)]
-      (try (%eval-reader (%reader (nth found 0) (nth found 1)))
-           (finally (in-ns ns))))))
+    (cond found
+          (let [ns (current-ns)]
+            (try (%eval-reader (%reader (nth found 0) (nth found 1)))
+                 (finally (in-ns ns))))
+          ;; A namespace with no source that already has definitions: a
+          ;; native extension's (norn.ui.native), or one made at the REPL.
+          (and (some (fn [n] (= (str n) (str lib))) (all-ns)) (seq (ns-publics lib))) nil
+          :else (error "Can't find library" (str lib) "(not embedded, and not on NORN_PATH)"))))
 
 (defn %load-lib [lib]
   (when (contains? *loading* lib)
@@ -2052,10 +2073,16 @@
   [a f & args]
   (loop []
     (let [old (deref a) new (apply f old args)]
-      (if (compare-and-set! a old new) [old new] (recur)))))
+      (if (compare-and-set! a old new)
+        (do (when (pos? (deref %watched)) (%fire-watches a old new)) [old new])
+        (recur)))))
 
 (defn reset-vals! "As reset!, but returns [old new]." [a v]
-  (loop [] (let [old (deref a)] (if (compare-and-set! a old v) [old v] (recur)))))
+  (loop []
+    (let [old (deref a)]
+      (if (compare-and-set! a old v)
+        (do (when (pos? (deref %watched)) (%fire-watches a old v)) [old v])
+        (recur)))))
 
 (defn memoize
   "f remembering every result by its arguments (see norn.cache for
@@ -2264,3 +2291,67 @@
   (if (seq syms)
     `(do ~@(map (fn [s] `(untrace-var! (var ~s))) syms))
     `(untrace-all!)))
+
+;;; ---- watches and evaluation hooks (M7.5) ----------------------------------------------------
+
+(def %reset-prim reset!)
+
+(defn reset!
+  "Set atom a to v (calling its watches). Returns v."
+  [a v]
+  (if (pos? (deref %watched))
+    (let [old (deref a)] (%reset-prim a v) (%fire-watches a old v) v)
+    (%reset-prim a v)))
+
+(defn add-watch
+  "Call (f key a old new) after each change to atom a through swap!, reset!,
+  swap-vals! or reset-vals! (not raw compare-and-set!). A second watch with
+  the same key replaces the first. Returns a."
+  [a key f]
+  (swap! %watches update a (fn [ws] (assoc (or ws {}) key f)))
+  (reset! %watched (count (deref %watches)))
+  a)
+
+(defn remove-watch "Remove atom a's watch named key. Returns a." [a key]
+  (swap! %watches (fn [m] (let [ws (dissoc (get m a {}) key)] (if (empty? ws) (dissoc m a) (assoc m a ws)))))
+  (reset! %watched (count (deref %watches)))
+  a)
+
+(def %after-eval-hooks (atom {}))
+
+(defn add-after-eval-hook!
+  "Call (f) after each evaluation from the REPL or the editor (norn.ui
+  re-renders its windows this way, so redefining a view updates them).
+  Returns key."
+  [key f]
+  (swap! %after-eval-hooks assoc key f)
+  key)
+
+(defn remove-after-eval-hook! [key] (swap! %after-eval-hooks dissoc key) nil)
+
+(defn %run-after-eval-hooks []
+  (doseq [[_ f] (deref %after-eval-hooks)]
+    (handler-case (f) (Error [c] (println "after-eval hook failed:" (condition-text c))))))
+
+;;; ---- for ---------------------------------------------------------------------------------------
+
+(defn %for-cat
+  "Concatenate (f x) for each x of coll, into a vector."
+  [f coll]
+  (reduce (fn [acc x] (into acc (f x))) [] coll))
+
+(defn- %for-emit [bindings body]
+  (if (empty? bindings)
+    `[(do ~@body)]
+    (let [[a b & more] bindings]
+      (cond (= a :let) `(let ~b ~(%for-emit more body))
+            (= a :when) `(if ~b ~(%for-emit more body) [])
+            :else `(%for-cat (fn [~a] ~(%for-emit more body)) ~b)))))
+
+(defmacro for
+  "List comprehension, eager: a vector of body's value for each binding of
+  the names, left to right, nested. Bindings destructure; :let [...] binds
+  more names, :when test skips.
+  (for [x [1 2 3] :when (odd? x) y [:a :b]] [x y]) => [[1 :a] [1 :b] [3 :a] [3 :b]]"
+  [bindings & body]
+  (%for-emit (vec bindings) body))

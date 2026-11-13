@@ -69,7 +69,8 @@
           (with-scope [s]
             (reset! inner (spawn s (take! (chan))))
             (take! (chan))))]
-  (sleep 10)
+  ;; wait for the tree to exist before cancelling it
+  (loop [i 0] (when (and (nil? @inner) (< i 1000)) (sleep 1) (recur (inc i))))
   (cancel! f)
   (is (= {:error "Cancelled"} (settle f)))
   (is (= {:error "Cancelled"} (settle @inner))))
