@@ -158,7 +158,7 @@ fn resources_are_dead_after_a_restore_until_reconnected() {
   (def lazy (register-resource! (Conn :name "lazy")))
   (def reconnects (atom 0))
   (defmethod on-image-restore ((c Conn)) (= (:name c) "eager"))
-  (defmethod reconnect ((c Conn)) (swap! reconnects inc))
+  (defmethod reconnect ((c Conn)) (swap! reconnects inc) c)
   (:objects (save-image "{}")))"#,
         img.display()
     );
@@ -230,4 +230,28 @@ fn weak_references_keep_only_what_else_is_saved() {
     );
     // The cleanup releases a per-process resource, so it isn't saved.
     assert_eq!(eval(Some(&img), "[(weak-get w1) (weak-get w2) (cancel-cleanup! c)]"), "[[0 1 2 3 4] nil false]");
+}
+
+#[test]
+fn a_file_handle_from_an_image_is_lost_until_reconnected() {
+    let d = scratch("file-handle");
+    let (img, file) = (d.join("fh.nimg"), d.join("log.txt"));
+    eval(
+        None,
+        &format!(
+            r#"(do (require 'norn.io)
+                   (def h (norn.io/open "{}" :write))
+                   (norn.io/write h "before\n")
+                   (:objects (save-image "{}")))"#,
+            file.display(),
+            img.display()
+        ),
+    );
+    let check = format!(
+        r#"[(try (norn.io/write h "x") (catch ResourceLost c :lost))
+            (handler-bind [ResourceLost (fn [c] (invoke-restart 'reconnect))] (norn.io/write h "after\n") :ok)
+            (norn.io/read-text "{}")]"#,
+        file.display()
+    );
+    assert_eq!(eval(Some(&img), &check), r#"[:lost :ok "before\nafter\n"]"#);
 }

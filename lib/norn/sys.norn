@@ -1,0 +1,40 @@
+;;;; norn.sys — the machine and the process. Every value is read when asked,
+;;;; so an image restored on another machine sees that machine.
+
+(ns norn.sys)
+
+(defn getenv "An environment variable, or nil. (Read-only: set a child process's environment with norn.process.)" [name] (%getenv (str name)))
+(defn env "All environment variables, as a map of strings." [] (%env))
+(defn args "The process's command-line arguments (the program first)." [] (%args))
+(defn exit "End the process with status code (default 0)." ([] (norn.core/exit 0)) ([code] (norn.core/exit code)))
+
+(defn info
+  "Everything at once: {:os :family :arch :endian :cores :page-size :memory
+  :pid :temp-dir :home-dir :user :hostname :cwd :norn-version :build}."
+  []
+  (%sys-info))
+
+(defn os "The OS: :macos, :linux, :windows…" [] (:os (info)))
+(defn family "The OS family: :unix or :windows." [] (:family (info)))
+(defn arch "The CPU architecture: :aarch64, :x86_64…" [] (:arch (info)))
+(defn endian "Byte order: :little or :big." [] (:endian (info)))
+(defn cores "Logical CPUs available." [] (:cores (info)))
+(defn page-size [] (:page-size (info)))
+(defn memory "Total physical memory in bytes, or nil if unknown." [] (:memory (info)))
+(defn pid [] (:pid (info)))
+(defn temp-dir [] (:temp-dir (info)))
+(defn home-dir [] (:home-dir (info)))
+(defn user [] (:user (info)))
+(defn hostname [] (:hostname (info)))
+(defn cwd "The current directory." [] (:cwd (info)))
+(defn norn-version [] (:norn-version (info)))
+(defn build "The runtime build fingerprint (images record it)." [] (:build (info)))
+
+(defn runtime
+  "The Norn runtime: {:carriers :carrier-threads :blocking-threads :handles
+  :heap-bytes :gc-count :image}."
+  []
+  (let [io (%io-stats)]
+    {:carriers (carrier-count) :carrier-threads (:carrier-threads io)
+     :blocking-threads (:blocking-threads io) :handles (:handles io)
+     :heap-bytes (heap-bytes) :gc-count (gc-count) :image (image-info)}))

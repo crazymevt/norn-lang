@@ -138,8 +138,8 @@ prims! {
     "println" 0 VAR => |_, a| out(&join(a, false), true);
     "pr" 0 VAR => |_, a| out(&join(a, true), false);
     "prn" 0 VAR => |_, a| out(&join(a, true), true);
-    "slurp" 1 Some(1) => |vm, a| { let p = text(a[0]); let s = std::fs::read_to_string(&p).map_err(|e| Error::new(format!("Can't read {p}: {e}")))?; Ok(str_new(&mut vm.m, &s)) };
-    "spit" 2 Some(2) => |_, a| { let p = text(a[0]); std::fs::write(&p, text(a[1])).map_err(|e| Error::new(format!("Can't write {p}: {e}")))?; Ok(Value::NIL) };
+    "slurp" 1 Some(1) => |vm, a| crate::sys::read(vm, text(a[0]), true);
+    "spit" 2 Some(2) => |vm, a| crate::sys::write(vm, text(a[0]), text(a[1]).into_bytes(), false);
     "read-string" 1 Some(1) => |vm, a| { let s = text(a[0]); let mut r = crate::reader::Reader::new(&s); match r.read(vm) { Ok(v) => Ok(v), Err(crate::reader::ReadError::Eof) => Ok(Value::NIL), Err(e) => Err(Error::new(e.to_string())) } };
     // evaluation and namespaces
     "macroexpand-1" 1 Some(1) => |vm, a| Ok(vm.macroexpand_1(a[0])?.0);
@@ -240,7 +240,35 @@ prims! {
     "handle?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Handle)));
     "%handle-id" 1 Some(1) => |_, a| { expect(a[0], Kind::Handle, "%handle-id")?; Ok(Value::fix(a[0].word(norn_rt::conc::handle::ID) as i64)) };
     "%handle-live?" 1 Some(1) => |_, a| Ok(Value::bool(crate::reactor::entry(a[0]).is_ok()));
+    "%handle-current?" 1 Some(1) => |_, a| { expect(a[0], Kind::Handle, "%handle-current?")?; Ok(Value::bool(a[0].word(norn_rt::conc::handle::EPOCH) == norn_rt::conc::process_epoch())) };
+    "handle-kind" 1 Some(1) => |_, a| { expect(a[0], Kind::Handle, "handle-kind")?; Ok(a[0].field(norn_rt::conc::handle::KIND)) };
+    "handle-info" 1 Some(1) => |_, a| { expect(a[0], Kind::Handle, "handle-info")?; Ok(a[0].field(norn_rt::conc::handle::INFO)) };
+    "%bytes-index-of" 2 Some(2) => |_, a| { expect(a[0], Kind::Bytes, "%bytes-index-of")?; let x = int(a[1], "%bytes-index-of")? as u8; Ok(Value::fix(a[0].as_bytes().iter().position(|&b| b == x).map_or(-1, |i| i as i64))) };
+    "%glob-match" 2 Some(2) => |_, a| Ok(Value::bool(crate::sys::glob_match(&text(a[0]), &text(a[1]))));
+    "%glob-base" 1 Some(1) => |vm, a| Ok(str_new(&mut vm.m, &crate::sys::glob_base(&text(a[0]))));
     "%io-stats" 0 Some(0) => |vm, _| { let kv = [rt().keyword(&mut vm.m, None, "handles"), Value::fix(crate::reactor::open_count() as i64), rt().keyword(&mut vm.m, None, "blocking-threads"), Value::fix(crate::blocking::threads() as i64), rt().keyword(&mut vm.m, None, "carrier-threads"), Value::fix(crate::sched::carrier_threads() as i64)]; hash_map(vm, &kv) };
+    // files, paths and the system (sys.rs; norn.io, norn.fs, norn.sys)
+    "%fs-read" 2 Some(2) => |vm, a| crate::sys::read(vm, text(a[0]), a[1].truthy());
+    "%fs-write" 3 Some(3) => |vm, a| { let d = data_bytes(a[1])?; crate::sys::write(vm, text(a[0]), d, a[2].truthy()) };
+    "%fs-info" 1 Some(1) => |vm, a| crate::sys::info(vm, text(a[0]));
+    "%fs-list" 1 Some(1) => |vm, a| crate::sys::list(vm, text(a[0]));
+    "%fs-walk" 1 Some(1) => |vm, a| crate::sys::walk(vm, text(a[0]));
+    "%fs-mkdirs" 1 Some(1) => |vm, a| crate::sys::mkdirs(vm, text(a[0]));
+    "%fs-delete" 2 Some(2) => |vm, a| crate::sys::delete(vm, text(a[0]), a[1].truthy());
+    "%fs-rename" 2 Some(2) => |vm, a| crate::sys::rename(vm, text(a[0]), text(a[1]));
+    "%fs-copy" 2 Some(2) => |vm, a| crate::sys::copy(vm, text(a[0]), text(a[1]));
+    "%fs-open" 2 Some(2) => |vm, a| { let mode = if a[1].is_keyword() { a[1].sym_name().to_owned() } else { text(a[1]) }; crate::sys::open(vm, text(a[0]), &mode) };
+    "%file-read" 2 Some(2) => |vm, a| { let n = int(a[1], "read")?.max(1) as usize; crate::sys::file_read(vm, a[0], n) };
+    "%file-write" 2 Some(2) => |vm, a| { let d = data_bytes(a[1])?; crate::sys::file_write(vm, a[0], d) };
+    "%stdin-line" 0 Some(0) => |vm, _| crate::sys::stdin_line(vm);
+    "%fs-watch" 2 Some(2) => |vm, a| crate::sys::watch(vm, text(a[0]), a[1].truthy());
+    "%path-join" 1 Some(1) => |_vm, a| { let parts: Vec<String> = seq::SeqIter::new(a[0]).map(|it| it.map(text).collect()).unwrap_or_default(); Ok(str_new(&mut _vm.m, &crate::sys::path_join(&parts))) };
+    "%path-part" 2 Some(2) => |vm, a| { let part = if a[1].is_keyword() { a[1].sym_name().to_owned() } else { text(a[1]) }; crate::sys::path_part(&mut vm.m, &text(a[0]), &part) };
+    "%getenv" 1 Some(1) => |vm, a| Ok(crate::sys::getenv(&mut vm.m, &text(a[0])));
+    "%env" 0 Some(0) => |vm, _| Ok(crate::sys::env(&mut vm.m));
+    "%args" 0 Some(0) => |vm, _| Ok(crate::sys::args(&mut vm.m));
+    "%sys-info" 0 Some(0) => |vm, _| Ok(crate::sys::system(&mut vm.m));
+    "%split-lines" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "lines")?; let ls: Vec<Value> = a[0].as_str().lines().map(|l| str_new(&mut vm.m, l)).collect(); Ok(vec_from_slice(&mut vm.m, &ls)) };
     // test helpers: a native call that blocks its carrier, and one on the pool
     "%native-stall" 1 Some(1) => |vm, a| { let ms = int(a[0], "%native-stall")?.max(0) as u64; vm.native_region(&[], || std::thread::sleep(std::time::Duration::from_millis(ms))); Ok(Value::fix(ms as i64)) };
     "%blocking-sleep" 1 Some(1) => |vm, a| { let ms = int(a[0], "%blocking-sleep")?.max(0) as u64; crate::blocking::run(vm, move || { std::thread::sleep(std::time::Duration::from_millis(ms)); Box::new(move |_: &mut norn_rt::Mutator| Ok(Value::fix(ms as i64))) }) };
@@ -561,6 +589,17 @@ pub(crate) fn hash_map(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 
 fn index_of(k: Value) -> Option<usize> {
     (k.is_fixnum() && k.as_fixnum() >= 0).then(|| k.as_fixnum() as usize)
+}
+
+/// The bytes of a string (UTF-8) or of a Bytes value.
+fn data_bytes(v: Value) -> Result<Vec<u8>> {
+    if v.is(Kind::Bytes) {
+        Ok(v.as_bytes().to_vec())
+    } else if v.is(Kind::String) {
+        Ok(v.as_str().as_bytes().to_vec())
+    } else {
+        Err(type_err("write", "a string or bytes", v))
+    }
 }
 
 /// `:read` → 0, `:write` → 1.

@@ -172,6 +172,14 @@ pub fn offer(vm: &mut Vm, c: Value, v: Value) -> Result<Value> {
     Ok(Value::bool(try_put_locked(&mut vm.m, c, v).unwrap_or(false)))
 }
 
+/// Offer `v` on channel `c` from a thread that isn't running a fiber (a
+/// file watcher, the signal thread): the caller is a running participant
+/// with its own mutator. True if it went in.
+pub fn offer_from(m: &mut Mutator, c: Value, v: Value) -> bool {
+    let _g = spin_lock(c, chan::LOCK);
+    try_put_locked(m, c, v).unwrap_or(false)
+}
+
 /// `(poll! c)`: take only if a value is available now, else nil.
 pub fn poll(vm: &mut Vm, c: Value) -> Result<Value> {
     let c = expect_chan(c, "poll!")?;

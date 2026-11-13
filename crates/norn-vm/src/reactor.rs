@@ -33,17 +33,25 @@ pub(crate) enum Io {
     TcpListener(mio::net::TcpListener),
     Tcp(mio::net::TcpStream),
     Udp(mio::net::UdpSocket),
+    /// Not pollable: read and written on the blocking pool.
+    File(std::fs::File),
+    /// A file watcher (norn.fs); dropping it stops the watch.
+    Watch(Box<dyn std::any::Any + Send>),
+    /// A child process (norn.process): waited for on the blocking pool.
+    Child(std::process::Child),
 }
 
 impl Io {
-    fn source(&mut self) -> (&mut dyn mio::event::Source, Interest) {
-        match self {
+    /// The mio source, for the kinds the reactor polls.
+    fn source(&mut self) -> Option<(&mut dyn mio::event::Source, Interest)> {
+        Some(match self {
             Io::PipeIn(r) => (r, Interest::READABLE),
             Io::PipeOut(w) => (w, Interest::WRITABLE),
             Io::TcpListener(l) => (l, Interest::READABLE),
             Io::Tcp(s) => (s, Interest::READABLE | Interest::WRITABLE),
             Io::Udp(s) => (s, Interest::READABLE | Interest::WRITABLE),
-        }
+            Io::File(_) | Io::Watch(_) | Io::Child(_) => return None,
+        })
     }
 }
 
@@ -127,12 +135,22 @@ fn lookup(id: u64) -> Option<Arc<Entry>> {
 /// in `#<tcp 3>`).
 pub(crate) fn register(m: &mut Mutator, mut io: Io, kind: &str, info: Value) -> std::result::Result<Value, String> {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    let (src, interest) = io.source();
-    registry().register(src, Token(id as usize), interest).map_err(|e| e.to_string())?;
+    if let Some((src, interest)) = io.source() {
+        registry().register(src, Token(id as usize), interest).map_err(|e| e.to_string())?;
+    }
     let entry = Arc::new(Entry { io: Mutex::new(Some(io)), ready: Mutex::new(Ready::default()) });
     TABLE.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, entry);
     let k = rt().keyword(m, None, kind);
     Ok(norn_rt::conc::handle_new(m, id, k, info))
+}
+
+/// The entry behind handle `h`, which must be of kind `kind` (e.g. "file").
+pub(crate) fn entry_of(h: Value, kind: &str) -> Result<Arc<Entry>> {
+    let e = entry(h)?;
+    if h.field(handle::KIND).sym_name() != kind {
+        return Err(Error::new(format!("Expected a {kind} handle, got a {} handle", h.field(handle::KIND).sym_name())));
+    }
+    Ok(e)
 }
 
 /// The entry behind handle `h`.
@@ -194,8 +212,10 @@ pub(crate) fn close(h: Value) -> Result<Value> {
 /// Close by table number (cleanups hold the number, not the handle).
 pub(crate) fn close_id(id: u64) {
     let Some(e) = TABLE.lock().unwrap().as_mut().and_then(|t| t.remove(&id)) else { return };
-    if let Some(mut io) = e.io.lock().unwrap().take() {
-        let _ = registry().deregister(io.source().0);
+    if let Some(mut io) = e.io.lock().unwrap().take()
+        && let Some((src, _)) = io.source()
+    {
+        let _ = registry().deregister(src);
     }
     let ws: Vec<Value> = {
         let mut r = e.ready.lock().unwrap();

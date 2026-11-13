@@ -1,6 +1,6 @@
 ;;;; The standard libraries (lib/norn/*.norn): loaded with require.
 
-(ns lib-test (:require [norn.bytes :as b]))
+(ns lib-test (:require [norn.bytes :as b] [norn.io :as io] [norn.fs :as fs] [norn.sys :as sys]))
 
 (def failures 0)
 (def checks 0)
@@ -44,6 +44,90 @@
 (is :error (fails (b/unhex "abc")))
 (is :error (fails (b/unbase64 "a")))
 (is 1 (count (into #{} [(bytes [1]) (bytes [1])])))
+
+;;; ---- norn.io: whole files, the file system, paths ----
+(def dir (io/path (sys/temp-dir) (str "norn-lib-test-" (sys/pid) "-" (nano-time))))
+(defn- f [& parts] (apply io/path dir parts))
+(io/mkdirs! (f "sub" "deeper"))
+(io/write-text (f "a.txt") "one\ntwo\r\nthree")
+(io/append-text (f "a.txt") "\nfour")
+(io/write-bytes (f "sub" "b.bin") (bytes [1 2 3]))
+(spit (f "sub" "deeper" "c.norn") "(+ 1 2)")
+(is ["one" "two" "three" "four"] (io/lines (f "a.txt")))
+(is "one\ntwo\r\nthree\nfour" (io/read-text (f "a.txt")))
+(is (bytes [1 2 3]) (io/read-bytes (f "sub" "b.bin")))
+(is "(+ 1 2)" (slurp (f "sub" "deeper" "c.norn")))
+(is :dir (:type (io/info dir)))
+(is [:file 3] (let [i (io/info (f "sub" "b.bin"))] [(:type i) (:size i)]))
+(is true (integer? (:modified (io/info (f "a.txt")))))
+(is nil (io/info (f "nope")))
+(is [true false true false] [(io/exists? (f "a.txt")) (io/exists? (f "nope")) (io/directory? (f "sub")) (io/file? (f "sub"))])
+(is ["a.txt" "sub"] (io/list-dir dir))
+(is [(f "a.txt") (f "sub") (f "sub" "b.bin") (f "sub" "deeper") (f "sub" "deeper" "c.norn")] (fs/walk dir))
+(is [(f "sub" "b.bin") (f "sub" "deeper" "c.norn")] (fs/glob (str dir "/sub/**/*.*")))
+(is [(f "sub" "deeper" "c.norn")] (fs/glob (str dir "/**/*.norn")))
+(is 3 (io/copy! (f "sub" "b.bin") (f "copy.bin")))
+(io/rename! (f "copy.bin") (f "moved.bin"))
+(is [false true] [(io/exists? (f "copy.bin")) (io/exists? (f "moved.bin"))])
+(io/delete! (f "moved.bin"))
+(is false (io/exists? (f "moved.bin")))
+(is :error (fails (io/delete! (f "sub"))))
+(is :error (fails (io/read-text (f "nope"))))
+(io/write-bytes (f "bad.txt") (bytes [255 254]))
+(is :error (fails (io/read-text (f "bad.txt"))))
+(is "y.norn" (io/file-name "x/y.norn"))
+(is ["x" "norn" "y"] [(io/parent "x/y.norn") (io/extension "x/y.norn") (io/stem "x/y.norn")])
+(is "a/b/c" (io/path "a" "b" "c"))
+(is nil (io/extension "README"))
+(is true (= (io/absolute "x") (io/path (sys/cwd) "x")))
+
+;;; ---- norn.io: streams ----
+(io/with-open [h (io/open (f "s.txt") :write)]
+  (io/write h "héllo\n")
+  (io/write h (bytes [119 111 114 108 100])))
+(is "héllo\nworld" (io/read-text (f "s.txt")))
+(def h2 (io/open (f "s.txt") :append))
+(io/write h2 "\nagain")
+(io/close h2)
+(io/close h2)
+(is :error (fails (io/write h2 "x")))
+(is ["héllo" "world" "again" nil]
+    (io/with-open [h (io/open (f "s.txt") :read)]
+      (let [r (io/line-reader h)] [(io/read-line r) (io/read-line r) (io/read-line r) (io/read-line r)])))
+(is "héllo\nworld\nagain" (io/with-open [h (io/open (f "s.txt") :read)] (bytes->string (io/read-all h))))
+(is :file (handle-kind (io/with-open [h (io/open (f "s.txt") :read)] h)))
+(is :error (fails (io/open (f "s.txt") :sideways)))
+
+;;; an unreachable stream is closed by its cleanup
+(def handles-before (:handles (sys/runtime)))
+(def leaked (io/open (f "s.txt") :read))
+(is (inc handles-before) (:handles (sys/runtime)))
+(def leaked nil)
+(gc)
+(sleep 100)
+(is handles-before (:handles (sys/runtime)))
+
+;;; ---- norn.fs: watching ----
+(def w (fs/watch dir :recursive true))
+(sleep 200)
+(io/write-text (f "watched.txt") "hi")
+(def ev (first (alts! [(:events w) (timeout 10000)])))
+(is true (and (map? ev) (some? (:kind ev)) (vector? (:paths ev))))
+(fs/unwatch w)
+
+;;; ---- norn.sys ----
+(def info (sys/info))
+(is true (every? (fn [k] (contains? info k)) [:os :family :arch :endian :cores :page-size :pid :temp-dir :cwd :norn-version :build]))
+(is true (keyword? (sys/os)))
+(is true (pos? (sys/cores)))
+(is true (string? (sys/getenv "PATH")))
+(is nil (sys/getenv "NORN_SURELY_UNSET_VARIABLE"))
+(is true (map? (sys/env)))
+(is true (pos? (count (sys/args))))
+(is true (pos? (:carriers (sys/runtime))))
+
+(io/delete! dir :recursive true)
+(is false (io/exists? dir))
 
 (println (str "lib_test: " checks " checks, " failures " failures"))
 (when (pos? failures) (error failures "library tests failed"))

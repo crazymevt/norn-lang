@@ -544,6 +544,7 @@
 (def Float (%defbuiltin 'Float [Number] "float"))
 (def String (%defbuiltin 'String [Object] "string"))
 (def Bytes (%defbuiltin 'Bytes [Object] "bytes"))
+(def Handle (%defbuiltin 'Handle [Object] "handle"))
 (def Symbol (%defbuiltin 'Symbol [Object] "symbol"))
 (def Keyword (%defbuiltin 'Keyword [Object] "keyword"))
 (def Collection (%defbuiltin 'Collection [Object] nil))
@@ -1044,7 +1045,9 @@
 (defmacro try
   "Clojure-style: (try body… (catch Class e handler…)… (finally cleanup…))."
   [& forms]
-  (let [clause? (fn [f k] (and (seq? f) (= (first f) k)))
+  ;; Clauses match by name in any namespace: a macro's syntax-quote turns
+  ;; catch and finally into ns/catch and ns/finally.
+  (let [clause? (fn [f k] (and (seq? f) (symbol? (first f)) (= (name (first f)) (name k))))
         body (remove (fn [f] (or (clause? f 'catch) (clause? f 'finally))) forms)
         catches (filter (fn [f] (clause? f 'catch)) forms)
         fin (some (fn [f] (when (clause? f 'finally) f)) forms)
@@ -1391,7 +1394,9 @@
 (defmethod on-image-restore (r) nil)
 
 (defgeneric reconnect (resource)
-  "Re-open a resource lost in an image restore (the `reconnect` restart).")
+  "Re-open a resource lost in an image restore (the `reconnect` restart).
+  Returns the live resource: the same one, or a replacement (an OS handle
+  can't be reopened in place).")
 
 (defn register-resource!
   "Track external resource r for image restores (weakly). Returns r."
@@ -1404,23 +1409,30 @@
   (some (fn [e] (when (identical? (weak-get (first e)) r) e)) @%resources))
 
 (defn resource-live?
-  "False for a registered resource lost in an image restore and not yet reconnected."
+  "False for a resource lost in an image restore and not yet reconnected: a
+  registered one, or an OS handle (file, socket, pipe) opened before the
+  restore."
   [r]
-  (let [e (%resource-entry r)]
-    (or (nil? e) (= @(second e) %image-generation))))
+  (if (handle? r)
+    (%handle-current? r)
+    (let [e (%resource-entry r)]
+      (or (nil? e) (= @(second e) %image-generation)))))
 
 (defn- %mark-live! [r]
   (when-let [e (%resource-entry r)] (reset! (second e) %image-generation)))
 
 (defn ensure-live
-  "r, if it is live. Otherwise signal ResourceLost, with restarts `reconnect`
-  (calls (reconnect r) and carries on) and `abort` (ends this fiber)."
+  "A live version of r: r itself if it is live. Otherwise signal ResourceLost,
+  with restarts `reconnect` (returns what (reconnect r) returns, e.g. a new
+  handle, or r itself when that returns nil) and `abort` (ends this fiber).
+  Use the value it returns."
   [r]
   (if (resource-live? r)
     r
     (restart-case
       (error ResourceLost :resource r :message (str "Resource lost in an image restore: " (pr-str r)))
-      (reconnect [] :report "Reconnect the resource and carry on" (reconnect r) (%mark-live! r) r)
+      (reconnect [] :report "Reconnect the resource and carry on"
+        (let [r2 (reconnect r)] (%mark-live! r) (if (some? r2) r2 r)))
       (abort [] :report "End this fiber" (%abort-fiber "Resource lost in an image restore" [])))))
 
 (defn save-image

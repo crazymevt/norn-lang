@@ -1,0 +1,29 @@
+;;;; norn.fs — walking directories, glob patterns and watching for changes.
+
+(ns norn.fs)
+
+(defn walk
+  "Every path under dir (files and directories, not following symbolic
+  links), depth first and sorted."
+  [dir]
+  (%fs-walk (str dir)))
+
+(defn glob
+  "Paths matching pattern, sorted: * matches within a path segment, ** any
+  number of segments, ? one character. E.g. (glob \"src/**/*.norn\")."
+  [pattern]
+  (let [base (%glob-base pattern)
+        rel (fn [p] (if (= base ".") (subs p 2) p))]
+    (vec (filter (fn [p] (%glob-match pattern p)) (map rel (walk base))))))
+
+(defn watch
+  "Watch a file or directory (with :recursive true, everything under it).
+  Returns {:handle h :events ch}: ch receives {:kind :create|:modify|:remove|:other
+  :paths [...]} as things change. Stop with unwatch."
+  [path & {:keys [recursive]}]
+  (let [[h ch] (%fs-watch (str path) (if recursive true false))]
+    {:handle h :events ch}))
+
+(defn unwatch "Stop a watch; its channel closes." [w]
+  (%io-close (:handle w))
+  (close! (:events w)))

@@ -14,6 +14,7 @@ pub mod reactor;
 pub mod reader;
 pub mod sched;
 pub mod server;
+pub mod sys;
 pub mod vm;
 
 pub use reader::{ReadError, Reader};

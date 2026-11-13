@@ -83,3 +83,21 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
   work waits; it retires when idle.
 - **Fibers waiting on I/O or the blocking pool are saved dead in images.**
 - **`mio` 1.x** for the reactor; no async runtime (no Tokio) is involved.
+- **All file I/O runs on the blocking pool**, including `slurp` and `spit`.
+  A slow disk or network file system can't stall a carrier.
+- **Files are handles too**, so `read`, `write` and `close` work the same on
+  files, pipes and sockets. An unreachable handle is closed by a cleanup
+  that holds only its number.
+- **OS handles don't go in the resource registry.** Their process epoch
+  already tells whether they're live, and registering every socket would
+  make opening one cost time proportional to the number open.
+- **`ensure-live` returns the live resource.** A handle's `reconnect`
+  returns a new handle; a file opened `:write` reopens as `:append`, so what
+  was written before the restore stays.
+- **`try` recognises `catch` and `finally` in any namespace.** A macro's
+  syntax-quote qualifies them (`norn.io/finally`), which used to turn them
+  into ordinary calls.
+- **File watching uses `notify` 8.** Events go to a channel buffering 1,024
+  of them, and are dropped while it's full.
+- **`norn.sys` reads environment variables but doesn't set them**; children
+  get their environment through `norn.process`.

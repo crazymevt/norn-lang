@@ -1,0 +1,137 @@
+;;;; norn.io — files, streams and paths.
+;;;;
+;;;; Whole-file functions take a path. Streams are handles (files, pipes,
+;;;; sockets): read, write and close work on all of them. Files are read and
+;;;; written on the blocking pool, sockets and pipes through the reactor, so
+;;;; no call ever blocks a carrier. An unreachable handle is closed by a
+;;;; cleanup; close it yourself (or use with-open) to free it promptly.
+
+(ns norn.io)
+
+;;; ---- whole files ----
+
+(defn read-text "The contents of a file, as UTF-8 text." [path] (%fs-read (str path) true))
+(defn read-bytes "The contents of a file, as bytes." [path] (%fs-read (str path) false))
+(defn write-text "Replace a file's contents with s (a string, as UTF-8)." [path s] (%fs-write (str path) (str s) false))
+(defn write-bytes "Replace a file's contents with bytes b." [path b] (%fs-write (str path) b false))
+(defn append-text "Add s to the end of a file (creating it)." [path s] (%fs-write (str path) (str s) true))
+(defn lines "The lines of a text file, as a vector." [path] (%split-lines (read-text path)))
+
+;;; ---- the file system ----
+
+(defn info
+  "{:type :file|:dir|:symlink|:other :size :modified (epoch ms) :readonly}, or nil if path doesn't exist."
+  [path]
+  (%fs-info (str path)))
+(defn exists? [path] (some? (info path)))
+(defn file? [path] (= :file (:type (info path))))
+(defn directory? [path] (= :dir (:type (info path))))
+(defn list-dir "The names in a directory, sorted." [path] (%fs-list (str path)))
+(defn mkdirs! "Create a directory and any missing parents." [path] (%fs-mkdirs (str path)))
+(defn delete!
+  "Delete a file or an empty directory; with :recursive true, a directory and everything in it."
+  [path & {:keys [recursive]}]
+  (%fs-delete (str path) (if recursive true false)))
+(defn rename! [from to] (%fs-rename (str from) (str to)))
+(defn copy! "Copy a file; returns the number of bytes copied." [from to] (%fs-copy (str from) (str to)))
+
+;;; ---- paths ----
+
+(defn path "Join path parts." [& parts] (%path-join (mapv str parts)))
+(defn parent "The directory part of a path, or nil." [p] (%path-part (str p) :parent))
+(defn file-name "The last part of a path, or nil." [p] (%path-part (str p) :name))
+(defn extension "The extension (without the dot), or nil." [p] (%path-part (str p) :ext))
+(defn stem "The file name without its extension, or nil." [p] (%path-part (str p) :stem))
+(defn absolute "The path made absolute against the current directory." [p] (%path-part (str p) :absolute))
+
+;;; ---- streams ----
+
+(defn- auto-close [h]
+  ;; A cleanup that closes the handle once it is unreachable (it holds the
+  ;; handle's number, not the handle).
+  (let [id (%handle-id h)] (add-cleanup! h (fn [] (%io-close-id id))))
+  h)
+
+(defn open
+  "Open a file as a stream. mode: :read, :write (create or truncate),
+  :append (create, add to the end) or :read-write."
+  [path mode]
+  (auto-close (%fs-open (str path) mode)))
+
+(defn- retry [h dir f]
+  (loop []
+    (let [s (%io-seq h dir) r (f)]
+      (if (= r :again) (do (%io-wait h dir s) (recur)) r))))
+
+(defn read
+  "Up to n bytes from a stream (file, pipe or socket), or nil at the end."
+  [h n]
+  (let [h (ensure-live h)]
+    (if (= :file (handle-kind h))
+      (%file-read h n)
+      (retry h :read (fn [] (%io-read h n))))))
+
+(defn write
+  "Write all of data (a string, as UTF-8, or bytes) to a stream."
+  [h data]
+  (let [h (ensure-live h)
+        b (bytes data)]
+    (if (= :file (handle-kind h))
+      (%file-write h b)
+      (loop [i 0]
+        (when (< i (count b))
+          (recur (+ i (retry h :write (fn [] (%io-write h b i))))))))
+    nil))
+
+(defn close "Close a stream (closing twice is harmless)." [h] (%io-close h))
+
+(defmacro with-open
+  "(with-open [h (open path :read)] body…): close h when body ends, however it ends."
+  [binding & body]
+  (let [[sym init] binding]
+    `(let [~sym ~init]
+       (try (do ~@body)
+            (finally (norn.io/close ~sym))))))
+
+(defn read-all
+  "Everything left in a stream, as bytes."
+  [h]
+  (loop [acc (bytes [])]
+    (let [b (read h 65536)]
+      (if b (recur (bytes-concat acc b)) acc))))
+
+;;; ---- lines ----
+
+(defn line-reader
+  "A reader of lines from stream h (for read-line)."
+  [h]
+  {:handle h :buf (atom (bytes []))})
+
+(defn- strip-cr [s]
+  (if (and (pos? (count s)) (= \return (nth s (dec (count s))))) (subs s 0 (dec (count s))) s))
+
+(defn read-line
+  "The next line (without its line ending), or nil at the end. With no
+  argument, reads standard input; otherwise a line reader."
+  ([] (%stdin-line))
+  ([r]
+   (loop []
+     (let [b @(:buf r)
+           i (%bytes-index-of b 10)]
+       (if (>= i 0)
+         (do (reset! (:buf r) (subbytes b (inc i)))
+             (strip-cr (bytes->string (subbytes b 0 i))))
+         (let [more (read (:handle r) 65536)]
+           (cond more (do (reset! (:buf r) (bytes-concat b more)) (recur))
+                 (pos? (count b)) (do (reset! (:buf r) (bytes [])) (strip-cr (bytes->string b)))
+                 :else nil)))))))
+
+;;; ---- reconnecting after an image restore ----
+
+(defmethod reconnect ((h Handle))
+  ;; A file reopens at its path. (:write reopens as :append, so what was
+  ;; written before the restore stays.)
+  (let [i (handle-info h)]
+    (if (= :file (handle-kind h))
+      (open (:path i) (if (= :write (:mode i)) :append (:mode i)))
+      (error "Don't know how to reconnect" (pr-str h)))))

@@ -12,3 +12,4 @@ cranelift-frontend = "0.137.1"
 cranelift-native = "0.137.1"
 libc = "0.2"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
+notify = "8"

@@ -19,7 +19,12 @@ pub const COMPILER_SRC: &str = include_str!("../../../lib/compiler/compiler.norn
 
 /// The standard libraries (`lib/norn/*.norn`), embedded so `norn` is a
 /// single file. `(require 'norn.x)` loads one the first time it is needed.
-pub const LIBS: &[(&str, &str)] = &[("norn.bytes", include_str!("../../../lib/norn/bytes.norn"))];
+pub const LIBS: &[(&str, &str)] = &[
+    ("norn.bytes", include_str!("../../../lib/norn/bytes.norn")),
+    ("norn.io", include_str!("../../../lib/norn/io.norn")),
+    ("norn.fs", include_str!("../../../lib/norn/fs.norn")),
+    ("norn.sys", include_str!("../../../lib/norn/sys.norn")),
+];
 
 /// `(%find-lib "a.b-c")`: the source of library `a.b-c` and where it came
 /// from — embedded, or `a/b-c.norn` under a directory on `NORN_PATH`
