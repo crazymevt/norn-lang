@@ -39,6 +39,10 @@ fn extension_primitives_and_native_handles() {
     );
     assert!(ok, "{err}");
     assert_eq!(out, r#"[1 2 :counter "The handle is closed"]"#);
+    // An extension's embedded library loads with require.
+    let (ok, out, err) = demo(&["-e", "(do (require '[norn.demo.lib :as d]) (d/greet \"ext\"))"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, r#""hello ext""#);
     // The plain binary has no such namespace.
     let plain = Command::new(env!("CARGO_BIN_EXE_norn")).args(["-e", "(resolve 'norn.demo/counter)"]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&plain.stdout).trim(), "nil");

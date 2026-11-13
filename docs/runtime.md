@@ -671,6 +671,9 @@ engine (design §9.1). Nothing here is UI-specific.
     the same rules (§2.3: Rust leaf functions that never call Norn).
   - Their names are part of the build fingerprint, so an image only loads
     in a binary with the same extensions.
+- **Embedded libraries:** an extension can carry Norn libraries (name and
+  source), which `require` finds like the built-in ones; `norn-ui` brings
+  `norn.ui` this way.
 - **Native objects** are `Handle`s owning a `Box<dyn Any + Send>`
   (`ext::handle`, `ext::with_native`). Closing a handle drops the object.
   A handle saved in an image comes back lost, as M6's sockets do.

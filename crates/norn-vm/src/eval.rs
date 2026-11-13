@@ -57,7 +57,7 @@ pub const LIBS: &[(&str, &str)] = &[
 /// from — embedded, or `a/b-c.norn` under a directory on `NORN_PATH`
 /// (colon-separated) or the current directory.
 pub(crate) fn find_lib(name: &str) -> Option<(String, String)> {
-    if let Some((_, src)) = LIBS.iter().find(|(n, _)| *n == name) {
+    if let Some((_, src)) = LIBS.iter().chain(crate::ext::libs()).find(|(n, _)| *n == name) {
         return Some(((*src).to_owned(), format!("<{name}>")));
     }
     let rel = format!("{}.norn", name.replace('.', "/"));

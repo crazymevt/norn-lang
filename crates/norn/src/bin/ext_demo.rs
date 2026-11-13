@@ -50,6 +50,7 @@ fn main() {
             PrimDef { name: "bump!", min: 1, max: Some(1), f: bump },
             PrimDef { name: "posted", min: 0, max: Some(0), f: posted },
         ],
+        libs: vec![("norn.demo.lib", "(ns norn.demo.lib)\n(defn greet [s] (str \"hello \" s))\n")],
     }])
     .expect("register the demo extension");
 

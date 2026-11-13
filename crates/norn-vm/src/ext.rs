@@ -8,6 +8,9 @@
 //!   example `norn.ui.native`). Extension primitives are numbered after the
 //!   built-in ones, and their names are part of the build fingerprint, so an
 //!   image only loads in a binary with the same extensions.
+//! - **Libraries:** an extension can embed Norn libraries (name, source),
+//!   which `require` finds like the built-in ones (`norn.ui` in `norn-ui`).
+//!   Their sources are part of the build fingerprint too.
 //! - **Primitives** follow the built-in rules (runtime.md §2.3): Rust leaf
 //!   functions that never call Norn code.
 //! - **Native objects** are `Handle`s (`handle` and `with_native`). Closing
@@ -33,6 +36,14 @@ pub struct Extension {
     pub name: &'static str,
     pub ns: &'static str,
     pub prims: Vec<PrimDef>,
+    /// Embedded Norn libraries: (name, source).
+    pub libs: Vec<(&'static str, &'static str)>,
+}
+
+/// Every extension's embedded libraries.
+pub(crate) fn libs() -> &'static [(&'static str, &'static str)] {
+    static LIBS: OnceLock<Vec<(&'static str, &'static str)>> = OnceLock::new();
+    LIBS.get_or_init(|| EXTENSIONS.get().map_or_else(Vec::new, |exts| exts.iter().flat_map(|e| e.libs.iter().copied()).collect()))
 }
 
 static EXTENSIONS: OnceLock<Vec<Extension>> = OnceLock::new();
@@ -80,6 +91,10 @@ pub(crate) fn fingerprint(eat: &mut dyn FnMut(&[u8])) {
         eat(ns.as_bytes());
         eat(p.name.as_bytes());
         eat(&[p.min as u8, p.max.map_or(255, |m| m as u8)]);
+    }
+    for (name, src) in libs() {
+        eat(name.as_bytes());
+        eat(src.as_bytes());
     }
 }
 
