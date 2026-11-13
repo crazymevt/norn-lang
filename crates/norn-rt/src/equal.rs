@@ -41,6 +41,13 @@ pub fn hash(v: Value) -> u64 {
     }
     match v.obj_kind() {
         Kind::String => mix64(hash_str(v.as_str())),
+        Kind::Bytes => {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ 0xb7e5;
+            for &b in v.as_bytes() {
+                h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+            }
+            mix64(h)
+        }
         Kind::Symbol | Kind::Keyword => v.sym_hash(),
         Kind::Float => {
             let f = v.as_f64();
@@ -113,6 +120,7 @@ pub fn equal(a: Value, b: Value) -> bool {
     }
     match a.obj_kind() {
         Kind::String => a.as_str() == b.as_str(),
+        Kind::Bytes => a.as_bytes() == b.as_bytes(),
         Kind::Float => a.as_f64() == b.as_f64(),
         Kind::Map => {
             a.map_count() == b.map_count()

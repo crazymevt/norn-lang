@@ -1,0 +1,49 @@
+;;;; norn.bytes — byte strings and their text encodings.
+;;;;
+;;;; Bytes are immutable values, like strings: (bytes "héllo") is the UTF-8,
+;;;; (bytes [1 2 3]) builds from integers, and they print as #bytes "0102".
+;;;; count, nth, get and seq work on them; = and hash compare contents.
+
+(ns norn.bytes)
+
+(defn utf8
+  "The UTF-8 bytes of string s."
+  [s]
+  (bytes (str s)))
+
+(defn utf8-string
+  "Decode UTF-8. Invalid sequences are an error, unless lossy? is true, which
+  replaces them with U+FFFD."
+  ([b] (bytes->string b))
+  ([b lossy?] (bytes->string b lossy?)))
+
+(defn hex
+  "Lower-case hex digits of b."
+  [b]
+  (%hex-encode b))
+
+(defn unhex
+  "Bytes from hex digits (either case)."
+  [s]
+  (%hex-decode s))
+
+(defn base64
+  "Base64 of b: the standard alphabet with padding, or with :url the
+  URL-safe alphabet without padding."
+  ([b] (%base64-encode b false))
+  ([b alphabet] (%base64-encode b (= alphabet :url))))
+
+(defn unbase64
+  "Bytes from base64 in either alphabet, padded or not."
+  [s]
+  (%base64-decode s))
+
+(defn concat-bytes
+  "One byte string from several."
+  [& bs]
+  (apply bytes-concat bs))
+
+(defn slice
+  "Bytes from index start (inclusive) to end (exclusive, default: the end)."
+  ([b start] (subbytes b start))
+  ([b start end] (subbytes b start end)))

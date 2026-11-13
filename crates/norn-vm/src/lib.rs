@@ -2,6 +2,7 @@
 //! and primitives. See docs/runtime.md §8.1 and §9.
 
 pub mod bytecode;
+pub mod codec;
 pub mod compiler;
 pub mod conc;
 pub mod eval;

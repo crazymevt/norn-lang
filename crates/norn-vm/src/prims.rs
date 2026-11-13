@@ -219,6 +219,16 @@ prims! {
     "%proto-parts" 1 Some(1) => proto_parts;
     "%seed-compile" 1 Some(1) => |vm, a| { vm.nested += 1; let r = crate::compiler::compile_toplevel(vm, a[0]); vm.nested -= 1; r };
     "%compiler-source" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, crate::eval::COMPILER_SRC));
+    // bytes (immutable byte strings)
+    "bytes?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Bytes)));
+    "bytes" 1 Some(1) => |vm, a| to_bytes(vm, a[0]);
+    "bytes->string" 1 Some(2) => |vm, a| { expect(a[0], Kind::Bytes, "bytes->string")?; let b = a[0].as_bytes(); let s = if a.get(1).is_some_and(|x| x.truthy()) { String::from_utf8_lossy(b).into_owned() } else { std::str::from_utf8(b).map_err(|e| Error::new(format!("Invalid UTF-8: {e}")))?.to_owned() }; Ok(str_new(&mut vm.m, &s)) };
+    "subbytes" 2 Some(3) => |vm, a| { expect(a[0], Kind::Bytes, "subbytes")?; let b = a[0].as_bytes(); let s = int(a[1], "subbytes")?; let e = match a.get(2) { Some(&x) => int(x, "subbytes")?, None => b.len() as i64 }; if s < 0 || e < s || e as usize > b.len() { return Err(Error::new(format!("subbytes: range {s}..{e} out of bounds for {} bytes", b.len()))); } Ok(norn_rt::string::bytes_new(&mut vm.m, &b[s as usize..e as usize])) };
+    "bytes-concat" 0 VAR => |vm, a| { let mut out = Vec::new(); for &x in a { expect(x, Kind::Bytes, "bytes-concat")?; out.extend_from_slice(x.as_bytes()); } Ok(norn_rt::string::bytes_new(&mut vm.m, &out)) };
+    "%hex-encode" 1 Some(1) => |vm, a| { expect(a[0], Kind::Bytes, "hex")?; Ok(str_new(&mut vm.m, &crate::codec::hex_encode(a[0].as_bytes()))) };
+    "%hex-decode" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "unhex")?; let b = crate::codec::hex_decode(a[0].as_str()).map_err(Error::new)?; Ok(norn_rt::string::bytes_new(&mut vm.m, &b)) };
+    "%base64-encode" 2 Some(2) => |vm, a| { expect(a[0], Kind::Bytes, "base64")?; Ok(str_new(&mut vm.m, &crate::codec::base64_encode(a[0].as_bytes(), a[1].truthy()))) };
+    "%base64-decode" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "unbase64")?; let b = crate::codec::base64_decode(a[0].as_str()).map_err(Error::new)?; Ok(norn_rt::string::bytes_new(&mut vm.m, &b)) };
     // weak references and cleanups
     "weak-ref" 1 Some(1) => |vm, a| Ok(norn_rt::weak::weak_new(&mut vm.m, a[0], Value::NIL));
     "weak-get" 1 Some(1) => |_, a| { expect(a[0], Kind::Weak, "weak-get")?; Ok(a[0].weak_get()) };
@@ -538,6 +548,27 @@ fn index_of(k: Value) -> Option<usize> {
     (k.is_fixnum() && k.as_fixnum() >= 0).then(|| k.as_fixnum() as usize)
 }
 
+/// `(bytes x)`: UTF-8 of a string, a seqable of integers 0–255, or bytes.
+fn to_bytes(vm: &mut Vm, x: Value) -> Result<Value> {
+    if x.is(Kind::Bytes) {
+        return Ok(x);
+    }
+    if x.is(Kind::String) {
+        return Ok(norn_rt::string::bytes_new(&mut vm.m, x.as_str().as_bytes()));
+    }
+    let mut out = Vec::new();
+    if let Some(it) = seq::SeqIter::new(x) {
+        for v in it {
+            match v.is_fixnum().then(|| v.as_fixnum()) {
+                Some(n @ 0..=255) => out.push(n as u8),
+                _ => return Err(Error::new(format!("bytes: {} is not a byte (0-255)", pr_str(v, true)))),
+            }
+        }
+        return Ok(norn_rt::string::bytes_new(&mut vm.m, &out));
+    }
+    Err(type_err("bytes", "a string, bytes or a collection of integers", x))
+}
+
 /// `(get coll key)` without a default.
 pub fn get(coll: Value, key: Value) -> Option<Value> {
     if !coll.is_obj() {
@@ -549,6 +580,7 @@ pub fn get(coll: Value, key: Value) -> Option<Value> {
         Kind::Set => coll.set_contains(key).then_some(key),
         Kind::Vector => index_of(key).filter(|&i| i < coll.vec_count()).map(|i| coll.vec_nth(i)),
         Kind::String => index_of(key).and_then(|i| coll.as_str().chars().nth(i)).map(Value::char),
+        Kind::Bytes => index_of(key).and_then(|i| coll.as_bytes().get(i)).map(|&b| Value::fix(b as i64)),
         _ => None,
     }
 }

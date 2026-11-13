@@ -231,6 +231,14 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
         }
         Kind::Scope => out.push_str("#<scope>"),
         Kind::Weak => out.push_str("#<weak-ref>"),
+        Kind::Bytes => {
+            // Readable as a literal: #bytes "68656c6c6f"
+            out.push_str("#bytes \"");
+            for b in v.as_bytes() {
+                let _ = write!(out, "{b:02x}");
+            }
+            out.push('"');
+        }
         k => {
             let _ = write!(out, "#<{k:?}>");
         }

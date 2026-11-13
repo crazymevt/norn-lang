@@ -336,6 +336,15 @@ impl<'a> Reader<'a> {
             '"' => Err(ReadError::Syntax("Regex literals are not supported yet".into())),
             _ => {
                 let tok = self.token();
+                if tok == "bytes" {
+                    // #bytes "68656c6c6f"
+                    let form = self.read_required(vm)?;
+                    if !form.is(Kind::String) {
+                        return Err(ReadError::Syntax("#bytes must be followed by a hex string".into()));
+                    }
+                    let b = crate::codec::hex_decode(form.as_str()).map_err(ReadError::Syntax)?;
+                    return Ok(Some(norn_rt::string::bytes_new(&mut vm.m, &b)));
+                }
                 if tok == "lang" {
                     // `#lang norn` selects the base language (design.md §8.1).
                     let start = self.pos;

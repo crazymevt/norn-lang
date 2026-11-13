@@ -47,6 +47,11 @@ fn compiler_suite() {
 }
 
 #[test]
+fn lib_suite() {
+    suite("lib_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [

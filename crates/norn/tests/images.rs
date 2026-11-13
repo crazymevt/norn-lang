@@ -109,7 +109,7 @@ fn suites_pass_in_a_runtime_started_from_an_image() {
     let d = scratch("suites");
     let base = d.join("base.nimg");
     ok(norn().arg("build").arg(&base).output().unwrap());
-    for suite in ["core_test", "conc_test", "clos_test", "cond_test", "compiler_test"] {
+    for suite in ["core_test", "conc_test", "clos_test", "cond_test", "compiler_test", "lib_test"] {
         let out = ok(norn().arg("--image").arg(&base).arg(format!("tests/norn/{suite}.norn")).output().unwrap());
         let summary = out.lines().find(|l| l.contains(" checks, ")).unwrap_or("").to_owned();
         assert!(summary.ends_with(" 0 failures"), "{suite} from an image: {out}");

@@ -63,3 +63,12 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
 - **A known GC imprecision.** A finished call's registers stay reachable
   until the caller reuses them, so weak references clear eventually rather
   than at the first possible collection. The fix is in M11 (runtime.md §4.5).
+- **`Bytes` is immutable**, a value like a string, with the same layout.
+  Reads return fresh `Bytes`; mutable buffers wait for M7's owned mutable
+  objects. The literal is `#bytes "68656c6c6f"` (hex), so bytes print
+  readably. `=` and `hash` compare contents, and bytes never equal a vector
+  or a string. Bytes have their own builtin class, `Bytes`.
+- **Hex and base64 are hand-written** (`norn-vm/src/codec.rs`, about 80
+  lines, tested against RFC 4648's examples) rather than a crate.
+- **Standard-library tests** live in one suite, `tests/norn/lib_test.norn`,
+  which runs in process, at both tiers, and from an image.

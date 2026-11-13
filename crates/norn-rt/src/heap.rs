@@ -245,7 +245,7 @@ pub(crate) fn object_words(p: *const u64) -> usize {
 pub(crate) fn size_words(kind: Kind, w: impl Fn(usize) -> usize) -> usize {
     match kind {
         Kind::Cons => 3,
-        Kind::String => 3 + w(0).div_ceil(8),
+        Kind::String | Kind::Bytes => 3 + w(0).div_ceil(8),
         Kind::Float | Kind::Set | Kind::Claim | Kind::Atom => 3,
         Kind::Symbol | Kind::Keyword => 5,
         Kind::Array => 3 + w(0),
@@ -338,7 +338,7 @@ pub(crate) fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
                 visit(slot_at(p.add(2)));
             }
         }
-        Kind::String | Kind::Float | Kind::Range | Kind::Code | Kind::EmptyList | Kind::Claim => {}
+        Kind::String | Kind::Bytes | Kind::Float | Kind::Range | Kind::Code | Kind::EmptyList | Kind::Claim => {}
         Kind::Symbol | Kind::Keyword => fields(&[0, 1], visit),
         Kind::Array => (1..=w(0)).for_each(|i| visit(slot_at(field(i)))),
         Kind::Vector => fields(&[2, 3], visit),

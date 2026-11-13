@@ -1,0 +1,49 @@
+;;;; The standard libraries (lib/norn/*.norn): loaded with require.
+
+(ns lib-test (:require [norn.bytes :as b]))
+
+(def failures 0)
+(def checks 0)
+
+(defmacro is [expected expr]
+  `(let [e# ~expected a# ~expr]
+     (alter-var-root (var checks) inc)
+     (when-not (= e# a#)
+       (alter-var-root (var failures) inc)
+       (println "FAIL:" '~expr "\n  expected:" (pr-str e#) "\n  actual:  " (pr-str a#)))))
+
+(defmacro fails [expr]
+  `(try ~expr :no-error (~'catch Error e# :error)))
+
+;;; ---- norn.bytes ----
+(def hello (b/utf8 "héllo"))
+(is 6 (count hello))
+(is [104 195 169 108 108 111] (vec (seq hello)))
+(is 195 (nth hello 1))
+(is 195 (get hello 1))
+(is "héllo" (b/utf8-string hello))
+(is "68c3a96c6c6f" (b/hex hello))
+(is hello (b/unhex "68C3A96C6C6F"))
+(is "aMOpbGxv" (b/base64 hello))
+(is "__4" (b/base64 (bytes [255 254]) :url))
+(is "//4=" (b/base64 (bytes [255 254])))
+(is (bytes [255 254]) (b/unbase64 "__4"))
+(is hello (read-string (pr-str hello)))
+(is "#bytes \"0102\"" (pr-str (bytes [1 2])))
+(is #bytes "c3a9" (b/slice hello 1 3))
+(is (bytes [1 2 3 4]) (b/concat-bytes (bytes [1 2]) (bytes []) (bytes [3 4])))
+(is true (= (bytes [1 2]) (bytes [1 2])))
+(is true (= (hash (bytes [1 2])) (hash (b/unhex "0102"))))
+(is false (= (bytes [1 2]) [1 2]))
+(is false (= (bytes [104 105]) "hi"))
+(is Bytes (class-of hello))
+(is true (bytes? hello))
+(is "�" (b/utf8-string (bytes [255]) true))
+(is :error (fails (b/utf8-string (bytes [255]))))
+(is :error (fails (bytes [256])))
+(is :error (fails (b/unhex "abc")))
+(is :error (fails (b/unbase64 "a")))
+(is 1 (count (into #{} [(bytes [1]) (bytes [1])])))
+
+(println (str "lib_test: " checks " checks, " failures " failures"))
+(when (pos? failures) (error failures "library tests failed"))

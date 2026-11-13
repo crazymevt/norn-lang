@@ -543,6 +543,7 @@
 (def Integer (%defbuiltin 'Integer [Number] "integer"))
 (def Float (%defbuiltin 'Float [Number] "float"))
 (def String (%defbuiltin 'String [Object] "string"))
+(def Bytes (%defbuiltin 'Bytes [Object] "bytes"))
 (def Symbol (%defbuiltin 'Symbol [Object] "symbol"))
 (def Keyword (%defbuiltin 'Keyword [Object] "keyword"))
 (def Collection (%defbuiltin 'Collection [Object] nil))

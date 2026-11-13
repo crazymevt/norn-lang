@@ -106,6 +106,7 @@ pub fn to_vec(m: &mut Mutator, v: Value) -> Result<Vec<Value>, String> {
             });
         }
         Kind::String => out.extend(v.as_str().chars().map(Value::char)),
+        Kind::Bytes => out.extend(v.as_bytes().iter().map(|&b| Value::fix(b as i64))),
         _ => return Err(format!("Don't know how to create a seq from {}", v.type_name())),
     }
     Ok(out)
@@ -117,7 +118,14 @@ pub fn is_seqable(v: Value) -> bool {
         || (v.is_obj()
             && matches!(
                 v.obj_kind(),
-                Kind::EmptyList | Kind::Vector | Kind::VecSeq | Kind::Range | Kind::Map | Kind::Set | Kind::String
+                Kind::EmptyList
+                    | Kind::Vector
+                    | Kind::VecSeq
+                    | Kind::Range
+                    | Kind::Map
+                    | Kind::Set
+                    | Kind::String
+                    | Kind::Bytes
             ))
 }
 
@@ -240,6 +248,7 @@ pub fn count(v: Value) -> Result<usize, String> {
             Kind::Map => v.map_count(),
             Kind::Set => v.set_count(),
             Kind::String => v.as_str().chars().count(),
+            Kind::Bytes => v.as_bytes().len(),
             _ => return Err(format!("count not supported on {}", v.type_name())),
         });
     }
@@ -263,6 +272,7 @@ pub fn nth(v: Value, i: usize) -> Result<Option<Value>, String> {
                 return Ok((i < v.range_count()).then(|| Value::fix(s + st * i as i64)));
             }
             Kind::String => return Ok(v.as_str().chars().nth(i).map(Value::char)),
+            Kind::Bytes => return Ok(v.as_bytes().get(i).map(|&b| Value::fix(b as i64))),
             Kind::EmptyList => return Ok(None),
             _ => {}
         }

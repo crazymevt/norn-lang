@@ -1,6 +1,7 @@
 //! Strings, floats, symbols and keywords.
 //!
 //! - String:  `[byte_len][utf-8 bytes, padded to 8]` — immutable.
+//! - Bytes:   `[len][bytes, padded to 8]` — immutable, the same layout.
 //! - Float:   `[f64 bits]`
 //! - Symbol / Keyword: `[ns: String|nil][name: String][hash]` — interned, so
 //!   equality is identity (see runtime.rs).
@@ -18,6 +19,25 @@ pub fn str_new(m: &mut Mutator, s: &str) -> Value {
         std::ptr::copy_nonoverlapping(s.as_ptr(), v.payload_ptr().add(1) as *mut u8, len);
     }
     v
+}
+
+pub fn bytes_new(m: &mut Mutator, b: &[u8]) -> Value {
+    let len = b.len();
+    let v = alloc(m, Kind::Bytes, 1 + len.div_ceil(8));
+    v.set_word(0, len as u64);
+    // SAFETY: payload has room for len bytes after the length word.
+    unsafe {
+        std::ptr::copy_nonoverlapping(b.as_ptr(), v.payload_ptr().add(1) as *mut u8, len);
+    }
+    v
+}
+
+impl Value {
+    /// The contents of a Bytes object.
+    pub fn as_bytes<'a>(self) -> &'a [u8] {
+        // SAFETY: Bytes objects hold `len` bytes after the length word.
+        unsafe { std::slice::from_raw_parts(self.payload_ptr().add(1) as *const u8, self.word(0) as usize) }
+    }
 }
 
 pub fn float_new(m: &mut Mutator, f: f64) -> Value {
