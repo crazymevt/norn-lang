@@ -31,6 +31,9 @@ pub const SUB_UNBOUND: u64 = 4;
 pub const SUB_EOF: u64 = 5;
 /// Internal marker used inside HAMT nodes; never visible to Norn code.
 pub const SUB_NODE: u64 = 6;
+/// Returned by a `retry` restart: the interpreter re-executes the
+/// instruction that failed (runtime.md §5.2). Never visible to Norn code.
+pub const SUB_RETRY: u64 = 7;
 
 const fn imm(sub: u64, payload: u64) -> u64 {
     (payload << PAYLOAD_SHIFT) | (sub << SUB_SHIFT) | TAG_IMM
@@ -46,6 +49,7 @@ impl Value {
     pub const UNBOUND: Value = Value(imm(SUB_UNBOUND, 0));
     pub const EOF: Value = Value(imm(SUB_EOF, 0));
     pub const NODE: Value = Value(imm(SUB_NODE, 0));
+    pub const RETRY: Value = Value(imm(SUB_RETRY, 0));
 
     /// A fixnum, or `None` if `n` doesn't fit in 63 bits.
     #[inline]

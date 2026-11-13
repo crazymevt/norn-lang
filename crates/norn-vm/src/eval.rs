@@ -139,6 +139,8 @@ pub(crate) fn read_next(vm: &mut Vm, r: Value) -> Result<Value> {
     let src = r.field(0).as_str();
     let pos = r.word(1) as usize;
     let mut rd = Reader::new_at(src, pos);
+    let _ = rd.at_end();
+    r.set_word(3, rd.line() as u64);
     let res = rd.read(vm);
     r.set_word(1, rd.pos() as u64);
     match res {

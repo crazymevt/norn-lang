@@ -249,7 +249,7 @@ fn object_words(p: *const u64) -> usize {
         Kind::EmptyList => 2,
         Kind::Range => 5,
         Kind::Code => 3 + w(0).div_ceil(2),
-        Kind::Proto => 8,
+        Kind::Proto => 9,
         Kind::Closure => 4 + w(1),
         Kind::Segment => 2 + SEG_HEADER + w(0),
         Kind::Fiber => 2 + fiber::WORDS,
@@ -339,7 +339,7 @@ fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
         Kind::Map => fields(&[1], visit),
         Kind::MapNode | Kind::CollisionNode => (2..2 + 2 * w(1)).for_each(|i| visit(slot_at(field(i)))),
         Kind::Var => fields(&[0, 1, 2], visit),
-        Kind::Proto => fields(&[0, 4, 5], visit),
+        Kind::Proto => fields(&[0, 4, 5, 6], visit),
         Kind::FnTemplate => fields(&[0, 1, 3], visit),
         Kind::Closure => {
             visit(slot_at(field(0)));

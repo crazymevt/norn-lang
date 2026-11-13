@@ -221,6 +221,11 @@ hooks haven't been specialised.
 
 ## 5. Live programming: REPL, conditions, debugger
 
+**Status (M3):** §5.2 and §5.3 are implemented, along with the debugger and an
+editor protocol (a subset of §5.1). See [runtime.md §5.4](runtime.md). Not
+yet built: xref, profiling, source-drift tracking, and output capture for
+editor evaluations.
+
 ### 5.1 The REPL **[decided]**
 
 - Vars are late-bound: redefining `foo` at the REPL affects every caller on
@@ -228,6 +233,12 @@ hooks haven't been specialised.
 - **Network REPL protocol** (in the spirit of Swank/nREPL) is part of the
   runtime, not a library: eval, completion, docs, inspect, xref (who-calls,
   who-specialises), macroexpand, list/attach fibers, profile.
+  - **M3 builds the core of it** (`norn --server PORT`). Messages are Norn
+    data, one map per line, so any editor can speak it with a socket and a
+    small reader.
+  - **Ops:** `:eval`, `:debugging`, `:backtrace`, `:restart`,
+    `:restart-frame`, `:abort`, `:eval-in-frame`, `:complete`.
+  - **Pushed events:** `{:event :debug …}` and `{:event :resumed …}`.
 - **Source drift tracking:** the REPL records definitions entered
   interactively that don't match any file, so `(unsaved-definitions)` tells you
   what your image knows that your repo doesn't.
@@ -246,19 +257,45 @@ and can choose a recovery strategy.
 
 ;; The policy is chosen far away from where the error happens —
 ;; and it is conveyed into every fiber spawned inside.
-(handler-bind [(parse-error (fn [e] (invoke-restart 'skip-entry)))]
+(handler-bind [parse-error (fn [e] (invoke-restart 'skip-entry))]
   (pmap parse-entry lines))
 ```
+
+As built (M3):
+- **Constructs:** `try`/`catch`/`finally` (Clojure style) expands to
+  `handler-case` + `unwind-protect`. Also `ignore-errors`, `catch-tag`/`throw-tag`,
+  `with-simple-restart`, `signal`, `warn`.
+- **Condition classes** are CLOS classes: `Condition` > `SeriousCondition` > `Error` >
+  `SimpleError`/`RuntimeError`, and `Warning`. Define your own with `defclass`.
+- **Every runtime error is resumable.** Errors raised inside the runtime
+  (divide by zero, unbound symbol, wrong arity, a failed `await`…) are
+  signalled as `RuntimeError` at the failing operation, with two restarts:
+  - `use-value`: the operation returns that value;
+  - `retry`: the operation runs again, e.g. after defining the missing
+    function.
 
 ### 5.3 Conditions × concurrency **[decided]**
 
 - Handlers and restarts are dynamic bindings, so they are **conveyed** to
   child fibers at spawn.
+  - **As built:** bindings, `handler-bind` handlers and the debugger mode are
+    conveyed.
+  - `handler-case` handlers and `restart-case` restarts are *not*: they unwind
+    to a point on the establishing fiber's stack, which another fiber can't
+    reach.
 - When a condition goes unhandled in a fiber, the fiber **parks with its stack
   intact** instead of dying. Its scope/supervisor is notified and, in
   development, the REPL receives a debugger event: inspect frames, eval in a
   frame, redefine the broken function, pick a restart (including
   `retry-frame`), and the fiber continues. All other fibers keep running.
+  - **As built:** this happens when `*debugger*` is `:park`, which the REPL
+    and editor evaluations bind and their spawned fibers inherit. Otherwise
+    the fiber unwinds (running cleanups) and ends with the error.
+  - "Retry frame" is `debug-restart-frame` (`:f N` at the REPL). It calls the
+    frame's function again with its original arguments, using the function's
+    *newest* definition.
+  - A frame replaced by a successful tail call is gone and can't be
+    restarted. A tail call that *fails* keeps its frame.
 - In production, a policy (per scope or per supervisor) picks a default
   restart, e.g. `abort-fiber` → propagate to the parent scope.
 

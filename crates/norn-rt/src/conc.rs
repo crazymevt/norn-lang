@@ -60,11 +60,14 @@ pub mod fiber {
     pub const WAKE_ERR: usize = 17; //   nil, reason code (fixnum), failed fiber, or string
     pub const NOTIFY: usize = 18; //     raw: root-fiber completion ticket (0 = none)
     pub const JOINING: usize = 19; //    scope it is joining, or nil
-    pub const WORDS: usize = 20;
+    pub const DYN: usize = 20; //        dynamic environment: map var → value (or nil)
+    pub const LOC: usize = 21; //        source location being loaded ("file:line"), or nil
+    pub const WORDS: usize = 22;
 
     /// Fields holding values (everything else is raw).
-    pub const VALUE_FIELDS: &[usize] =
-        &[SEG, FP, WAKE_VALUE, WAKE_AUX, RESULT, ERROR, TRACE, JOINERS, THUNK, SCOPE, PARK, WAKE_ERR, JOINING];
+    pub const VALUE_FIELDS: &[usize] = &[
+        SEG, FP, WAKE_VALUE, WAKE_AUX, RESULT, ERROR, TRACE, JOINERS, THUNK, SCOPE, PARK, WAKE_ERR, JOINING, DYN, LOC,
+    ];
 
     // States.
     pub const QUEUED: u64 = 0;

@@ -4,7 +4,7 @@
 //! ```text
 //! Var:        [ns: Symbol][name: Symbol][root][flags]
 //! Code:       [n_instructions][u32 instructions, packed two per word]
-//! Proto:      [name][nfixed][variadic][nregs][consts: Array][code: Code]
+//! Proto:      [name][nfixed][variadic][nregs][consts: Array][code: Code][locals: Array]
 //! FnTemplate: [name][arities: Array<Proto>][nups][captures: Array<fixnum>]
 //! Closure:    [template][nups][upval0 upval1 …]   (size readable without the template)
 //! Primitive:  [name: Symbol][index][min-args][max-args | -1]
@@ -20,6 +20,9 @@ use std::sync::atomic::Ordering;
 
 pub const VAR_MACRO: u64 = 1;
 pub const VAR_DYNAMIC: u64 = 2;
+/// Has ever been bound with `binding`: reads must consult the fiber's
+/// dynamic environment.
+pub const VAR_DYNBOUND: u64 = 4;
 
 pub fn var_new(m: &mut Mutator, ns: Value, name: Value) -> Value {
     let v = alloc(m, Kind::Var, 4);
@@ -97,16 +100,19 @@ pub struct ProtoInfo {
     pub nregs: usize,
     pub consts: Value,
     pub code: Value,
+    /// Array [sym, reg, sym, reg …]: local variable names, for the debugger.
+    pub locals: Value,
 }
 
 pub fn proto_new(m: &mut Mutator, p: ProtoInfo) -> Value {
-    let v = alloc(m, Kind::Proto, 6);
+    let v = alloc(m, Kind::Proto, 7);
     v.set_field(0, p.name);
     v.set_word(1, p.nfixed as u64);
     v.set_word(2, p.variadic as u64);
     v.set_word(3, p.nregs as u64);
     v.set_field(4, p.consts);
     v.set_field(5, p.code);
+    v.set_field(6, p.locals);
     v
 }
 
@@ -133,6 +139,9 @@ impl Value {
     #[inline]
     pub fn proto_code(self) -> Value {
         self.field(5)
+    }
+    pub fn proto_locals(self) -> Value {
+        self.field(6)
     }
 }
 

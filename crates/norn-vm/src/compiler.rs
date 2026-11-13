@@ -41,6 +41,8 @@ struct Arity {
     code: Vec<u32>,
     consts: Vec<Value>,
     locals: Vec<(Value, u8)>,
+    /// Every local ever bound in this arity (name, register), for the debugger.
+    debug: Vec<(Value, u8)>,
     next_reg: usize,
     max_reg: usize,
     recur: Vec<RecurTarget>,
@@ -187,8 +189,10 @@ impl Compiler<'_> {
         let m = &mut self.vm.m;
         let consts = array_from(m, &ar.consts);
         let code = code_new(m, &ar.code);
+        let dbg: Vec<Value> = ar.debug.iter().flat_map(|&(s, r)| [s, Value::fix(r as i64)]).collect();
+        let locals = array_from(m, &dbg);
         let nregs = ar.max_reg.max(nfixed + variadic as usize);
-        proto_new(m, ProtoInfo { name, nfixed, variadic, nregs, consts, code })
+        proto_new(m, ProtoInfo { name, nfixed, variadic, nregs, consts, code, locals })
     }
 
     fn load_const(&mut self, dest: u8, v: Value) -> Result<()> {
@@ -395,6 +399,11 @@ impl Compiler<'_> {
         }
         if pos.tail {
             self.emit(abc(TAILCALL, base, args.len() as u8, 0));
+            // Never reached by a successful tail call. If the call *fails*,
+            // the error handler runs as an ordinary call returning here, so
+            // this frame stays on the stack (debuggable, restartable) and a
+            // `use-value` is returned from it; a `retry` re-runs the TAILCALL.
+            self.emit(abc(RETURN, base, 0, 0));
         } else {
             self.emit(abc(CALL, base, args.len() as u8, 0));
             if dest != base {
@@ -469,6 +478,7 @@ impl Compiler<'_> {
             let r = self.alloc()?;
             self.compile(init, r, NT)?;
             self.ar().locals.push((s, r));
+            self.ar().debug.push((s, r));
             regs.push(r);
         }
         let body_pos = if is_loop {
@@ -496,6 +506,7 @@ impl Compiler<'_> {
             let r = self.alloc()?;
             self.emit(abc(LOADNIL, r, 0, 0));
             self.ar().locals.push((s, r));
+            self.ar().debug.push((s, r));
             regs.push(r);
         }
         let mut fixups = Vec::new();
@@ -653,6 +664,7 @@ impl Compiler<'_> {
                 }
                 let r = self.alloc()?;
                 self.ar().locals.push((ps[k], r));
+            self.ar().debug.push((ps[k], r));
                 regs.push(r);
                 if !variadic {
                     nfixed += 1;

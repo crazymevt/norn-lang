@@ -369,6 +369,77 @@ that is only the seed compiler holding forms while it calls a macro.
   ordinary global is a single acquire-load of its root.
 - Condition handlers and restarts are just dynamic bindings, so they are
   conveyed into children too (design §5.3).
+- **As built (M3):**
+  - The current dynamic environment is `Vm.dyn_env`, saved in the fiber's
+    `DYN` field at every park, yield and safepoint, and copied into a child at
+    `spawn`.
+  - `GETVAR` consults it only for vars flagged `VAR_DYNBOUND` (set the first
+    time a var is bound), which costs one relaxed load for every other var.
+  - `binding` is the Norn function `%with-bindings*`, whose frame records the
+    environment to restore.
+
+### 5.4 Errors, unwinding and the debugger **[implemented in M3]**
+
+**Frames that mark dynamic extent.** Four small Norn functions in core.norn,
+recognised by the runtime by closure identity:
+
+| Frame (its parameters are its registers) | Meaning |
+|---|---|
+| `%catch* [tag thunk dyn]` | a throw target |
+| `%unwind-protect* [body cleanup dyn]` | a cleanup to run if unwound |
+| `%with-bindings* [new thunk old]` | the dynamic environment to restore |
+| `%finish-unwind [cleanups dyn mode x args]` | completes an unwind (below) |
+
+**Unwinding is stack surgery.** `%throw`, `%restart-frame` and
+`%abort-fiber` are interpreter intrinsics:
+1. Walk the frames from the top to the target (a catch tag, a given frame, or
+   the bottom).
+2. Collect each `%unwind-protect*` cleanup passed, with its dynamic
+   environment, and note the environment in force at the target.
+3. Cut the stack back to the target and replace the target frame with
+   `%finish-unwind`.
+4. `%finish-unwind` runs the cleanups innermost first, restores the
+   environment, then:
+   - **`:return`** returns the thrown value from the catch;
+   - **`:call`** calls the restarted frame's function (its newest definition)
+     with the frame's original arguments;
+   - **`:die`** ends the fiber.
+
+Frames are data, so none of this needs native stack unwinding.
+
+**Errors from Rust code** carry a kind:
+
+| Kind | Examples | Handling |
+|---|---|---|
+| `Runtime` | divide by zero, unbound var, arity, compile error, failed `await` | becomes a call to `%runtime-error` *in place of the failed instruction* (CALL, TAILCALL, GETVAR), returning into that instruction's destination register |
+| `Abort` | cancellation, stack overflow | unwinds the whole fiber (running cleanups), then ends it |
+| `Fatal` | the condition system already ran; internal errors | ends the fiber immediately |
+
+How a `Runtime` conversion works:
+- `%runtime-error` signals a `RuntimeError` with the restarts `use-value` and
+  `retry`.
+- `use-value` returns its value as the failed operation's value.
+- `retry` returns a reserved immediate, `RETRY`. When `do_return` sees it
+  coming out of a `%runtime-error` frame, it re-executes the failed
+  instruction instead of delivering a value.
+- The compiler emits an unreachable `RETURN` after every `TAILCALL`, so a
+  *failed* tail call is handled like a failed call: its frame stays on the
+  stack, debuggable and restartable.
+
+**Race fixed along the way:** a fiber cancelled between starting a blocking
+operation and parking used to sleep forever. See the handshake in `cancel`
+(sched.rs).
+
+**The debugger.** It is Norn code on top of all this:
+- `%debug-park` registers the fiber, posts a `{:event :debug …}` line on the
+  event bus (`sched::subscribe`), and parks on a channel.
+- `backtrace` reads a parked fiber's frames, with local names recorded by the
+  compiler in each proto.
+- `eval-in-frame` evaluates with those locals bound.
+- `debug-restart`, `debug-restart-frame` and `debug-abort` send the choice
+  down the channel.
+- The terminal REPL and the editor server (`server.rs`) are both clients of
+  the event bus.
 
 ### 5.3 Sync primitives **[M1: atoms, channels, scopes built]**
 
@@ -609,7 +680,7 @@ together.
 | M0 ✅ | Workspace, `Value`/object model, cons/vector/map/string, reader, printer, seed compiler, tier-0 VM on heap stacks, REPL; NoGC heap | `(reduce + (range 1000000))` at the REPL; macOS JIT spike works |
 | M1 ✅ | Fibers, scheduler, safepoints, MMTk GC (non-moving Immix), atoms, channels, scopes | 1M fibers ping-pong across all cores under GC stress |
 | M2 ✅ | CLOS in Norn: `defclass`, layouts, generic functions, method combination, dispatch caches | Live `defmethod` while 8 cores call the generic function |
-| M3 | Conditions, restarts, parked-fiber debugger, REPL protocol | Fix a crashed fiber from the editor and resume it |
+| M3 ✅ | Conditions, restarts, parked-fiber debugger, REPL protocol | Fix a crashed fiber from the editor and resume it |
 | M4 | Real compiler in Norn, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
 | M5 | Images: save/load, layers, parked fibers, `on-image-restore` | Under 50 ms startup; a saved fiber resumes after load |
 | M6 | Hygiene, modules/phases, `#lang`, sealing | Stdlib built as sealed modules |
@@ -720,6 +791,43 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
 **Known gaps:**
 - A miss compiles the effective method with `eval`, which takes about 21 µs per new argument-class combination (measured with one primary and one `:before` method).
 - Class redefinition invalidates every generic function's cache.
+
+### 12.4 M3 status (2026-11-13)
+
+**Built:**
+- the condition system (§5.4, design §5.2);
+- dynamic bindings with conveyance;
+- resumable runtime errors (`use-value`, `retry`);
+- `unwind-protect` cleanups on errors, restarts, cancellation and stack
+  overflow;
+- the parked-fiber debugger (backtrace with locals, `eval-in-frame`, restart,
+  restart frame, abort);
+- debugger mode in the terminal REPL;
+- the editor protocol server (`norn --server PORT`);
+- `file:line` locations for errors in loaded code.
+
+**Verified:**
+- `tests/norn/cond_test.norn` (50 checks);
+- `crates/norn-vm/tests/editor.rs`, the done-check: over TCP, crash a worker,
+  inspect it, fix it with `:eval`, resume it with `:restart-frame`; it
+  finishes its whole job;
+- the full suite 10/10 times;
+- the suites under GC stress (see the note below) and on one carrier.
+
+**Known gaps:**
+- Output from editor evaluations goes to the server's stdout (not captured
+  per request).
+- Frames replaced by tail calls can't be shown or restarted (a debug mode
+  without TCO could fix that).
+- `Interrupted` (Ctrl-C) aborts the evaluation rather than entering the
+  debugger.
+- Local names come from the compiler and include out-of-scope locals in the
+  same function.
+- `NORN_GC_STRESS=1` together with a very deep stack is quadratic: every
+  forced collection rescans the whole stack. The stack-overflow check in
+  `cond_test.norn` (about 16M frames) doesn't finish in reasonable time at
+  level 1. The rest of the suite passes at level 1 in under a second, and the
+  whole suite passes at level 3 (839 forced collections).
 
 ---
 

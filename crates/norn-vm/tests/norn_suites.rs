@@ -37,6 +37,11 @@ fn clos_suite() {
 }
 
 #[test]
+fn cond_suite() {
+    suite("cond_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [
@@ -50,14 +55,14 @@ fn printing_and_errors() {
         ("named", "#<fn printing-test/named>"),
         ("first", "#<primitive norn.core/first>"),
         ("(atom [1])", "#<atom [1]>"),
-        ("(/ 1 0)", "ERROR: Divide by zero"),
-        ("(undefined-thing)", "ERROR: Unable to resolve symbol: undefined-thing in this context"),
-        ("(4611686018427387903 1)", "ERROR: Integer is not a function: 4611686018427387903"),
-        ("(+ 4611686018427387903 1)", "ERROR: Integer overflow (bignums are not implemented yet)"),
-        ("((fn [x] x))", "ERROR: Wrong number of args (0) passed to: #<fn fn>"),
-        ("(loop [] (recur 1))", "ERROR: Mismatched argument count to recur, expected: 0 args, got: 1"),
-        ("(fn [] (inc (recur)))", "ERROR: Can only recur from tail position"),
-        ("(defmacro blocks [] (take! (chan))) (blocks)", "ERROR: while expanding #'printing-test/blocks: Can't block here: not in a fiber, or inside macro expansion"),
+        ("(/ 1 0)", "ERROR: <string>:1: Divide by zero"),
+        ("(undefined-thing)", "ERROR: <string>:1: Unable to resolve symbol: undefined-thing in this context"),
+        ("(4611686018427387903 1)", "ERROR: <string>:1: Integer is not a function: 4611686018427387903"),
+        ("(+ 4611686018427387903 1)", "ERROR: <string>:1: Integer overflow (bignums are not implemented yet)"),
+        ("((fn [x] x))", "ERROR: <string>:1: Wrong number of args (0) passed to: #<fn fn>"),
+        ("(loop [] (recur 1))", "ERROR: <string>:1: Mismatched argument count to recur, expected: 0 args, got: 1"),
+        ("(fn [] (inc (recur)))", "ERROR: <string>:1: Can only recur from tail position"),
+        ("(defmacro blocks [] (take! (chan))) (blocks)", "ERROR: <string>:1: while expanding #'printing-test/blocks: Can't block here: not in a fiber, or inside macro expansion"),
         ("(", "ERROR: <string>:1: EOF while reading, expected )"),
     ];
     for (src, want) in cases {

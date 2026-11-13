@@ -18,31 +18,52 @@
 //! values across them (runtime.md §4.3).
 
 use crate::bytecode::*;
-use crate::prims::{APPLY, EVAL, PRIMS};
+use crate::prims::{ABORT_FIBER, APPLY, EVAL, PRIMS, RESTART_FRAME, THROW};
 use norn_rt::conc::fiber;
 use norn_rt::func::{
-    Capture, F_FN, F_PREV, F_PROTO, F_RESUME, HDR, PREV_BOUNDARY, PREV_SEG_START, closure_new, segment_new,
+    VAR_DYNBOUND, Capture, F_FN, F_PREV, F_PROTO, F_RESUME, HDR, PREV_BOUNDARY, PREV_SEG_START, closure_new, segment_new,
 };
 use norn_rt::list::list_from_with_tail;
 use norn_rt::print::pr_str;
 use norn_rt::runtime::{Namespace, rt};
 use norn_rt::safepoint;
+use norn_rt::string::str_new;
 use norn_rt::vector::vec_from_slice;
 use norn_rt::{Kind, Mutator, Value};
 
 // ---- errors ---------------------------------------------------------------
 
-/// A Norn error. M0/M1 have no condition system yet (M3), so an error ends
-/// the fiber it happens in and carries a Norn-level backtrace.
+/// How an error raised by Rust code is handled when it reaches a fiber's
+/// interpreter loop (runtime.md §5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrKind {
+    /// Signalled as a Norn condition (`RuntimeError`) at the failing
+    /// instruction, with `use-value` and `retry` restarts.
+    Runtime,
+    /// Cancellation, stack overflow: unwind the fiber (running cleanups), then
+    /// end it with this error.
+    Abort,
+    /// End the fiber now (the condition system already ran, or can't run).
+    Fatal,
+}
+
+/// A Norn error as seen from Rust, with a Norn-level backtrace.
 #[derive(Debug, Clone)]
 pub struct Error {
     pub msg: String,
     pub trace: Vec<String>,
+    pub kind: ErrKind,
 }
 
 impl Error {
     pub fn new(msg: impl Into<String>) -> Error {
-        Error { msg: msg.into(), trace: Vec::new() }
+        Error { msg: msg.into(), trace: Vec::new(), kind: ErrKind::Runtime }
+    }
+    pub fn abort(msg: impl Into<String>) -> Error {
+        Error { msg: msg.into(), trace: Vec::new(), kind: ErrKind::Abort }
+    }
+    pub fn fatal(msg: impl Into<String>, trace: Vec<String>) -> Error {
+        Error { msg: msg.into(), trace, kind: ErrKind::Fatal }
     }
 }
 
@@ -65,7 +86,56 @@ impl std::fmt::Display for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn cancel_error(code: i64) -> Error {
-    Error::new(if code == fiber::INTERRUPTED { "Interrupted" } else { "Cancelled" })
+    Error::abort(if code == fiber::INTERRUPTED { "Interrupted" } else { "Cancelled" })
+}
+
+// ---- frames the runtime recognises -------------------------------------------------
+
+/// Norn functions whose frames mark dynamic extent (core.norn). The unwinder
+/// recognises them by closure identity:
+///
+/// - `%catch* [tag thunk dyn]`          — a throw target
+/// - `%unwind-protect* [body cleanup dyn]` — cleanup to run when unwound
+/// - `%with-bindings* [new thunk old]`  — dynamic environment to restore
+/// - `%finish-unwind [cleanups dyn mode x args]` — runs cleanups, then returns,
+///   calls, or ends the fiber
+/// - `%runtime-error [msg trace]` — a `retry` returning through it re-executes
+///   the failed instruction
+pub(crate) struct FrameKinds {
+    pub catch: Value,
+    pub unwind: Value,
+    pub bind: Value,
+    pub finish: Value,
+    pub runtime_error: Value,
+}
+
+pub(crate) static FRAME_KINDS: std::sync::OnceLock<FrameKinds> = std::sync::OnceLock::new();
+
+pub(crate) enum Target {
+    Catch(Value),
+    Frame(Value, usize),
+    Bottom,
+}
+
+/// Every frame of a stack, top first: (segment, frame offset).
+pub(crate) fn walk_frames(mut seg: Value, mut fp: usize) -> Vec<(Value, usize)> {
+    let mut out = Vec::new();
+    if seg.is_nil() {
+        return out;
+    }
+    loop {
+        out.push((seg, fp));
+        // SAFETY: (seg, fp) is a live frame.
+        let prev = unsafe { (*seg.seg_data().add(fp + F_PREV)).as_fixnum() };
+        match prev {
+            PREV_BOUNDARY => return out,
+            PREV_SEG_START => {
+                fp = seg.seg_prev_fp();
+                seg = seg.seg_prev();
+            }
+            p => fp = p as usize,
+        }
+    }
 }
 
 // ---- stack sizes ---------------------------------------------------------------
@@ -161,6 +231,8 @@ pub struct Vm {
     /// Depth of nested (non-suspendable, GC-inhibited) runs.
     pub(crate) nested: u32,
     pub(crate) want_gc: bool,
+    /// The running fiber's dynamic environment (map var → value, or nil).
+    pub(crate) dyn_env: Value,
     spare: Value,
     scratch: Vec<Value>,
     key_buf: Vec<Value>,
@@ -196,6 +268,7 @@ impl Vm {
             suspend: None,
             nested: 0,
             want_gc: false,
+            dyn_env: Value::NIL,
             spare: Value::NIL,
             scratch: Vec::new(),
             key_buf: Vec::new(),
@@ -287,7 +360,7 @@ impl Vm {
             } else {
                 let depth = st.seg.seg_depth() + cur_end;
                 if depth > MAX_STACK_WORDS {
-                    return Err(Error::new("Stack overflow"));
+                    return Err(Error::abort("Stack overflow"));
                 }
                 let size = (st.seg.seg_capacity() * 2).min(MAX_SEG_WORDS);
                 let s = self.take_segment(need, size);
@@ -339,11 +412,15 @@ impl Vm {
     #[inline]
     unsafe fn do_return(&mut self, st: &mut St, val: Value) -> Flow {
         unsafe {
+            // A `retry` restart returning through %runtime-error: re-execute
+            // the instruction that failed instead of delivering a value.
+            let retry = val == Value::RETRY
+                && FRAME_KINDS.get().is_some_and(|k| st.slot(F_FN) == k.runtime_error);
             match st.slot(F_PREV).as_fixnum() {
                 PREV_BOUNDARY => {
                     self.give_segment(st.seg);
                     st.seg = Value::NIL;
-                    return Flow::Done(val);
+                    return Flow::Done(if retry { Value::NIL } else { val });
                 }
                 PREV_SEG_START => {
                     let old = st.seg;
@@ -355,6 +432,10 @@ impl Vm {
                 p => st.fp = p as usize,
             }
             st.enter();
+            if retry {
+                st.pc -= 1;
+                return Flow::Next;
+            }
             // The instruction before the resume point is the CALL; its A
             // operand names the destination register.
             let call = *st.code.add(st.pc - 1);
@@ -374,6 +455,7 @@ impl Vm {
         if !self.current.is_nil() && self.nested == 0 {
             self.current.set_field(fiber::SEG, st.seg);
             self.current.set_field(fiber::FP, Value::fix(st.fp as i64));
+            self.current.set_field(fiber::DYN, self.dyn_env);
         }
     }
 
@@ -585,6 +667,23 @@ impl Vm {
                             let thunk = self.compile_for_eval(args[0])?;
                             return self.invoke(st, thunk, &[], dest);
                         }
+                        // Stack surgery: these need the interpreter state.
+                        THROW => {
+                            let kw = rt().keyword(&mut self.m, None, "return");
+                            return self.unwind(st, Target::Catch(args[0]), kw, args[1], Value::NIL);
+                        }
+                        RESTART_FRAME => {
+                            if !args[0].is(Kind::Segment) || !args[1].is_fixnum() {
+                                return Err(Error::new("%restart-frame expects a frame id"));
+                            }
+                            let kw = rt().keyword(&mut self.m, None, "call");
+                            let target = Target::Frame(args[0], args[1].as_fixnum() as usize);
+                            return self.unwind(st, target, kw, Value::NIL, Value::NIL);
+                        }
+                        ABORT_FIBER => {
+                            let kw = rt().keyword(&mut self.m, None, "die");
+                            return self.unwind(st, Target::Bottom, kw, args[0], args[1]);
+                        }
                         _ => self.call_prim(f, args)?,
                     }
                 } else {
@@ -649,9 +748,125 @@ impl Vm {
     }
 
     fn fail(&self, st: &St, mut e: Error) -> Error {
+        if e.kind == ErrKind::Fatal && !e.trace.is_empty() {
+            return e; // the condition system already recorded where it happened
+        }
         // SAFETY: st describes a valid frame chain.
         e.trace.extend(unsafe { self.backtrace(st) });
         e
+    }
+
+    /// Unwind the stack to `target`, collecting the cleanups of every
+    /// `%unwind-protect*` frame passed and the dynamic environment in force at
+    /// the target. Then replace the target frame with a call to
+    /// `%finish-unwind`, which runs the cleanups (innermost first) and then:
+    /// `:return` x, `:call`s the frame's function again (newest definition)
+    /// with its original arguments, or `:die`s with message x and trace args.
+    unsafe fn unwind(&mut self, st: &mut St, target: Target, mode: Value, x: Value, xargs: Value) -> Result<Flow> {
+        let Some(fk) = FRAME_KINDS.get() else {
+            return Err(Error::fatal("unwinding before core.norn is loaded", vec![]));
+        };
+        let mut cleanups = Vec::new();
+        let mut dyn_at = self.dyn_env;
+        let mut found = None;
+        unsafe {
+            for (seg, fp) in walk_frames(st.seg, st.fp) {
+                let fr = seg.seg_data().add(fp);
+                let f = *fr.add(F_FN);
+                let regs = fr.add(HDR);
+                let hit = match target {
+                    Target::Catch(tag) => f == fk.catch && *regs == tag,
+                    Target::Frame(s, p) => s == seg && p == fp,
+                    Target::Bottom => (*fr.add(F_PREV)).as_fixnum() == PREV_BOUNDARY,
+                };
+                // Aborting unwinds the bottom frame too (it may itself be an
+                // unwind-protect, e.g. when a fiber's thunk tail-calls one); a
+                // catch or restarted frame survives.
+                let passed = !hit || matches!(target, Target::Bottom);
+                if hit && matches!(target, Target::Catch(_)) {
+                    dyn_at = *regs.add(2);
+                }
+                if passed && f == fk.unwind {
+                    cleanups.push(vec_from_slice(&mut self.m, &[*regs.add(1), *regs.add(2)]));
+                } else if passed && f == fk.bind {
+                    dyn_at = *regs.add(2);
+                }
+                if hit {
+                    found = Some((seg, fp));
+                    break;
+                }
+            }
+            let Some((seg, fp)) = found else {
+                return Err(match target {
+                    Target::Catch(tag) => Error::new(format!("No catch for tag {}", pr_str(tag, true))),
+                    _ => Error::new("That frame is not on this fiber's stack"),
+                });
+            };
+            let (mut x, mut xargs) = (x, xargs);
+            if let Target::Frame(..) = target {
+                // Restart the frame: its function's *current* definition, with
+                // the arguments it was called with.
+                let fr = seg.seg_data().add(fp);
+                let (f, proto, regs) = (*fr.add(F_FN), *fr.add(F_PROTO), fr.add(HDR));
+                let mut a: Vec<Value> = (0..proto.proto_nfixed()).map(|i| *regs.add(i)).collect();
+                if proto.proto_variadic() {
+                    a.extend(norn_rt::seq::to_vec(&mut self.m, *regs.add(proto.proto_nfixed()))?);
+                }
+                let name = proto.proto_name();
+                let newest = if name.is_symbol() {
+                    self.resolve(name).map(|v| v.var_root()).filter(|v| v.is(Kind::Closure))
+                } else {
+                    None
+                };
+                x = newest.unwrap_or(f);
+                xargs = vec_from_slice(&mut self.m, &a);
+            }
+            let cl = vec_from_slice(&mut self.m, &cleanups);
+            st.seg = seg;
+            st.base = seg.seg_data();
+            st.fp = fp;
+            st.enter();
+            let finish = fk.finish;
+            let proto = select_arity(finish, 5)?;
+            self.tail_frame(st, finish, proto, &[cl, dyn_at, mode, x, xargs])
+        }
+    }
+
+    /// An error reached the interpreter loop of a fiber. `dest`: where the
+    /// failing instruction's value goes — `Some(Some(r))` register r,
+    /// `Some(None)` returned from the frame (tail call), `None` nowhere.
+    ///
+    /// Runtime errors with a destination become a call to `%runtime-error`
+    /// (Norn) *in place of the failed operation*: it signals a condition, and
+    /// whatever a handler or restart returns becomes the operation's value
+    /// (`use-value`); a `retry` re-executes it. Everything else unwinds the
+    /// fiber and ends it.
+    unsafe fn handle_error(&mut self, st: &mut St, e: Error, dest: Option<Option<usize>>) -> Result<Flow> {
+        let Some(fk) = FRAME_KINDS.get() else { return Err(self.fail(st, e)) };
+        if self.nested > 0 || self.current.is_nil() || e.kind == ErrKind::Fatal || st.seg.is_nil() {
+            return Err(self.fail(st, e));
+        }
+        // SAFETY: st describes a valid frame chain.
+        let mut lines = e.trace.clone();
+        lines.extend(unsafe { self.backtrace(st) });
+        let lines: Vec<Value> = lines.iter().map(|t| str_new(&mut self.m, t)).collect();
+        let trace = vec_from_slice(&mut self.m, &lines);
+        let msg = str_new(&mut self.m, &e.msg);
+        let r = unsafe {
+            match (e.kind, dest) {
+                (ErrKind::Runtime, Some(d)) => self.invoke(st, fk.runtime_error, &[msg, trace], d),
+                _ => {
+                    // Honoured: let cleanups run without being cancelled again.
+                    self.current.atomic_word(fiber::CANCEL).store(0, std::sync::atomic::Ordering::SeqCst);
+                    let kw = rt().keyword(&mut self.m, None, "die");
+                    self.unwind(st, Target::Bottom, kw, msg, trace)
+                }
+            }
+        };
+        r.map_err(|mut e2| {
+            e2.kind = ErrKind::Fatal;
+            self.fail(st, e2)
+        })
     }
 
     // ---- entry points ----
@@ -717,9 +932,13 @@ impl Vm {
     pub(crate) fn run_fiber(&mut self, f: Value) -> Result<Exit> {
         let mode = f.word(fiber::MODE);
         let mut st;
+        let pending: Option<(Error, Option<Option<usize>>)>;
         // SAFETY: frame chains in fibers are valid.
         unsafe {
             if mode == fiber::START {
+                if f.fiber_cancel() != 0 {
+                    return Err(cancel_error(f.fiber_cancel() as i64));
+                }
                 let thunk = f.field(fiber::THUNK);
                 f.set_field(fiber::THUNK, Value::NIL);
                 // A thunk is a callable, or an internal [f arg…] call spec.
@@ -745,9 +964,26 @@ impl Vm {
                 self.write_frame(s.seg_data(), 0, callee, proto, PREV_BOUNDARY, &args);
                 st = St::at(s, 0);
                 st.enter();
+                pending = None;
             } else {
                 st = St::at(f.field(fiber::SEG), f.field(fiber::FP).as_fixnum() as usize);
                 st.enter();
+                let err = f.field(fiber::WAKE_ERR);
+                f.set_field(fiber::WAKE_ERR, Value::NIL);
+                let cancel = f.fiber_cancel();
+                // Where the value of the operation the fiber parked in goes.
+                let dest = match mode {
+                    fiber::DELIVER | fiber::DELIVER_PAIR => Some(Some(a(*st.code.add(st.pc - 1)))),
+                    fiber::RETURN | fiber::RETURN_PAIR => Some(None),
+                    _ => None,
+                };
+                pending = if cancel != 0 {
+                    Some((cancel_error(cancel as i64), None))
+                } else if !err.is_nil() {
+                    Some((crate::sched::wake_error(err), dest))
+                } else {
+                    None
+                };
                 let v = f.field(fiber::WAKE_VALUE);
                 let deliver = match mode {
                     fiber::DELIVER | fiber::RETURN => Some(v),
@@ -757,7 +993,7 @@ impl Vm {
                     }
                     _ => None,
                 };
-                if let Some(v) = deliver {
+                if let Some(v) = deliver.filter(|_| pending.is_none()) {
                     if mode == fiber::RETURN || mode == fiber::RETURN_PAIR {
                         if let Flow::Done(v) = self.do_return(&mut st, v) {
                             return Ok(Exit::Done(v));
@@ -770,12 +1006,16 @@ impl Vm {
             }
             f.set_field(fiber::WAKE_VALUE, Value::NIL);
             f.set_field(fiber::WAKE_AUX, Value::NIL);
-            let err = f.field(fiber::WAKE_ERR);
-            if !err.is_nil() {
-                f.set_field(fiber::WAKE_ERR, Value::NIL);
-                return Err(self.fail(&st, crate::sched::wake_error(err)));
-            }
-            let r = self.run(&mut st);
+            let r = match pending {
+                Some((e, dest)) => match self.handle_error(&mut st, e, dest) {
+                    Ok(Flow::Next) => self.run(&mut st),
+                    Ok(Flow::Done(v)) => Ok(Exit::Done(v)),
+                    Ok(Flow::Park) => Ok(Exit::Park),
+                    Ok(Flow::Yield) => Ok(Exit::Yield),
+                    Err(e) => Err(e),
+                },
+                None => self.run(&mut st),
+            };
             if matches!(r, Ok(Exit::Park) | Ok(Exit::Yield)) {
                 self.save(&st);
             }
@@ -818,13 +1058,19 @@ impl Vm {
                     }
                     GETVAR => {
                         let var = *st.consts.add(bx(ins));
-                        let v = var.var_root();
-                        if v == Value::UNBOUND {
-                            let e = Error::new(format!("Unbound var: {}", pr_str(var, true)));
-                            return Err(self.fail(st, e));
+                        let mut v = var.var_root();
+                        if var.var_flags() & VAR_DYNBOUND != 0
+                            && !self.dyn_env.is_nil()
+                            && let Some(x) = self.dyn_env.map_get(var)
+                        {
+                            v = x;
                         }
-                        *regs.add(ra) = v;
-                        continue;
+                        if v == Value::UNBOUND {
+                            Err(Error::new(format!("Unbound var: {}", pr_str(var, true))))
+                        } else {
+                            *regs.add(ra) = v;
+                            continue;
+                        }
                     }
                     DEFVAR => {
                         (*st.consts.add(bx(ins))).var_set_root(*regs.add(ra));
@@ -890,12 +1136,23 @@ impl Vm {
                     RETURN => Ok(self.do_return(st, *regs.add(ra))),
                     other => Err(Error::new(format!("bad opcode {other}"))),
                 };
+                let flow = match flow {
+                    Err(e) => {
+                        // A failed TAILCALL is followed by `RETURN ra` (see the
+                        // compiler), so it is handled like a failed CALL.
+                        let dest = match op(ins) {
+                            CALL | GETVAR | TAILCALL => Some(Some(ra)),
+                            _ => None,
+                        };
+                        self.handle_error(st, e, dest)?
+                    }
+                    Ok(f) => f,
+                };
                 match flow {
-                    Ok(Flow::Next) => {}
-                    Ok(Flow::Done(v)) => return Ok(Exit::Done(v)),
-                    Ok(Flow::Park) => return Ok(Exit::Park),
-                    Ok(Flow::Yield) => return Ok(Exit::Yield),
-                    Err(e) => return Err(self.fail(st, e)),
+                    Flow::Next => {}
+                    Flow::Done(v) => return Ok(Exit::Done(v)),
+                    Flow::Park => return Ok(Exit::Park),
+                    Flow::Yield => return Ok(Exit::Yield),
                 }
             }
         }

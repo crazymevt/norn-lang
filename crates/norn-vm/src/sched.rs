@@ -61,6 +61,11 @@ pub enum RootTask {
     Repl(String),
     /// Load a file.
     Load(String),
+    /// An editor-protocol request (one line of Norn data); the result is the
+    /// response line, returned raw.
+    Request(String),
+    /// Like Eval, but a string result is returned raw (not printed readably).
+    EvalRaw(String),
 }
 
 pub struct RootDone {
@@ -100,7 +105,7 @@ pub struct Sched {
     external_len: AtomicUsize,
     currents: Vec<AtomicU64>,
     roots: Mutex<HashMap<u64, Value>>,
-    notifies: Mutex<HashMap<u64, mpsc::Sender<RootDone>>>,
+    notifies: Mutex<HashMap<u64, (mpsc::Sender<RootDone>, bool)>>,
     next_id: AtomicU64,
     pub spawned: AtomicU64,
     pub finished: AtomicU64,
@@ -233,6 +238,9 @@ pub fn has_other_work(me: usize) -> bool {
 pub fn spawn(vm: &mut Vm, thunk: Value, scope_v: Value) -> Value {
     let s = sched();
     let f = fiber_new(&mut vm.m, s.next_id(), thunk, scope_v, vm.ns as *const Namespace as usize);
+    // Conveyance: the child starts in its creator's dynamic environment
+    // (bindings, condition handlers, restarts, debugger mode).
+    f.set_field(fiber::DYN, vm.dyn_env);
     if !scope_v.is_nil() {
         let _g = spin_lock(scope_v, scope::LOCK);
         let kids = cons(&mut vm.m, f, scope_v.field(scope::CHILDREN));
@@ -350,9 +358,10 @@ fn finish(vm: &mut Vm, f: Value, r: Result<Value, Error>) {
     let ticket = f.word(fiber::NOTIFY);
     if ticket != 0 {
         s.roots.lock().unwrap().remove(&ticket);
-        if let Some(tx) = s.notifies.lock().unwrap().remove(&ticket) {
+        if let Some((tx, raw)) = s.notifies.lock().unwrap().remove(&ticket) {
             let result = match err {
                 Some(e) => Err(e),
+                None if raw && val.is(Kind::String) => Ok(val.as_str().to_owned()),
                 None => Ok(pr_str(val, true)),
             };
             let _ = tx.send(RootDone { result, ns: vm.ns.name.sym_name().to_owned() });
@@ -554,6 +563,8 @@ pub fn process_external(vm: &mut Vm) {
                     RootTask::Eval(src) => ("%eval-root", src),
                     RootTask::Repl(src) => ("%repl-eval", src),
                     RootTask::Load(path) => ("load-file", path),
+                    RootTask::Request(line) => ("%serve-request", line),
+                    RootTask::EvalRaw(src) => ("%eval-root", src),
                 };
                 let sym = rt().symbol(&mut vm.m, None, fname);
                 let var = vm.core.lookup(sym).expect("norn.core is missing its root functions");
@@ -586,15 +597,14 @@ fn run_one(vm: &mut Vm, f: Value) {
     vm.current = f;
     // SAFETY: NS holds a leaked &'static Namespace.
     vm.ns = unsafe { &*(f.word(fiber::NS) as *const Namespace) };
+    vm.dyn_env = f.field(fiber::DYN);
     loop {
         aset(f, fiber::PARK, Value::NIL);
         aset(f, fiber::JOINING, Value::NIL);
-        let r = if f.fiber_cancel() != 0 {
-            Err(cancel_error(f.fiber_cancel() as i64))
-        } else {
-            vm.run_fiber(f)
-        };
+        // run_fiber notices a pending cancel itself (and unwinds).
+        let r = vm.run_fiber(f);
         f.set_word(fiber::NS, vm.ns as *const Namespace as usize as u64);
+        f.set_field(fiber::DYN, vm.dyn_env);
         match r {
             Ok(Exit::Done(v)) => {
                 finish(vm, f, Ok(v));
@@ -619,7 +629,7 @@ fn run_one(vm: &mut Vm, f: Value) {
                         && w.word(waiter::FLAGS) & waiter::NO_CANCEL_WAKE == 0
                         && try_claim(w.field(waiter::CLAIM))
                     {
-                        continue; // the loop top raises Cancelled
+                        continue; // run_fiber sees the cancel and unwinds
                     }
                 }
                 match f.fiber_state().compare_exchange(
@@ -747,10 +757,26 @@ impl Norn {
         let s = sched();
         let ticket = s.next_id();
         let (tx, rx) = mpsc::channel();
-        s.notifies.lock().unwrap().insert(ticket, tx);
+        let raw = matches!(task, RootTask::Request(_) | RootTask::EvalRaw(_));
+        s.notifies.lock().unwrap().insert(ticket, (tx, raw));
         self.pending.lock().unwrap().insert(ticket, rx);
         submit(Job::Root { task, ns: ns.to_owned(), ticket });
         ticket
+    }
+
+    /// Wait up to `d` for a root fiber; `None` if it is still running.
+    pub fn wait_timeout(&self, ticket: u64, d: Duration) -> Option<RootDone> {
+        let rx = self.pending.lock().unwrap().remove(&ticket)?;
+        match rx.recv_timeout(d) {
+            Ok(done) => Some(done),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.pending.lock().unwrap().insert(ticket, rx);
+                None
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Some(RootDone { result: Err(Error::new("root fiber vanished")), ns: "user".into() })
+            }
+        }
     }
 
     pub fn wait(&self, ticket: u64) -> RootDone {
@@ -781,4 +807,20 @@ impl Norn {
 /// Is this waiter still waiting (claim not yet taken)?
 pub fn waiter_live(w: Value) -> bool {
     !is_claimed(w.field(waiter::CLAIM))
+}
+
+// ---- events (debugger notifications for the REPL and editors) -------------------------
+
+static EVENTS: Mutex<Vec<mpsc::Sender<String>>> = Mutex::new(Vec::new());
+
+/// Receive every event posted from now on (one line of Norn data each).
+pub fn subscribe() -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    EVENTS.lock().unwrap().push(tx);
+    rx
+}
+
+/// Broadcast an event to every subscriber (dropping disconnected ones).
+pub fn post_event(line: String) {
+    EVENTS.lock().unwrap().retain(|tx| tx.send(line.clone()).is_ok());
 }

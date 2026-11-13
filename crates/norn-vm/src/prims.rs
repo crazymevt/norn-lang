@@ -31,9 +31,12 @@ pub struct PrimDef {
     pub f: PrimFn,
 }
 
-/// Indices of `apply` and `eval`, which the interpreter handles itself.
+/// Indices of primitives the interpreter handles itself (they need its state).
 pub const APPLY: usize = 0;
 pub const EVAL: usize = 1;
+pub const THROW: usize = 2;
+pub const RESTART_FRAME: usize = 3;
+pub const ABORT_FIBER: usize = 4;
 
 const VAR: Option<usize> = None;
 
@@ -46,6 +49,9 @@ macro_rules! prims {
 prims! {
     "apply" 2 VAR => |_, _| unreachable!("apply is handled by the interpreter");
     "eval" 1 Some(1) => |_, _| unreachable!("eval is handled by the interpreter");
+    "%throw" 2 Some(2) => |_, _| Err(Error::new("throw is only possible inside a fiber"));
+    "%restart-frame" 2 Some(2) => |_, _| Err(Error::new("%restart-frame is only possible inside a fiber"));
+    "%abort-fiber" 2 Some(2) => |_, a| Err(Error::fatal(pr_str(a[0], false), vec![]));
     // numbers
     "+" 0 VAR => |vm, a| arith(vm, a, Op::Add);
     "-" 1 VAR => |vm, a| arith(vm, a, Op::Sub);
@@ -187,6 +193,21 @@ prims! {
     "compare-and-set!" 3 Some(3) => |_, a| { expect(a[0], Kind::Atom, "compare-and-set!")?; Ok(Value::bool(a[0].atom_cas(a[1], a[2]))) };
     "carrier-count" 0 Some(0) => |_, _| Ok(Value::fix(crate::sched::sched().n as i64));
     "fiber-stats" 0 Some(0) => fiber_stats;
+    // conditions, dynamic environment, debugger support
+    "%dyn" 0 Some(0) => |vm, _| Ok(vm.dyn_env);
+    "%set-dyn!" 1 Some(1) => |vm, a| { vm.dyn_env = a[0]; Ok(a[0]) };
+    "%mark-dynamic!" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "%mark-dynamic!")?; a[0].var_set_flag(norn_rt::func::VAR_DYNBOUND); Ok(a[0]) };
+    "%register-frame-kinds!" 5 Some(5) => register_frame_kinds;
+    "%retry-marker" 0 Some(0) => |_, _| Ok(Value::RETRY);
+    "%die" 2 Some(2) => |vm, a| { let lines = to_vec(vm, a[1]).unwrap_or_default().iter().map(|&t| pr_str(t, false)).collect(); Err(Error::fatal(pr_str(a[0], false), lines)) };
+    "%message" 0 VAR => |vm, a| Ok(str_new(&mut vm.m, &join(a, false)));
+    "%frames" 1 Some(1) => frames;
+    "%post-event" 1 Some(1) => |_, a| { crate::sched::post_event(text(a[0])); Ok(Value::NIL) };
+    "fiber-id" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "fiber-id")?; Ok(Value::fix(a[0].fiber_id() as i64)) };
+    "%location" 0 Some(0) => |vm, _| Ok(if vm.current.is_nil() { Value::NIL } else { vm.current.field(norn_rt::conc::fiber::LOC) });
+    "%set-location!" 1 Some(1) => |vm, a| { if !vm.current.is_nil() { vm.current.set_field(norn_rt::conc::fiber::LOC, a[0]); } Ok(a[0]) };
+    "%reader-line" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-line")?; Ok(Value::fix(a[0].word(3) as i64)) };
+    "%reader-name" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-name")?; Ok(a[0].field(2)) };
     // classes, instances, generic functions (runtime half of CLOS; policy is in core.norn)
     "class-of" 1 Some(1) => |_, a| Ok(norn_rt::clos::class_of(a[0]));
     "class?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Class)));
@@ -888,4 +909,61 @@ fn bits(a: &[Value], op: &str, f: fn(i64, i64) -> i64) -> Result<Value> {
         acc = f(acc, int(x, op)?);
     }
     Ok(Value::fix(acc))
+}
+
+// ---- conditions and the debugger ---------------------------------------------------
+
+fn register_frame_kinds(_: &mut Vm, a: &[Value]) -> Result<Value> {
+    for &f in a {
+        expect(f, Kind::Closure, "%register-frame-kinds!")?;
+    }
+    let _ = crate::vm::FRAME_KINDS.set(crate::vm::FrameKinds {
+        catch: a[0],
+        unwind: a[1],
+        bind: a[2],
+        finish: a[3],
+        runtime_error: a[4],
+    });
+    Ok(Value::NIL)
+}
+
+/// `(%frames fiber)`: the stack of a parked fiber, top first, as maps
+/// `{:fn name :id [segment offset] :locals {sym value}}`.
+fn frames(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    use norn_rt::conc::fiber;
+    use norn_rt::func::{F_FN, F_PROTO, HDR};
+    let f = a[0];
+    expect(f, Kind::Fiber, "%frames")?;
+    if f.fiber_state().load(std::sync::atomic::Ordering::Acquire) != fiber::PARKED {
+        return Err(Error::new("%frames needs a parked fiber"));
+    }
+    let k = |vm: &mut Vm, n: &str| rt().keyword(&mut vm.m, None, n);
+    let (kfn, kid, kloc) = (k(vm, "fn"), k(vm, "id"), k(vm, "locals"));
+    let mut out = Vec::new();
+    for (seg, fp) in crate::vm::walk_frames(f.field(fiber::SEG), f.field(fiber::FP).as_fixnum() as usize) {
+        // SAFETY: walk_frames yields live frames of a parked fiber.
+        let (func, proto, regs) = unsafe {
+            let fr = seg.seg_data().add(fp);
+            (*fr.add(F_FN), *fr.add(F_PROTO), fr.add(HDR))
+        };
+        let name = proto.proto_name();
+        let name = if name.is_nil() { str_new(&mut vm.m, "fn") } else { name };
+        let mut locals = map_empty();
+        let dbg = proto.proto_locals();
+        if dbg.is(Kind::Array) {
+            for pair in dbg.arr_slice().chunks(2) {
+                let r = pair[1].as_fixnum() as usize;
+                if r < proto.proto_nregs() {
+                    // SAFETY: r is a register of this frame.
+                    let v = unsafe { *regs.add(r) };
+                    locals = map_assoc(&mut vm.m, locals, pair[0], v);
+                }
+            }
+        }
+        let id = vec_from_slice(&mut vm.m, &[seg, Value::fix(fp as i64)]);
+        let _ = func;
+        let m = hash_map(vm, &[kfn, name, kid, id, kloc, locals])?;
+        out.push(m);
+    }
+    Ok(vec_from_slice(&mut vm.m, &out))
 }

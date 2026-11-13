@@ -8,8 +8,9 @@ pub mod eval;
 pub mod prims;
 pub mod reader;
 pub mod sched;
+pub mod server;
 pub mod vm;
 
 pub use reader::{ReadError, Reader};
-pub use sched::{Norn, RootDone, RootTask, start};
+pub use sched::{Norn, RootDone, RootTask, start, subscribe};
 pub use vm::{Error, Result, Vm};

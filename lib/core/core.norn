@@ -878,3 +878,359 @@
             em (%build-em gf methods [(%class-get (if (class? dv) dv (class-of dv)) :cpl)])]
         (%gf-cache-put! gf token key em)
         (apply em args)))))
+
+;;; ---- dynamic bindings and non-local exits (runtime.md §5.4) ------------------------
+;;;
+;;; The runtime recognises the frames of these functions by identity (see
+;;; %register-frame-kinds! below): unwinding to a %catch* runs the cleanups of
+;;; every %unwind-protect* frame it passes and restores the dynamic
+;;; environment saved by the frames it lands on.
+
+(def %catch* (fn* %catch* [tag thunk dyn] (let* [r (thunk)] r)))
+(def %unwind-protect* (fn* %unwind-protect* [body cleanup dyn] (let* [r (body)] (cleanup) r)))
+(def %with-bindings*
+  (fn* %with-bindings* [new thunk old]
+    (%set-dyn! new)
+    (let* [r (thunk)] (%set-dyn! old) r)))
+(def %finish-unwind
+  (fn* %finish-unwind [cleanups dyn mode x args]
+    (doseq [c cleanups] (%set-dyn! (nth c 1)) ((nth c 0)))
+    (%set-dyn! dyn)
+    (cond (= mode :return) x
+          (= mode :call) (apply x args)
+          :else (%die x args))))
+
+(defn %bind-map [pairs]
+  (loop [m (or (%dyn) {}) s (seq pairs)]
+    (if s
+      (do (%mark-dynamic! (first s)) (recur (assoc m (first s) (second s)) (nnext s)))
+      m)))
+
+(defmacro binding
+  "Bind vars for the dynamic extent of body, in this fiber and in every fiber
+  it spawns (conveyance)."
+  [bindings & body]
+  (let [pairs (loop [s (seq bindings) acc []]
+                (if s (recur (nnext s) (conj (conj acc (list 'var (first s))) (second s))) acc))]
+    `(%with-bindings* (%bind-map [~@pairs]) (fn* [] ~@body) (%dyn))))
+
+(defmacro catch-tag [tag & body] `(%catch* ~tag (fn* [] ~@body) (%dyn)))
+(defn throw-tag [tag value] (%throw tag value))
+
+(defmacro unwind-protect
+  "Evaluate form; always run cleanup afterwards, including when the stack is
+  unwound past it (errors, restarts, cancellation)."
+  [form & cleanup]
+  `(%unwind-protect* (fn* [] ~form) (fn* [] ~@cleanup) (%dyn)))
+
+;;; ---- conditions (design.md §5.2) -------------------------------------------------------
+
+(defclass Condition () ((message :initform nil) (trace :initform nil) (location :initform nil)))
+(defclass Warning (Condition) ())
+(defclass SeriousCondition (Condition) ())
+(defclass Error (SeriousCondition) ())
+(defclass SimpleError (Error) ())
+(defclass RuntimeError (Error) ())
+
+(defn condition-message [c] (:message c))
+(defn condition-text [c]
+  (let [loc (:location c)
+        msg (or (:message c) (str (class-name (class-of c))))]
+    (if loc (str loc ": " msg) msg)))
+
+;; Each handler is [class fn owner]. Handlers that unwind (handler-case) can
+;; only reach their catch point in the fiber that established them, so other
+;; fibers skip them; handler-bind handlers (owner nil) are conveyed.
+(def *handlers* nil)
+(def *restarts* nil)
+(def *debugger* nil)
+
+(defn- %visible? [owner] (or (nil? owner) (identical? owner (current-fiber))))
+
+(defn signal
+  "Offer condition c to the active handlers, innermost first. A handler
+  declines by returning; while it runs, only the handlers outside it are active."
+  [c]
+  (loop [hs *handlers*]
+    (when hs
+      (let [h (first hs) more (next hs)]
+        (when (and (%visible? (nth h 2)) (instance? (nth h 0) c))
+          (binding [*handlers* more] ((nth h 1) c)))
+        (recur more))))
+  nil)
+
+(defn- %make-condition [x args]
+  (let [c (cond (instance? Condition x) x
+                (and (class? x) (subclass? x Condition)) (apply make x args)
+                :else (make SimpleError :message (apply %message x args)))]
+    (if (:location c) c (with c :location (%location)))))
+
+(defn %abort
+  "Unwind this fiber completely (running cleanups) and end it with c."
+  [c]
+  (%abort-fiber (condition-text c) (or (:trace c) [])))
+
+(declare %debug-park)
+
+(defn invoke-debugger [c]
+  (if (= *debugger* :park) (%debug-park c) (%abort c)))
+
+(defn error
+  "Signal an error: (error \"message\" args…), (error SomeErrorClass :k v…) or
+  (error condition). If no handler takes it, the debugger does: in a REPL or
+  editor the fiber waits with its stack intact; elsewhere the fiber ends."
+  [x & args]
+  (let [c (%make-condition x args)]
+    (signal c)
+    (invoke-debugger c)))
+
+(defn throw [c] (error c))
+
+(defn warn [x & args]
+  (let [c (if (instance? Condition x) x (make Warning :message (apply %message x args)))]
+    (signal c)
+    (println "WARNING:" (condition-text c))
+    nil))
+
+(defn %with-handlers [entries thunk]
+  (binding [*handlers* (concat entries *handlers*)] (thunk)))
+
+(defmacro handler-bind
+  "(handler-bind [Class handler …] body…): call handler on matching conditions
+  signalled in body, without unwinding. Handlers are conveyed to spawned fibers."
+  [bindings & body]
+  `(%with-handlers [~@(map (fn [p] `[~(first p) ~(second p) nil]) (partition 2 bindings))] (fn* [] ~@body)))
+
+(defn %handler-case [thunk classes]
+  (let [tag (gensym "handler-case")
+        me (current-fiber)]
+    (%catch* tag
+             (fn* [] [:ok (%with-handlers (map-indexed (fn [i cls] [cls (fn [c] (throw-tag tag [i c])) me]) classes) thunk)])
+             (%dyn))))
+
+(defmacro handler-case
+  "(handler-case form (Class [e] body…)…): if a matching condition is
+  signalled in form, unwind to here and run that clause."
+  [form & clauses]
+  (let [r (gensym "r")
+        clauses (vec clauses)]
+    `(let* [~r (%handler-case (fn* [] ~form) [~@(map first clauses)])]
+       (cond (= (first ~r) :ok) (second ~r)
+             ~@(apply concat
+                      (map (fn [i c]
+                             [`(= (first ~r) ~i)
+                              `(let* [~@(let [ps (second c)] (if (seq ps) [(first ps) `(second ~r)] []))] ~@(drop 2 c))])
+                           (range (count clauses)) clauses))))))
+
+(defmacro try
+  "Clojure-style: (try body… (catch Class e handler…)… (finally cleanup…))."
+  [& forms]
+  (let [clause? (fn [f k] (and (seq? f) (= (first f) k)))
+        body (remove (fn [f] (or (clause? f 'catch) (clause? f 'finally))) forms)
+        catches (filter (fn [f] (clause? f 'catch)) forms)
+        fin (some (fn [f] (when (clause? f 'finally) f)) forms)
+        hc (if (seq catches)
+             `(handler-case (do ~@body) ~@(map (fn [c] `(~(nth c 1) [~(nth c 2)] ~@(drop 3 c))) catches))
+             `(do ~@body))]
+    (if fin `(unwind-protect ~hc ~@(rest fin)) hc)))
+
+(defmacro ignore-errors [& body] `(handler-case (do ~@body) (Error [] nil)))
+
+;;; ---- restarts --------------------------------------------------------------------------------
+
+(defn %with-restarts [rs thunk]
+  (binding [*restarts* (concat rs *restarts*)] (thunk)))
+
+(defn %restart-case [thunk specs]
+  (let [tag (gensym "restart")
+        me (current-fiber)
+        rs (map-indexed (fn [i s] (assoc s :tag tag :index i :owner me)) specs)
+        r (%catch* tag (fn* [] [:ok (%with-restarts rs thunk)]) (%dyn))]
+    (if (= (first r) :ok)
+      (second r)
+      (apply (:fn (nth specs (first r))) (second r)))))
+
+(defmacro restart-case
+  "(restart-case form (name [params] :report \"…\"? body…)…): run form with
+  these restarts available; invoking one unwinds to here and runs its body."
+  [form & clauses]
+  `(%restart-case (fn* [] ~form)
+     [~@(map (fn [c]
+               (let [rname (first c)
+                     params (second c)
+                     body (drop 2 c)
+                     report (when (= (first body) :report) (second body))
+                     body (if report (drop 2 body) body)]
+                 `{:name '~rname :report ~report :fn (fn* ~params ~@body)}))
+             clauses)]))
+
+(defn compute-restarts [] (vec (filter (fn [r] (%visible? (:owner r))) *restarts*)))
+
+(defn find-restart [rname]
+  (some (fn [r] (when (= (:name r) rname) r)) (compute-restarts)))
+
+(defn invoke-restart [r & args]
+  (let [r (if (map? r) r (or (find-restart r) (error "No active restart named" (pr-str r))))]
+    (throw-tag (:tag r) [(:index r) args])))
+
+(defmacro with-simple-restart [rname report & body]
+  `(restart-case (do ~@body) (~rname [] :report ~report nil)))
+
+;; A runtime error raised by Rust code is turned into a call to this, in place
+;; of the failed operation: its value becomes the operation's value.
+(defn %runtime-error [msg trace]
+  (let* [r (restart-case (error (make RuntimeError :message msg :trace trace))
+             (use-value [v] :report "Return a value from the failed operation instead" v)
+             (retry [] :report "Try the failed operation again (e.g. after defining or fixing something)"
+                    (%retry-marker)))]
+    r))
+
+(%register-frame-kinds! %catch* %unwind-protect* %with-bindings* %finish-unwind %runtime-error)
+
+;;; ---- the debugger (design.md §5.3) --------------------------------------------------------
+;;;
+;;; With *debugger* bound to :park (REPL and editor evaluations, and every
+;;; fiber they spawn), an unhandled error parks the fiber here, stack intact.
+;;; The REPL or an editor inspects it (backtrace, eval-in-frame), fixes code,
+;;; then picks a restart or restarts a frame; the choice arrives on a channel.
+
+(def %debugging (atom {}))
+
+(defn- %describe-restart [r] {:name (str (:name r)) :report (or (:report r) "")})
+
+(defn- %debug-entry [id]
+  (or (get @%debugging id) (error "Fiber" id "is not in the debugger")))
+
+(defn %debug-park [c]
+  (let [f (current-fiber)
+        id (fiber-id f)
+        ch (chan)
+        rs (compute-restarts)]
+    (swap! %debugging assoc id {:fiber f :condition c :restarts rs :chan ch})
+    (%post-event (pr-str {:event :debug :fiber id :condition (condition-text c)
+                          :class (str (class-name (class-of c)))
+                          :restarts (mapv %describe-restart rs)}))
+    (let [cmd (take! ch)]
+      (swap! %debugging dissoc id)
+      (%post-event (pr-str {:event :resumed :fiber id}))
+      (cond (= (first cmd) :restart) (apply invoke-restart (nth rs (nth cmd 1)) (nth cmd 2))
+            (= (first cmd) :frame) (%restart-frame (nth cmd 1) (nth cmd 2))
+            :else (%abort c)))))
+
+(defn debugging
+  "Fibers waiting in the debugger."
+  []
+  (mapv (fn [kv]
+          (let [e (second kv)]
+            {:fiber (first kv) :condition (condition-text (:condition e))
+             :restarts (mapv %describe-restart (:restarts e))}))
+        @%debugging))
+
+(defn backtrace
+  "Frames of fiber id (waiting in the debugger), top first:
+  {:fn name :locals {sym value} :internal? bool}."
+  [id]
+  (mapv (fn [fr]
+          (let [n (:fn fr)]
+            {:fn n :locals (:locals fr)
+             :internal? (and (symbol? n) (= (namespace n) "norn.core"))}))
+        (%frames (:fiber (%debug-entry id)))))
+
+(defn debug-restart
+  "Resume fiber id by invoking its restart number i with args."
+  [id i & args]
+  (put! (:chan (%debug-entry id)) [:restart i args])
+  :ok)
+
+(defn debug-restart-frame
+  "Resume fiber id by calling frame i's function again — its newest
+  definition — with the same arguments."
+  [id i]
+  (let [e (%debug-entry id)
+        fid (:id (nth (%frames (:fiber e)) i))]
+    (put! (:chan e) [:frame (nth fid 0) (nth fid 1)])
+    :ok))
+
+(defn debug-abort
+  "End fiber id (its cleanups run)."
+  [id]
+  (put! (:chan (%debug-entry id)) [:abort])
+  :ok)
+
+(defn eval-in-frame
+  "Evaluate form with frame i's locals of fiber id bound."
+  [id i form]
+  (let [fr (nth (%frames (:fiber (%debug-entry id))) i)
+        bs (reduce-kv (fn [acc k v] (conj (conj acc k) (list 'quote v))) [] (:locals fr))]
+    (eval (list 'let* bs form))))
+
+;;; ---- loading, the REPL, and the editor protocol -------------------------------------------
+
+(defn %eval-reader [r]
+  (let [src (%reader-name r)
+        saved (%location)]
+    (loop [last nil]
+      (let [f (%read r)]
+        (if (%eof? f)
+          (do (%set-location! saved) last)
+          (do (%set-location! (str src ":" (%reader-line r)))
+              (recur (eval f))))))))
+
+(defn %repl-eval [s]
+  (binding [*debugger* :park]
+    (let [r (%reader s "<repl>")]
+      (loop []
+        (let [f (%read r)]
+          (when-not (%eof? f)
+            (prn (eval f))
+            (recur)))))))
+
+(defn- %serve-eval [req]
+  (in-ns (symbol (or (:ns req) "user")))
+  (binding [*debugger* :park]
+    (restart-case
+      (let [v (%eval-reader (%reader (:code req) "<editor>"))]
+        {:value (pr-str v) :ns (str (current-ns))})
+      (abort [] :report "Abort this evaluation" {:error "Aborted" :ns (str (current-ns))}))))
+
+(defn- %complete [prefix nsname]
+  (let [names (fn [ns] (map (fn [k] (name k)) (keys (or (ns-publics ns) {}))))
+        all (distinct (concat (names (symbol nsname)) (names 'norn.core)))]
+    (vec (sort (filter (fn [n] (and (>= (count n) (count prefix)) (= prefix (subs n 0 (count prefix))))) all)))))
+
+(defn %serve-request
+  "One editor-protocol request (a map, as a line of Norn data) → the response line."
+  [line]
+  (let [req (read-string line)
+        op (:op req)
+        resp (if (= op :eval)
+               (%serve-eval req)
+               (handler-case
+                 (cond
+                   (= op :debugging) {:value (debugging)}
+                   (= op :backtrace) {:frames (mapv (fn [fr] {:fn (str (:fn fr)) :locals (pr-str (:locals fr))
+                                                              :internal (:internal? fr)})
+                                                    (backtrace (:fiber req)))}
+                   (= op :restart) {:value (pr-str (apply debug-restart (:fiber req) (:restart req)
+                                                          (load-string (str "[" (or (:args req) "") "]"))))}
+                   (= op :restart-frame) {:value (pr-str (debug-restart-frame (:fiber req) (:frame req)))}
+                   (= op :abort) {:value (pr-str (debug-abort (:fiber req)))}
+                   (= op :eval-in-frame) {:value (pr-str (eval-in-frame (:fiber req) (:frame req) (read-string (:code req))))}
+                   (= op :complete) {:completions (%complete (or (:prefix req) "") (or (:ns req) "user"))}
+                   :else {:error (str "Unknown op: " (pr-str op))})
+                 (Error [e] {:error (condition-text e)})))]
+    (pr-str (assoc resp :id (:id req)))))
+
+(defn %debugger-banner
+  "Human-readable summary of fiber id waiting in the debugger (terminal REPL)."
+  [id]
+  (let [e (%debug-entry id)]
+    (str "Fiber " id " is waiting in the debugger: " (condition-text (:condition e)) "\n"
+         "  Restarts:\n"
+         (apply str (map-indexed (fn [i r] (str "    " i ": [" (:name r) "] " (or (:report r) "") "\n"))
+                                 (:restarts e)))
+         "  Frames:\n"
+         (apply str (map-indexed (fn [i fr]
+                                   (when-not (:internal? fr)
+                                     (str "    " i ": " (:fn fr) " " (pr-str (:locals fr)) "\n")))
+                                 (backtrace id))))))
