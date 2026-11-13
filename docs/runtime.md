@@ -1545,16 +1545,22 @@ tests (they now wait for what they check, or watch their own handles).
 - **A changed `:selected` didn't restyle until the next redraw.**
 
 **Deviations from the plan:**
-- **Carried into M7.6**, to be built as the editor needs them: dropdowns,
-  tooltips and popups (as OS windows), virtualized grids, tabs that drag
-  between docks, transitions, CLOS extension points for self-drawing
-  widgets (`ui/widget`, `ui/measure`, `ui/paint`), IME composition (only
-  commits are handled), context menus, and the editor's horizontal
-  scrolling, clipboard and multiple carets.
+- **Built after the done-check, before M7.6:**
+  - the editor's multiple carets, clipboard, drag-select and horizontal
+    scrolling;
+  - popups and tooltips (as OS windows), native context menus and
+    dropdowns;
+  - IME composition and style transitions;
+  - virtualized grids and tab docks;
+  - canvases, and self-drawing widgets through CLOS (`ui/Widget`).
+
+  Norn gained destructuring `if-let`/`when-let` and `ext::to_f64` on the
+  way.
 - **`native-view` and `norn-ui-webview` slip to `norn-ui` 0.2.** Nothing
   needs them before M9's HTTP and database panels.
 - **The desktop backend is tested on macOS only.**
-- **Colour emoji are not drawn yet.**
+- **Not yet drawn:** colour emoji, and `[:image …]` on canvases.
+- **Canvas paths are not antialiased** (rectangles and circles are).
 
 ---
 

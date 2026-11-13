@@ -75,7 +75,7 @@ native views and outside the parent window.
 | Op | Meaning |
 |---|---|
 | `[:hello version]` | Handshake (§2). |
-| `[:window id props]` | Create or update a window: `:title`, `:size [w h]`, `:min-size`, `:position`, `:resizable`, `:decorations`, `:root` node id, `:menu`. |
+| `[:window id props]` | Create or update a window: `:title`, `:size [w h]`, `:min-size`, `:resizable`, `:root` node id. A popup also has `:owner` (a window id) and `:position [x y]` in the owner's coordinates. It shows as a borderless window above the owner that doesn't take focus, and is dismissed lightly (`:dismiss`, §11), except by a press on its `:anchor` node. `:fit-content true` sizes a window to its content. |
 | `[:close-window id]` | Close it (its nodes stay, detached). |
 | `[:create id kind props]` | Make a detached node. |
 | `[:set id props]` | Merge props; a `nil` value removes one. |
@@ -89,10 +89,16 @@ native views and outside the parent window.
 | `[:scroll-to id]` | Scroll a node into view. |
 | `[:select id from to]` | Select text in a field or rich text. |
 | `[:menu tree]` | The app's menu bar (on macOS the first submenu is the application menu). A tree is a vector of items: `[label command shortcut?]` (command a keyword; shortcut like `"cmd+s"`, `cmd` meaning ctrl off macOS), `[label [items…]]` for a submenu, or `:separator`. The commands `:quit` and `:hide` are the system's own; `:copy` `:cut` `:paste` `:select-all` also act on a focused text field. |
-| `[:context-menu req tree]` | Show a context menu at the pointer; answered by `:command` or `:menu-dismissed`. |
+| `[:context-menu req tree window x y]` | Show a native context menu at (x, y) in a window; answered by `{:event :command :req req :command c}` or `{:event :menu-dismissed :req req}`. |
 | `[:dialog req spec]` | A file dialog: `{:kind k :title t :directory d :filters [[name [ext…]] …]}`, `k` one of `:open-file`, `:open-files`, `:folder`, `:save-file`; answered by `{:event :dialog :req req :paths […]}` (nil if cancelled). |
 | `[:clipboard-set text]`, `[:clipboard-get req]` | The clipboard; get answers `{:event :clipboard :req req :text …}`. |
 | `[:stats req]` | Counters (§10). |
+
+A scroll container's `:scroll-x`/`:scroll-y` props set its position, after
+layout and clamped. The engine ignores a value it reported itself in a
+recent `:scroll` event: that is Norn echoing it back. `:transition ms` (or
+`[:prop ms …]`) in a style animates background, colour, border colour and
+opacity changes.
 
 Editor, list, grid, terminal, canvas and native-view ops are in §6–§9.
 
@@ -178,17 +184,19 @@ viewport.
 The engine redraws a canvas only when its commands change (`[:set id
 {:commands …}]`).
 - **Shapes:** `[:rect [x y w h] paint]`, `[:rounded-rect [x y w h] r
-  paint]`, `[:line [x1 y1] [x2 y2] stroke]`, `[:polyline [[x y] …]
-  stroke]`, `[:path "M0 0 L10 10 …" paint]`.
-- **Text and images:** `[:text [x y] "…" text-style]`, `[:image [x y w h]
-  src]`.
+  paint]`, `[:circle [cx cy] r paint]`, `[:line [x1 y1] [x2 y2] stroke]`,
+  `[:polyline [[x y] …] stroke]`, `[:path "M0 0 L10 10 …" paint]` (SVG
+  path syntax).
+- **Text and images:** `[:text [x y] "…" text-style]`; `[:image [x y w h]
+  src]` is not drawn yet.
 - **Clipping and transforms:** `[:clip [x y w h] [commands …]]`,
   `[:translate [dx dy] [commands …]]`.
 
 Paints are `{:fill color}` and strokes `{:stroke color :width n}`.
 
-A widget class in Norn (`ui/widget` with `ui/measure` and `ui/paint`
-methods) produces a canvas node.
+A widget class in Norn (a subclass of `ui/Widget` with `ui/measure` and
+`ui/paint` methods, and `ui/widget-events` and `ui/on-event` for input)
+produces a canvas node.
 
 ## 9. Native views
 
@@ -233,7 +241,11 @@ and `:time` (milliseconds).
 | `:submit` | Enter in a single-line text field |
 | `:focus`, `:blur` | focus moved |
 | `:scroll` | `:x` `:y` scroll position (coalesced) |
-| `:command` | `:command` from a menu, a shortcut or a context menu |
+| `:command` | `:command` from a menu or a shortcut; with `:node`, the focused node asked for `:command` (an editor's copy and paste) |
+| `:context-menu` | a right click (ctrl-click on macOS) on a node asking for it: `:x` `:y` in the window |
+| `:dismiss` | a popup should close: a press in its owner, or Escape |
+| `:tooltip` | the pointer rested on a node with `:tooltip`: `:node` `:text` `:x` `:y`; `:node nil` hides it |
+| `:drag-select` | a drag in an editor: `:anchor [line col]`, `:line`, `:col` |
 | `:drop` | `:data` and `:kind`, on the nearest node under the pointer that asks for `:drop` (else the window); files from the OS have `:kind :files` and `:paths` (files dropped together arrive as one event) |
 | `:resize` | a window's new `:size` and `:scale` (coalesced) |
 | `:close-requested` | the user asked to close a window (Norn decides) |
