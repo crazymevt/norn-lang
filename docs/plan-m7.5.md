@@ -19,7 +19,7 @@ with `fontique` for fonts), `accesskit` (accessibility), `muda` (menus),
 `rfd` (file dialogs), `arboard` (clipboard). All are cross-platform, so
 Linux and Windows (M12) are mostly backend glue.
 
-## Part 1 — in this repository
+## Part 1 — in this repository (done, 2026-11-13)
 
 | Part | Work |
 |---|---|
@@ -28,11 +28,13 @@ Linux and Windows (M12) are mostly backend glue.
 | 1.3 | **The UI protocol spec** (`docs/ui-protocol.md`), the contract between `norn.ui` (Norn) and the engine (Rust). See the outline below. |
 | 1.4 | **Done-check here:** a test-only extension crate registers primitives, posts from a foreign thread at a high rate under `NORN_GC_STRESS=2`, and runs a fake event loop through `run_on_main`; images saved with extension handles report `ResourceLost` as M6's sockets do. Docs: runtime.md §5.7 (extensions) and the M7.5 status. |
 
-### The protocol, in outline (1.3 writes it in full)
+### The protocol, in outline (written in full: `docs/ui-protocol.md`)
 
-- **Transport:** Norn data on channels in one process, never serialized.
-  Norn → engine: a channel of *batches* (vectors of patch ops, applied
-  atomically between frames). Engine → Norn: a channel of events.
+- **Transport:** Norn data in one process, never serialized. Norn →
+  engine: a primitive, `apply!`, that queues a *batch* (a vector of patch
+  ops, applied atomically between frames) and wakes the event loop; it
+  doesn't need a fiber on the engine's side. Engine → Norn: a channel of
+  events, fed through a `Port`.
 - **Nodes:** integer ids chosen by Norn; a kind (`:box`, `:text`, `:image`,
   `:scroll`, `:canvas`, `:editor`, `:grid`, `:native-view`, …), properties,
   a style map (CSS-like property names as Norn keywords, no CSS text), and
