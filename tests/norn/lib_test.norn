@@ -2,7 +2,7 @@
 
 (ns lib-test (:require [norn.bytes :as b] [norn.io :as io] [norn.fs :as fs] [norn.sys :as sys]
                        [norn.process :as proc] [norn.time :as t] [norn.signal :as sig]
-                       [norn.net :as net] [norn.ffi :as ffi]))
+                       [norn.net :as net] [norn.ffi :as ffi] [norn.rope :as rope]))
 
 (def failures 0)
 (def checks 0)
@@ -269,6 +269,41 @@
   (is true (> (count dump) 20))
   (put! ch :done)
   (is :done (await waiting)))
+
+;;; ---- norn.rope ----
+(def r0 (rope/rope "hello\nworld\n"))
+(def r1 (rope/insert r0 5 ", there"))
+(is "hello, there\nworld\n" (rope/text r1))
+(is "hello\nworld\n" (rope/text r0))
+(is "there\nworld\n" (rope/text (rope/delete r1 0 7)))
+(is 19 (rope/length r1))
+(is 3 (rope/line-count r1))
+(is "world" (rope/line r1 1))
+(is "" (rope/line r1 2))
+(is nil (rope/line r1 3))
+(is 13 (rope/line-start r1 1))
+(is 12 (rope/line-end r1 0))
+(is 1 (rope/line-of r1 14))
+(is "lo, th" (rope/slice r1 3 9))
+(is \e (rope/char-at r1 1))
+(is "HELLO, there\nworld\n" (rope/text (rope/replace r1 0 5 "HELLO")))
+;; a big rope: many chunks, still balanced, every line findable
+(def big-text (apply str (map (fn [i] (str "line " i "\n")) (range 2000))))
+(def big (rope/rope big-text))
+(is (count big-text) (rope/length big))
+(is big-text (rope/text big))
+(is 2001 (rope/line-count big))
+(is "line 1234" (rope/line big 1234))
+(is 1234 (rope/line-of big (rope/line-start big 1234)))
+(is true (< (#'norn.rope/height big) 12))
+(def edited (reduce (fn [r i] (rope/insert r (* i 7) "é")) big (range 300)))
+(is (+ 300 (count big-text)) (rope/length edited))
+(is (reduce (fn [s i] (str (subs s 0 (* i 7)) "é" (subs s (* i 7)))) big-text (range 300)) (rope/text edited))
+(is (subs big-text 9) (rope/text (rope/delete big 0 9)))
+(is true (< (#'norn.rope/height edited) 16))
+(is (subs big-text 5000 5100) (rope/slice big 5000 5100))
+(is "héllo" (rope/text (rope/insert (rope/rope "hllo") 1 "é")))
+(is \l (rope/char-at (rope/rope "héllo") 2))
 
 (println (str "lib_test: " checks " checks, " failures " failures"))
 (when (pos? failures) (error failures "library tests failed"))

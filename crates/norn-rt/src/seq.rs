@@ -184,6 +184,8 @@ pub fn to_vec(m: &mut Mutator, v: Value) -> Result<Vec<Value>, String> {
         }
         Kind::String => out.extend(v.as_str().chars().map(Value::char)),
         Kind::Bytes => out.extend(v.as_bytes().iter().map(|&b| Value::fix(b as i64))),
+        Kind::Sorted => out = crate::colls::sorted_items(m, v),
+        Kind::Queue => out = crate::colls::queue_items(v),
         _ => return Err(format!("Don't know how to create a seq from {}", v.type_name())),
     }
     Ok(out)
@@ -204,6 +206,8 @@ pub fn is_seqable(v: Value) -> bool {
                     | Kind::String
                     | Kind::Bytes
                     | Kind::Stream
+                    | Kind::Sorted
+                    | Kind::Queue
             ))
 }
 
@@ -341,6 +345,15 @@ pub fn count(v: Value) -> Result<usize, String> {
             Kind::Set => v.set_count(),
             Kind::String => v.as_str().chars().count(),
             Kind::Bytes => v.as_bytes().len(),
+            Kind::Sorted => v.sorted_count(),
+            Kind::Queue => v.queue_count(),
+            Kind::Transient => {
+                if v.word(crate::colls::T_KIND) == crate::colls::TV {
+                    v.word(crate::colls::T_COUNT) as usize
+                } else {
+                    count(v.field(crate::colls::T_DATA))?
+                }
+            }
             Kind::Stream => match SeqIter::new(v) {
                 Some(it) => it.count(),
                 None => return Err(NEEDS_FORCE.into()),

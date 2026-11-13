@@ -1732,8 +1732,8 @@
   [coll v]
   (cond (vector? coll) v
         (list? coll) (apply list v)
-        (set? coll) (set v)
-        (map? coll) (into {} v)
+        (set? coll) (into (empty coll) v)
+        (map? coll) (into (empty coll) v)
         :else v))
 
 (defn- %like-made
@@ -1743,7 +1743,7 @@
   [coll v]
   (cond (vector? coll) v
         (list? coll) (apply list v)
-        (set? coll) (set v)
+        (set? coll) (into (empty coll) v)
         :else v))
 
 (defn- %eager [xf coll] (transduce xf conj [] coll))
@@ -1948,3 +1948,11 @@
 (defn %eval-root [s]
   (let [v (%eval-reader (%reader s "<string>"))]
     (if (stream? v) (doall v) v)))
+
+;;; ---- more collections (runtime.md §2.4) ----------------------------------------------------
+
+(defn queue
+  "A persistent FIFO queue of xs: conj adds at the back, peek and pop work
+  at the front."
+  [& xs]
+  (into (%empty-queue) xs))

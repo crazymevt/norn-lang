@@ -290,3 +290,14 @@ fn mutable_objects_owned_by_the_saver_are_free_after_a_restore() {
     // The saving fiber didn't survive, so the object is free to claim.
     assert_eq!(eval(Some(&img), "(do (update-slot! c :n inc) [(:n c) (identical? (owner c) (current-fiber))])"), "[6 true]");
 }
+
+#[test]
+fn sorted_collections_and_queues_survive_an_image() {
+    let d = scratch("colls");
+    let img = d.join("colls.nimg");
+    eval(None, &format!(r#"(do (def sm (sorted-map 3 :c 1 :a)) (def q (queue 1 2)) (def ss (sorted-set 5 4)) (save-image "{}"))"#, img.display()));
+    assert_eq!(
+        eval(Some(&img), "[(assoc sm 2 :b) (conj q 3) (conj ss 1) (= sm {1 :a 3 :c}) (pop q)]"),
+        "[{1 :a, 2 :b, 3 :c} #queue [1 2 3] #{1 4 5} true #queue [2]]"
+    );
+}

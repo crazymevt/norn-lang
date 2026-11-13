@@ -19,6 +19,7 @@ pub mod reactor;
 pub mod reader;
 pub mod sched;
 pub mod server;
+pub mod sorted;
 pub mod sys;
 pub mod vm;
 

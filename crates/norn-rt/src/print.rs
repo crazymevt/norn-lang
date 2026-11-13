@@ -165,6 +165,25 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
             });
             write_seq(out, items.into_iter(), "#{", "}", readably);
         }
+        Kind::Sorted => {
+            let entries = crate::colls::sorted_entries(v);
+            if v.sorted_is_set() {
+                write_seq(out, entries.into_iter().map(|e| e.0), "#{", "}", readably);
+            } else {
+                out.push('{');
+                for (i, (k, val)) in entries.into_iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    write_value(out, k, readably);
+                    out.push(' ');
+                    write_value(out, val, readably);
+                }
+                out.push('}');
+            }
+        }
+        Kind::Queue => write_seq(out, crate::colls::queue_items(v).into_iter(), "#queue [", "]", readably),
+        Kind::Transient => out.push_str("#<transient>"),
         Kind::Var => {
             out.push_str("#'");
             out.push_str(v.var_ns().sym_name());

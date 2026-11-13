@@ -196,6 +196,22 @@ Decisions for M7 are at the end, after M6's.
   heap kind), so `reduce` checks for early exit cheaply.
 - **`norn -e`** realizes a stream result before printing it, as a REPL
   prints a lazy seq in full.
+- **Sorted collections use natural order only** (`compare`). A
+  `sorted-map-by` with a user comparator would need Rust to call Norn,
+  which it never does (runtime.md §2.3); it waits until Norn classes can
+  implement the collection operations themselves.
+- **Sorted, queue and transient are Rust heap kinds**, not Norn code as
+  §2.4 first proposed: they need no user callbacks, and every collection
+  primitive then handles them at full speed.
+- **Transient vectors are fast; transient maps and sets are API-complete
+  but copy per change.** In-place CHAMP editing is later work; the API
+  won't change.
+- **Ropes are Norn code** (`norn.rope`): chunks of at most 512 characters,
+  AVL-balanced, each branch caching length and newline count. Three small
+  string primitives (`%str-stats`, `%nth-newline-end`, `%count-newlines`)
+  do the per-chunk counting. Indexes are characters (code points);
+  graphemes come with `norn.string` in 7.5.
+- **`conj!` takes one item**, as in Clojure.
 - **Found and fixed:** `comp` of three or more functions skipped the first
   one. A `loop` binding shadowed the list it was reading, and it had gone
   untested until transducers.

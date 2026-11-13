@@ -92,8 +92,11 @@ prims! {
     "fn?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Closure) || a[0].is(Kind::Primitive)));
     "list?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_cons() || a[0].is(Kind::EmptyList)));
     "vector?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Vector)));
-    "map?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Map)));
-    "set?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Set)));
+    "map?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Map) || (a[0].is(Kind::Sorted) && !a[0].sorted_is_set())));
+    "set?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Set) || (a[0].is(Kind::Sorted) && a[0].sorted_is_set())));
+    "sorted?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Sorted)));
+    "queue?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Queue)));
+    "transient?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Transient)));
     "seq?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_cons() || (a[0].is_obj() && matches!(a[0].obj_kind(), Kind::EmptyList | Kind::VecSeq | Kind::Range))));
     "coll?" 1 Some(1) => |_, a| Ok(Value::bool(seq::is_seqable(a[0]) && !a[0].is_nil() && !a[0].is(Kind::String)));
     "seqable?" 1 Some(1) => |_, a| Ok(Value::bool(seq::is_seqable(a[0])));
@@ -114,15 +117,28 @@ prims! {
     "seq" 1 Some(1) => |vm, a| Ok(seq::seq(&mut vm.m, a[0])?);
     "count" 1 Some(1) => |_, a| Ok(Value::fix(seq::count(a[0])? as i64));
     "nth" 2 Some(3) => nth;
-    "get" 2 Some(3) => |vm, a| { crate::owned::check(vm, a[0], false)?; Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) };
+    "get" 2 Some(3) => |vm, a| { crate::owned::check(vm, a[0], false)?; if a[0].is(Kind::Sorted) { let r = if a[0].sorted_is_set() { crate::sorted::find(a[0].sorted_root(), a[1])?.map(|_| a[1]) } else { crate::sorted::get(a[0], a[1])? }; return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))); } Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) };
+    // sorted maps and sets, queues, transients (colls.rs, sorted.rs)
+    "sorted-map" 0 VAR => |vm, a| { if a.len() % 2 != 0 { return Err(Error::new("sorted-map expects key/value pairs")); } let mut s = norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, false); for kv in a.chunks(2) { s = crate::sorted::assoc(&mut vm.m, s, kv[0], kv[1])?; } Ok(s) };
+    "sorted-set" 0 VAR => |vm, a| { let mut s = norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, true); for &k in a { s = crate::sorted::assoc(&mut vm.m, s, k, k)?; } Ok(s) };
+    "subseq" 3 Some(5) => |vm, a| sorted_range(vm, a, false);
+    "rsubseq" 3 Some(5) => |vm, a| sorted_range(vm, a, true);
+    "%empty-queue" 0 Some(0) => |vm, _| { let e = rt().empty_vector; Ok(norn_rt::colls::queue_new(&mut vm.m, 0, Value::NIL, e)) };
+    "transient" 1 Some(1) => |vm, a| transient(vm, a[0]);
+    "persistent!" 1 Some(1) => |vm, a| persistent(vm, a[0]);
+    "conj!" 2 Some(2) => |vm, a| transient_op(vm, a[0], TOp::Conj(a[1]));
+    "assoc!" 3 Some(3) => |vm, a| transient_op(vm, a[0], TOp::Assoc(a[1], a[2]));
+    "dissoc!" 2 Some(2) => |vm, a| transient_op(vm, a[0], TOp::Dissoc(a[1]));
+    "disj!" 2 Some(2) => |vm, a| transient_op(vm, a[0], TOp::Disj(a[1]));
+    "pop!" 1 Some(1) => |vm, a| transient_op(vm, a[0], TOp::Pop);
     "assoc" 3 VAR => assoc;
-    "dissoc" 1 VAR => |vm, a| { let mut m = a[0]; if m.is_nil() { return Ok(m); } expect(m, Kind::Map, "dissoc")?; for &k in &a[1..] { m = map_dissoc(&mut vm.m, m, k); } Ok(m) };
+    "dissoc" 1 VAR => |vm, a| { let mut m = a[0]; if m.is_nil() { return Ok(m); } else if m.is(Kind::Sorted) { for &k in &a[1..] { m = crate::sorted::dissoc(&mut vm.m, m, k)?; } return Ok(m); } expect(m, Kind::Map, "dissoc")?; for &k in &a[1..] { m = map_dissoc(&mut vm.m, m, k); } Ok(m) };
     "conj" 0 VAR => conj;
-    "disj" 1 VAR => |vm, a| { let mut s = a[0]; if s.is_nil() { return Ok(s); } expect(s, Kind::Set, "disj")?; for &k in &a[1..] { s = set_disj(&mut vm.m, s, k); } Ok(s) };
+    "disj" 1 VAR => |vm, a| { let mut s = a[0]; if s.is_nil() { return Ok(s); } else if s.is(Kind::Sorted) { for &k in &a[1..] { s = crate::sorted::dissoc(&mut vm.m, s, k)?; } return Ok(s); } expect(s, Kind::Set, "disj")?; for &k in &a[1..] { s = set_disj(&mut vm.m, s, k); } Ok(s) };
     "contains?" 2 Some(2) => contains;
     "keys" 1 Some(1) => |vm, a| map_part(vm, a[0], true);
     "vals" 1 Some(1) => |vm, a| map_part(vm, a[0], false);
-    "empty" 1 Some(1) => |_, a| Ok(empty_of(a[0]));
+    "empty" 1 Some(1) => |vm, a| Ok(match a[0] { c if c.is(Kind::Sorted) => norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, c.sorted_is_set()), c if c.is(Kind::Queue) => { let e = rt().empty_vector; norn_rt::colls::queue_new(&mut vm.m, 0, Value::NIL, e) } c => empty_of(c) });
     "peek" 1 Some(1) => peek;
     "pop" 1 Some(1) => pop;
     "concat" 0 VAR => |vm, a| { let mut out = Vec::new(); for &x in a { out.extend(to_vec(vm, x)?); } Ok(if out.is_empty() { rt().empty_list } else { list_from(&mut vm.m, &out) }) };
@@ -282,6 +298,10 @@ prims! {
     "%env" 0 Some(0) => |vm, _| Ok(crate::sys::env(&mut vm.m));
     "%args" 0 Some(0) => |vm, _| Ok(crate::sys::args(&mut vm.m));
     "%sys-info" 0 Some(0) => |vm, _| Ok(crate::sys::system(&mut vm.m));
+    // string helpers for norn.rope: character and line arithmetic on a chunk
+    "%str-stats" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "%str-stats")?; let t = a[0].as_str(); let c = t.chars().count() as i64; let n = t.bytes().filter(|&b| b == b'\n').count() as i64; Ok(vec_from_slice(&mut vm.m, &[Value::fix(c), Value::fix(n)])) };
+    "%nth-newline-end" 2 Some(2) => |_, a| { expect(a[0], Kind::String, "%nth-newline-end")?; let k = int(a[1], "%nth-newline-end")?; let mut seen = 0; for (i, ch) in a[0].as_str().chars().enumerate() { if ch == '\n' { seen += 1; if seen == k { return Ok(Value::fix(i as i64 + 1)); } } } Ok(Value::NIL) };
+    "%count-newlines" 2 Some(2) => |_, a| { expect(a[0], Kind::String, "%count-newlines")?; let i = int(a[1], "%count-newlines")?.max(0) as usize; Ok(Value::fix(a[0].as_str().chars().take(i).filter(|&c| c == '\n').count() as i64)) };
     "%split-lines" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "lines")?; let ls: Vec<Value> = a[0].as_str().lines().map(|l| str_new(&mut vm.m, l)).collect(); Ok(vec_from_slice(&mut vm.m, &ls)) };
     // sockets and TLS (net.rs; norn.net)
     "%resolve" 2 Some(2) => |vm, a| { let port = int(a[1], "resolve")?; crate::net::resolve(vm, text(a[0]), port.clamp(0, 65535) as u16) };
@@ -709,6 +729,135 @@ fn deep_unrealized(x: Value) -> Option<Value> {
     None
 }
 
+/// `(subseq sc test key)` / `(subseq sc test key test key)`: items of a sorted
+/// collection within the bounds (tests are the functions `<` `<=` `>` `>=`).
+fn sorted_range(vm: &mut Vm, a: &[Value], reverse: bool) -> Result<Value> {
+    crate::sorted::check(a[0], "subseq")?;
+    if a.len() != 3 && a.len() != 5 {
+        return Err(Error::new("subseq expects a sorted collection and one or two test/key pairs"));
+    }
+    let mut bounds = Vec::new();
+    for tk in a[1..].chunks(2) {
+        let name = if tk[0].is(Kind::Primitive) { tk[0].prim_name().sym_name().to_owned() } else { String::new() };
+        let (side, incl) = match name.as_str() {
+            "<" => (Ordering::Less, false),
+            "<=" => (Ordering::Less, true),
+            ">" => (Ordering::Greater, false),
+            ">=" => (Ordering::Greater, true),
+            _ => return Err(Error::new("subseq tests must be <, <=, > or >=")),
+        };
+        bounds.push((side, incl, tk[1]));
+    }
+    crate::sorted::subseq(&mut vm.m, a[0], &bounds, reverse)
+}
+
+enum TOp {
+    Conj(Value),
+    Assoc(Value, Value),
+    Dissoc(Value),
+    Disj(Value),
+    Pop,
+}
+
+/// `(transient coll)`: a builder for a vector, map or set, usable only by
+/// this fiber until `persistent!`.
+fn transient(vm: &mut Vm, c: Value) -> Result<Value> {
+    use norn_rt::colls::*;
+    if c.is(Kind::Vector) {
+        let n = c.vec_count();
+        let buf = norn_rt::array::array_new(&mut vm.m, n.max(8), Value::NIL);
+        for i in 0..n {
+            buf.arr_set(i, c.vec_nth(i));
+        }
+        return Ok(transient_new(&mut vm.m, TV, vm.current, n, buf));
+    }
+    let kind = if c.is(Kind::Map) || (c.is(Kind::Sorted) && !c.sorted_is_set()) {
+        TM
+    } else if c.is(Kind::Set) || c.is(Kind::Sorted) {
+        TS
+    } else {
+        return Err(type_err("transient", "a vector, map or set", c));
+    };
+    Ok(transient_new(&mut vm.m, kind, vm.current, 0, c))
+}
+
+fn transient_check(vm: &Vm, t: Value) -> Result<()> {
+    use norn_rt::colls::*;
+    expect(t, Kind::Transient, "transient operation")?;
+    if t.word(T_DONE) != 0 {
+        return Err(Error::new("Transient used after persistent!"));
+    }
+    if t.field(T_OWNER) != vm.current {
+        return Err(Error::new("Ownership: a transient belongs to the fiber that made it"));
+    }
+    Ok(())
+}
+
+fn transient_op(vm: &mut Vm, t: Value, op: TOp) -> Result<Value> {
+    use norn_rt::colls::*;
+    transient_check(vm, t)?;
+    if t.word(T_KIND) == TV {
+        let n = t.word(T_COUNT) as usize;
+        let mut buf = t.field(T_DATA);
+        match op {
+            TOp::Conj(x) => {
+                if n == buf.arr_len() {
+                    let bigger = norn_rt::array::array_new(&mut vm.m, n * 2, Value::NIL);
+                    for i in 0..n {
+                        bigger.arr_set(i, buf.arr_get(i));
+                    }
+                    t.set_field(T_DATA, bigger);
+                    buf = bigger;
+                }
+                buf.arr_set(n, x);
+                t.set_word(T_COUNT, (n + 1) as u64);
+            }
+            TOp::Assoc(k, v) => match index_of(k).filter(|&i| i <= n) {
+                Some(i) if i == n => return transient_op(vm, t, TOp::Conj(v)),
+                Some(i) => buf.arr_set(i, v),
+                None => return Err(Error::new(format!("Index out of bounds: {}", pr_str(k, true)))),
+            },
+            TOp::Pop => {
+                if n == 0 {
+                    return Err(Error::new("Can't pop an empty vector"));
+                }
+                buf.arr_set(n - 1, Value::NIL);
+                t.set_word(T_COUNT, (n - 1) as u64);
+            }
+            _ => return Err(Error::new("That operation doesn't apply to a transient vector")),
+        }
+        return Ok(t);
+    }
+    let c = t.field(T_DATA);
+    let c2 = match op {
+        TOp::Conj(x) => conj(vm, &[c, x])?,
+        TOp::Assoc(k, v) if t.word(T_KIND) == TM => assoc(vm, &[c, k, v])?,
+        TOp::Dissoc(k) if t.word(T_KIND) == TM => {
+            if c.is(Kind::Sorted) { crate::sorted::dissoc(&mut vm.m, c, k)? } else { map_dissoc(&mut vm.m, c, k) }
+        }
+        TOp::Disj(k) if t.word(T_KIND) == TS => {
+            if c.is(Kind::Sorted) { crate::sorted::dissoc(&mut vm.m, c, k)? } else { set_disj(&mut vm.m, c, k) }
+        }
+        _ => return Err(Error::new("That operation doesn't apply to this transient")),
+    };
+    t.set_field(T_DATA, c2);
+    Ok(t)
+}
+
+/// `(persistent! t)`: the finished collection; t can't be used again.
+fn persistent(vm: &mut Vm, t: Value) -> Result<Value> {
+    use norn_rt::colls::*;
+    transient_check(vm, t)?;
+    t.set_word(T_DONE, 1);
+    if t.word(T_KIND) == TV {
+        let n = t.word(T_COUNT) as usize;
+        let buf = t.field(T_DATA);
+        let items: Vec<Value> = (0..n).map(|i| buf.arr_get(i)).collect();
+        return Ok(vec_from_slice(&mut vm.m, &items));
+    }
+    Ok(t.field(T_DATA))
+}
+
 /// `(bytes x)`: UTF-8 of a string, a seqable of integers 0–255, or bytes.
 fn to_bytes(vm: &mut Vm, x: Value) -> Result<Value> {
     if x.is(Kind::Bytes) {
@@ -772,6 +921,8 @@ fn assoc(vm: &mut Vm, a: &[Value]) -> Result<Value> {
             }
         } else if c.is(Kind::Map) {
             map_assoc(&mut vm.m, c, kv[0], kv[1])
+        } else if c.is(Kind::Sorted) && !c.sorted_is_set() {
+            crate::sorted::assoc(&mut vm.m, c, kv[0], kv[1])?
         } else if c.is(Kind::Vector) {
             match index_of(kv[0]).filter(|&i| i <= c.vec_count()) {
                 Some(i) => vec_assoc(&mut vm.m, c, i, kv[1]),
@@ -788,7 +939,19 @@ fn conj(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let Some((&first, xs)) = a.split_first() else { return Ok(vec_empty()) };
     let mut c = first;
     for &x in xs {
-        c = if c.is_nil() || c.is_cons() || c.is(Kind::EmptyList) {
+        c = if c.is(Kind::Sorted) {
+            if c.sorted_is_set() {
+                crate::sorted::assoc(&mut vm.m, c, x, x)?
+            } else if x.is(Kind::Vector) && x.vec_count() == 2 {
+                crate::sorted::assoc(&mut vm.m, c, x.vec_nth(0), x.vec_nth(1))?
+            } else if x.is_nil() {
+                c
+            } else {
+                return Err(Error::new("conj on a sorted map expects a [key value] vector"));
+            }
+        } else if c.is(Kind::Queue) {
+            norn_rt::colls::queue_conj(&mut vm.m, c, x)
+        } else if c.is_nil() || c.is_cons() || c.is(Kind::EmptyList) {
             let tail = if c.is(Kind::EmptyList) { Value::NIL } else { c };
             norn_rt::object::cons(&mut vm.m, x, tail)
         } else if c.is(Kind::Vector) {
@@ -829,6 +992,8 @@ fn contains(_: &mut Vm, a: &[Value]) -> Result<Value> {
         norn_rt::clos::slot_get(c, k).is_some()
     } else if c.is(Kind::Set) {
         c.set_contains(k)
+    } else if c.is(Kind::Sorted) {
+        crate::sorted::find(c.sorted_root(), k)?.is_some()
     } else if c.is(Kind::Vector) {
         index_of(k).is_some_and(|i| i < c.vec_count())
     } else {
@@ -843,6 +1008,10 @@ fn map_part(vm: &mut Vm, m: Value, keys: bool) -> Result<Value> {
     if m.is(Kind::Instance) {
         let layout = m.instance_class().class_field(norn_rt::clos::class::LAYOUT);
         let xs: Vec<Value> = if keys { norn_rt::clos::layout_keys(layout).to_vec() } else { norn_rt::clos::instance_values(m) };
+        return Ok(if xs.is_empty() { Value::NIL } else { list_from(&mut vm.m, &xs) });
+    }
+    if m.is(Kind::Sorted) && !m.sorted_is_set() {
+        let xs: Vec<Value> = norn_rt::colls::sorted_entries(m).into_iter().map(|(k, v)| if keys { k } else { v }).collect();
         return Ok(if xs.is_empty() { Value::NIL } else { list_from(&mut vm.m, &xs) });
     }
     expect(m, Kind::Map, if keys { "keys" } else { "vals" })?;
@@ -872,6 +1041,9 @@ fn empty_of(c: Value) -> Value {
 
 fn peek(_: &mut Vm, a: &[Value]) -> Result<Value> {
     let c = a[0];
+    if c.is(Kind::Queue) {
+        return Ok(norn_rt::colls::queue_peek(c));
+    }
     if c.is(Kind::Vector) {
         return Ok(if c.vec_count() == 0 { Value::NIL } else { c.vec_nth(c.vec_count() - 1) });
     }
@@ -886,6 +1058,9 @@ fn peek(_: &mut Vm, a: &[Value]) -> Result<Value> {
 
 fn pop(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let c = a[0];
+    if c.is(Kind::Queue) {
+        return Ok(norn_rt::colls::queue_pop(&mut vm.m, c));
+    }
     if c.is(Kind::Vector) {
         if c.vec_count() == 0 {
             return Err(Error::new("Can't pop an empty vector"));

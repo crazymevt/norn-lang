@@ -111,15 +111,33 @@ functions: they may allocate but never invoke Norn code. Consequences:
   carrier and can't be captured, saved or migrated. Racket's CS backend has
   the same rule.
 
-### 2.4 Collections **[proposed]**
+### 2.4 Collections **[built in M7]**
 
 | In Rust (no user callbacks needed) | In Norn |
 |---|---|
-| Persistent vector (RRB), hash map/set (CHAMP), string, byte-vector, cons | Sorted map/set, lazy streams, transducers, `sort` |
-| Transients (with owner-fiber check) | Queues, everything built on the above |
+| Persistent vector (RRB), hash map/set (CHAMP), string, byte-vector, cons | Lazy streams, transducers, `sort` |
+| Sorted map/set (persistent AVL, natural `compare` order), persistent queue, transients (with owner-fiber check) | Ropes (`norn.rope`), everything built on the above |
 
 Rust gives them speed while everything runs on the bytecode interpreter.
 Once the native compiler is good, moving more into Norn is an option.
+
+**Status (M7 part 4).**
+- `Sorted` (`[count][root][set?]`) and `SNode` (`[key][val][left][right][height]`)
+  heap kinds hold sorted maps and sets: a persistent AVL tree ordered by
+  `compare`. They are maps and sets for `=`, `hash`, `get`, `assoc`,
+  `conj`, `seq` and the rest; a sorted map equals a hash map with the same
+  entries. `subseq` and `rsubseq` give ranges. Keys that `compare` can't
+  order are an error at insertion.
+- `Queue` (`[count][front list][rear vector]`) is a FIFO: `conj` adds at the
+  back, `peek` and `pop` work at the front. It prints as `#queue [..]`.
+- `Transient` (`[kind][owner][count][data][done]`) is one fiber's builder
+  for a vector, map or set. Use from another fiber is an `OwnershipError`;
+  use after `persistent!` is an error. Transient vectors fill an array in
+  place; transient maps and sets have the full API but still copy per
+  change (in place is later work).
+- Ropes are a Norn library: a height-balanced tree of string chunks
+  (at most 512 characters), each branch caching its length and newline
+  count, so edits and line lookups are O(log n).
 
 
 ### 2.5 The numeric tower **[built in M7]**

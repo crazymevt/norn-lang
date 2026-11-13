@@ -66,6 +66,23 @@ pub fn hash(v: Value) -> u64 {
             });
             mix64(h)
         }
+        // The same order-independent formulas as hash maps and sets.
+        Kind::Sorted => {
+            let set = v.sorted_is_set();
+            let mut h = if set { SET_SEED } else { MAP_SEED };
+            crate::colls::sorted_each(v.sorted_root(), &mut |k, val| {
+                h = h.wrapping_add(if set { hash(k) } else { hash(k) ^ mix64(hash(val)) });
+                true
+            });
+            mix64(h)
+        }
+        Kind::Queue => {
+            let mut h = SEQ_SEED;
+            for x in crate::colls::queue_items(v) {
+                h = h.wrapping_mul(31).wrapping_add(hash(x));
+            }
+            mix64(h)
+        }
         Kind::Set => {
             let mut h = SET_SEED;
             v.set_for_each(|k| {
@@ -101,7 +118,37 @@ fn hash_sequential(v: Value) -> u64 {
 }
 
 pub fn is_sequential(v: Value) -> bool {
-    v.is_cons() || (v.is_obj() && matches!(v.obj_kind(), Kind::Vector | Kind::VecSeq | Kind::Range | Kind::EmptyList | Kind::Stream))
+    v.is_cons() || (v.is_obj() && matches!(v.obj_kind(), Kind::Vector | Kind::VecSeq | Kind::Range | Kind::EmptyList | Kind::Stream | Kind::Queue))
+}
+
+fn is_map_like(v: Value) -> bool {
+    v.is(Kind::Map) || (v.is(Kind::Sorted) && !v.sorted_is_set())
+}
+
+fn is_set_like(v: Value) -> bool {
+    v.is(Kind::Set) || (v.is(Kind::Sorted) && v.sorted_is_set())
+}
+
+fn map_like_count(v: Value) -> usize {
+    if v.is(Kind::Map) { v.map_count() } else { v.sorted_count() }
+}
+
+fn set_like_count(v: Value) -> usize {
+    if v.is(Kind::Set) { v.set_count() } else { v.sorted_count() }
+}
+
+/// A sorted collection equals a hash map or set with the same entries (and
+/// two sorted ones with equal entries are equal: they list them in the
+/// same order).
+fn sorted_equal(a: Value, b: Value) -> bool {
+    let (s, other) = if a.is(Kind::Sorted) { (a, b) } else { (b, a) };
+    if other.is(Kind::Sorted) {
+        let (x, y) = (crate::colls::sorted_entries(s), crate::colls::sorted_entries(other));
+        return x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| equal(p.0, q.0) && equal(p.1, q.1));
+    }
+    crate::colls::sorted_each(s.sorted_root(), &mut |k, v| {
+        if other.is(Kind::Map) { matches!(other.map_get(k), Some(w) if equal(v, w)) } else { other.set_contains(k) }
+    })
 }
 
 /// The slots `=` and `hash` look at: the current layout's, less any marked
@@ -119,6 +166,19 @@ fn compared_slots(inst: Value) -> Vec<(Value, Value)> {
 pub fn equal(a: Value, b: Value) -> bool {
     if a == b {
         return true;
+    }
+    if is_map_like(a) && is_map_like(b) && (a.is(Kind::Sorted) || b.is(Kind::Sorted)) {
+        return map_like_count(a) == map_like_count(b) && sorted_equal(a, b);
+    }
+    if is_set_like(a) && is_set_like(b) && (a.is(Kind::Sorted) || b.is(Kind::Sorted)) {
+        return set_like_count(a) == set_like_count(b) && sorted_equal(a, b);
+    }
+    if a.is(Kind::Queue) || b.is(Kind::Queue) {
+        let items = |v: Value| if v.is(Kind::Queue) { Some(crate::colls::queue_items(v)) } else { SeqIter::new(v).map(|it| it.collect()) };
+        return match (items(a), items(b)) {
+            (Some(x), Some(y)) => x.len() == y.len() && x.iter().zip(&y).all(|(&p, &q)| equal(p, q)),
+            _ => false,
+        };
     }
     if is_sequential(a) {
         if !is_sequential(b) {

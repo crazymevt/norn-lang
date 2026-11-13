@@ -65,6 +65,10 @@ kinds! {
     Ratio => "Ratio",
     Stream => "Stream",
     Reduced => "Reduced",
+    Sorted => "Sorted",
+    SNode => "SNode",
+    Queue => "Queue",
+    Transient => "Transient",
 }
 
 /// Static per-kind descriptor. From M2 layouts become heap objects that also

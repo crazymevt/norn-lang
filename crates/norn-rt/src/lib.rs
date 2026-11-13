@@ -5,6 +5,7 @@
 
 pub mod array;
 pub mod clos;
+pub mod colls;
 pub mod conc;
 pub mod equal;
 pub mod func;
