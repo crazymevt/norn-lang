@@ -164,6 +164,32 @@ Once the native compiler is good, moving more into Norn is an option.
   interpreter, whose primitive promotes.
 ---
 
+### 2.6 Text **[built in M7]**
+
+- **Strings index by code point.** `count`, `nth`, `subs` and every index
+  in `norn.string` and `norn.regex` count characters (Unicode scalar
+  values), never bytes; the Rust side converts at the boundary (text.rs),
+  with a fast path for ASCII. What a person sees as one character can be
+  several code points, so `norn.string` adds `graphemes`, `grapheme-count`
+  and `width` (terminal and editor columns; `unicode-segmentation` and
+  `unicode-width`). `reverse`, `truncate` and the padding functions work in
+  graphemes and columns.
+- **Regexes** use the `regex` crate: linear-time matching, no
+  backreferences or lookaround. `#"…"` reads a regex (backslashes as
+  written; `\"` is a quote). A regex is a heap kind holding its pattern
+  string, so it prints as written, compares and hashes by pattern, and
+  saves in images. Compiled regexes live in a per-carrier cache keyed by
+  pattern (512 entries, then cleared), so the hot path takes no lock.
+- **JSON** is read and written by a small hand-written Rust parser and
+  printer (no serde): objects become hash maps with keyword keys (strings
+  with `:keywords false`), integers of any size become fixnums or
+  bignums. Writing turns ratios into floats and refuses NaN, the
+  infinities and values with no JSON form. An unrealized stream is
+  realized first (§5.4.1).
+- **`format`** (in core) takes printf-style directives, implemented in
+  Rust; widths and precisions for `%s` count display columns.
+
+
 ## 3. Stacks, frames and fibers
 
 ### 3.1 Segmented heap stacks **[decided]**
@@ -1081,12 +1107,22 @@ each part needs from the runtime:
 - **Linux is the second platform** (decided 2026-11-13), then Windows.
   Linux CI can start any time: M12 is where the platform work is finished,
   not where it begins.
-- **M7.5 is `norn.ui` and M7.6 the Norn editor** (decided 2026-11-13).
-  - The UI is native-rendered, with a full UI library as the goal (design
-    §9.1).
-  - The UI host is part of the runtime, so the UI doesn't wait for M9's FFI
-    callbacks: events arrive as channel messages, and Norn hands Rust
-    immutable display lists to draw.
+- **M7.5 is the runtime side of `norn.ui`, and M7.6 the Norn editor**
+  (decided 2026-11-13; design §9.1).
+  - `norn.ui` itself is a versioned package in its own repository,
+    `norn-ui` (semver from 0.1): a shared Rust UI engine (retained tree,
+    layout, styling, text, GPU painting), platform backends, and the Norn
+    widget library. It isn't part of the stdlib and isn't sealed at M8.
+  - This repository gains only two general hooks: main-thread handoff and
+    a native extension API (Rust crates registering primitives and posting
+    to channels). Until loadable extensions have a stable ABI, `norn-ui`
+    builds its own statically linked `norn` binary.
+  - The protocol is thick: Norn sends tree patches; Rust sends semantic
+    events over channels. Norn isn't on each frame's critical path, so the
+    UI doesn't wait for M10's optimiser.
+  - The editor runs as its own process with the UI engine linked in; the
+    code being edited runs in a separate `norn` process over the editor
+    protocol.
   - The editor needs, from earlier milestones:
     - persistent ropes and Unicode graphemes and display widths (M7);
     - the comment-keeping reader, `fmt` and `lint` (M7);
@@ -1111,10 +1147,10 @@ each part needs from the runtime:
 | M5 ✅ | Images: save/load, layers, parked fibers, `on-image-restore` | Under 50 ms startup; a saved fiber resumes after load |
 | M6 ✅ | I/O: the reactor (`mio`) plus a blocking pool for files; byte arrays and buffers; `norn.io` (files, streams, paths), `norn.net` (TCP, UDP, TLS via `rustls`), `norn.process`, `norn.time`, `norn.sys` (environment variables (read-only), command-line arguments, exit, OS type and architecture, core count, memory, pid, directories, hostname, the Norn version and build; all read live, so a restored image sees the machine it runs on), `norn.fs` (walking directories, glob patterns, file watching), `norn.signal` (OS signals as channel messages); byte encodings (UTF-8, base64, hex); a basic FFI (load a dynamic library; call C functions with integer, float, pointer and byte-buffer arguments, either fast on the carrier or blocking on the pool; Cranelift-generated call stubs). Handles, including FFI handles, are image resources; weak references and finalizers in the GC binding (for resource registries, caches and freeing FFI handles); the monitor thread (replaces a carrier stuck in a long native call); fiber dumps (every fiber's stack, on a signal) | A TCP echo server holds 10,000 connections on fibers without blocking a carrier; a socket saved in an image comes back as `ResourceLost` and its `reconnect` restart works |
 | M7 | Numbers, collections and the pure stdlib: bignums and ratios with automatic promotion; sorted maps and sets, a persistent queue, transients; `norn.string`, `norn.math`, `norn.set`, `norn.walk`, `norn.regex`, `norn.json`, `norn.pprint`, `norn.random`, `norn.test`; type-preserving sequence functions and explicit `lazy` streams (design §3.3); transducers (one vocabulary for sequences, channels and `preduce`); `norn.format` (`cl-format` and `printf`); `norn.edn` (a safe reader for untrusted data); `norn.async` extras (`mult`, `pub`/`sub`, `pipeline`, `merge`, dropping and sliding buffers), `norn.sync` (semaphores, latches, a rate limiter), `norn.cache` (`memoize` with LRU and TTL variants); REPL tools (`doc`, `apropos`, `source`, an inspector, `trace`/`untrace`), `norn.bench` and `norn.log`; tooling: a reader mode that keeps comments and whitespace, `norn fmt` (one canonical style, no options; macros declare indentation, e.g. `{:indent 1}`), `norn lint` (the compiler in analysis mode, signalling `Warning`s: unresolved symbols, unused locals, wrong arity to known functions, shadowed core names, `def` inside a function, `defmethod` lambda lists that don't match), and `:format`/`:lint` editor ops; `norn doc` with a docstring convention (Markdown; `:since`, `:deprecated`, `:see-also`, runnable `:examples`) and deprecation warnings; `norn test` (discovers tests, runs them in parallel on fibers, filters, TAP and JUnit output); `norn check` (fmt, lint, test and docs in one command); a terminal REPL line editor (history, multi-line editing, completion); `norn image info` and image diff; code coverage from bytecode counters if it's cheap. equality per design §3.4 (`:equality :identity`, `:compare false`, reflexive NaN, numeric-tower rules); mutable objects per design §4.2 (`(:mutable)` classes, `set-slot!`/`update-slot!`, fiber ownership with `release!`, `share` and `locking`) | Every suite runs on `norn.test`; arithmetic promotes past 62 bits identically at tier 0 and tier 1; `norn fmt --check` and `norn lint` are clean on `lib/` and `tests/`, and formatting is idempotent and reads back to the same forms |
-| M7.5 | `norn.ui`, a native UI library (design §9.1). In Rust, the UI host: the main-thread event loop, windows, input (including IME), clipboard, accessibility, GPU drawing of display lists, text shaping and layout. In Norn: widgets, flex and grid layout, styling, focus, animation, and declarative views over atom state with tree diffing; windows as image resources | A widget gallery runs smoothly at the display's frame rate on macOS; redefining a view at the REPL updates the open window; a restored image reopens its windows |
-| M7.6 | The Norn editor, the first real program: a VS Code-style editor made for Norn, written in Norn on `norn.ui`, to test the stdlib before it is sealed. It lives in its own repository; until M8's packages exist it loads Norn sources from a local checkout of this one. Text buffers are persistent ropes; highlighting and structure come from M7's comment-keeping reader; the REPL, debugger and evaluation go through the editor protocol (M3) to a separate `norn` process; `norn fmt` and `norn lint` run in it | Norn's own development happens in the editor: editing, the REPL, the debugger, formatting and linting; what it needed is fixed or scheduled before M8 |
+| M7.5 | The runtime side of `norn.ui` (design §9.1). Here: main-thread handoff to an extension, a native extension API (register primitives, post to channels, per §5.5), and a spec of the UI protocol (tree patches one way, semantic events the other). In the `norn-ui` repository (a versioned package, 0.1): the shared Rust engine (retained node tree, flex and grid layout, styling, text shaping, GPU painting, hit-testing, scrolling, animation), the macOS and headless backends, `native-view` nodes, and the Norn widget library with declarative views over atom state; `norn-ui-webview` as an optional package | A widget gallery runs smoothly on macOS; redefining a view at the REPL updates the open window; a restored image reopens its windows; headless tests show no frames drawn in 5 s idle and at most one line repainted per keystroke; on macOS the idle editor averages under 0.5% CPU over a minute |
+| M7.6 | The Norn editor, the first real program: a VS Code-style editor made for Norn, written in Norn on `norn.ui` (pinning a `norn-ui` version), to test the stdlib before it is sealed. It is essentially Xeon Studio rebuilt in Norn (design §9.1): explorer with Git status, project, outline and source-control views; draggable dock tabs; REPL, Problems, Debugger and Inspector; Markdown preview; terminal; API/HTTP workbench and Databases view; AI chat (Claude Code and Codex CLIs) and team chat. Language support starts with Norn only (Common Lisp, Clojure and Racket later, if wanted). Three panels are phased (design §9.1): the API/HTTP workbench follows M9's HTTP client, the Databases view M9's database drivers (SQLite first), and the terminal panel pseudo-terminal support in `norn.process`; everything else, including Git through the `git` command and AI and team chat through the `claude`/`codex` CLIs and `norn.json`, is in M7.6. It runs as its own process with the UI engine linked in. It lives in its own repository; until M8's packages exist it loads Norn sources from a local checkout of this one. Text buffers are persistent ropes; highlighting and structure come from M7's comment-keeping reader; the REPL, debugger and evaluation go through the editor protocol (M3) to a separate `norn` process; `norn fmt` and `norn lint` run in it | Norn's own development happens in the editor: editing, the REPL, the debugger, formatting and linting; what it needed is fixed or scheduled before M8 |
 | M8 | Hygiene, modules/phases, `#lang`, sealing; then packages: a project file, dependency resolution, and `norn build` across dependencies, starting with Git and path dependencies only, with a registry later (perhaps its own milestone); module-aware lint rules (unused or missing requires, private access, phase errors, redefining sealed vars); `norn api-diff` (a snapshot of each module's public interface, taken when it is first sealed, and breaking-change detection between versions); a macro stepper that shows hygiene's renaming; a bytecode verifier for compiled code from packages (and crafted images) | Stdlib built as sealed modules |
-| M9 | Full MOP, the `norn.stm` library, processes/supervisors, the full FFI (callbacks from C, struct layouts, typed signatures, unsafe modules), gradual types, contracts; then HTTP, compression, crypto, database drivers, `norn.schedule`, `norn.uri`, `norn.uuid`, `norn.csv` and TOML, `norn.zip`, `norn.data` (structural diff), a binary format for Norn values, a sampling profiler, source-drift tracking (design §5.1), `norn lsp` (a Language Server Protocol adapter over the editor protocol), tree shaking for images (`:shake`, using sealing to prove code unused), `norn new` (project scaffolding), and code coverage if M7 didn't get it | — |
+| M9 | Full MOP, the `norn.stm` library, processes/supervisors, the full FFI (callbacks from C, struct layouts, typed signatures, unsafe modules), gradual types, contracts; then HTTP, compression, crypto, database drivers (SQLite first), pseudo-terminals in `norn.process` (small; can come earlier if convenient, for the editor's terminal panel), `norn.schedule`, `norn.uri`, `norn.uuid`, `norn.csv` and TOML, `norn.zip`, `norn.data` (structural diff), a binary format for Norn values, a sampling profiler, source-drift tracking (design §5.1), `norn lsp` (a Language Server Protocol adapter over the editor protocol), tree shaking for images (`:shake`, using sealing to prove code unused), `norn new` (project scaffolding), and code coverage if M7 didn't get it | — |
 | M10 | The optimising compiler: the IR (design §8.3), inlining, type inference from M9's signatures, unboxing, escape analysis; tier 1's full calling convention (push-frame and `return_call`), inline caches, and native compilation of every `defn` | Measured wins on `bench/` with tier 0 and tier 1 still agreeing on every suite |
 | M11 | GC maturity: generational collection (write barriers), opportunistic defragmentation (the M1 fragmentation finding), concurrent collection; deadlock detection for fibers nothing can wake (open question 4: a deadlock event, and the fiber kept in the debugger with a `Deadlock` condition); complex numbers as a library type | Bounded pause times and heap overhead under the M1 stress workloads |
 | M12 | Platforms and distribution: Linux first, then Windows (JIT memory, signals), CI on all three, release builds and installers, `norn` shipped with a base image (bootstrap step 6); WASM as a second target (design §9, open) | Every suite passes on macOS, Linux and Windows; `norn` starts from its bundled image |

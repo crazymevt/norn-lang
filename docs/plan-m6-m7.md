@@ -212,6 +212,50 @@ Decisions for M7 are at the end, after M6's.
   do the per-chunk counting. Indexes are characters (code points);
   graphemes come with `norn.string` in 7.5.
 - **`conj!` takes one item**, as in Clojure.
+- **Text indexes are code points**; graphemes and display widths are
+  functions (`norn.string`), not the unit of indexing (runtime.md §2.6).
+- **Regexes compare by pattern** (Clojure compares them by identity), as
+  design §3.4's structural equality suggests; they're a heap kind so they
+  print, hash and save in images. Syntax is the `regex` crate's.
+- **`re-find`, `re-matches`, `re-seq`, `format`, `printf`, `parse-long`,
+  `parse-double` and `parse-boolean` are in core**; the libraries hold the
+  rest. `re-seq` returns a vector (eager core, design §3.3).
+- **JSON keys become keywords by default**, since configuration files and
+  editor protocol messages are the common case; `:keywords false` keeps
+  strings. JSON is hand-written Rust rather than serde, to build Norn
+  values directly.
+- **`norn.edn` is the reader without evaluation.** Tagged literals
+  (`#inst`, `#uuid`, user tags) wait for reader extensions.
+- **`cl-format` is deferred**: `format` covers printf directives, and
+  `norn.format` adds helpers for people (numbers with separators,
+  percentages, byte sizes, durations, ordinals, plurals).
+- **`pprint` fills lines** with small items (as Clojure's does for
+  vectors), puts one map entry per line when a map doesn't fit, and keeps
+  a code form's head symbol and first argument together.
+- **`norn.ui` is a separate package** (decided by the user, 2026-11-13;
+  design §9.1). It lives in its own `norn-ui` repository, semver from 0.1,
+  with a shared Rust engine drawing a retained, themed control tree on the
+  GPU (JavaFX-style), a thick protocol (tree patches in, semantic events
+  out), platform backends (macOS, then headless, Linux and Windows), and
+  embeddable OS views such as webviews (`norn-ui-webview`, optional).
+  Idle must be idle: no render loop, damage-only repaints, frame counters
+  for tests. This repository's M7.5 shrinks to two general hooks
+  (main-thread handoff and a native extension API) plus a protocol spec.
+- **The Norn editor is essentially Xeon Studio rebuilt in Norn** (decided
+  by the user, 2026-11-13; design §9.1), with its full feature set (AI
+  chat and team chat, the API workbench and Databases view, the terminal,
+  and the rest). Language support starts with Norn only; Common Lisp,
+  Clojure and Racket can come later.
+- **The editor's panels are phased** (decided by the user, 2026-11-13). The
+  API/HTTP workbench, the Databases view and the terminal panel arrive
+  when M9's HTTP client, database drivers (SQLite first) and `norn.process`
+  pseudo-terminals land; pseudo-terminals join M9's list and can come
+  earlier. Everything else is in M7.6, and its done-check is unchanged.
+  `norn.ui` 0.1 still plans the cell-grid and virtualized-grid widgets,
+  which may slip to a later 0.x.
+- **Found and fixed:** `class-of` gave `Object` for sorted maps and sets
+  and for streams; they're now `Map`, `Set` and `Seq`, so methods on those
+  classes apply.
 - **Found and fixed:** `comp` of three or more functions skipped the first
   one. A `loop` binding shadowed the list it was reading, and it had gone
   untested until transducers.

@@ -4,6 +4,7 @@
 pub mod blocking;
 pub mod bytecode;
 pub mod codec;
+pub mod text;
 pub mod compiler;
 pub mod conc;
 pub mod eval;

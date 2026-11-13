@@ -302,6 +302,28 @@ prims! {
     "%str-stats" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "%str-stats")?; let t = a[0].as_str(); let c = t.chars().count() as i64; let n = t.bytes().filter(|&b| b == b'\n').count() as i64; Ok(vec_from_slice(&mut vm.m, &[Value::fix(c), Value::fix(n)])) };
     "%nth-newline-end" 2 Some(2) => |_, a| { expect(a[0], Kind::String, "%nth-newline-end")?; let k = int(a[1], "%nth-newline-end")?; let mut seen = 0; for (i, ch) in a[0].as_str().chars().enumerate() { if ch == '\n' { seen += 1; if seen == k { return Ok(Value::fix(i as i64 + 1)); } } } Ok(Value::NIL) };
     "%count-newlines" 2 Some(2) => |_, a| { expect(a[0], Kind::String, "%count-newlines")?; let i = int(a[1], "%count-newlines")?.max(0) as usize; Ok(Value::fix(a[0].as_str().chars().take(i).filter(|&c| c == '\n').count() as i64)) };
+    // text (text.rs): norn.string, norn.regex, norn.json, format
+    "%str-case" 2 Some(2) => crate::text::case;
+    "%str-trim" 2 Some(2) => crate::text::trim;
+    "%str-index" 4 Some(4) => crate::text::index;
+    "%str-split" 3 Some(3) => crate::text::split;
+    "%str-replace" 4 Some(4) => crate::text::replace;
+    "%graphemes" 1 Some(1) => crate::text::graphemes;
+    "%grapheme-count" 1 Some(1) => crate::text::grapheme_count;
+    "%str-width" 1 Some(1) => crate::text::width;
+    "%str-reverse" 1 Some(1) => crate::text::reverse;
+    "%str-truncate" 2 Some(2) => crate::text::truncate;
+    "regex?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Regex)));
+    "re-pattern" 1 Some(1) => crate::text::re_pattern;
+    "re-quote" 1 Some(1) => crate::text::re_quote;
+    "%re-search" 4 Some(4) => crate::text::re_search;
+    "%re-all" 2 Some(2) => crate::text::re_all;
+    "%re-replace" 4 Some(4) => crate::text::re_replace;
+    "%re-split" 3 Some(3) => crate::text::re_split;
+    "%json-read" 2 Some(2) => crate::text::json_read;
+    "%json-write" 3 Some(3) => crate::text::json_write;
+    "%format" 2 Some(2) => crate::text::format;
+    "%parse-number" 2 Some(2) => crate::text::parse_number;
     "%split-lines" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "lines")?; let ls: Vec<Value> = a[0].as_str().lines().map(|l| str_new(&mut vm.m, l)).collect(); Ok(vec_from_slice(&mut vm.m, &ls)) };
     // sockets and TLS (net.rs; norn.net)
     "%resolve" 2 Some(2) => |vm, a| { let port = int(a[1], "resolve")?; crate::net::resolve(vm, text(a[0]), port.clamp(0, 65535) as u16) };
@@ -412,11 +434,11 @@ fn type_err(op: &str, wanted: &str, got: Value) -> Error {
     Error::new(format!("{op} expects {wanted}, got {}: {}", got.type_name(), pr_str(got, true)))
 }
 
-fn expect(v: Value, k: Kind, op: &str) -> Result<()> {
+pub(crate) fn expect(v: Value, k: Kind, op: &str) -> Result<()> {
     if v.is(k) { Ok(()) } else { Err(type_err(op, norn_rt::object::LAYOUTS[k as usize].name, v)) }
 }
 
-fn int(v: Value, op: &str) -> Result<i64> {
+pub(crate) fn int(v: Value, op: &str) -> Result<i64> {
     if v.is_fixnum() { Ok(v.as_fixnum()) } else { Err(type_err(op, "an integer", v)) }
 }
 

@@ -333,7 +333,38 @@ impl<'a> Reader<'a> {
                     t => Err(ReadError::Syntax(format!("Unknown symbolic value: ##{t}"))),
                 }
             }
-            '"' => Err(ReadError::Syntax("Regex literals are not supported yet".into())),
+            '"' => {
+                // #"pattern": backslashes stay as written; \" is a quote.
+                self.bump();
+                let mut pat = String::new();
+                loop {
+                    match self.peek() {
+                        None => return Err(ReadError::Incomplete("Unterminated regex literal".into())),
+                        Some('"') => {
+                            self.bump();
+                            break;
+                        }
+                        Some('\\') => {
+                            self.bump();
+                            match self.peek() {
+                                Some('"') => pat.push('"'),
+                                Some(c) => {
+                                    pat.push('\\');
+                                    pat.push(c);
+                                }
+                                None => return Err(ReadError::Incomplete("Unterminated regex literal".into())),
+                            }
+                            self.bump();
+                        }
+                        Some(c) => {
+                            pat.push(c);
+                            self.bump();
+                        }
+                    }
+                }
+                let s = norn_rt::string::str_new(&mut vm.m, &pat);
+                crate::text::regex_value(&mut vm.m, s).map(Some).map_err(|e| ReadError::Syntax(e.msg))
+            }
             _ => {
                 let tok = self.token();
                 if tok == "bytes" {

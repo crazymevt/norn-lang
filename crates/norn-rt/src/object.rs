@@ -69,6 +69,7 @@ kinds! {
     SNode => "SNode",
     Queue => "Queue",
     Transient => "Transient",
+    Regex => "Regex",
 }
 
 /// Static per-kind descriptor. From M2 layouts become heap objects that also

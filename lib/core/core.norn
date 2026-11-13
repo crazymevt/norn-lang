@@ -561,6 +561,7 @@
 (def String (%defbuiltin 'String [Object] "string"))
 (def Bytes (%defbuiltin 'Bytes [Object] "bytes"))
 (def Handle (%defbuiltin 'Handle [Object] "handle"))
+(def Regex (%defbuiltin 'Regex [Object] "regex"))
 (def Symbol (%defbuiltin 'Symbol [Object] "symbol"))
 (def Keyword (%defbuiltin 'Keyword [Object] "keyword"))
 (def Collection (%defbuiltin 'Collection [Object] nil))
@@ -1956,3 +1957,33 @@
   at the front."
   [& xs]
   (into (%empty-queue) xs))
+
+;;; ---- text (norn.string and friends have the rest) ------------------------------------------
+
+(defn re-find
+  "The first match of regex re in s: the matched text, or [text group1 …]
+  when re has groups; nil when there is none."
+  [re s]
+  (when-let [m (%re-search re s 0 false)]
+    (let [groups (nth m 2)] (if (= 1 (count groups)) (first groups) groups))))
+
+(defn re-matches "As re-find, but re must match the whole of s." [re s]
+  (when-let [m (%re-search re s 0 true)]
+    (let [groups (nth m 2)] (if (= 1 (count groups)) (first groups) groups))))
+
+(defn re-seq "Every non-overlapping match of re in s, as re-find gives each." [re s]
+  (mapv (fn [m] (let [groups (nth m 2)] (if (= 1 (count groups)) (first groups) groups))) (%re-all re s)))
+
+(defn format
+  "Text from printf-style directives: %s (as str), %S (as pr-str), %d, %f,
+  %e, %g, %x, %X, %o, %b, %c, %% and %n; flags - 0 + space and , (group
+  thousands); a width and .precision."
+  [fmt & args]
+  (%format fmt (vec args)))
+
+(defn printf "Print (format fmt args…)." [fmt & args] (print (%format fmt (vec args))))
+
+(defn parse-long "The integer written in s (base 10, any size), or nil." [s] (%parse-number s true))
+(defn parse-double "The floating-point number written in s, or nil." [s] (%parse-number s false))
+(defn parse-boolean "true for \"true\", false for \"false\", else nil." [s]
+  (cond (= s "true") true (= s "false") false :else nil))

@@ -121,7 +121,7 @@ builtins! {
     Keyword => "keyword", List => "list", Vector => "vector", Map => "map", Set => "set",
     Seq => "seq", Function => "function", Var => "var", Fiber => "fiber", Channel => "channel",
     Atom => "atom", Scope => "scope", Class => "class", Generic => "generic-function",
-    Bytes => "bytes", Handle => "handle", Ratio => "ratio", Other => "other",
+    Bytes => "bytes", Handle => "handle", Ratio => "ratio", Regex => "regex", Other => "other",
 }
 
 const NBUILTINS: usize = Builtin::Other as usize + 1;
@@ -197,7 +197,10 @@ fn builtin_id(v: Value) -> Builtin {
         Kind::Vector => Builtin::Vector,
         Kind::Map => Builtin::Map,
         Kind::Set => Builtin::Set,
-        Kind::VecSeq | Kind::Range => Builtin::Seq,
+        Kind::VecSeq | Kind::Range | Kind::Stream => Builtin::Seq,
+        Kind::Sorted if v.sorted_is_set() => Builtin::Set,
+        Kind::Sorted => Builtin::Map,
+        Kind::Regex => Builtin::Regex,
         Kind::Closure | Kind::Primitive => Builtin::Function,
         Kind::Var => Builtin::Var,
         Kind::Fiber => Builtin::Fiber,

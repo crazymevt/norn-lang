@@ -645,32 +645,140 @@ Dynamically typed with **optional, gradual annotations**: CL-style
 
 ### 9.1 UI: `norn.ui` **[decided, 2026-11-13]**
 
-Native rendering, with a full UI library as the goal; the Norn editor is its
-first user. The split follows "Rust never calls Norn" (runtime.md §2.3):
+The UI is drawn by Norn's own engine, JavaFX-style: a retained tree of real
+controls that we draw on the GPU and style with CSS-like themes. The Norn
+editor is its first user. (The reference point is the author's Xeon Studio
+editor, built on JavaFX and RichTextFX.)
 
-- **Rust: the UI host.**
-  - It owns the main thread (macOS requires windows to live there), runs the
-    platform event loop, and delivers input as channel messages: keys, IME
-    composition, pointer, focus, resize, clipboard and accessibility
-    requests.
-  - It draws *display lists*: immutable Norn data describing rectangles,
-    paths, images and glyph runs. It draws them on the GPU.
-  - It shapes and lays out text: font fallback, bidi, line breaking.
-  - Likely crates: `winit` (windows and events), `wgpu` (rendering),
-    `cosmic-text` or `parley` (text), `accesskit` (accessibility).
-- **Norn: everything above that.** Widgets, layout (flex and grid),
-  styling, focus, animation and state, in a declarative style that suits
-  immutable data:
-  - application state lives in atoms;
-  - a view is a function from state to a widget tree;
-  - the library diffs trees and re-lays out only what changed.
-- **Live programming applies to UIs too.** Redefining a view function at the
-  REPL updates the open window. Windows are image resources, so a restored
-  image reopens them through `on-image-restore`.
-- **Risk: speed before the optimiser.** Layout runs in Norn every frame,
-  and the optimising compiler comes later (M10). Mitigations: incremental
-  layout, a retained tree, and Rust doing the per-pixel and per-glyph work.
-  Measuring this early is part of M7.5.
+- **A package, not the stdlib.** `norn.ui` and its backends live in their
+  own repository, `norn-ui`, versioned from 0.1 with semver from the
+  start; the editor pins a version. The widget API will change far faster
+  than the language and shouldn't be sealed at M8, the core shouldn't
+  carry a GPU stack, and backends need their own release cycle.
+- **The runtime gains two general hooks, nothing UI-specific:**
+  - *main-thread handoff*: the runtime can give the process's first thread
+    to an extension (macOS requires the event loop there);
+  - *a native extension API*: a Rust crate can register primitives and
+    post messages into channels, following the rule for threads outside
+    the carriers (runtime.md §5.5).
+
+  Both serve other uses too (audio, game loops). Until loadable extensions
+  have a stable ABI, linking is static: the `norn-ui` repository builds its
+  own `norn` binary from the runtime crates plus the UI crates. Loadable
+  extensions come later, perhaps with M9's full FFI.
+- **Own drawing, with the OS for the rest.** The OS still supplies the
+  menu bar, file dialogs, clipboard, IME, accessibility, drag and drop and
+  notifications. Native widgets (AppKit, GTK, Win32) were rejected: they
+  can't take the themed look, the editor, terminal and grid would be
+  custom views anyway, and each backend would become a whole toolkit.
+- **A thick protocol.** One shared Rust UI engine, the same on every
+  platform, owns:
+  - the retained node tree: containers, text, shapes, images, and
+    controls such as the code-editor surface and a virtualized grid;
+  - layout (flex and grid, probably `taffy`), styling, text shaping and
+    layout, GPU painting, hit-testing, scrolling, caret blink and
+    animation.
+
+  Norn (`norn.ui`) owns declarative views over atom state, tree diffing,
+  event handlers, commands and the widget library.
+  - Norn sends tree patches. Rust sends semantic events over channels (a
+    click on node N; text field N changed). Raw pointer motion never
+    crosses.
+  - The editor surface asks Norn for the lines in its viewport, so a
+    keystroke sends only the changed lines and their style spans; the rope
+    stays Norn data.
+  - A thin design, with Norn computing layout and display lists every
+    frame, was rejected: it puts Norn on every frame's critical path before
+    M10's optimiser.
+- **Text** shaping and layout (font fallback, bidi, line breaking) live in
+  the shared engine (`parley` or `cosmic-text`), never per backend.
+- **Backends are platform layers only:** windows, the GPU surface, the
+  event loop, menus, dialogs, IME and accessibility. macOS first, then
+  Linux and Windows (M12), plus a *headless* backend that renders to images
+  and replays scripted input for tests and CI, built early.
+- **Idle must be idle:**
+  - there is no render loop: drawing happens only on an event, a state
+    change or a running animation;
+  - only the damaged area is repainted;
+  - nothing animates forever, and the display's frame timer runs only while
+    an animation is active;
+  - the caret blink repaints only the caret rectangle, and stops when the
+    window loses focus and after a while without typing;
+  - hidden or minimised windows draw nothing;
+  - the engine asks for the low-power (integrated) GPU;
+  - streaming updates are coalesced to at most one layout pass per frame.
+
+  The engine counts frames drawn, area repainted and layout passes, so
+  headless tests can assert, say, "no frames in 5 s idle" and "one
+  keystroke repaints at most one line".
+- **Every widget, webviews included.** A `native-view` node reserves a
+  rectangle, and the backend places a real OS view there, keeping its
+  position and clipping in step with layout and scrolling.
+  - Webviews use `wry` (WKWebView, WebKitGTK, WebView2), with two-way
+    JavaScript↔Norn messages on channels and custom URL schemes. They're a
+    separate optional package, `norn-ui-webview`, so apps that don't use
+    one don't link WebKit.
+  - Other OS views (PDF, video, maps) come the same way.
+  - Custom controls can be written in Norn on a canvas node, with drawing
+    commands and damage tracking.
+  - Known limits:
+    - native views sit above our drawing, so our popups (menus,
+      completion, tooltips) are separate small OS windows;
+    - native views can't be themed, made translucent or animated with
+      transforms;
+    - focus moving between our controls and a native view needs care;
+    - headless screenshots show a placeholder for them.
+- **Processes.** The editor is its own Norn process with the UI engine
+  linked in; the code being edited runs in a separate `norn` process over
+  the editor protocol. A crash or runaway loop in user code can't freeze the
+  editor, and the language runtime never loads a GPU stack. Other people's
+  GUI apps run `norn.ui` in their own process.
+- **Live programming applies to UIs too.** Redefining a view function at
+  the REPL updates the open window. Windows are image resources, so a
+  restored image reopens them through `on-image-restore`.
+- **Scope of `norn.ui` 0.1**, drawn from Xeon Studio (about 18k lines of
+  Clojure):
+  - window, title bar, menus (app and context), dialogs, tooltips, themes;
+  - resizable splits, dock areas with tabs that drag between them, an
+    activity bar, a top bar with chips, a status bar;
+  - buttons, toggles, dropdowns, text fields, a tree with icons and
+    coloured labels, virtualized lists and grids;
+  - the code-editor surface: syntax colours, brackets coloured by depth,
+    inline results, squiggles, a gutter, completion and signature popups;
+  - a REPL console, rich text flow (Markdown, chat), a cell-grid terminal
+    view, SVG icons.
+- **The editor is essentially Xeon Studio rebuilt in Norn** (decided
+  2026-11-13), on `norn.ui`, with its full feature set:
+  - the explorer with Git status, and the project, outline and
+    source-control views;
+  - dock areas with tabs that drag between them;
+  - the REPL, Problems, Debugger and Inspector;
+  - Markdown preview;
+  - the terminal;
+  - the API/HTTP workbench and the Databases view;
+  - AI chat (the Claude Code and Codex CLIs) and team chat.
+
+  Language support starts with Norn only. Common Lisp, Clojure and Racket
+  support (Swank, nREPL, their indentation and highlighting) can come
+  later, if wanted. So `norn.ui` 0.1 needs everything in the scope list
+  above: the terminal's cell-grid view, the virtualized grid, rich text
+  flow for Markdown and chat, and the code-editor surface.
+- **Phased panels** (decided 2026-11-13). M7.6's editor ships without the
+  three panels whose libraries come later; its done-check is unchanged
+  (Norn's own development happens in the editor). Each phased panel
+  arrives when its library lands, so the editor exercises that library too:
+  - the API/HTTP workbench follows M9's HTTP client;
+  - the Databases view follows M9's database drivers (SQLite first);
+  - the terminal panel follows pseudo-terminal support in `norn.process`
+    (in M9's library list; small, so it can come earlier if convenient).
+
+  Everything else is in M7.6: the explorer, Git status and source control
+  (through the `git` command), project and outline views, dock tabs, the
+  REPL, Problems, Debugger and Inspector, Markdown preview, and AI chat and
+  team chat (the `claude` and `codex` command-line tools plus `norn.json`).
+  `norn.ui` 0.1 still includes the terminal cell-grid view and the
+  virtualized grid, as general widgets, but they can land in a later 0.x
+  release if M7.5 runs long.
 
 ---
 
@@ -730,9 +838,11 @@ stdlib   (Norn)
 5. ~~**Primary audience**~~ — decided: Norn is a general-purpose language,
    developed by one person to start with. Its first real program is a
    VS Code-style editor made for Norn, written in Norn (runtime.md §12,
-   M7.6), on the `norn.ui` library (M7.5).
-6. ~~**The editor's UI technology**~~ — decided: native rendering, with a
-   full UI library, `norn.ui`, as the driving goal (§9.1).
+   M7.6), on `norn.ui`, a versioned package in its own repository (§9.1).
+   M7.5 adds the runtime hooks it needs.
+6. ~~**The editor's UI technology**~~ — decided: our own GPU drawing of a
+   retained, themed control tree (JavaFX-style), with OS views such as
+   webviews embeddable; `norn.ui` is a separate package (§9.1).
 7. ~~**License**~~ — decided: MIT.
 8. ~~**Versioning**~~ — decided: semantic versioning per module, enforced
    by `norn api-diff`; a breaking change needs a major version and a

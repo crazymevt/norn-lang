@@ -1,0 +1,79 @@
+;;;; norn.pprint — printing data so that it fits a width.
+;;;;
+;;;; Anything that fits on the rest of the line prints as pr-str prints it;
+;;;; a collection that doesn't puts one item per line, indented to sit under
+;;;; its first item. A list that starts with a symbol (code) keeps the
+;;;; symbol and its first argument together and indents the rest by two.
+
+(ns norn.pprint
+  (:require [norn.string :as s]))
+
+(def ^:dynamic *width* "The default line width." 80)
+
+(defn- spaces [n] (s/repeat-str n " "))
+
+(declare render)
+
+(defn- block
+  "Items after open, then close. Small items (not collections) fill each
+  line as far as width allows; otherwise one item per line. Continuation
+  lines are indented to col."
+  [open items close col width]
+  (if (not-any? coll? items)
+    (let [words (map pr-str items)]
+      (loop [out (str open (first words)) at (+ col (s/width (first words))) words (next words)]
+        (if-let [w (first words)]
+          (let [ww (s/width w)]
+            (if (<= (+ at 1 ww 1) width)
+              (recur (str out " " w) (+ at 1 ww) (next words))
+              (recur (str out "\n" (spaces col) w) (+ col ww) (next words))))
+          (str out close))))
+    (let [sep (str "\n" (spaces col))]
+      (str open (s/join sep (map (fn [x] (render x col width)) items)) close))))
+
+(defn- render-entries [m col width]
+  (let [col (inc col)
+        sep (str ",\n" (spaces col))]
+    (str "{"
+         (s/join sep
+                 (map (fn [[k v]]
+                        (let [kt (render k col width)
+                              flat (str kt " " (pr-str v))]
+                          (if (and (not (s/includes? kt "\n")) (<= (+ col (s/width flat)) width))
+                            flat
+                            (let [vcol (+ col (s/width kt) 1)]
+                              (if (and (not (s/includes? kt "\n")) (coll? v) (< vcol (- width 20)))
+                                (str kt " " (render v vcol width))
+                                (str kt "\n" (spaces (inc col)) (render v (inc col) width)))))))
+                      m))
+         "}")))
+
+(defn- render-list [xs col width]
+  (let [head (first xs)]
+    (if (and (symbol? head) (next xs))
+      (let [start (str "(" (pr-str head) " ")
+            first-arg (render (second xs) (+ col (s/width start)) width)
+            rest-col (+ col 2)]
+        (str start first-arg
+             (apply str (map (fn [x] (str "\n" (spaces rest-col) (render x rest-col width))) (nnext xs)))
+             ")"))
+      (block "(" xs ")" (inc col) width))))
+
+(defn- render [x col width]
+  (let [flat (pr-str x)]
+    (if (or (<= (+ col (s/width flat)) width) (not (coll? x)) (empty? x))
+      flat
+      (cond (map? x) (render-entries x col width)
+            (vector? x) (block "[" x "]" (inc col) width)
+            (set? x) (block "#{" x "}" (+ col 2) width)
+            (queue? x) (block "#queue [" x "]" (+ col 8) width)
+            (seqable? x) (render-list (seq x) col width)
+            :else flat))))
+
+(defn pprint-str "x pretty-printed to fit width (default *width*), as a string." 
+  ([x] (pprint-str x *width*))
+  ([x width] (render x 0 width)))
+
+(defn pprint "Print x pretty-printed to fit width, then a newline."
+  ([x] (println (pprint-str x)))
+  ([x width] (println (pprint-str x width))))

@@ -184,6 +184,27 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
         }
         Kind::Queue => write_seq(out, crate::colls::queue_items(v).into_iter(), "#queue [", "]", readably),
         Kind::Transient => out.push_str("#<transient>"),
+        Kind::Regex => {
+            let pat = v.field(0).as_str();
+            if readably {
+                // #"…": the pattern as written, with bare quotes escaped.
+                out.push_str("#\"");
+                let mut esc = false;
+                for c in pat.chars() {
+                    if esc {
+                        esc = false;
+                    } else if c == '\\' {
+                        esc = true;
+                    } else if c == '"' {
+                        out.push('\\');
+                    }
+                    out.push(c);
+                }
+                out.push('"');
+            } else {
+                out.push_str(pat);
+            }
+        }
         Kind::Var => {
             out.push_str("#'");
             out.push_str(v.var_ns().sym_name());

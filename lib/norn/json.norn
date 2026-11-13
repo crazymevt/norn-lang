@@ -1,0 +1,27 @@
+;;;; norn.json — JSON text to Norn data and back.
+;;;;
+;;;; Reading: objects become maps (keys as keywords unless :keywords false),
+;;;; arrays become vectors, numbers become integers (of any size) or floats,
+;;;; null becomes nil.
+;;;;
+;;;; Writing: maps (with string, keyword, symbol or number keys) become
+;;;; objects; vectors, lists, sets and other sequences become arrays;
+;;;; keywords, symbols and characters become strings; ratios become floats.
+;;;; NaN, the infinities, and other values are an error.
+
+(ns norn.json)
+
+(defn read-string
+  "The value of JSON text s. Options: :keywords (default true) makes object
+  keys keywords; false keeps them strings."
+  [s & {:keys [keywords] :or {keywords true}}]
+  (%json-read s keywords))
+
+(defn write-string
+  "JSON text for x. Options: :pretty indents two spaces per level; :ascii
+  escapes every non-ASCII character as \\uXXXX."
+  [x & {:keys [pretty ascii]}]
+  (%json-write x pretty ascii))
+
+(defn read-file "The JSON value in file path (UTF-8)." [path & opts] (apply read-string (slurp path) opts))
+(defn write-file "Write x to path as JSON." [path x & opts] (spit path (apply write-string x opts)))

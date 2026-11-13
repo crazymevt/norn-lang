@@ -275,6 +275,7 @@ pub(crate) fn size_words(kind: Kind, w: impl Fn(usize) -> usize) -> usize {
         Kind::SNode => 7,
         Kind::Queue => 5,
         Kind::Transient => 7,
+        Kind::Regex => 3,
     }
 }
 
@@ -350,7 +351,7 @@ pub(crate) fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
         Kind::String | Kind::Bytes | Kind::Float | Kind::Range | Kind::Code | Kind::EmptyList | Kind::Claim | Kind::BigInt => {}
         Kind::Ratio => fields(&[0, 1], visit),
         Kind::Stream => fields(&[1], visit),
-        Kind::Reduced => fields(&[0], visit),
+        Kind::Reduced | Kind::Regex => fields(&[0], visit),
         Kind::Sorted => fields(&[crate::colls::SORTED_ROOT], visit),
         Kind::SNode => fields(&[0, 1, 2, 3], visit),
         Kind::Queue => fields(&[crate::colls::Q_FRONT, crate::colls::Q_REAR], visit),

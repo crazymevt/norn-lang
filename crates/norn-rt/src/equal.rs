@@ -41,6 +41,7 @@ pub fn hash(v: Value) -> u64 {
     }
     match v.obj_kind() {
         Kind::String => mix64(hash_str(v.as_str())),
+        Kind::Regex => mix64(hash_str(v.field(0).as_str()) ^ 0x7e9e),
         Kind::Bytes => {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ 0xb7e5;
             for &b in v.as_bytes() {
@@ -200,6 +201,7 @@ pub fn equal(a: Value, b: Value) -> bool {
     }
     match a.obj_kind() {
         Kind::String => a.as_str() == b.as_str(),
+        Kind::Regex => a.field(0).as_str() == b.field(0).as_str(),
         Kind::Bytes => a.as_bytes() == b.as_bytes(),
         // `=` is an equivalence: NaN equals NaN (`==` keeps IEEE).
         Kind::Float => {
