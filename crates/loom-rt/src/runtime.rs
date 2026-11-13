@@ -150,6 +150,22 @@ impl Runtime {
             .or_insert_with(|| Box::leak(Box::new(Namespace { name, mappings: RwLock::new(HashMap::new()) })))
     }
 
+    /// Visit every value the runtime tables keep alive (GC roots).
+    pub fn visit_roots(&self, f: &mut dyn FnMut(Value)) {
+        self.symbols.lock().unwrap().values().for_each(|&v| f(v));
+        self.keywords.lock().unwrap().values().for_each(|&v| f(v));
+        for ns in self.namespaces.lock().unwrap().values() {
+            f(ns.name);
+            for (k, v) in ns.mappings() {
+                f(k);
+                f(v);
+            }
+        }
+        for v in [self.empty_list, self.empty_vector, self.empty_map, self.empty_set, self.empty_array] {
+            f(v);
+        }
+    }
+
     pub fn all_namespaces(&self) -> Vec<&'static Namespace> {
         self.namespaces.lock().unwrap().values().copied().collect()
     }
@@ -167,5 +183,12 @@ impl Runtime {
             }
             None => ns.lookup(sym).or_else(|| core.lookup(sym)),
         }
+    }
+}
+
+/// GC roots held by the runtime tables (nothing before `init`).
+pub fn for_each_root(f: &mut dyn FnMut(Value)) {
+    if let Some(r) = RT.get() {
+        r.visit_roots(f);
     }
 }

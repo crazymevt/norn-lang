@@ -74,6 +74,16 @@ impl<'a> Reader<'a> {
         Reader { src, pos: 0, fn_args: None }
     }
 
+    /// A reader starting at byte offset `pos`.
+    pub fn new_at(src: &'a str, pos: usize) -> Self {
+        Reader { src, pos: pos.min(src.len()), fn_args: None }
+    }
+
+    /// Current byte offset.
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+
     /// 1-based line number of the current position.
     pub fn line(&self) -> usize {
         self.src[..self.pos].matches('\n').count() + 1

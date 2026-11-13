@@ -128,25 +128,29 @@ This follows Chez Scheme's design. Each fiber's stack is a chain of **stack
 segments**, which are ordinary heap objects (class `StackSegment`).
 
 ```
- Fiber ──► current segment (2 KiB initial, doubling to 64 KiB)
-            ┌──────────────────────────┐
-            │ frame: fn, resume, size  │ ◄─ fp
-            │        slots …           │
-            │ frame …                  │
-            │ underflow frame ─────────┼──► previous segment ─► …
-            └──────────────────────────┘
+ Fiber ──► current segment (1 KiB initial, doubling to 256 KiB)
+            ┌───────────────────────────────────┐
+            │ header: capacity, prev segment,   │──► previous segment ─► …
+            │         prev fp, depth, live top  │
+            │ frame: fn, proto, resume, prev    │
+            │        registers …                │
+            │ frame …                           │ ◄─ top
+            └───────────────────────────────────┘
 ```
 
-- **Overflow:** at function entry, the frame size is compared against the
-  segment's limit. On overflow, a new segment is allocated and linked under
-  an underflow frame. Deep recursion is therefore bounded only by the heap
-  (with a configurable limit that signals `stack-exhausted`).
-- **Fiber switch** means saving the frame pointer into the old fiber and
-  loading the next fiber's. There are no registers to save between Loom calls
-  (§3.2) and no assembly context switching.
-- **Memory:** a parked fiber costs its fiber object plus a 2 KiB segment.
-  1M fibers ≈ 2–3 GB. Fibers that have never run hold no segment, so spawning
-  1M tasks that run in waves is far cheaper.
+- **Overflow:** when a frame doesn't fit, a new segment (double the size, up
+  to 32K words) is linked to the previous one through its header. Deep
+  recursion is bounded only by a per-fiber limit (32M words), which raises
+  `Stack overflow`.
+- **Live top:** each segment records its topmost live frame whenever a GC
+  could run (at safepoints, at parks, and when a newer segment is pushed). The
+  GC scans exactly the live words, never stale frames above the top.
+- **Fiber switch** means saving the segment and frame offset into the old
+  fiber and loading the next fiber's. There are no registers to save between
+  Loom calls (§3.2) and no assembly context switching.
+- **Memory (measured, M1):** a parked fiber costs about 1.7 KB in total
+  (fiber object, first segment, closure, waiter). 1M parked fibers use
+  1.73 GB of heap. A fiber gets its first segment when it starts running.
 
 ### 3.2 Calls compile to "push frame + tail call" **[decided]**
 
@@ -225,36 +229,56 @@ values rather than boxes.
 
 ### 4.1 GC: MMTk **[decided]**
 
-- **M0 runs on its own NoGC heap** (`loom-rt/src/heap.rs`: bump allocation
-  from 4 MiB zeroed chunks, never freed), behind the same `Mutator` API that
-  the MMTk binding will implement in M1. The rule that allocation never
-  collects (§4.3) was kept from the first commit.
-- **First real collector: `StickyImmix`** (generational Immix:
-  stop-the-world, parallel, mostly non-moving, defragments opportunistically).
+- **M1: MMTk 0.33, `Immix` plan built with `immix_non_moving`**
+  (`loom-rt/src/heap.rs`): parallel (one GC worker per core), stop-the-world,
+  and objects never move, so the interpreter's cached code and frame pointers
+  stay valid across a GC. Dynamic heap size, 64 MB up to 8 GB by default
+  (`LOOM_HEAP_MIN`, `LOOM_HEAP_MAX`).
+- **Next: generational `StickyImmix`** with `sticky_immix_non_moving_nursery`.
+  It needs write barriers on stores into possibly-old objects (var roots,
+  atoms, fiber, channel and scope fields; §4.4). Stack frames don't need
+  them, because frames are scanned through their fiber at every GC.
 - **Later: concurrent collection**, as MMTk's concurrent plans mature or
   through our own plan. **[open]**
 - **One MMTk mutator per carrier thread**, not per fiber. Fibers allocate from
   their carrier's thread-local buffer.
+- **Conses carry a one-word header** (`[layout][car][cdr]`, 24 bytes), because
+  MMTk reads every object's size from the object itself. Their pointer tag
+  still identifies them without a memory load.
 
 ### 4.2 Roots and safepoints **[decided]**
 
-Because Loom values only live in heap stack segments and in carrier
-"registers" saved at safepoints, the root set is small:
+Loom values live only in the heap (stack frames included), so the roots that
+live *outside* the heap are few (implemented in M1):
 
-- The fiber registry (every live fiber → its stack segments).
-- Global tables: namespaces → vars, the class registry, interned keywords.
-- Each carrier's saved register block.
-- The Rust handle stack (§4.3).
+- Runtime tables: interned symbols and keywords, namespaces → vars, the
+  shared empty collections.
+- Scheduler state: every carrier's run queue, the global queue, timers, root
+  fibers submitted by the host, and each carrier's *running* fiber.
+- Nothing else. A parked fiber is reachable from whatever will wake it
+  (a channel, a timer, the fiber it awaits); a parked fiber that nothing can
+  wake is garbage and is collected.
 
-A **safepoint poll** is a decrement-and-branch on a per-carrier `poll` word,
-placed at function entry and loop back-edges. The same poll serves three
-purposes:
+A fiber's stack is scanned when the GC traces the fiber object: it walks the
+segment chain and visits each segment's live words.
 
-| `poll` reaches ≤ 0 because… | Action |
+The **safepoint poll** sits at function entry (after the new frame is fully
+written) and at loop back-edges. Its fast path is a budget decrement plus one
+load of a global *attention* counter, compared with the value the carrier last
+saw. Anything that needs a busy carrier's attention bumps that counter:
+
+| Slow path taken because… | Action |
 |---|---|
-| reduction budget used up (normal) | yield fiber → preemption |
-| GC requested (set to `i64::MIN`) | park carrier for stop-the-world |
-| REPL interrupt / image save / debugger | park, then handle request |
+| reduction budget (2000) used up | yield, if other fibers are waiting |
+| stop-the-world requested | save stack top, block until the GC finishes |
+| `(gc)` or `LOOM_GC_STRESS` | save stack top, request a collection, block |
+| fiber cancelled / interrupted | raise `Cancelled` / `Interrupted` |
+| work submitted from outside (REPL, cancel) | handle it |
+
+The **safepoint protocol** (`loom-rt/src/safepoint.rs`) counts *running*
+participants: carriers executing Loom code, and the timer thread while it
+fires timers. Stopping the world waits until none is running. Idle carriers
+count as safe.
 
 ### 4.3 Rooting in Rust **[decided — revised in M0]**
 
@@ -271,11 +295,18 @@ that is only the seed compiler holding forms while it calls a macro.
 - **Risk:** a primitive that allocates enormously between safepoints
   (`(vec (range 1e9))`) over-commits the heap. That's acceptable: it's bounded
   by the size of the result, which has to be built anyway.
-- **To verify in M1:** MMTk must allow allocation without polling for GC
-  (over-commit on allocation failure). If it can't, primitives that
-  allocate in a loop will need handles.
-- **GC stress mode** (collect at every safepoint, poisoning freed memory)
-  still runs the whole test suite in CI.
+- **Verified in M1:** MMTk allocates with
+  `AllocationOptions { allow_overcommit: true, at_safepoint: false }`. A full
+  heap makes it *request* a collection, and the collection then starts
+  through our `stop_all_mutators`, which waits for every carrier to reach a
+  safepoint.
+- **Nested runs are GC-inhibited.** Rust code that re-enters Loom (the seed
+  compiler expanding macros, boot) holds values the GC can't see. While such a
+  run is active, the carrier's polls don't stop for a GC, which simply waits
+  for the run to end. The seed compiler is replaced in M4.
+- **GC stress mode:** `LOOM_GC_STRESS=N` forces a collection at every N-th
+  slow-path poll of every carrier. With N=1, the core suite completed
+  2,032,983 collections with 0 failures.
 
 ### 4.4 Barriers and publication **[decided]**
 
@@ -305,17 +336,29 @@ that is only the seed compiler holding forms while it calls a macro.
           ▲  global injector queue          └─────────────┘        └───────────────┘
 ```
 
-- **Work stealing** uses `crossbeam-deque`. A newly spawned fiber goes to the
-  local deque (LIFO slot for the most recent, for cache locality, as in
-  Go/Tokio).
-- **Fiber states:** `New → Runnable ⇄ Running → {Parked(reason), Done}`. Park
-  reasons: channel, I/O, timer, scope-join, lock, **debugger** (an unhandled
-  condition: the fiber waits with its stack intact).
-- **Blocking FFI:** the fiber enters `InNative`. If the monitor thread sees a
-  carrier stay in native code for more than about 50 µs, it starts a spare
-  carrier so the other cores stay busy (Go's sysmon approach).
-- **Preemption** via the reduction budget (§4.2). Defaults to about 4000
-  reductions, tunable per scope.
+- **As built in M1** (`loom-vm/src/sched.rs`):
+  - one carrier thread per core (`LOOM_THREADS` overrides), plus a timer thread;
+  - each carrier has a mutex-guarded run queue, and there is one global queue;
+  - a carrier takes from its own queue first, then the global one, then
+    steals from other carriers;
+  - every 61st pick checks the global queue first, as Go does, and fibers
+    preempted at the end of a time slice go to the global queue, so a busy
+    carrier can't starve fibers woken by the timer thread. (This was a real
+    starvation bug at one carrier.)
+  - A lock-free Chase-Lev deque is a later optimisation. The run queues are
+    GC roots, so a replacement must let the GC enumerate them.
+- **Fiber states:** `QUEUED → RUNNING → {PARKED, DONE}`, plus `NOTIFIED` for
+  a wake-up that arrives between registering a wait and committing the park.
+  The owner commits a park with a CAS `RUNNING → PARKED`; if that fails, the
+  fiber continues immediately. There are no lost wake-ups and no locks around
+  parking.
+- **Claims:** every wait is a heap `Waiter` with a `Claim`. Whoever CASes the
+  claim first (a channel partner, a timer, a canceller, a finishing fiber)
+  delivers the wake-up. An `alts!` shares one claim across its channels.
+- **Not built yet:** the I/O reactor (`mio`) and the monitor thread for
+  blocking FFI arrive with I/O and FFI (M7). The debugger park reason arrives
+  in M3.
+- **Preemption** via the reduction budget (§4.2): 2000 reductions per slice.
 
 ### 5.2 Dynamic bindings and conveyance **[decided]**
 
@@ -327,15 +370,21 @@ that is only the seed compiler holding forms while it calls a macro.
 - Condition handlers and restarts are just dynamic bindings, so they are
   conveyed into children too (design §5.3).
 
-### 5.3 Sync primitives in Rust **[proposed]**
+### 5.3 Sync primitives **[M1: atoms, channels, scopes built]**
+
+All shared mutable state is in the heap, guarded by one-word spinlocks inside
+the objects (`loom-rt/src/conc.rs`). There are no Rust-side allocations,
+finalisers or extra root tables.
 
 | Primitive | Implementation |
 |---|---|
-| `atom` | `AtomicU64` CAS on a tagged value, with a write barrier |
-| `var` | root slot (release store / acquire load) + flags + watchers |
-| `chan` | lock-protected ring buffer, plus parked-fiber wait queues for putters and takers; `select` registers on several and the first winner cancels the rest |
-| fiber-aware mutex | parks the fiber instead of blocking the carrier |
-| STM `ref` | MVCC in Loom on top of atoms and the locks (if kept in core) |
+| `atom` | `AtomicU64` CAS on a tagged value; `swap!` is a CAS loop written in Loom |
+| `var` | root slot (release store / acquire load) + flags |
+| `chan` | spinlock + optional ring buffer + FIFO queues of waiters (two lists each) for takers and putters; unbuffered channels hand values over directly. `alts!` locks its channels in address order and parks on all of them with one shared claim. `timeout` is a channel the timer thread closes. |
+| scope | children list, pending count, first failure, owner waiter. A failing child cancels its siblings; cancelling the owner cancels the tree. |
+| fiber-aware mutex | **not yet** |
+| STM `ref` | **not yet** (still open: core or library) |
+| dynamic bindings / conveyance (§5.2) | **not yet** (arrive with conditions in M3); a fiber inherits its creator's current namespace |
 
 ---
 
@@ -485,6 +534,7 @@ loom-lang/
     async/                   scopes, channels, processes, supervisors, parallel
     compiler/                expander, ANF, optimiser, codegen drivers
     repl/                    network REPL server
+  bench/                     benchmarks (bench/pingpong.loom: the M1 done-check)
   spikes/
     jit-spike/               platform checks for tier 1 and images (§7.4)
   docs/
@@ -520,7 +570,7 @@ together.
 | # | Milestone | Done when |
 |---|---|---|
 | M0 ✅ | Workspace, `Value`/object model, cons/vector/map/string, reader, printer, seed compiler, tier-0 VM on heap stacks, REPL; NoGC heap | `(reduce + (range 1000000))` at the REPL; macOS JIT spike works |
-| M1 | Fibers, scheduler, safepoints, `StickyImmix`, atoms, channels, scopes | 1M fibers ping-pong across all cores under GC stress |
+| M1 ✅ | Fibers, scheduler, safepoints, MMTk GC (non-moving Immix), atoms, channels, scopes | 1M fibers ping-pong across all cores under GC stress |
 | M2 | CLOS in Loom: `defclass`, layouts, generic functions, method combination, dispatch caches | Live `defmethod` while 8 cores call the generic function |
 | M3 | Conditions, restarts, parked-fiber debugger, REPL protocol | Fix a crashed fiber from the editor and resume it |
 | M4 | Real compiler in Loom, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
@@ -564,6 +614,44 @@ together.
 | `try`/conditions | M3 |
 | Transients | — (`map`/`into` allocate per element; harmless until there's a GC) |
 
+### 12.2 M1 status (2026-11-13)
+
+**Built:**
+- **Fibers on heap segmented stacks:** start, yield, park, resume.
+- **Work-stealing M:N scheduler:** one carrier per core plus a timer thread.
+- **Safepoint protocol, MMTk binding (non-moving Immix) and GC stress mode.**
+- **Concurrency API:**
+  - `spawn`, `with-scope`, `await`/`@`, `settle`, `cancel!`;
+  - `sleep`, `yield`;
+  - `chan`, `put!`, `take!`, `offer!`, `poll!`, `close!`, `alts!`, `timeout`;
+  - `atom`, `swap!`, `reset!`, `compare-and-set!`;
+  - `pmap`, `preduce`.
+- **All evaluation runs in fibers.** `eval` is an interpreter intrinsic, so evaluated code can park, and the REPL thread never touches the heap.
+
+**Measured** (release build, Apple M-series, 10 cores; `bench/pingpong.loom`):
+
+| Run | Result |
+|---|---|
+| 1M fibers alive at once, then 10M messages | ✅ 1.73 GB heap; 4.6 s with `LOOM_HEAP_MIN=3g` (1 GC); 21 s from the default 64 MB heap (161 GCs, mostly while spawning) |
+| 1M fibers, `LOOM_GC_STRESS=20` | ✅ 441 GCs, 68 s |
+| 40k fibers, `LOOM_GC_STRESS=1` | ✅ 65,694 GCs, 2M messages, checksums correct |
+| core suite, `LOOM_GC_STRESS=1` | ✅ 2,032,983 GCs, 0 failures |
+| suites ×10 at 1, 2, 3 and 10 carriers | ✅ 0 failures |
+
+**Found along the way:**
+- **Run-queue starvation at one carrier:** fixed with a global queue for preempted fibers and a periodic global-first pick (§5.1).
+- **Probable fragmentation:** under extreme GC stress (a collection every few milliseconds while 40k fibers were being spawned), MMTk reported 1.1 GB in use for about 70 MB of live data. The likely cause is that non-moving Immix keeps a whole 32 KB block for a few scattered survivors (not yet verified). The fix is opportunistic defragmentation, which moves objects, so the interpreter would have to reload cached pointers after a safepoint. **[open]**
+
+**Deferred** (unchanged from M0, plus):
+
+| Item | Arrives in |
+|---|---|
+| Dynamic bindings and conveyance | M3, with conditions |
+| `try` (tests use `settle` meanwhile) | M3 |
+| Error locations (`file:line`) for code loaded through `load-file`, which now runs in Loom | M3 |
+| I/O reactor, FFI monitor thread | M7 |
+| Generational GC (needs write barriers) | — |
+
 ---
 
 ## 13. Open questions
@@ -572,5 +660,6 @@ together.
    user-defined `=`/`hash`, which would push hash maps into Loom.
 2. **Multi-shot continuations** (§3.4): keep them out unless a need appears?
 3. **Concurrent GC** (§4.1): wait for MMTk, or plan our own?
-4. **MMTk over-commit** (§4.3): confirm that MMTk can allocate without
-   polling for GC. This is the first thing to check in M1.
+4. **Parked fibers nothing can wake** are currently collected silently
+   (§4.2). Should they instead be reported as a deadlock (as Go does), or
+   kept for the debugger (M3)?

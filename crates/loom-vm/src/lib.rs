@@ -3,10 +3,13 @@
 
 pub mod bytecode;
 pub mod compiler;
+pub mod conc;
 pub mod eval;
 pub mod prims;
 pub mod reader;
+pub mod sched;
 pub mod vm;
 
 pub use reader::{ReadError, Reader};
-pub use vm::{Error, INTERRUPT, Result, Vm};
+pub use sched::{Loom, RootDone, RootTask, start};
+pub use vm::{Error, Result, Vm};

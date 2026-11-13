@@ -6,9 +6,9 @@
 //! Code:       [n_instructions][u32 instructions, packed two per word]
 //! Proto:      [name][nfixed][variadic][nregs][consts: Array][code: Code]
 //! FnTemplate: [name][arities: Array<Proto>][nups][captures: Array<fixnum>]
-//! Closure:    [template][upval0 upval1 …]
+//! Closure:    [template][nups][upval0 upval1 …]   (size readable without the template)
 //! Primitive:  [name: Symbol][index][min-args][max-args | -1]
-//! Segment:    [capacity][prev-segment][prev-fp][depth][frames …]
+//! Segment:    [capacity][prev-segment][prev-fp][depth][top][frames …]
 //! ```
 
 use crate::heap::Mutator;
@@ -192,10 +192,11 @@ impl Value {
 
 pub fn closure_new(m: &mut Mutator, template: Value) -> Value {
     let n = template.template_nups();
-    let c = alloc(m, Kind::Closure, 1 + n);
+    let c = alloc(m, Kind::Closure, 2 + n);
     c.set_field(0, template);
+    c.set_word(1, n as u64);
     for i in 0..n {
-        c.set_field(1 + i, Value::NIL);
+        c.set_field(2 + i, Value::NIL);
     }
     c
 }
@@ -206,12 +207,16 @@ impl Value {
         self.field(0)
     }
     #[inline]
+    pub fn closure_nups(self) -> usize {
+        self.word(1) as usize
+    }
+    #[inline]
     pub fn closure_upval(self, i: usize) -> Value {
-        self.field(1 + i)
+        self.field(2 + i)
     }
     #[inline]
     pub fn closure_set_upval(self, i: usize, v: Value) {
-        self.set_field(1 + i, v)
+        self.set_field(2 + i, v)
     }
 }
 
@@ -244,45 +249,89 @@ impl Value {
     }
 }
 
-// ---- stack segments ---------------------------------------------------------
+// ---- stack segments and frames ---------------------------------------------
+//
+// Frame layout (runtime.md §3.3). Every word is a tagged value, so the GC can
+// scan a frame without side tables.
+//
+//  +0 fn      closure being executed
+//  +1 proto   arity being executed; frame size = HDR + proto.nregs
+//  +2 resume  pc to continue at (fixnum)
+//  +3 prev    caller frame offset in this segment, or PREV_SEG_START / PREV_BOUNDARY
+//  +4 … registers
 
-pub const SEG_HEADER: usize = 4;
+pub const HDR: usize = 4;
+pub const F_FN: usize = 0;
+pub const F_PROTO: usize = 1;
+pub const F_RESUME: usize = 2;
+pub const F_PREV: usize = 3;
+pub const PREV_SEG_START: i64 = -1;
+pub const PREV_BOUNDARY: i64 = -2;
+
+pub const SEG_HEADER: usize = 5;
+const SEG_CAP: usize = 0;
+const SEG_PREV: usize = 1;
+const SEG_PREV_FP: usize = 2;
+const SEG_DEPTH: usize = 3;
+const SEG_TOP: usize = 4;
 
 pub fn segment_new(m: &mut Mutator, capacity: usize) -> Value {
     let s = alloc(m, Kind::Segment, SEG_HEADER + capacity);
-    s.set_word(0, capacity as u64);
-    s.set_field(1, Value::NIL);
-    s.set_field(2, Value::fix(0));
-    s.set_field(3, Value::fix(0));
+    s.set_word(SEG_CAP, capacity as u64);
+    s.set_field(SEG_PREV, Value::NIL);
+    s.set_field(SEG_PREV_FP, Value::fix(0));
+    s.set_field(SEG_DEPTH, Value::fix(0));
+    s.set_field(SEG_TOP, Value::fix(-1));
     s
 }
 
 impl Value {
     #[inline]
     pub fn seg_capacity(self) -> usize {
-        self.word(0) as usize
+        self.word(SEG_CAP) as usize
     }
     #[inline]
     pub fn seg_prev(self) -> Value {
-        self.field(1)
+        self.field(SEG_PREV)
     }
     #[inline]
     pub fn seg_prev_fp(self) -> usize {
-        self.field(2).as_fixnum() as usize
+        self.field(SEG_PREV_FP).as_fixnum() as usize
     }
     #[inline]
     pub fn seg_depth(self) -> usize {
-        self.field(3).as_fixnum() as usize
+        self.field(SEG_DEPTH).as_fixnum() as usize
     }
     pub fn seg_link(self, prev: Value, prev_fp: usize, depth: usize) {
-        self.set_field(1, prev);
-        self.set_field(2, Value::fix(prev_fp as i64));
-        self.set_field(3, Value::fix(depth as i64));
+        self.set_field(SEG_PREV, prev);
+        self.set_field(SEG_PREV_FP, Value::fix(prev_fp as i64));
+        self.set_field(SEG_DEPTH, Value::fix(depth as i64));
+    }
+    /// Offset of the topmost live frame, or -1 if the segment holds none.
+    /// Kept exact whenever a GC can run: at safepoints, parks, and when a
+    /// newer segment is pushed on top.
+    #[inline]
+    pub fn seg_top(self) -> i64 {
+        self.field(SEG_TOP).as_fixnum()
+    }
+    #[inline]
+    pub fn seg_set_top(self, top: i64) {
+        self.set_field(SEG_TOP, Value::fix(top))
     }
     /// First frame word.
     #[inline]
     pub fn seg_data(self) -> *mut Value {
         // SAFETY: frames start after the segment header.
         unsafe { self.payload_ptr().add(SEG_HEADER) as *mut Value }
+    }
+    /// Number of live words at the start of the segment's frame area.
+    pub fn seg_live_words(self) -> usize {
+        let top = self.seg_top();
+        if top < 0 {
+            return 0;
+        }
+        // SAFETY: top is a valid frame offset.
+        let proto = unsafe { *self.seg_data().add(top as usize + F_PROTO) };
+        top as usize + HDR + proto.proto_nregs()
     }
 }

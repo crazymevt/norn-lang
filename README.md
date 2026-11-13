@@ -8,10 +8,11 @@ runtime built for many cores.
 - Language design: [docs/design.md](docs/design.md)
 - Runtime architecture and milestones: [docs/runtime.md](docs/runtime.md)
 
-**Status: M0** — a bytecode interpreter on heap-allocated stacks, persistent
-collections, macros and a REPL. No garbage collector yet (M1); see
-[runtime.md §12.1](docs/runtime.md#121-m0-status-2026-11-13) for what exists
-and what's deferred.
+**Status: M1** — a bytecode interpreter running millions of fibers on a
+work-stealing scheduler (one carrier per core), with channels, `alts!`,
+atoms, structured concurrency scopes and a parallel MMTk garbage collector.
+See [runtime.md §12](docs/runtime.md#12-revised-milestones) for what exists
+and what's next.
 
 ## Build and run
 
@@ -24,16 +25,21 @@ cargo build --release
 ./target/release/loom tests/loom/core_test.loom
 cargo test                                  # Rust + Loom test suites
 cargo run -p jit-spike --release            # tier-1 platform checks
+./target/release/loom -e '(do (load-file "bench/pingpong.loom") (ping-pong 500000 10))'
+                                            # 1M fibers ping-pong
+LOOM_GC_STRESS=1 ./target/release/loom tests/loom/conc_test.loom
+                                            # force a GC at every slow-path poll
 ```
 
 ## Layout
 
 ```
 crates/loom-rt   values, heap, objects, collections, printer, namespaces
-crates/loom-vm   reader, seed compiler, bytecode interpreter, primitives
+crates/loom-vm   reader, seed compiler, interpreter, scheduler, channels, primitives
 crates/loom      the `loom` binary
 lib/core         loom.core, written in Loom
 tests/loom       Loom test suites
+bench/           benchmarks
 spikes/          throwaway platform experiments
 docs/            design documents
 ```

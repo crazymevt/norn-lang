@@ -1,0 +1,30 @@
+;;;; M1 done-check: `pairs` pairs of fibers ping-pong `rounds` messages over
+;;;; unbuffered channels. Every fiber is spawned and parked on a start latch
+;;;; first, so all of them are alive at once; then they all run, across all
+;;;; carriers. Usage: loom bench/pingpong.loom  (PAIRS / ROUNDS via -e)
+
+(defn ping-pong [pairs rounds]
+  (let [start (chan)
+        t0 (nano-time)
+        sums (with-scope [s]
+               (let [receivers
+                     (loop [i 0 acc []]
+                       (if (< i pairs)
+                         (let [a (chan) b (chan)]
+                           (spawn s (take! start) (dotimes [k rounds] (put! a k) (take! b)))
+                           (recur (inc i)
+                                  (conj acc (spawn s (take! start)
+                                                   (loop [k 0 sum 0]
+                                                     (if (< k rounds)
+                                                       (let [v (take! a)] (put! b :ok) (recur (inc k) (+ sum v)))
+                                                       sum))))))
+                         acc))]
+                 (println "spawned" (* 2 pairs) "fibers, all parked; live" (:live (fiber-stats))
+                          "| heap" (quot (heap-bytes) 1000000) "MB | GCs so far" (gc-count)
+                          "|" (quot (- (nano-time) t0) 1000000) "ms")
+                 (close! start)
+                 (map await receivers)))
+        ms (quot (- (nano-time) t0) 1000000)]
+    (println "done:" (* 2 pairs rounds) "messages in" ms "ms on" (carrier-count) "carriers | GCs" (gc-count))
+    (assert (= (reduce + sums) (* pairs (quot (* rounds (dec rounds)) 2))) "wrong sum")
+    :ok))

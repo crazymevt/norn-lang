@@ -186,6 +186,23 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
             write_name(out, v.proto_name());
             out.push('>');
         }
+        Kind::Fiber => {
+            use crate::conc::fiber;
+            let state = match v.fiber_state().load(std::sync::atomic::Ordering::Acquire) {
+                fiber::QUEUED => "queued",
+                fiber::RUNNING | fiber::NOTIFIED => "running",
+                fiber::PARKED => "parked",
+                _ => "done",
+            };
+            let _ = write!(out, "#<fiber {} {state}>", v.fiber_id());
+        }
+        Kind::Atom => {
+            out.push_str("#<atom ");
+            write_value(out, v.atom_get(), readably);
+            out.push('>');
+        }
+        Kind::Chan => out.push_str("#<channel>"),
+        Kind::Scope => out.push_str("#<scope>"),
         k => {
             let _ = write!(out, "#<{k:?}>");
         }

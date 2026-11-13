@@ -6,6 +6,15 @@
 ;;;; primitives. Collection functions are eager (design.md §3.3) until lazy
 ;;;; streams and transducers arrive.
 
+;;; ---- evaluation --------------------------------------------------------------
+
+;; `eval` of a top-level (do …) calls this, so each form is compiled only after
+;; the previous one ran (a macro defined early can be used later).
+(def %eval-all
+  (fn* %eval-all [forms]
+    (loop* [s (seq forms) last nil]
+      (if s (recur (next s) (eval (first s))) last))))
+
 ;;; ---- defining things ------------------------------------------------------
 
 (def defmacro
@@ -331,6 +340,102 @@
 (defn sort-by
   ([keyfn coll] (sort-by keyfn compare coll))
   ([keyfn cmp coll] (sort (fn [a b] (cmp (keyfn a) (keyfn b))) coll)))
+
+;;; ---- loading code ------------------------------------------------------------------
+
+(defn %eval-reader [r]
+  (loop [last nil]
+    (let [f (%read r)]
+      (if (%eof? f) last (recur (eval f))))))
+
+(defn load-string [s] (%eval-reader (%reader s "<string>")))
+
+(defn load-file [path]
+  (let [ns (current-ns)
+        v (%eval-reader (%reader (slurp path) path))]
+    (in-ns ns)
+    v))
+
+;; Root fibers started by the host (REPL, `loom -e`, tests).
+(defn %eval-root [s] (load-string s))
+(defn %repl-eval [s]
+  (let [r (%reader s "<repl>")]
+    (loop []
+      (let [f (%read r)]
+        (when-not (%eof? f)
+          (prn (eval f))
+          (recur))))))
+
+;;; ---- concurrency (design.md §6) ---------------------------------------------------
+
+(defmacro spawn
+  "Run body in a new fiber inside scope s; returns the fiber."
+  [s & body]
+  `(%scope-spawn ~s (fn* [] ~@body)))
+
+(defmacro spawn-detached
+  "Run body in a new fiber that belongs to no scope."
+  [& body]
+  `(%spawn (fn* [] ~@body)))
+
+(defn %scope-run [s thunk]
+  (let [body (%scope-spawn s thunk)]
+    (%scope-join s)
+    (%scope-result s body)))
+
+(defmacro with-scope
+  "Structured concurrency: body runs in a fiber of a new scope bound to s, and
+  the form returns only when every fiber spawned in s has finished. If any of
+  them fails, the others are cancelled and the error is re-raised here."
+  [binding & body]
+  (let [s (first binding)]
+    `(let* [~s (%scope)] (%scope-run ~s (fn* [] ~@body)))))
+
+(defn settle
+  "Wait for fiber f without raising: {:value v} or {:error message}."
+  [f]
+  (%join f)
+  (let [e (fiber-error f)]
+    (if e {:error e} {:value (await f)})))
+
+(defn swap! [a f & args]
+  (loop []
+    (let [old (deref a)
+          new (apply f old args)]
+      (if (compare-and-set! a old new) new (recur)))))
+
+(def >! put!)
+(def <! take!)
+
+(defn- %chunk-size [n]
+  (let [parts (* 4 (carrier-count))]
+    (max 1 (quot (+ n (dec parts)) parts))))
+
+(defn pmap
+  "Parallel map: splits coll into chunks, one fiber per chunk. Order-preserving."
+  [f coll]
+  (let [v (vec coll) n (count v) size (%chunk-size n)]
+    (with-scope [s]
+      (let [parts (loop [lo 0 acc []]
+                    (if (< lo n)
+                      (let [hi (min n (+ lo size))]
+                        (recur hi (conj acc (spawn s (loop [j lo out []]
+                                                       (if (< j hi) (recur (inc j) (conj out (f (nth v j)))) out))))))
+                      acc))]
+        (reduce (fn [acc t] (into acc (await t))) [] parts)))))
+
+(defn preduce
+  "Parallel reduce: f must be associative and init its identity."
+  [f init coll]
+  (let [v (vec coll) n (count v) size (%chunk-size n)]
+    (with-scope [s]
+      (let [parts (loop [lo 0 acc []]
+                    (if (< lo n)
+                      (let [hi (min n (+ lo size))]
+                        (recur hi (conj acc (spawn s (loop [j lo r init]
+                                                       (if (< j hi) (recur (inc j) (f r (nth v j))) r))))))
+                      acc))]
+        (reduce (fn [acc t] (f acc (await t))) init parts)))))
 
 ;;; ---- vars -------------------------------------------------------------------------
 

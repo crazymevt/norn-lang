@@ -31,8 +31,9 @@ pub struct PrimDef {
     pub f: PrimFn,
 }
 
-/// Index of `apply`, which the interpreter handles itself.
+/// Indices of `apply` and `eval`, which the interpreter handles itself.
 pub const APPLY: usize = 0;
+pub const EVAL: usize = 1;
 
 const VAR: Option<usize> = None;
 
@@ -44,6 +45,7 @@ macro_rules! prims {
 
 prims! {
     "apply" 2 VAR => |_, _| unreachable!("apply is handled by the interpreter");
+    "eval" 1 Some(1) => |_, _| unreachable!("eval is handled by the interpreter");
     // numbers
     "+" 0 VAR => |vm, a| arith(vm, a, Op::Add);
     "-" 1 VAR => |vm, a| arith(vm, a, Op::Sub);
@@ -134,11 +136,11 @@ prims! {
     "spit" 2 Some(2) => |_, a| { let p = text(a[0]); std::fs::write(&p, text(a[1])).map_err(|e| Error::new(format!("Can't write {p}: {e}")))?; Ok(Value::NIL) };
     "read-string" 1 Some(1) => |vm, a| { let s = text(a[0]); let mut r = crate::reader::Reader::new(&s); match r.read(vm) { Ok(v) => Ok(v), Err(crate::reader::ReadError::Eof) => Ok(Value::NIL), Err(e) => Err(Error::new(e.to_string())) } };
     // evaluation and namespaces
-    "eval" 1 Some(1) => |vm, a| vm.eval(a[0]);
     "macroexpand-1" 1 Some(1) => |vm, a| Ok(vm.macroexpand_1(a[0])?.0);
     "macroexpand" 1 Some(1) => |vm, a| vm.macroexpand(a[0]);
-    "load-file" 1 Some(1) => |vm, a| vm.load_file(&text(a[0]));
-    "load-string" 1 Some(1) => |vm, a| vm.load_str(&text(a[0]), "<string>");
+    "%reader" 2 Some(2) => |vm, a| { expect(a[0], Kind::String, "%reader")?; Ok(loom_rt::conc::reader_new(&mut vm.m, a[0], a[1])) };
+    "%read" 1 Some(1) => |vm, a| { expect(a[0], Kind::Reader, "%read")?; crate::eval::read_next(vm, a[0]) };
+    "%eof?" 1 Some(1) => |_, a| Ok(Value::bool(a[0] == Value::EOF));
     "in-ns" 1 Some(1) => |vm, a| { if !a[0].is_symbol() { return Err(type_err("in-ns", "a symbol", a[0])); } vm.ns = rt().find_or_create_ns(a[0]); Ok(a[0]) };
     "current-ns" 0 Some(0) => |vm, _| Ok(vm.ns.name);
     "all-ns" 0 Some(0) => |vm, _| { let names: Vec<Value> = rt().all_namespaces().iter().map(|n| n.name).collect(); Ok(list_from(&mut vm.m, &names)) };
@@ -153,6 +155,38 @@ prims! {
     // system
     "nano-time" 0 Some(0) => |_, _| { use std::sync::OnceLock; use std::time::Instant; static T0: OnceLock<Instant> = OnceLock::new(); Ok(Value::fix(T0.get_or_init(Instant::now).elapsed().as_nanos() as i64)) };
     "heap-bytes" 0 Some(0) => |_, _| Ok(Value::fix(loom_rt::heap::heap_bytes() as i64));
+    "gc" 0 Some(0) => |vm, _| { vm.want_gc = true; loom_rt::safepoint::bump_attention(); Ok(Value::NIL) };
+    "gc-count" 0 Some(0) => |_, _| Ok(Value::fix(loom_rt::heap::gc_count() as i64));
+    // fibers, scopes, channels, atoms
+    "%spawn" 1 Some(1) => |vm, a| Ok(crate::sched::spawn(vm, a[0], Value::NIL));
+    "%scope" 0 Some(0) => |vm, _| Ok(loom_rt::conc::scope_new(&mut vm.m));
+    "%scope-spawn" 2 Some(2) => |vm, a| { expect(a[0], Kind::Scope, "spawn")?; Ok(crate::sched::spawn(vm, a[1], a[0])) };
+    "%scope-join" 1 Some(1) => |vm, a| { expect(a[0], Kind::Scope, "%scope-join")?; crate::sched::scope_join(vm, a[0]) };
+    "%scope-result" 2 Some(2) => scope_result;
+    "await" 1 Some(1) => |vm, a| crate::conc::await_fiber(vm, a[0]);
+    "%join" 1 Some(1) => |vm, a| crate::conc::wait_fiber(vm, a[0], false);
+    "fiber-error" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "fiber-error")?; Ok(a[0].field(loom_rt::conc::fiber::ERROR)) };
+    "yield" 0 Some(0) => |vm, _| { if vm.can_park() { vm.suspend = Some(crate::vm::Suspend::Yield); } Ok(Value::NIL) };
+    "sleep" 1 Some(1) => |vm, a| { let ms = int(a[0], "sleep")?; crate::sched::sleep(vm, ms.max(0) as u64) };
+    "current-fiber" 0 Some(0) => |vm, _| Ok(vm.current);
+    "fiber?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Fiber)));
+    "done?" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "done?")?; Ok(Value::bool(a[0].fiber_state().load(std::sync::atomic::Ordering::Acquire) == loom_rt::conc::fiber::DONE)) };
+    "cancel!" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "cancel!")?; crate::sched::cancel(a[0], loom_rt::conc::fiber::CANCELLED); Ok(Value::NIL) };
+    "chan" 0 Some(1) => |vm, a| { let n = match a.first() { Some(&v) => int(v, "chan")?.max(0) as usize, None => 0 }; Ok(loom_rt::conc::chan_new(&mut vm.m, n)) };
+    "put!" 2 Some(2) => |vm, a| crate::conc::put(vm, a[0], a[1]);
+    "take!" 1 Some(1) => |vm, a| crate::conc::take(vm, a[0]);
+    "offer!" 2 Some(2) => |vm, a| crate::conc::offer(vm, a[0], a[1]);
+    "poll!" 1 Some(1) => |vm, a| crate::conc::poll(vm, a[0]);
+    "close!" 1 Some(1) => |_, a| { if !a[0].is(Kind::Chan) { return Err(type_err("close!", "a channel", a[0])); } crate::conc::close(a[0]); Ok(Value::NIL) };
+    "closed?" 1 Some(1) => |_, a| crate::conc::closed(a[0]);
+    "alts!" 1 VAR => crate::conc::alts;
+    "timeout" 1 Some(1) => |vm, a| { let ms = int(a[0], "timeout")?; Ok(crate::sched::timeout(vm, ms.max(0) as u64)) };
+    "atom" 1 Some(1) => |vm, a| Ok(loom_rt::conc::atom_new(&mut vm.m, a[0]));
+    "deref" 1 Some(1) => deref;
+    "reset!" 2 Some(2) => |_, a| { expect(a[0], Kind::Atom, "reset!")?; a[0].atom_set(a[1]); Ok(a[1]) };
+    "compare-and-set!" 3 Some(3) => |_, a| { expect(a[0], Kind::Atom, "compare-and-set!")?; Ok(Value::bool(a[0].atom_cas(a[1], a[2]))) };
+    "carrier-count" 0 Some(0) => |_, _| Ok(Value::fix(crate::sched::sched().n as i64));
+    "fiber-stats" 0 Some(0) => fiber_stats;
     "exit" 0 Some(1) => |_, a| { let _ = std::io::stdout().flush(); std::process::exit(a.first().map(|v| v.as_fixnum() as i32).unwrap_or(0)) };
 }
 
@@ -657,4 +691,43 @@ fn disassemble(_: &mut Vm, a: &[Value]) -> Result<Value> {
         s.push_str(&crate::bytecode::disassemble_proto(p));
     }
     out(&s, false)
+}
+
+fn scope_result(_: &mut Vm, a: &[Value]) -> Result<Value> {
+    expect(a[0], Kind::Scope, "%scope-result")?;
+    let failed = a[0].field(loom_rt::conc::scope::FAILED);
+    if !failed.is_nil() {
+        return Err(crate::sched::error_from_fiber(failed));
+    }
+    crate::sched::fiber_outcome(a[1])
+}
+
+fn deref(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let x = a[0];
+    if x.is(Kind::Atom) {
+        Ok(x.atom_get())
+    } else if x.is(Kind::Var) {
+        Ok(x.var_root())
+    } else if x.is(Kind::Fiber) {
+        crate::conc::await_fiber(vm, x)
+    } else {
+        Err(type_err("deref", "an atom, var or fiber", x))
+    }
+}
+
+fn fiber_stats(vm: &mut Vm, _: &[Value]) -> Result<Value> {
+    use std::sync::atomic::Ordering;
+    let s = crate::sched::sched();
+    let spawned = s.spawned.load(Ordering::Relaxed) as i64;
+    let finished = s.finished.load(Ordering::Relaxed) as i64;
+    let k = |vm: &mut Vm, n: &str| rt().keyword(&mut vm.m, None, n);
+    let kvs = [
+        k(vm, "spawned"),
+        Value::fix(spawned),
+        k(vm, "finished"),
+        Value::fix(finished),
+        k(vm, "live"),
+        Value::fix(spawned - finished),
+    ];
+    hash_map(vm, &kvs)
 }

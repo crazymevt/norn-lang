@@ -5,3 +5,4 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+mmtk = { version = "0.33.0", default-features = false, features = ["immix_non_moving"] }

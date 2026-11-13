@@ -6,7 +6,9 @@
 //!  word 2…  payload
 //! ```
 //!
-//! Conses are headerless: two words (car, cdr), identified by their tag.
+//! Conses have a one-word header (layout only) so the GC can find every
+//! object's size from the object itself: `[layout][car][cdr]`. Their tag
+//! still identifies them without touching memory.
 //!
 //! Accessors here are `unsafe` in spirit: they assume the value really is the
 //! kind of object the caller says it is. Callers check `is(kind)` first.
@@ -45,6 +47,14 @@ kinds! {
     Closure => "Closure",
     Primitive => "Primitive",
     Segment => "StackSegment",
+    Cons => "Cons",
+    Fiber => "Fiber",
+    Chan => "Channel",
+    Waiter => "Waiter",
+    Claim => "Claim",
+    Scope => "Scope",
+    Atom => "Atom",
+    Reader => "Reader",
 }
 
 /// Static per-kind descriptor. From M2 layouts become heap objects that also
@@ -70,14 +80,17 @@ pub fn alloc(m: &mut Mutator, kind: Kind, payload_words: usize) -> Value {
     Value(p as u64 | TAG_OBJ)
 }
 
+pub const CONS_WORDS: usize = 3;
+
 /// Allocate a cons cell.
 #[inline]
 pub fn cons(m: &mut Mutator, car: Value, cdr: Value) -> Value {
-    let p = m.alloc_words(2);
-    // SAFETY: two fresh words.
+    let p = m.alloc_words(CONS_WORDS);
+    // SAFETY: three fresh words.
     unsafe {
-        p.write(car.0);
-        p.add(1).write(cdr.0);
+        p.write(&LAYOUTS[Kind::Cons as usize] as *const Layout as u64);
+        p.add(1).write(car.0);
+        p.add(2).write(cdr.0);
     }
     Value(p as u64 | TAG_CONS)
 }
@@ -85,7 +98,7 @@ pub fn cons(m: &mut Mutator, car: Value, cdr: Value) -> Value {
 impl Value {
     #[inline]
     pub fn layout(self) -> &'static Layout {
-        debug_assert!(self.is_obj());
+        debug_assert!(self.is_obj() || self.is_cons());
         // SAFETY: every object's word 0 is a pointer into LAYOUTS.
         unsafe { &*(*self.ptr() as *const Layout) }
     }
@@ -139,15 +152,15 @@ impl Value {
     #[inline]
     pub fn car(self) -> Value {
         debug_assert!(self.is_cons());
-        // SAFETY: conses are two words.
-        unsafe { Value(*self.ptr()) }
+        // SAFETY: conses are [layout][car][cdr].
+        unsafe { Value(*self.ptr().add(1)) }
     }
 
     #[inline]
     pub fn cdr(self) -> Value {
         debug_assert!(self.is_cons());
-        // SAFETY: conses are two words.
-        unsafe { Value(*self.ptr().add(1)) }
+        // SAFETY: conses are [layout][car][cdr].
+        unsafe { Value(*self.ptr().add(2)) }
     }
 
     /// Identity hash, assigned on first request and stored in the header
@@ -179,6 +192,7 @@ impl Value {
             match self.obj_kind() {
                 Kind::EmptyList => "List",
                 Kind::Closure => "Function",
+                Kind::Fiber => "Fiber",
                 k => LAYOUTS[k as usize].name,
             }
         } else if self.is_nil() {
