@@ -36,13 +36,15 @@ use std::time::{Duration, Instant};
 
 // ---- atomic heap fields -------------------------------------------------------
 
-/// Fields read by other threads without the owner's lock (PARK, JOINING).
+/// Fields read by other threads without the owner's lock (PARK, JOINING,
+/// WAKE_*). Sequentially consistent: parking and cancellation rely on a
+/// store-then-load handshake on PARK/JOINING and CANCEL (see `cancel`).
 pub(crate) fn aset(obj: Value, field: usize, v: Value) {
-    obj.atomic_word(field).store(v.0, Ordering::Release);
+    obj.atomic_word(field).store(v.0, Ordering::SeqCst);
 }
 
 pub(crate) fn aget(obj: Value, field: usize) -> Value {
-    Value(obj.atomic_word(field).load(Ordering::Acquire))
+    Value(obj.atomic_word(field).load(Ordering::SeqCst))
 }
 
 fn list_items(v: Value) -> Vec<Value> {
@@ -368,11 +370,17 @@ fn finish(vm: &mut Vm, f: Value, r: Result<Value, Error>) {
 /// Cancel a fiber: it raises `Cancelled` (or `Interrupted`) at its next
 /// safepoint, or immediately if parked. Cancelling a fiber that is joining a
 /// scope cancels the scope's children too.
+///
+/// Handshake with a fiber that is about to park: the canceller stores CANCEL
+/// then loads PARK; the parker stores PARK then loads CANCEL (in `run_one`,
+/// before committing the park). With sequentially consistent accesses at
+/// least one side sees the other, and the waiter's claim makes sure exactly
+/// one of them delivers the wake-up.
 pub fn cancel(f: Value, code: i64) {
     if f.fiber_state().load(Ordering::Acquire) == fiber::DONE {
         return;
     }
-    let _ = f.atomic_word(fiber::CANCEL).compare_exchange(0, code as u64, Ordering::AcqRel, Ordering::Relaxed);
+    let _ = f.atomic_word(fiber::CANCEL).compare_exchange(0, code as u64, Ordering::SeqCst, Ordering::SeqCst);
     safepoint::bump_attention();
     let joining = aget(f, fiber::JOINING);
     if !joining.is_nil() {
@@ -602,6 +610,18 @@ fn run_one(vm: &mut Vm, f: Value) {
                 break;
             }
             Ok(Exit::Park) => {
+                // A cancel that arrived before our waiter was visible in PARK
+                // couldn't wake us; we must notice it ourselves, or we would
+                // park forever with the cancel flag set.
+                if f.fiber_cancel() != 0 {
+                    let w = aget(f, fiber::PARK);
+                    if !w.is_nil()
+                        && w.word(waiter::FLAGS) & waiter::NO_CANCEL_WAKE == 0
+                        && try_claim(w.field(waiter::CLAIM))
+                    {
+                        continue; // the loop top raises Cancelled
+                    }
+                }
                 match f.fiber_state().compare_exchange(
                     fiber::RUNNING,
                     fiber::PARKED,

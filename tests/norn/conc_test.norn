@@ -39,6 +39,23 @@
   (cancel! f)
   (is {:error "Cancelled"} (settle f)))
 
+;; Regression: a cancel arriving while the target is between starting a
+;; blocking operation and parking must still wake it (it used to park forever).
+(is :survived (do (dotimes [_ 2000]
+                    (let [f (spawn-detached (take! (chan)))]
+                      (cancel! f)
+                      (settle f)))
+                  :survived))
+(is :survived (do (dotimes [_ 500]
+                    (let [inner (atom nil)
+                          f (spawn-detached (with-scope [s]
+                                              (reset! inner (spawn s (take! (chan))))
+                                              (take! (chan))))]
+                      (cancel! f)
+                      (settle f)
+                      (when @inner (settle @inner))))
+                  :survived))
+
 ;;; structured concurrency
 (is 6 (with-scope [s]
         (let [a (spawn s 1) b (spawn s 2) c (spawn s 3)]

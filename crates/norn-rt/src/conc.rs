@@ -120,7 +120,7 @@ impl Value {
     }
     #[inline]
     pub fn fiber_cancel(self) -> u64 {
-        self.atomic_word(fiber::CANCEL).load(Ordering::Acquire)
+        self.atomic_word(fiber::CANCEL).load(Ordering::SeqCst)
     }
 }
 
