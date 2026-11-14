@@ -30,6 +30,7 @@ pub const LIBS: &[(&str, &str)] = &[
     ("norn.net", include_str!("../../../lib/norn/net.norn")),
     ("norn.ffi", include_str!("../../../lib/norn/ffi.norn")),
     ("norn.rope", include_str!("../../../lib/norn/rope.norn")),
+    ("norn.markdown", include_str!("../../../lib/norn/markdown.norn")),
     ("norn.string", include_str!("../../../lib/norn/string.norn")),
     ("norn.regex", include_str!("../../../lib/norn/regex.norn")),
     ("norn.json", include_str!("../../../lib/norn/json.norn")),

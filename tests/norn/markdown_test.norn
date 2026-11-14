@@ -1,0 +1,51 @@
+;;;; norn.markdown: Markdown to data and HTML.
+
+(ns markdown-test
+  (:require [norn.test :refer [is are deftest testing]] [norn.markdown :as md]))
+
+(deftest blocks
+  (are [src out] (= out (md/html src))
+    "# One\n## Two ##" "<h1>One</h1>\n<h2>Two</h2>\n"
+    "Title\n=====\n\nSub\n---" "<h1>Title</h1>\n<h2>Sub</h2>\n"
+    "one\ntwo\n\nthree" "<p>one two</p>\n<p>three</p>\n"
+    "***\n- - -" "<hr />\n<hr />\n"
+    "```norn\n(+ 1 2)\n```" "<pre><code class=\"language-norn\">(+ 1 2)\n</code></pre>\n"
+    "    indented\n    code" "<pre><code>indented\ncode\n</code></pre>\n"
+    "> quoted\n> text" "<blockquote>\n<p>quoted text</p>\n</blockquote>\n"
+    "> lazy\ncontinuation" "<blockquote>\n<p>lazy continuation</p>\n</blockquote>\n"))
+
+(deftest lists
+  (are [src out] (= out (md/html src))
+    "- a\n- b" "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n"
+    "1. a\n2. b" "<ol>\n<li>a</li>\n<li>b</li>\n</ol>\n"
+    "3) x" "<ol start=\"3\">\n<li>x</li>\n</ol>\n"
+    "- a\n\n- b" "<ul>\n<li><p>a</p>\n</li>\n<li><p>b</p>\n</li>\n</ul>\n"
+    "- a\n  - nested\n- b" "<ul>\n<li>a<ul>\n<li>nested</li>\n</ul>\n</li>\n<li>b</li>\n</ul>\n"
+    "- [ ] todo\n- [x] done"
+    "<ul>\n<li><input type=\"checkbox\" disabled> todo</li>\n<li><input type=\"checkbox\" checked disabled> done</li>\n</ul>\n")
+  (testing "a different bullet starts a new list"
+    (is (= 2 (count (filter (fn [b] (= :list (first b))) (rest (md/parse "- a\n+ b"))))))))
+
+(deftest inlines
+  (are [src out] (= out (md/html src))
+    "*em* and **strong** and ~~gone~~" "<p><em>em</em> and <strong>strong</strong> and <del>gone</del></p>\n"
+    "_em_ and __strong__" "<p><em>em</em> and <strong>strong</strong></p>\n"
+    "snake_case_name stays" "<p>snake_case_name stays</p>\n"
+    "a `code` span and ``a ` tick``" "<p>a <code>code</code> span and <code>a ` tick</code></p>\n"
+    "[Norn](https://example.com \"home\")" "<p><a href=\"https://example.com\" title=\"home\">Norn</a></p>\n"
+    "![logo](img/logo.png)" "<p><img src=\"img/logo.png\" alt=\"logo\" /></p>\n"
+    "<https://example.com>" "<p><a href=\"https://example.com\">https://example.com</a></p>\n"
+    "\\*not em\\*" "<p>*not em*</p>\n"
+    "a  \nb" "<p>a<br />\nb</p>\n"
+    "1 < 2 &amp; 3" "<p>1 &lt; 2 &amp; 3</p>\n"
+    "**bold *and em***" "<p><strong>bold <em>and em</em></strong></p>\n"))
+
+(deftest tables
+  (is (= (str "<table>\n<thead>\n<tr><th>Name</th><th>Size</th></tr>\n</thead>\n"
+              "<tbody>\n<tr><td>a</td><td><code>1</code></td></tr>\n<tr><td>b</td><td>2</td></tr>\n</tbody>\n</table>\n")
+         (md/html "| Name | Size |\n|------|-----:|\n| a | `1` |\n| b | 2 |")))
+  (is (= [:center :right nil] (:align (second (second (md/parse "a|b|c\n:-:|--:|---\n1|2|3")))))))
+
+(deftest data-and-text
+  (is (= [:doc [:heading {:level 1} "Hi"] [:paragraph "Some " [:em "text"] "."]] (md/parse "# Hi\n\nSome *text*.")))
+  (is (= "Hi\nSome text.\n" (md/text "# Hi\n\nSome *text*."))))
