@@ -59,7 +59,7 @@ its code is a guide, not a source to translate line by line.
 | Part | Work |
 |---|---|
 | 1.1 | **Editor-protocol ops** (`%serve-request`), each with a test in `tests/server.rs`. The ops: `:eval` with `:file` and `:line` (so errors and definitions point at the source); `:load-file`; `:interrupt` (a running evaluation); `:doc` (a var's docstring and arglists, for signature hints); `:definition` (file and line); `:macroexpand`; `:inspect` (structured, navigable values); `:ns-vars` (for outlines of loaded code); `:test` (run `norn.test`, results as data); and pushed `:out`/`:err` events, so printed output streams to the REPL as it happens. |
-| 1.2 | **File watching:** `norn.fs/watch` (the `notify` crate, delivered through a channel per §5.5), so the explorer, Git status and open documents follow changes made outside the editor. |
+| 1.2 | **File watching:** already there. `norn.fs/watch` (M6) gives a channel of create, modify and remove events, recursively if asked, and is tested in `lib_test`. Nothing to build. |
 | 1.3 | **`norn.markdown`:** CommonMark (headings, emphasis, links, images, lists, block quotes, code blocks, tables) parsed to Norn data, for the Markdown preview and the chats. In the stdlib, since sealing is still ahead. |
 | 1.4 | **What the editor turns up**, fixed as found and listed in the status: missing stdlib functions, slow paths (Norn's `sort-by` took about a second for 10,000 maps in a debug build), and protocol gaps. |
 

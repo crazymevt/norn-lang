@@ -77,6 +77,7 @@ prims! {
     "identical?" 2 Some(2) => |_, a| Ok(Value::bool(a[0] == a[1]));
     "hash" 1 Some(1) => |_, a| { forced(a)?; Ok(Value::fix((hash(a[0]) >> 2) as i64)) };
     "compare" 2 Some(2) => |_, a| Ok(Value::fix(match compare(a[0], a[1])? { Ordering::Less => -1, Ordering::Equal => 0, Ordering::Greater => 1 }));
+    "%sort-keyed" 2 Some(2) => sort_keyed;
     // type predicates
     "nil?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_nil()));
     "number?" 1 Some(1) => |_, a| Ok(Value::bool(norn_rt::numbers::is_number(a[0])));
@@ -310,7 +311,7 @@ prims! {
     "%args" 0 Some(0) => |vm, _| Ok(crate::sys::args(&mut vm.m));
     "%sys-info" 0 Some(0) => |vm, _| Ok(crate::sys::system(&mut vm.m));
     // string helpers for norn.rope: character and line arithmetic on a chunk
-    "%str-stats" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "%str-stats")?; let t = a[0].as_str(); let c = t.chars().count() as i64; let n = t.bytes().filter(|&b| b == b'\n').count() as i64; Ok(vec_from_slice(&mut vm.m, &[Value::fix(c), Value::fix(n)])) };
+    "%str-stats" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "%str-stats")?; let t = a[0].as_str(); let c = a[0].str_char_count() as i64; let n = t.bytes().filter(|&b| b == b'\n').count() as i64; Ok(vec_from_slice(&mut vm.m, &[Value::fix(c), Value::fix(n)])) };
     "%nth-newline-end" 2 Some(2) => |_, a| { expect(a[0], Kind::String, "%nth-newline-end")?; let k = int(a[1], "%nth-newline-end")?; let mut seen = 0; for (i, ch) in a[0].as_str().chars().enumerate() { if ch == '\n' { seen += 1; if seen == k { return Ok(Value::fix(i as i64 + 1)); } } } Ok(Value::NIL) };
     "%count-newlines" 2 Some(2) => |_, a| { expect(a[0], Kind::String, "%count-newlines")?; let i = int(a[1], "%count-newlines")?.max(0) as usize; Ok(Value::fix(a[0].as_str().chars().take(i).filter(|&c| c == '\n').count() as i64)) };
     // text (text.rs): norn.string, norn.regex, norn.json, format
@@ -572,6 +573,31 @@ fn compare_chain(a: &[Value], ok: fn(Ordering) -> bool) -> Result<Value> {
 }
 
 /// Total order used by `compare` and `sort`.
+/// `(%sort-keyed keys vals)`: vals (a vector) ordered by keys (a vector of
+/// the same length) under `compare`, stably. sort and sort-by use it when
+/// the comparison is the default one.
+fn sort_keyed(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let keys = to_vec(vm, a[0])?;
+    let vals = to_vec(vm, a[1])?;
+    if keys.len() != vals.len() {
+        return Err(Error::new("%sort-keyed: keys and values differ in length"));
+    }
+    let mut order: Vec<usize> = (0..keys.len()).collect();
+    let mut failed = None;
+    order.sort_by(|&i, &j| match compare(keys[i], keys[j]) {
+        Ok(o) => o,
+        Err(e) => {
+            failed.get_or_insert(e);
+            Ordering::Equal
+        }
+    });
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    let out: Vec<Value> = order.iter().map(|&i| vals[i]).collect();
+    Ok(vec_from_slice(&mut vm.m, &out))
+}
+
 pub fn compare(a: Value, b: Value) -> Result<Ordering> {
     use norn_rt::numbers::is_number;
     if is_number(a) && is_number(b) {
@@ -976,7 +1002,7 @@ pub fn get(coll: Value, key: Value) -> Option<Value> {
         Kind::Map => coll.map_get(key),
         Kind::Set => coll.set_contains(key).then_some(key),
         Kind::Vector => index_of(key).filter(|&i| i < coll.vec_count()).map(|i| coll.vec_nth(i)),
-        Kind::String => index_of(key).and_then(|i| coll.as_str().chars().nth(i)).map(Value::char),
+        Kind::String => index_of(key).and_then(|i| coll.str_char_at(i)).map(Value::char),
         Kind::Bytes => index_of(key).and_then(|i| coll.as_bytes().get(i)).map(|&b| Value::fix(b as i64)),
         _ => None,
     }
@@ -1182,7 +1208,8 @@ fn range(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 fn subs(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     expect(a[0], Kind::String, "subs")?;
     let s = a[0].as_str();
-    let n = s.chars().count();
+    let ascii = a[0].str_is_ascii();
+    let n = a[0].str_char_count();
     let start = int(a[1], "subs")?;
     let end = match a.get(2) {
         Some(&e) => int(e, "subs")?,
@@ -1190,6 +1217,10 @@ fn subs(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     };
     if start < 0 || end < start || end as usize > n {
         return Err(Error::new(format!("String index out of range: {start}..{end} of {n}")));
+    }
+    if ascii {
+        let out = &s[start as usize..end as usize];
+        return Ok(str_new(&mut vm.m, out));
     }
     let out: String = s.chars().skip(start as usize).take((end - start) as usize).collect();
     Ok(str_new(&mut vm.m, &out))

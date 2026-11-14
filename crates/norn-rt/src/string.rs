@@ -1,6 +1,8 @@
 //! Strings, floats, symbols and keywords.
 //!
-//! - String:  `[byte_len][utf-8 bytes, padded to 8]` — immutable.
+//! - String:  `[byte_len | ASCII][utf-8 bytes, padded to 8]` — immutable.
+//!   The top bit of the length word says the string is all ASCII, so
+//!   indexing by character (nth, subs, count) is constant time for it.
 //! - Bytes:   `[len][bytes, padded to 8]` — immutable, the same layout.
 //! - Float:   `[f64 bits]`
 //! - Symbol / Keyword: `[ns: String|nil][name: String][hash]` — interned, so
@@ -10,10 +12,13 @@ use crate::heap::Mutator;
 use crate::object::{Kind, alloc};
 use crate::value::Value;
 
+/// The length word's flag for an all-ASCII string.
+const ASCII: u64 = 1 << 63;
+
 pub fn str_new(m: &mut Mutator, s: &str) -> Value {
     let len = s.len();
     let v = alloc(m, Kind::String, 1 + len.div_ceil(8));
-    v.set_word(0, len as u64);
+    v.set_word(0, len as u64 | if s.is_ascii() { ASCII } else { 0 });
     // SAFETY: payload has room for len bytes after the length word.
     unsafe {
         std::ptr::copy_nonoverlapping(s.as_ptr(), v.payload_ptr().add(1) as *mut u8, len);
@@ -55,12 +60,33 @@ impl Value {
     #[inline]
     pub fn as_str<'a>(self) -> &'a str {
         debug_assert!(self.is(Kind::String));
-        let len = self.word(0) as usize;
+        let len = (self.word(0) & !ASCII) as usize;
         // SAFETY: strings are only ever created from valid UTF-8.
         unsafe {
             let bytes = std::slice::from_raw_parts(self.payload_ptr().add(1) as *const u8, len);
             std::str::from_utf8_unchecked(bytes)
         }
+    }
+
+    /// Is this string all ASCII (so a character index is a byte index)?
+    /// Strings from images made before the flag existed say no, which is
+    /// only slower.
+    #[inline]
+    pub fn str_is_ascii(self) -> bool {
+        self.word(0) & ASCII != 0
+    }
+
+    /// The number of characters in this string.
+    #[inline]
+    pub fn str_char_count(self) -> usize {
+        if self.str_is_ascii() { self.as_str().len() } else { self.as_str().chars().count() }
+    }
+
+    /// Character i of this string.
+    #[inline]
+    pub fn str_char_at(self, i: usize) -> Option<char> {
+        let s = self.as_str();
+        if self.str_is_ascii() { s.as_bytes().get(i).map(|&b| b as char) } else { s.chars().nth(i) }
     }
 
     #[inline]

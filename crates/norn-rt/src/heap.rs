@@ -245,7 +245,9 @@ pub(crate) fn object_words(p: *const u64) -> usize {
 pub(crate) fn size_words(kind: Kind, w: impl Fn(usize) -> usize) -> usize {
     match kind {
         Kind::Cons => 3,
-        Kind::String | Kind::Bytes => 3 + w(0).div_ceil(8),
+        // (a string's length word carries its all-ASCII flag in the top bit)
+        Kind::String => 3 + (w(0) & !(1usize << 63)).div_ceil(8),
+        Kind::Bytes => 3 + w(0).div_ceil(8),
         Kind::Float | Kind::Set | Kind::Claim | Kind::Atom => 3,
         Kind::Symbol | Kind::Keyword => 5,
         Kind::Array => 3 + w(0),

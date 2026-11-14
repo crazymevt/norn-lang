@@ -343,7 +343,7 @@ pub fn count(v: Value) -> Result<usize, String> {
             Kind::Range => v.range_count(),
             Kind::Map => v.map_count(),
             Kind::Set => v.set_count(),
-            Kind::String => v.as_str().chars().count(),
+            Kind::String => v.str_char_count(),
             Kind::Bytes => v.as_bytes().len(),
             Kind::Sorted => v.sorted_count(),
             Kind::Queue => v.queue_count(),
@@ -380,7 +380,7 @@ pub fn nth(v: Value, i: usize) -> Result<Option<Value>, String> {
                 let (s, _, st) = v.range_parts();
                 return Ok((i < v.range_count()).then(|| Value::fix(s + st * i as i64)));
             }
-            Kind::String => return Ok(v.as_str().chars().nth(i).map(Value::char)),
+            Kind::String => return Ok(v.str_char_at(i).map(Value::char)),
             Kind::Bytes => return Ok(v.as_bytes().get(i).map(|&b| Value::fix(b as i64))),
             Kind::EmptyList => return Ok(None),
             _ => {}

@@ -324,27 +324,42 @@
 
 ;;; ---- sorting --------------------------------------------------------------------
 
-(defn- merge-sorted [cmp a b]
-  (loop [a (seq a) b (seq b) acc []]
-    (cond
-      (not a) (into acc b)
-      (not b) (into acc a)
-      (pos? (cmp (first a) (first b))) (recur a (next b) (conj acc (first b)))
-      :else (recur (next a) b (conj acc (first a))))))
+(defn- merge-sort
+  "v (a vector) sorted by cmp, stably: a merge sort over index ranges. cmp
+  returns a number (as compare does) or is a predicate such as <."
+  [cmp v]
+  (let [after? (fn [a b] (let [r (cmp a b)] (if (number? r) (pos? r) (if (cmp b a) true false))))
+        step (fn step [lo hi]
+               (if (< (- hi lo) 2)
+                 (if (< lo hi) [(nth v lo)] [])
+                 (let [mid (quot (+ lo hi) 2)
+                       a (step lo mid)
+                       b (step mid hi)
+                       na (count a)
+                       nb (count b)]
+                   (loop [i 0 j 0 acc []]
+                     (cond (= i na) (into acc (drop j b))
+                           (= j nb) (into acc (drop i a))
+                           (after? (nth a i) (nth b j)) (recur i (inc j) (conj acc (nth b j)))
+                           :else (recur (inc i) j (conj acc (nth a i))))))))]
+    (step 0 (count v))))
 
 (defn sort
-  "Stable merge sort; returns a vector."
-  ([coll] (sort compare coll))
+  "Stable sort; returns a vector. With the default compare it sorts natively."
+  ([coll] (let [v (vec coll)] (%sort-keyed v v)))
   ([cmp coll]
-   (let [v (vec coll) n (count v)]
-     (if (< n 2)
-       v
-       (let [mid (quot n 2)]
-         (merge-sorted cmp (sort cmp (take mid v)) (sort cmp (drop mid v))))))))
+   (let [v (vec coll)]
+     (if (identical? cmp compare) (%sort-keyed v v) (merge-sort cmp v)))))
 
 (defn sort-by
+  "Stable sort by (keyfn x); returns a vector. keyfn is called once per
+  element, and with the default compare the sort is native."
   ([keyfn coll] (sort-by keyfn compare coll))
-  ([keyfn cmp coll] (sort (fn [a b] (cmp (keyfn a) (keyfn b))) coll)))
+  ([keyfn cmp coll]
+   (let [v (vec coll)]
+     (if (identical? cmp compare)
+       (%sort-keyed (vec (map keyfn v)) v)
+       (merge-sort (fn [a b] (cmp (keyfn a) (keyfn b))) v)))))
 
 ;;; ---- loading code ------------------------------------------------------------------
 
