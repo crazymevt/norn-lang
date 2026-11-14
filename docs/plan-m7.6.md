@@ -82,7 +82,7 @@ a design against Norn's fibers and conditions.
 
 ## Part 3 — the editor
 
-**Status (2026-11-14): 3.1 to 3.7 done.**
+**Status (2026-11-14): 3.1 to 3.8 done.**
 - **3.1, the shell:** built as planned, with a basic Explorer tree (3.6
   adds icons for Git status and the rest). The tools in the docks are
   placeholders until their parts.
@@ -120,6 +120,14 @@ a design against Norn's fibers and conditions.
   block at the caret comes to the top of the preview (by the line each
   top-level block starts on, which `norn.markdown/parse-lines` gives).
   Links open: web addresses in the browser, paths as documents.
+- **3.8, AI chat:** built as planned, by porting Xeon Studio's sessions:
+  Claude Code over its CLI's stream-json (Norn Studio's tools as an
+  in-process MCP server, "sdk"), Codex over its app-server (the tools as
+  dynamic tools). Agent mode reads and edits documents and drives the
+  project's `norn` (the REPL, debugger, inspector, tests), asking before
+  each change unless Approve for Me is on; Chat mode refuses changes.
+  The tests use fake CLIs (written in Norn) that speak both protocols;
+  the real Claude Code and Codex haven't been run against it yet.
 
 On the way:
 - `norn-ui` gained:
@@ -137,6 +145,9 @@ On the way:
     rejected them;
   - `:gutter false` on the editor surface (the REPL's input has no line
     numbers);
+  - a fix: an editor's reveal before its first layout scrolled as if the
+    view were a line short (a newly opened document hid its first line);
+    it now waits for the layout;
   - tree rows with a badge (a Git status letter) and an icon colour of
     their own; `markdown` taking `:block-id` (an id for each top-level
     block, to measure and scroll to); `editor-set-text!` taking a function applied in the same
