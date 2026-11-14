@@ -147,7 +147,35 @@ a design against Norn's fibers and conditions.
     times faster (0.3 seconds; 25 to 30 ms a step), so `bin/norn-studio`
     runs the release build when it's the newer one. The preview's first
     layout (0.25 seconds in release) lays out every block, in view or
-    not: one to improve if it bothers.
+    not: one to improve if it bothers. Also found in use and fixed in
+    `norn-ui`: the wheel scrolled boxes whose overflow was only hidden
+    (moving a whole layout), text was shaped again on every paint (now
+    cached), and a Markdown code block's longest line widened the whole
+    preview (now it scrolls sideways, its text `:white-space :pre`).
+    Then: the preview told the app every scroll position, so each wheel
+    event re-rendered the whole window (170 ms with a long preview) and
+    pushed an older position back; the preview now scrolls by itself, and
+    `ui/memo` keeps its elements until its text changes (a re-render with
+    it showing: 19 ms). Scroll containers and editors have scroll bars.
+    And a race: a new node's handlers were registered after its ops went
+    out, so an editor's first request for its lines could be lost, leaving
+    it blank (switching a Markdown document back to Source showed it).
+    And the desktop backend laid out and drew the window for every wheel
+    event; a trackpad sends far more than there are frames, so the
+    backlog kept scrolling for seconds after the fingers stopped. Wheel
+    deltas are now summed and applied once per batch of events. Scroll
+    bars drag (and a press on the track jumps there). Then the real
+    culprit for the wheel: every change of the hovered node restyled
+    every ancestor's whole subtree (and each node's style was resolved
+    from the root again), so with a long preview one pointer move took
+    700 ms, and macOS held the wheel's events meanwhile and sent them
+    summed into one jump. Now only the nodes whose hover state changed
+    are restyled, going down only while styles change, each style
+    resolved once. Big single wheel steps (a mouse's) glide over about
+    150 ms. `NORN_UI_FRAMES=1` reports slow steps, event handling and
+    waits for a surface. Also: a popup's size or position arriving
+    after it closed brought back half its entry, and every render then
+    failed ("rendering window 2 failed").
   - **Still to do: the working stretch** — Norn's own development in the
     editor (editing `lib/` and `tests/`, the REPL, the debugger,
     formatting and linting), and what it turns up.
