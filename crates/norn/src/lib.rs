@@ -29,11 +29,13 @@ use std::time::Duration;
 
 const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --server [PORT] | ARGS…]
        norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]
+                  (in a project, with no files: its :main)
        norn test [--only REGEX] [--serial] [--tap] [--junit FILE] [PATH…]
        norn fmt [--check] [PATH…]
        norn lint [PATH…]
        norn check [PATH…]
        norn expand [--steps] FILE.norn | -e EXPR
+       norn deps [--update]
        norn doc NAMESPACE | NAME | NS/NAME …
        norn image info IMG.nimg | norn image diff A.nimg B.nimg";
 
@@ -113,7 +115,24 @@ pub fn run() {
         });
     }
 
-    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand")) = args.first().map(String::as_str) {
+    // The project this run belongs to (M8 part 8.10): its paths and its
+    // packages' go on the library path. (norn deps resolves it itself.)
+    if args.first().map(String::as_str) != Some("deps") {
+        let start = match args.first() {
+            Some(f) if !f.starts_with('-') && f.ends_with(".norn") => {
+                std::path::Path::new(f).parent().map(std::path::Path::to_path_buf).unwrap_or_default()
+            }
+            _ => std::path::PathBuf::from("."),
+        };
+        if let Some(dir) = find_project(&start)
+            && !use_project(norn, &dir)
+            && !args.is_empty()
+        {
+            exit(1);
+        }
+    }
+
+    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand" | "deps")) = args.first().map(String::as_str) {
         // `norn test …`, `norn fmt …`: the library's main returns the exit status.
         let call = format!(
             "(do (require 'norn.{tool}) (norn.{tool}/main {}))",
@@ -248,6 +267,25 @@ fn build(args: &[String]) -> i32 {
     // macros in this form: the first macro to expand loads norn.validate,
     // which must not come from (or go to) the cache either.
     norn.run(RootTask::EvalRaw("(let* [v (resolve 'norn.expander/set-cache-dir!)] (if v (v nil)))".into()), "user");
+    // In a project, its packages are on the library path, and with no files
+    // its :main is the entry, its namespace loaded.
+    let start = files.first().and_then(|f| std::path::Path::new(f).parent().map(std::path::Path::to_path_buf)).unwrap_or_default();
+    if let Some(dir) = find_project(&start) {
+        if !use_project(norn, &dir) {
+            return 1;
+        }
+        if files.is_empty() && entry.is_none() {
+            let code = format!("(norn.deps/load-main! {})", norn_string(&dir.to_string_lossy()));
+            match norn.run(RootTask::Eval(code), "user").result {
+                Ok(v) if v != "nil" => entry = Some(v.trim_matches('"').to_owned()),
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    return 1;
+                }
+            }
+        }
+    }
     for f in files {
         if !run_task(norn, RootTask::Load(f), false) {
             return 1;
@@ -509,6 +547,34 @@ fn debug_event_fiber(line: &str) -> Option<u64> {
     }
     let rest = &line[line.find(":fiber ")? + 7..];
     rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
+/// The project (M8 part 8.10) a run in folder `start` belongs to: the
+/// nearest folder with a norn.edn, from `start` up.
+fn find_project(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    let start = if start.as_os_str().is_empty() { std::path::Path::new(".") } else { start };
+    let mut d = std::fs::canonicalize(start).ok()?;
+    loop {
+        if d.join("norn.edn").is_file() {
+            return Some(d);
+        }
+        if !d.pop() {
+            return None;
+        }
+    }
+}
+
+/// Use the project in `dir`: its packages resolved (and fetched), its paths
+/// and theirs on the library path. False, having said why, if it can't be.
+fn use_project(norn: &norn_vm::Norn, dir: &std::path::Path) -> bool {
+    let code = format!("(do (require 'norn.deps) (norn.deps/use-project! {}) nil)", norn_string(&dir.to_string_lossy()));
+    match norn.run(RootTask::Eval(code), "user").result {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("norn: the project in {}: {e}", dir.display());
+            false
+        }
+    }
 }
 
 fn eval_raw(norn: &norn_vm::Norn, src: &str, ns: &str) -> String {

@@ -96,6 +96,11 @@ fn pattern_suite() {
 }
 
 #[test]
+fn deps_suite() {
+    suite("deps_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [

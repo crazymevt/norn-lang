@@ -56,13 +56,15 @@ pub const LIBS: &[(&str, &str)] = &[
     ("norn.syntax", include_str!("../../../lib/norn/syntax.norn")),
     ("norn.validate", include_str!("../../../lib/norn/validate.norn")),
     ("norn.expand", include_str!("../../../lib/norn/expand.norn")),
+    ("norn.deps", include_str!("../../../lib/norn/deps.norn")),
 ];
 
 /// `(%find-lib "a.b-c")`: the source of library `a.b-c` and where it came
-/// from — embedded, or `a/b-c.norn` under a directory on `NORN_PATH`
-/// (colon-separated) or the current directory.
-/// Folders added at run time (`(add-lib-path! dir)`), searched after
-/// NORN_PATH and before the current directory: a project's source folders.
+/// from — embedded, or `a/b-c.norn` under a folder added at run time, a
+/// directory on `NORN_PATH` (colon-separated) or the current directory.
+/// Folders added at run time (`(add-lib-path! dir)`): a project's source
+/// folders and its packages' (M8 part 8.10), searched before NORN_PATH,
+/// which is the fallback.
 static LIB_PATH: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
 
 pub(crate) fn add_lib_path(dir: String) {
@@ -96,7 +98,7 @@ pub(crate) fn find_lib(name: &str) -> Option<(String, String)> {
     let rel = format!("{}.norn", name.replace('.', "/"));
     let path = std::env::var("NORN_PATH").unwrap_or_default();
     let added = LIB_PATH.read().unwrap().clone();
-    path.split(':').filter(|d| !d.is_empty()).chain(added.iter().map(String::as_str)).chain(std::iter::once(".")).find_map(|dir| {
+    added.iter().map(String::as_str).chain(path.split(':').filter(|d| !d.is_empty())).chain(std::iter::once(".")).find_map(|dir| {
         let p = std::path::Path::new(dir).join(&rel);
         std::fs::read_to_string(&p).ok().map(|src| (src, p.to_string_lossy().into_owned()))
     })

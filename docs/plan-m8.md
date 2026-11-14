@@ -495,3 +495,69 @@ later).**
   - the editor protocol test (`:expand-steps`);
   - a CLI test (`norn expand --steps` on a module that uses another's
     macro, and `-e`).
+
+**8.10, packages (2026-11-14): done, with Git and path packages
+(decision 7).**
+
+- **`norn.edn`**, a project's file, has these keys:
+  - `:name` and `:version`;
+  - `:paths`: its source folders (default `["src"]`);
+  - `:deps`: each `{:path "folder"}`, `{:git "url" :tag "tag"}` or
+    `{:git "url" :sha "commit"}`;
+  - `:overrides`;
+  - `:main`: `norn build`'s entry.
+
+  A package is a project used as a dependency. A folder without a
+  `norn.edn` is a package whose source is in `src`. Paths are relative to
+  the `norn.edn` that names them.
+- **Resolution** (`norn.deps/resolve-project`) walks the dependencies
+  from the project. One version of a package reached two ways is fine. Two
+  versions (two folders, or two commits) are an error showing the chain to
+  each:
+
+  ```
+  Two versions of c in the build:
+    path …/c1, by clash → a → c
+    path …/c2, by clash → b2 → c
+  Add c to :overrides in …/norn.edn to choose one.
+  ```
+
+  An override is used wherever the package is asked for.
+- **`norn.lock`**, beside `norn.edn`, records the commit of every Git
+  package in the build, transitive ones included:
+  - a locked package stays at its commit when its tag moves;
+  - only a new or changed one is looked up (`git ls-remote`);
+  - `norn deps --update` looks them all up again;
+  - a short `:sha` is resolved to the full commit.
+- **Fetching** clones a Git package with the `git` command into a cache:
+  `NORN_DEPS`, else the module cache folder's `deps`, one folder per
+  package and commit. A clone is made beside the target and renamed into
+  place, so a half-done fetch is never used.
+- **`norn` uses the project it finds** (in the folder of the file it runs,
+  else the current one, or a folder above). The project's paths, then its
+  packages', go on the library path, ahead of `NORN_PATH`, which is now the
+  fallback. `norn deps` lists the packages and the chain that brought each
+  in, and writes `norn.lock`. In a project, `norn build OUT.nimg` with no
+  files loads `:main`'s namespace and makes `:main` the entry, so a
+  project builds across its packages.
+- **norn-ui and Studio have project files.**
+  - norn-ui's `norn.edn` is a package whose source is `lib`. Its Rust
+    engine is still the `norn-ui` binary, which embeds the same source.
+    Packages carry Norn source; native parts come with the binary that
+    runs them.
+  - Studio's `norn.edn` uses norn-ui by path (`../norn-ui`), with
+    `:main studio.main/main`, a new entry.
+  - Studio's scripts no longer set `NORN_PATH`.
+  - `norn-ui build studio.nimg` in Studio's folder builds an image (65,289
+    objects, 3.7 MB) that starts Studio. **That's M8's second done-check
+    item.**
+- **Tests:**
+  - `deps_test.norn`, 22 checks at both tiers: finding and reading
+    projects; path and Git packages; the lock across a moved tag and
+    `--update`; a diamond; two versions with both chains; an override; a
+    short commit;
+  - a CLI test: a script run from another folder, `norn deps`, and
+    `norn build` from `:main`.
+- **Not done:** a registry, and version ranges. A dependency names one
+  version, and conflicts are settled by an override (runtime.md has the
+  registry later).

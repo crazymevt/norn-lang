@@ -82,3 +82,29 @@ fn norn_expand_shows_each_macro_step() {
     assert!(plain.ends_with("(if a (do b))"), "{plain}");
 }
 
+#[test]
+fn a_project_puts_its_packages_on_the_path_and_builds_from_main() {
+    // (M8 part 8.10) app uses lib-a by path; the script runs from another
+    // folder, and the project is found from the script's
+    let d = std::env::temp_dir().join(format!("norn-libs-{}-project", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    for (path, text) in [
+        ("app/norn.edn", "{:name app :version \"0.1.0\" :deps {lib-a {:path \"../lib-a\"}} :main app.core/main}\n"),
+        ("app/src/app/core.norn", "(ns app.core (:require [la.core :as la]))\n(defn main [& args] (println (la/hello) (vec args)) 0)\n"),
+        ("app/run.norn", "(require 'app.core)\n(app.core/main)\n"),
+        ("lib-a/norn.edn", "{:name lib-a :version \"0.2.0\"}\n"),
+        ("lib-a/src/la/core.norn", "(ns la.core)\n(defn hello [] \"hello from lib-a\")\n"),
+    ] {
+        std::fs::create_dir_all(d.join(path).parent().unwrap()).unwrap();
+        std::fs::write(d.join(path), text).unwrap();
+    }
+    let elsewhere = std::env::temp_dir();
+    let out = norn(&elsewhere, &[d.join("app/run.norn").to_str().unwrap()]);
+    assert_eq!(out, "hello from lib-a []");
+    let listed = norn(&d.join("app"), &["deps"]);
+    assert!(listed.contains("lib-a 0.2.0: path "), "{listed}");
+    let img = d.join("app.nimg");
+    norn(&d.join("app"), &["build", img.to_str().unwrap()]);
+    assert_eq!(norn(&elsewhere, &["--image", img.to_str().unwrap(), "x"]), "hello from lib-a [x]");
+}
+
