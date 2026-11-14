@@ -199,3 +199,8 @@ fn interrupt_stops_a_runaway_root_fiber() {
     let r = norn.wait(t).result;
     assert!(matches!(&r, Err(e) if e.msg == "Interrupted"), "{r:?}");
 }
+
+#[test]
+fn actor_suite() {
+    suite("actor_test.norn");
+}

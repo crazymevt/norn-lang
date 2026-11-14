@@ -3146,7 +3146,7 @@
 
 (defclass MatchError (Error) ((value :initform nil)))
 
-(defn- %pattern-vars
+(defn %pattern-vars
   "The names pattern p binds, in order."
   [p]
   (cond (= p '_) []

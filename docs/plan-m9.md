@@ -519,3 +519,57 @@ describe.**
   still working), a combination of one's own, protocols on a class and on
   `Integer`, and which classes keep the fast paths.
 
+
+**9.6, processes and supervisors (2026-11-14): done.**
+
+- **`norn.actor`** (`norn.process` is the operating system's processes).
+  A process is a fiber with a mailbox:
+  - `spawn-process`, `self`, `send` (to a process or a registered name;
+    to one that has ended, dropped), `register!` and `whereis`;
+  - `receive` is selective: it takes the first message one of its clauses
+    matches (`match`'s patterns and `:when` guards), leaving the rest in
+    order, and waits for one, or `:after ms`. The bodies are in tail
+    position, so `defprocess` (a `defn` whose body loops) keeps its state
+    in `recur`;
+  - `ask` sends a message with a promise on the end and waits for the
+    process to deliver it, from anywhere, in a process or not (a
+    `TimeoutError` after 5 s).
+- **Ends.** A process's reason is `:normal`, the condition it failed with
+  (the very one), `:killed`, or what it was told with `exit!`:
+  - `link!` and `spawn-link`: an abnormal end ends the linked process too,
+    with the same reason; `trap-exits!` makes it `[:EXIT p reason]`
+    instead (and `exit!` a message, except `:kill`);
+  - `monitor`: `[:DOWN ref p reason]`;
+  - `exit-reason`, `alive?` and `await-exit`.
+- **A crash** is seen by the process's outermost handler, which tells its
+  links and monitors and declines, so the condition goes on to the
+  debugger as any fiber's does (design §5.3), while the supervisor
+  restarts the process.
+- **Supervisors:** `supervisor` with `child` specs:
+  - children are started in order, and stopped the last first: unlinked,
+    told `:shutdown`, given `:shutdown-ms` (5000), then killed;
+  - `:one-for-one`, `:one-for-all` and `:rest-for-one`;
+  - `:permanent`, `:transient` and `:temporary` children (a temporary one
+    stopped for a sibling's restart stays stopped);
+  - more than `:max-restarts` (3) in `:max-ms` (5000) and it stops its
+    children and ends, `:too-many-restarts`;
+  - `supervise` is a child function, for supervisors under supervisors: a
+    supervisor that hears its own supervisor end stops its children and
+    ends too;
+  - `which-children` and `stop-supervisor!`.
+- **A gap it found:** a fiber inherits the handlers of the fiber that
+  spawned it, as it does dynamic bindings. So the supervisor's handler saw
+  its children's crashes as its own. Each process's handler now checks
+  that it's in the process's own fiber. Whether spawned fibers should
+  inherit handlers at all is a question for sealing.
+- **Core:** `%pattern-vars` is public, for `receive` (its test for a clause
+  mentions the names a pattern binds, so lint doesn't call them unused).
+- **Not done:** distribution (processes on other machines), and a
+  process's crash report is the fiber's ("Fiber N failed: …").
+- **Tests:** `actor_test.norn`, 44 checks at both tiers: messages,
+  selective receive and timeouts, names, crash reasons, links (abnormal,
+  normal, trapped, to a process already ended), `exit!` and `:kill`,
+  monitors, a supervisor restarting a crashed child under its name, the
+  three strategies, the three restart kinds, too many restarts, a
+  supervisor under a supervisor, and `ask` timing out. Run ten times at
+  both tiers without a failure.

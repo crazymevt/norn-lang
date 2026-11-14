@@ -511,6 +511,13 @@ long-lived, fault-isolated services.
            [(child counter 0)]))
 ```
 
+**Status (M9 part 9.6):** built as `norn.actor`. A child has an id, which
+is also its registered name when it's a keyword: `(child :counter counter
+0)`. `send` to a registered name works, and `ask` is the usual way to get
+an answer (`[:get reply]`, delivering a promise). A crashed process tells
+its links and monitors, then its condition goes to the debugger as any
+fiber's does, while its supervisor restarts it.
+
 ### 6.6 Data parallelism **[decided]**
 
 Fork/join on the same work-stealing pool:
