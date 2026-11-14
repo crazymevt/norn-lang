@@ -1194,7 +1194,9 @@
     nil))
 
 (defn %with-handlers [entries thunk]
-  (binding [*handlers* (concat entries *handlers*)] (thunk)))
+  ;; (a list, consed onto the handlers outside: signal walks it, and a lazy
+  ;; concat per handler-bind made that slow)
+  (binding [*handlers* (reduce (fn [acc e] (cons e acc)) *handlers* (reverse* entries))] (thunk)))
 
 (defmacro handler-bind
   "(handler-bind [Class handler …] body…): call handler on matching conditions
@@ -1203,10 +1205,15 @@
   `(%with-handlers [~@(map (fn [p] `[~(first p) ~(second p) nil]) (partition 2 bindings))] (fn* [] ~@body)))
 
 (defn %handler-case [thunk classes]
-  (let [tag (gensym "handler-case")
-        me (current-fiber)]
+  (let [tag (atom nil) ; (any new object: a catch tag is matched by identity)
+        me (current-fiber)
+        n (count classes)]
     (%catch* tag
-             (fn* [] [:ok (%with-handlers (map-indexed (fn [i cls] [cls (fn [c] (throw-tag tag [i c])) me]) classes) thunk)])
+             (fn* [] [:ok (%with-handlers (loop [i 0 out []]
+                                            (if (< i n)
+                                              (recur (inc i) (conj out [(nth classes i) (fn [c] (throw-tag tag [i c])) me]))
+                                              out))
+                                          thunk)])
              (%dyn))))
 
 (defmacro handler-case
@@ -2880,7 +2887,7 @@
   ([v start end]
    (when (or (neg? start) (> end (count v)) (> start end))
      (error "subvec indexes out of range:" start end))
-   (vec (take (- end start) (drop start v)))))
+   (if (vector? v) (%subvec v start end) (vec (take (- end start) (drop start v))))))
 
 (defn max-key "The x for which (k x) is greatest." [k x & xs]
   (reduce (fn [a b] (if (> (k b) (k a)) b a)) x xs))

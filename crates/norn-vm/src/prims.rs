@@ -142,6 +142,7 @@ prims! {
     "vals" 1 Some(1) => |vm, a| map_part(vm, a[0], false);
     "empty" 1 Some(1) => |vm, a| Ok(match a[0] { c if c.is(Kind::Sorted) => norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, c.sorted_is_set()), c if c.is(Kind::Queue) => { let e = rt().empty_vector; norn_rt::colls::queue_new(&mut vm.m, 0, Value::NIL, e) } c => empty_of(c) });
     "peek" 1 Some(1) => peek;
+    "%subvec" 3 Some(3) => subvec;
     "pop" 1 Some(1) => pop;
     "concat" 0 VAR => |vm, a| { let mut out = Vec::new(); for &x in a { out.extend(to_vec(vm, x)?); } Ok(if out.is_empty() { rt().empty_list } else { list_from(&mut vm.m, &out) }) };
     "range" 0 Some(3) => range;
@@ -1253,6 +1254,21 @@ fn empty_of(c: Value) -> Value {
         Kind::EmptyList | Kind::VecSeq | Kind::Range => rt().empty_list,
         _ => Value::NIL,
     }
+}
+
+/// `(%subvec v start end)`: vector v's items start..end as a vector (the
+/// indexes checked by `subvec`).
+fn subvec(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let v = a[0];
+    let (start, end) = (int(a[1], "subvec")?, int(a[2], "subvec")?);
+    if !v.is(Kind::Vector) || start < 0 || end < start || end as usize > v.vec_count() {
+        return Err(Error::new("subvec expects a vector and indexes in range"));
+    }
+    if start == 0 && end as usize == v.vec_count() {
+        return Ok(v);
+    }
+    let items: Vec<Value> = (start as usize..end as usize).map(|i| v.vec_nth(i)).collect();
+    Ok(vec_from_slice(&mut vm.m, &items))
 }
 
 fn peek(_: &mut Vm, a: &[Value]) -> Result<Value> {

@@ -45,6 +45,7 @@ pub const LIBS: &[(&str, &str)] = &[
     ("norn.async", include_str!("../../../lib/norn/async.norn")),
     ("norn.sync", include_str!("../../../lib/norn/sync.norn")),
     ("norn.actor", include_str!("../../../lib/norn/actor.norn")),
+    ("norn.stm", include_str!("../../../lib/norn/stm.norn")),
     ("norn.cache", include_str!("../../../lib/norn/cache.norn")),
     ("norn.log", include_str!("../../../lib/norn/log.norn")),
     ("norn.test", include_str!("../../../lib/norn/test.norn")),

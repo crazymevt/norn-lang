@@ -204,3 +204,8 @@ fn interrupt_stops_a_runaway_root_fiber() {
 fn actor_suite() {
     suite("actor_test.norn");
 }
+
+#[test]
+fn stm_suite() {
+    suite("stm_test.norn");
+}

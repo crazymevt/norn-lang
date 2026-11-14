@@ -1083,6 +1083,31 @@ impl Vm {
         if self.nested > 0 || self.current.is_nil() || e.kind == ErrKind::Fatal || st.seg.is_nil() {
             return Err(self.fail(st, e));
         }
+        // (a primitive handing a call over: no error, so no trace to make)
+        let handed = unsafe {
+            match (&e.kind, dest) {
+                (ErrKind::Call(f, args), Some(d)) => {
+                    let mut argv = Vec::new();
+                    args.vec_for_each(|a| {
+                        argv.push(a);
+                        true
+                    });
+                    Some(self.invoke(st, *f, &argv, d))
+                }
+                (ErrKind::Force(s, all), Some(d)) => {
+                    let var = self.core_fn("%force-stream", &FORCE_VAR);
+                    let force = if var.is(Kind::Var) { var.var_root() } else { var };
+                    Some(self.invoke(st, force, &[*s, Value::bool(*all)], d))
+                }
+                _ => None,
+            }
+        };
+        if let Some(r) = handed {
+            return r.map_err(|mut e2| {
+                e2.kind = ErrKind::Fatal;
+                self.fail(st, e2)
+            });
+        }
         // SAFETY: st describes a valid frame chain.
         let mut lines = e.trace.clone();
         lines.extend(unsafe { self.backtrace(st) });
@@ -1094,19 +1119,6 @@ impl Vm {
                 (ErrKind::Runtime, Some(d)) => {
                     let (cls, data, cond) = self.class_values(&e);
                     self.invoke(st, fk.runtime_error, &[msg, trace, cls, data, cond], d)
-                }
-                (ErrKind::Call(f, args), Some(d)) => {
-                    let mut argv = Vec::new();
-                    args.vec_for_each(|a| {
-                        argv.push(a);
-                        true
-                    });
-                    self.invoke(st, f, &argv, d)
-                }
-                (ErrKind::Force(s, all), Some(d)) => {
-                    let var = self.core_fn("%force-stream", &FORCE_VAR);
-                    let force = if var.is(Kind::Var) { var.var_root() } else { var };
-                    self.invoke(st, force, &[s, Value::bool(all)], d)
                 }
                 _ => {
                     // Honoured: let cleanups run without being cancelled again.

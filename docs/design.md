@@ -91,6 +91,10 @@ CL/Racket conveniences.
 | `chan` | CSP channel, buffered/unbuffered | Pipelines, coordination |
 | `process` | Fiber + mailbox (actor) | Isolated stateful services |
 
+**Status (M9 part 9.7):** `ref` and `dosync` are built, as the
+`norn.stm` library: `alter`, `ref-set`, `commute`, `ensure`, `io!` and
+`after-commit`, MVCC as Clojure's (without its barging).
+
 ### 3.3 Sequences and laziness **[decided, 2026-11-13]**
 
 Clojure's pervasive lazy seqs interact badly with dynamic binding, resource

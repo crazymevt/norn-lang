@@ -21,7 +21,7 @@ fn run(suite: &str, tier: &str) -> String {
 
 #[test]
 fn tier0_and_tier1_agree_on_every_suite() {
-    for suite in ["core_test.norn", "conc_test.norn", "clos_test.norn", "cond_test.norn", "compiler_test.norn", "lib_test.norn", "test_test.norn", "syntax_test.norn", "expander_test.norn", "module_test.norn", "phase_test.norn", "cache_test.norn", "pattern_test.norn", "deps_test.norn", "verify_test.norn", "http_test.norn", "errors_test.norn", "later_test.norn", "match_test.norn", "contracts_test.norn", "mop_test.norn", "actor_test.norn"] {
+    for suite in ["core_test.norn", "conc_test.norn", "clos_test.norn", "cond_test.norn", "compiler_test.norn", "lib_test.norn", "test_test.norn", "syntax_test.norn", "expander_test.norn", "module_test.norn", "phase_test.norn", "cache_test.norn", "pattern_test.norn", "deps_test.norn", "verify_test.norn", "http_test.norn", "errors_test.norn", "later_test.norn", "match_test.norn", "contracts_test.norn", "mop_test.norn", "actor_test.norn", "stm_test.norn"] {
         let t0 = run(suite, "0");
         let t1 = run(suite, "1");
         assert!(t0.ends_with(" 0 failed, 0 errors"), "{suite} tier 0: {t0}");

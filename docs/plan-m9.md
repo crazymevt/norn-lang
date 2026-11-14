@@ -557,11 +557,11 @@ describe.**
     supervisor that hears its own supervisor end stops its children and
     ends too;
   - `which-children` and `stop-supervisor!`.
-- **A gap it found:** a fiber inherits the handlers of the fiber that
-  spawned it, as it does dynamic bindings. So the supervisor's handler saw
-  its children's crashes as its own. Each process's handler now checks
-  that it's in the process's own fiber. Whether spawned fibers should
-  inherit handlers at all is a question for sealing.
+- **Something to allow for:** a fiber inherits the `handler-bind`
+  handlers of the fiber that spawned it (by design: its docstring says
+  so), as it does dynamic bindings. So the supervisor's handler saw its
+  children's crashes as its own. Each process's handler now checks that
+  it's in the process's own fiber.
 - **Core:** `%pattern-vars` is public, for `receive` (its test for a clause
   mentions the names a pattern binds, so lint doesn't call them unused).
 - **Not done:** distribution (processes on other machines), and a
@@ -572,4 +572,64 @@ describe.**
   monitors, a supervisor restarting a crashed child under its name, the
   three strategies, the three restart kinds, too many restarts, a
   supervisor under a supervisor, and `ask` timing out. Run ten times at
+  both tiers without a failure.
+
+**9.7, `norn.stm` (2026-11-14): done.**
+
+- **Refs and transactions,** MVCC as Clojure's:
+  - `ref` (options `:validator` and `:max-history`), `dosync`, `alter`,
+    `ref-set`, `commute`, `ensure`, and `deref`/`@`;
+  - a transaction reads every ref as of its read point, so it sees one
+    moment throughout, and its writes stay its own until it commits;
+  - a commit locks the refs it changes (in id order, so commits can't
+    deadlock), checks that none changed since the read point, and writes
+    them all at one new point; otherwise the transaction runs again;
+  - a reader that meets a commit's lock waits for it, since the commit
+    may be writing a value at the reader's point;
+  - `alter` and `ref-set` on a ref already changed since the read point
+    run the transaction again at once, not at commit.
+- **`commute`** is applied again at commit to the newest value and never
+  conflicts. Nor does it run the transaction again for a value older than
+  the ref's history: its newest value will do.
+- **`ensure`** guards a ref only read, against write skew.
+- **History:** a ref keeps `:max-history` (10) old values for older
+  transactions; one that needs a value older than that runs again.
+- **Around the transaction:**
+  - `io!` refuses side effects inside one, and `after-commit` runs
+    them once it commits;
+  - a `dosync` inside one is part of it; `in-transaction?`;
+  - a fiber started inside one isn't in it (it inherits the binding,
+    not the transaction);
+  - watches (`add-watch`) fire after a commit, and a validator's
+    refusal is an error with nothing changed;
+  - `*max-retries*` (10000), and `stm-stats` counts commits and retries
+    and why.
+- **Values only** (design §4.2): a ref can't hold a mutable object
+  (shallowly checked), unless it's shared.
+- **Retries unwind with a catch tag,** not a condition, so a handler or a
+  `catch` in the body never sees them.
+- **Speed.** The first version took 12 µs for a transaction that only
+  reads, 25 µs for one with an `alter`, and 2.5 µs to deref a ref outside
+  one. Three gaps in the runtime were most of it:
+  - A primitive handing a call over (`ErrKind::Call`: `deref` of a delay,
+    promise, future or anything with a `deref-object` method, and
+    `slot-value` through the MOP) built a backtrace it never used: 7 µs a
+    call, now 1.
+  - `handler-case` built its handler list with a lazy `concat` and
+    `map-indexed`, which `signal` then walked: twice as fast now, with
+    lists and a cheap catch tag.
+  - `subvec` was `(vec (take … (drop …)))`: 5 µs for ten items. It's a
+    primitive for vectors now, 20 times faster.
+  Now (tier 0, tier 1): 3.0/2.5 µs for a transaction that reads, 10/9 µs
+  with an `alter`, 0.3/0.2 µs to deref a ref outside one. 16 fibers each
+  making 500 transfers among 10 accounts: 257 ms before, 110 ms now.
+- **Not done:** Clojure's barging (an older transaction winning a conflict
+  against a younger one); here a long transaction under steady writes to
+  its refs can lose again and again, up to `*max-retries*`. History is
+  fixed, not grown on a fault.
+- **Tests:** `stm_test.norn`, 38 checks at both tiers: transactions and
+  nesting, one moment throughout, a conflict running a transaction
+  again, write skew without and with `ensure`, `commute` not conflicting,
+  12 fibers transferring at once, history, validators and watches, values
+  only, `io!`, `after-commit` and fibers started inside. Run ten times at
   both tiers without a failure.
