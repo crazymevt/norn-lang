@@ -46,7 +46,8 @@ exists from `:create` and is shown once inserted under a window's root.
 |---|---|---|
 | `:box` | — (layout comes from the style) | any |
 | `:text` | `:text`, `:wrap` (`true`, `false`, `:ellipsis`) | — |
-| `:rich-text` | `:spans` `[[text style] …]`, `:selectable` | — |
+| `:rich-text` | `:spans`: strings or `[text style]`, a style setting `:font-family` (`:ui`, `:code`), `:font-size`, `:font-weight`, `:font-style`, `:color`, `:background`, `:underline`, `:strike` and `:link` (a click sends `:link`). It wraps to its width; dragging selects and Copy copies. | — |
+| `:icon` | `:d` (SVG path data), `:view` (the box it's drawn in, 24), `:stroke` (a width; else filled), `:size`; colour from the style | — |
 | `:image` | `:src` (path or bytes), `:fit` (`:contain`, `:cover`, `:fill`) | — |
 | `:svg` | `:src`, `:tint` | — |
 | `:button` | — (a box that is focusable and has `:pressed`) | any |
@@ -249,6 +250,8 @@ and `:time` (milliseconds).
 | `:drag-select` | a drag in an editor: `:anchor [line col]`, `:line`, `:col` |
 | `:drop` | `:data` and `:kind`, on the nearest node under the pointer that asks for `:drop` (else the window); files from the OS have `:kind :files` and `:paths` (files dropped together arrive as one event) |
 | `:resize` | a window's new `:size` and `:scale` (coalesced) |
+| `:moved` | a top-level window's new `:position` on screen (coalesced) |
+| `:link` | a click on a link span of rich text: `:href` |
 | `:close-requested` | the user asked to close a window (Norn decides) |
 | `:window-focus` | `:focused` true or false |
 | `:need-lines`, `:viewport`, `:drag-select` | §6 |

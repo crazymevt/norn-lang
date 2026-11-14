@@ -63,7 +63,14 @@ its code is a guide, not a source to translate line by line.
 | 1.3 | **`norn.markdown`:** CommonMark (headings, emphasis, links, images, lists, block quotes, code blocks, tables) parsed to Norn data, for the Markdown preview and the chats. In the stdlib, since sealing is still ahead. |
 | 1.4 | **What the editor turns up**, fixed as found and listed in the status: missing stdlib functions, slow paths (Norn's `sort-by` took about a second for 10,000 maps in a debug build), and protocol gaps. |
 
-## Part 2 — `norn-ui` 0.2: what the editor needs from the UI
+## Part 2 — `norn-ui` 0.2: what the editor needs from the UI (done, 2026-11-13)
+
+Built as planned. Along the way, Norn's core gained about 60 of
+Clojure's functions and macros it lacked (`case`, `cond->`, `some->`,
+`subvec`, `merge-with`, `boolean`, `sequential?` and more). Text nodes
+now report their narrowest width correctly, so text wraps inside rows.
+`delay`, `future`, promises and `ex-info` are left for later: they need
+a design against Norn's fibers and conditions.
 
 | Part | Work |
 |---|---|
