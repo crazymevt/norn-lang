@@ -1510,7 +1510,7 @@ tests (they now wait for what they check, or watch their own handles).
   UI protocol, version 1 (`docs/ui-protocol.md`). There were also core
   additions `norn.ui` needed: watches on atoms, after-eval hooks, `for`,
   and `require` of extension namespaces.
-- **In `norn-ui` 0.1** (`~/projects/loom/norn-ui`):
+- **In `norn-ui` 0.1** (`~/projects/norn/norn-ui`):
   - **The engine:** the node tree, themes, taffy layout, damage tracking,
     text fields, scrolling, drag, and the code-editor surface.
   - **Painting:** wgpu, damage-only, with headless PNGs.

@@ -61,3 +61,10 @@ fn aliases_survive_an_image() {
     let r = norn(&d, &["--image", img.to_str().unwrap(), "-e", "(do (in-ns 'my.app) [(u/shout \"x\") (run) @my.util/loads])"]);
     assert_eq!(r, r#"["x!" ["a!" "b!" "c!c!"] 1]"#);
 }
+
+#[test]
+fn a_script_gets_its_arguments() {
+    let d = scratch("args");
+    std::fs::write(d.join("args.norn"), "(require '[norn.string :as str] '[norn.sys :as sys])\n(prn (vec (rest (drop-while (fn [a] (not (str/ends-with? a \"args.norn\"))) (sys/args)))))\n").unwrap();
+    assert_eq!(norn(&d, &["args.norn", "one", "two words"]), r#"["one" "two words"]"#);
+}

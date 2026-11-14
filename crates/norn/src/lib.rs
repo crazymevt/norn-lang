@@ -153,7 +153,8 @@ pub fn run() {
             repl(norn);
             return;
         }
-        [file] if !file.starts_with('-') => run_task(norn, RootTask::Load(file.clone()), false),
+        // A script's own arguments follow it; (norn.sys/args) has them.
+        [file, ..] if !file.starts_with('-') => run_task(norn, RootTask::Load(file.clone()), false),
         _ => {
             eprintln!("{USAGE}");
             exit(2)

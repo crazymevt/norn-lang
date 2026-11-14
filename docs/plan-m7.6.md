@@ -20,7 +20,7 @@ Norn is fixed, or scheduled, before M8.
   It ends with an M7.6 commit like the others.
 - **`norn-ui`** goes to 0.2 with the widgets the editor needs (below).
 - **The editor, Norn Studio**, in a new repository,
-  `~/projects/loom/norn-studio` (git, no remote, MIT). It's Norn code run by
+  `~/projects/norn/norn-studio` (git, no remote, MIT). It's Norn code run by
   the `norn-ui` binary,
   pinning a `norn-ui` version. Until M8's packages exist, it loads Norn
   and `norn-ui` from local checkouts by path, as `norn-ui` does now.
@@ -82,6 +82,16 @@ a design against Norn's fibers and conditions.
 
 ## Part 3 — the editor
 
+**Status (2026-11-14): 3.1 done.** The shell is built as planned, with a
+basic Explorer tree (3.6 adds icons for Git status and the rest). The
+tools in the docks are placeholders until their parts. On the way:
+- `norn-ui` gained `dock-group` (one group of a dock's layout, placed
+  anywhere, so left, right and bottom docks share drags),
+  `dock-dragging?` (to show empty docks as drop targets), close buttons
+  and context menus on dock tabs, and `set-title!`;
+- `norn FILE.norn ARGS…` now runs the file with its arguments, as the
+  usage line always said (it refused them).
+
 | Part | Work |
 |---|---|
 | 3.1 | **The shell:** a window with the activity bar (Explorer, Project, Outline, Source Control), the sidebar, docks for tools (left, right, bottom; drag tabs between them; ⌘J), the top bar (project, branch, a chip for the running `norn`), the status bar, the command registry and palette (⇧⌘P), settings (⌘,), and Light and Dark themes. |
@@ -102,7 +112,9 @@ client), the Databases view (after M9's drivers) and the terminal panel
 ## Decisions (the user, 2026-11-13)
 
 1. **The name:** `norn-studio`, the app "Norn Studio", in
-   `~/projects/loom/norn-studio` beside `norn-ui`.
+   `~/projects/norn/norn-studio` beside `norn-ui`. (The checkouts moved
+   from `~/projects/loom` to `~/projects/norn` on 2026-11-13, and
+   `loom-lang` became `norn-lang`.)
 2. **Team chat** (about 4,000 lines in Xeon Studio, and not needed by the
    done-check) **is built last in M7.6**, after the done-check's work, so
    it never blocks the rest.
