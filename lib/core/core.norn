@@ -2674,3 +2674,11 @@
 (defn list* "args, the last a collection, as a list: (list* 1 2 [3 4]) is (1 2 3 4)." [& args]
   (let [front (butlast args) more (last args)]
     (reduce (fn [acc x] (cons x acc)) (seq more) (reverse front))))
+
+(defn boolean "x as true or false (nil and false are false)." [x] (if x true false))
+(defn num "x, which must be a number." [x] (if (number? x) x (error "Not a number:" x)))
+(defn long "x as an integer (truncating)." [x] (int x))
+(defn double "x as a float." [x] (float x))
+(defn ifn? "Can x be called: a function, keyword, map, set or vector?" [x]
+  (or (fn? x) (keyword? x) (map? x) (set? x) (vector? x)))
+(defn distinct? "Are all the arguments different?" [& xs] (= (count xs) (count (set xs))))
