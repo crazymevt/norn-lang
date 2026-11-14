@@ -1,0 +1,85 @@
+;;;; Values that arrive later, and errors with data (M9 part 9.14):
+;;;; promises, delays and futures, which deref (and @) wait for, and ex-info.
+
+(ns later-test
+  (:require [norn.test :refer [is deftest testing]] [norn.io :as io] [norn.string :as str]))
+
+(defn- message [f] (try (f) nil (catch Error e (condition-message e))))
+(defn- class-name-of [c] (when c (name (class-name (class-of c)))))
+
+(deftest deref-is-as-it-was
+  (is (= 1 @(atom 1)))
+  (is (= 2 @(spawn-detached (+ 1 1))) "a fiber"))
+
+(deftest promises
+  (let [p (promise)]
+    (is (not (realized? p)))
+    (is (= :late (deref p 30 :late)) "a timeout")
+    (let [waiters (mapv (fn [_] (spawn-detached @p)) (range 20))]
+      (sleep 20)
+      (is (= p (deliver p 42)))
+      (is (= (repeat 20 42) (mapv await waiters)) "every fiber waiting wakes"))
+    (is (realized? p))
+    (is (nil? (deliver p 43)) "once only")
+    (is (= 42 @p))
+    (is (= 42 (deref p 10 :late)))))
+
+(deftest delays
+  (let [n (atom 0)
+        d (delay (sleep 20) (swap! n inc) :computed)]
+    (is (not (realized? d)))
+    (is (= (repeat 10 :computed) (mapv await (mapv (fn [_] (spawn-detached @d)) (range 10)))))
+    (is (= 1 @n) "computed once, for ten fibers at once")
+    (is (realized? d))
+    (is (= :computed (force d)))
+    (is (= 5 (force 5)) "force of anything else is itself"))
+  (testing "a failure is every deref's"
+    (let [runs (atom 0)
+          d (delay (swap! runs inc) (/ 1 0))]
+      (is (= "ArithmeticError" (class-name-of (try @d nil (catch Error e e)))))
+      (is (= "ArithmeticError" (class-name-of (try @d nil (catch Error e e)))))
+      (is (= 1 @runs) "not run again")))
+  (testing "a delay that needs its own value"
+    (let [d (atom nil)]
+      (reset! d (delay @@d))
+      (is (= "This delay needs its own value to compute it" (message (fn [] @@d)))))))
+
+(deftest futures
+  (let [f (future (sleep 50) (+ 1 2))]
+    (is (not (future-done? f)))
+    (is (= :not-yet (deref f 10 :not-yet)))
+    (is (= 3 @f))
+    (is (and (future-done? f) (realized? f) (future? f))))
+  (testing "its failure is its deref's: the very condition"
+    (let [f (future (io/read-text "/no/such/file/at/all"))
+          c (try @f nil (catch Error e e))]
+      (is (= ["FileNotFound" "/no/such/file/at/all"] [(class-name-of c) (:path c)]))))
+  (testing "cancelling"
+    (let [f (future (sleep 10000) :never)]
+      (future-cancel f)
+      (sleep 20)
+      (is (future-cancelled? f))
+      (is (some? (message (fn [] @f)))))))
+
+(defclass Box () ((value :initarg :value)))
+(defmethod deref-object ((b Box) _ms _timeout-value) (:value b))
+
+(deftest a-class-of-ones-own
+  (is (= 9 @(make Box :value 9)) "a deref-object method")
+  (let [c (try @(make SimpleError :message "x") nil (catch Error e e))]
+    (is (= "TypeError" (class-name-of c)) "without one: a TypeError")
+    (is (str/starts-with? (condition-message c) "deref expects an atom, var, fiber, delay, promise or future, got")))
+  (is (some? (message (fn [] (deref (atom 1) 10 :x)))) "a timeout only for promises and futures"))
+
+(deftest errors-with-data
+  (let [cause (make SimpleError :message "underneath")
+        c (try (throw (ex-info "Bad order" {:id 7} cause)) (catch ExInfo e e))]
+    (is (= "Bad order" (ex-message c)))
+    (is (= {:id 7} (ex-data c)))
+    (is (identical? cause (ex-cause c)))
+    (is (instance? Error c)))
+  (testing "ex-data of the runtime's errors: what went wrong"
+    (is (= {:path "/nope/nope" :reason :not-found} (try (slurp "/nope/nope") (catch IOError e (ex-data e)))))
+    (is (nil? (ex-data (make SimpleError :message "x"))) "nothing to say")
+    (is (nil? (ex-data :not-a-condition))))
+  (is (some? (message (fn [] (ex-info "x" [1 2])))) "the data is a map"))

@@ -238,7 +238,7 @@ prims! {
     "alts!" 1 VAR => crate::conc::alts;
     "timeout" 1 Some(1) => |vm, a| { let ms = int(a[0], "timeout")?; Ok(crate::sched::timeout(vm, ms.max(0) as u64)) };
     "atom" 1 Some(1) => |vm, a| Ok(norn_rt::conc::atom_new(&mut vm.m, a[0]));
-    "deref" 1 Some(1) => deref;
+    "deref" 1 Some(3) => deref;
     "reset!" 2 Some(2) => |_, a| { expect(a[0], Kind::Atom, "reset!")?; a[0].atom_set(a[1]); Ok(a[1]) };
     "compare-and-set!" 3 Some(3) => |_, a| { expect(a[0], Kind::Atom, "compare-and-set!")?; Ok(Value::bool(a[0].atom_cas(a[1], a[2]))) };
     "carrier-count" 0 Some(0) => |_, _| Ok(Value::fix(crate::sched::sched().n as i64));
@@ -1298,8 +1298,26 @@ fn scope_result(_: &mut Vm, a: &[Value]) -> Result<Value> {
     crate::sched::fiber_outcome(a[1])
 }
 
+static DEREF_OBJECT: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+
+/// `(deref x)`, `(deref x ms timeout-value)`: an atom's, var's or fiber's
+/// value here; an object's (a delay, promise or future, or a class of one's
+/// own) from the generic function deref-object, called in this primitive's
+/// place so it can park (M9 part 9.14).
 fn deref(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let x = a[0];
+    if x.is(Kind::Instance) {
+        let var = vm.core_fn("deref-object", &DEREF_OBJECT);
+        let f = if var.is(Kind::Var) { var.var_root() } else { var };
+        let (ms, tv) = (a.get(1).copied().unwrap_or(Value::NIL), a.get(2).copied().unwrap_or(Value::NIL));
+        let args = vec_from_slice(&mut vm.m, &[x, ms, tv]);
+        return Err(Error::call(f, args));
+    }
+    if a.len() > 1 {
+        return Err(Error::of("TypeError", format!("deref with a timeout needs a promise or a future, got {}", pr_str(x, true)))
+            .with("expected", crate::vm::ErrData::Str("a promise or a future".into()))
+            .with("value", crate::vm::ErrData::Val(x)));
+    }
     if x.is(Kind::Atom) {
         Ok(x.atom_get())
     } else if x.is(Kind::Var) {
@@ -1307,7 +1325,7 @@ fn deref(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     } else if x.is(Kind::Fiber) {
         crate::conc::await_fiber(vm, x)
     } else {
-        Err(type_err("deref", "an atom, var or fiber", x))
+        Err(type_err("deref", "an atom, var, fiber, delay, promise or future", x))
     }
 }
 

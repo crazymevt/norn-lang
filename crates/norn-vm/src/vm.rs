@@ -49,6 +49,11 @@ pub enum ErrKind {
     /// `%force-stream` on it (all of it, if the flag is set) in place of the
     /// failed instruction, then runs the instruction again (design §3.3).
     Force(Value, bool),
+    /// Not an error: a primitive asks for function f to be called with the
+    /// arguments in vector args, in its place (so in the fiber, where it
+    /// can park), its value the call's. deref hands objects to
+    /// `deref-object` this way (M9 part 9.14).
+    Call(Value, Value),
 }
 
 /// A Norn error as seen from Rust, with a Norn-level backtrace.
@@ -102,6 +107,11 @@ impl Error {
     }
     pub fn fatal(msg: impl Into<String>, trace: Vec<String>) -> Error {
         Error { msg: msg.into(), trace, kind: ErrKind::Fatal, class: None }
+    }
+    /// Ask the interpreter to call `f` with the arguments in vector `args`
+    /// in place of the primitive that returns this.
+    pub fn call(f: Value, args: Value) -> Error {
+        Error { msg: "A call had to be made outside a fiber".into(), trace: Vec::new(), kind: ErrKind::Call(f, args), class: None }
     }
     /// Ask the interpreter to realize stream `s` (one cell, or `all` of it).
     pub fn force(s: Value, all: bool) -> Error {
@@ -695,7 +705,7 @@ impl Vm {
     // ---- calls ----
 
     /// A loom.core function the interpreter redirects to (resolved once).
-    fn core_fn(&mut self, name: &str, cell: &'static std::sync::OnceLock<Value>) -> Value {
+    pub(crate) fn core_fn(&mut self, name: &str, cell: &'static std::sync::OnceLock<Value>) -> Value {
         *cell.get_or_init(|| {
             let sym = rt().symbol(&mut self.m, None, name);
             self.core.lookup(sym).unwrap_or(Value::NIL)
@@ -755,6 +765,16 @@ impl Vm {
             return Err(arity_error(f, args.len()));
         }
         match (crate::ext::prim(f.prim_index()).f)(self, args) {
+            // (a run from Rust can't hand the call to the interpreter: make
+            // it here, nested; it can't park)
+            Err(Error { kind: ErrKind::Call(g, a), .. }) if self.nested > 0 => {
+                let mut argv = Vec::new();
+                a.vec_for_each(|x| {
+                    argv.push(x);
+                    true
+                });
+                self.apply(g, &argv)
+            }
             Err(e) if e.kind == ErrKind::Runtime => match args.iter().find_map(|&a| norn_rt::seq::first_unrealized(a)) {
                 Some(s) => {
                     let one_step = matches!(crate::ext::prim(f.prim_index()).name, "first" | "rest" | "next" | "seq" | "nth" | "empty?");
@@ -1061,6 +1081,14 @@ impl Vm {
                 (ErrKind::Runtime, Some(d)) => {
                     let (cls, data, cond) = self.class_values(&e);
                     self.invoke(st, fk.runtime_error, &[msg, trace, cls, data, cond], d)
+                }
+                (ErrKind::Call(f, args), Some(d)) => {
+                    let mut argv = Vec::new();
+                    args.vec_for_each(|a| {
+                        argv.push(a);
+                        true
+                    });
+                    self.invoke(st, f, &argv, d)
                 }
                 (ErrKind::Force(s, all), Some(d)) => {
                     let var = self.core_fn("%force-stream", &FORCE_VAR);

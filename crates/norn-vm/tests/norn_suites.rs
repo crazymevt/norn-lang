@@ -116,6 +116,11 @@ fn errors_suite() {
 }
 
 #[test]
+fn later_suite() {
+    suite("later_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [

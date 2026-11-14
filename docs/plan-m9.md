@@ -295,3 +295,57 @@ Added the same day, from what earlier milestones left open (the user,
   - JSON, source, URI and not-HTTP parse errors;
   - conditions through `await`, scopes, and a condition of one's own.
 
+**9.14, values that arrive later, and errors with data (2026-11-14):
+done.**
+
+- **`deref` (and `@`) waits for a value:** an atom's or var's now, a
+  fiber's when it ends, and a delay's, promise's or future's when it
+  arrives. With `(deref x ms timeout-value)`, it waits at most that long
+  for a promise or a future.
+  - `realized?` covers all three, plus fibers.
+  - `deref-object` and `realized?-object` are generic functions, so a
+    class of one's own can be deref'd.
+- **Promises:** `promise` and `deliver`. Any number of fibers can wait on
+  one, and delivering a second time does nothing (it returns nil). A
+  promise is an atom holding its state plus a channel closed on delivery.
+- **Delays:** `delay`, `force` and `delay?`. The body is computed once,
+  by the first fiber to ask, and the others wait for it. A failure is
+  cached, and every deref signals that same condition. A delay that needs
+  its own value to compute it is an error rather than a hang.
+- **Futures:** `future`, `future?`, `future-done?`, `future-cancel` and
+  `future-cancelled?`.
+  - A future is a fiber in a scope of its own that nobody joins. So its
+    failure belongs to its deref (not printed when it happens), while
+    cancelling and the debugger work as for any fiber.
+  - Its deref is `await`, so the condition it failed with comes back
+    whole (9.13).
+- **`ex-info`, `ex-data`, `ex-message` and `ex-cause`:**
+  - `ex-info` makes an `ExInfo` (an `Error`) with a data map and a cause,
+    for `throw` or `error`;
+  - `ex-data` gives an `ExInfo`'s map, or a runtime error's slots
+    (`{:path … :reason :not-found}`), or nil.
+- **`deref` stays a primitive.** A Norn `deref` function made `@` on an
+  atom four times slower at tier 1 (20 to 76 ms for 2 million). Instead,
+  the primitive hands an object to `deref-object` through a new
+  `ErrKind::Call`: the interpreter calls the function in the primitive's
+  place, in the fiber, so it can park. A run from Rust calls it nested.
+  `@` on an atom costs what it did (22 ms).
+- **Two bugs found writing it:**
+  - `compare-and-set!` compares by identity, so a promise's pending state
+    must be an interned keyword, not a vector literal (deliver never
+    matched, and deref waited for ever);
+  - a future cancelled before its fiber starts never runs its body, so
+    its `finally` never closes its done channel. Its deref now awaits the
+    fiber itself, and `future-cancel` closes the channel.
+  - `realized?` already existed, as a primitive for lazy streams, and the
+    first version replaced it (`core_test` caught it). The new one hands
+    everything that isn't a fiber or an object to that primitive.
+- **Tests:** `later_test.norn`, 39 checks at both tiers:
+  - twenty fibers waiting on one promise, and timeouts;
+  - a delay forced by ten fibers at once, computed once, with its failure
+    cached and the self-reference error;
+  - futures' values, failures (the condition intact), timeouts and
+    cancelling;
+  - a class of one's own deref'd;
+  - `ex-info` with data and a cause, and `ex-data` of a runtime error.
+

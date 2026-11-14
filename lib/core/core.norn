@@ -2877,3 +2877,173 @@
 (defn ifn? "Can x be called: a function, keyword, map, set or vector?" [x]
   (or (fn? x) (keyword? x) (map? x) (set? x) (vector? x)))
 (defn distinct? "Are all the arguments different?" [& xs] (= (count xs) (count (set xs))))
+
+;;; ---- values that arrive later, and errors with data (M9 part 9.14) -----------------------
+;;;
+;;; deref (and @) waits for a value: an atom's or var's now, a fiber's when
+;;; it ends, a delay's when it's first forced, a promise's when it's
+;;; delivered, a future's when its fiber ends. A future is a fiber, so
+;;; cancelling it, and the debugger when it fails, work as for any fiber;
+;;; its failure is its deref's (the very condition, signalled again), not
+;;; reported when it happens.
+
+(defgeneric deref-object (x ms timeout-value)
+  "deref for an object: its value, waiting for it (at most ms, then
+  timeout-value, when ms isn't nil). Define a method to make a class of
+  one's own something deref and @ work on.")
+
+(defgeneric realized?-object (x)
+  "realized? for an object: has its value arrived?")
+
+(defmethod deref-object ((x StandardObject) ms timeout-value)
+  (error TypeError :message (str "deref expects an atom, var, fiber, delay, promise or future, got " (pr-str x))
+         :expected "something deref works on" :value x))
+
+;; (deref itself is a primitive: atoms, vars and fibers there, and objects
+;; handed to deref-object in its place, in the calling fiber)
+
+(def ^:private %realized-stream? realized?) ; (the primitive: lazy streams)
+
+(defn realized?
+  "Has x's value arrived: a lazy stream's first cell computed, a delay
+  forced, a promise delivered, a future's or fiber's work done?"
+  [x]
+  (cond (fiber? x) (done? x)
+        (instance? StandardObject x) (realized?-object x)
+        :else (%realized-stream? x)))
+
+;; ---- promises ----
+
+(defclass Promise () ((state :initarg :state) (done :initarg :done)))
+
+(defn promise
+  "A promise: a value delivered once, later (deliver), which deref waits
+  for. Any number of fibers may wait on it."
+  []
+  ;; (pending, the keyword: compare-and-set! compares by identity, and a
+  ;; keyword is always the same object)
+  (make Promise :state (atom ::pending) :done (chan)))
+
+(defn deliver
+  "Deliver x to promise p, waking every fiber waiting on it: p, or nil if
+  something was delivered to it already."
+  [p x]
+  (when (compare-and-set! (:state p) ::pending [::delivered x])
+    (close! (:done p))
+    p))
+
+(defn- %await-done
+  "Wait for channel done to close (at most ms, when ms isn't nil): true if
+  it did."
+  [done ms]
+  (if ms
+    (let [[_ port] (alts! [done (timeout ms)])] (identical? port done))
+    (do (take! done) true)))
+
+(defmethod deref-object ((p Promise) ms timeout-value)
+  (let [s @(:state p)]
+    (if (vector? s)
+      (second s)
+      (if (%await-done (:done p) ms) (second @(:state p)) timeout-value))))
+
+(defmethod realized?-object ((p Promise)) (vector? @(:state p)))
+
+;; ---- delays ----
+
+(defclass Delay () ((thunk :initarg :thunk) (claimed :initarg :claimed) (result :initarg :result)))
+
+(defn %delay [thunk] (make Delay :thunk thunk :claimed (atom nil) :result (promise)))
+
+(defmacro delay
+  "(delay body…): body, computed the first time deref (or force) asks for
+  it, and that value from then on. Fibers asking while it's computed wait
+  for it. If body fails, every deref signals that same condition."
+  [& body]
+  `(%delay (fn* [] ~@body)))
+
+(defn delay? "Is x a delay?" [x] (instance? Delay x))
+
+(defmethod deref-object ((d Delay) _ms _timeout-value)
+  (let [me (current-fiber)]
+    (when (compare-and-set! (:claimed d) nil me)
+      ;; (this fiber computes it: the value, or the condition it failed with)
+      (deliver (:result d)
+               (handler-case [::value ((:thunk d))]
+                 (Error [c] [::failed c]))))
+    (when (and (identical? @(:claimed d) me) (not (realized? (:result d))))
+      (error "This delay needs its own value to compute it"))
+    (let [[how x] @(:result d)]
+      (if (= how ::failed) (error x) x))))
+
+(defmethod realized?-object ((d Delay)) (realized? (:result d)))
+
+(defn force "x's value if it's a delay (computing it the first time), else x." [x]
+  (if (delay? x) @x x))
+
+;; ---- futures ----
+
+(defclass Future () ((fiber :initarg :fiber) (done :initarg :done)))
+
+(defn %future [thunk]
+  (let [done (chan)]
+    ;; (in a scope of its own, which nobody joins: its failure is for its
+    ;; deref, not reported when it happens)
+    (make Future :done done
+          :fiber (%scope-spawn (%scope) (fn* [] (try (thunk) (finally (close! done))))))))
+
+(defmacro future
+  "(future body…): body, run in a fiber of its own; deref (or @) waits
+  for its value, and signals the condition it failed with, if it did.
+  future-cancel cancels it."
+  [& body]
+  `(%future (fn* [] ~@body)))
+
+(defn future? "Is x a future?" [x] (instance? Future x))
+(defn future-done? "Has future f finished (or failed, or been cancelled)?" [f] (done? (:fiber f)))
+(defn future-cancel
+  "Cancel future f's fiber (one cancelled before it started never runs its
+  body, so this says it's done too)."
+  [f]
+  (cancel! (:fiber f))
+  (close! (:done f))
+  nil)
+(defn future-cancelled? "Was future f cancelled?" [f]
+  (and (done? (:fiber f)) (= "Cancelled" (fiber-error (:fiber f)))))
+
+(defmethod deref-object ((f Future) ms timeout-value)
+  ;; (with no timeout, the fiber's own join, which every way of ending
+  ;; reaches; with one, the done channel its body closes)
+  (if (or (nil? ms) (done? (:fiber f)) (%await-done (:done f) ms))
+    (await (:fiber f))
+    timeout-value))
+
+(defmethod realized?-object ((f Future)) (done? (:fiber f)))
+
+;; ---- errors with data ----
+
+(defclass ExInfo (Error) ((data :initform nil) (cause :initform nil)))
+
+(defn ex-info
+  "A condition carrying data (a map), and perhaps the condition that caused
+  it: (throw (ex-info \"Bad order\" {:id 7})), or (error …). A handler reads
+  them with ex-data and ex-cause."
+  ([msg data] (ex-info msg data nil))
+  ([msg data cause]
+   (when-not (map? data) (error TypeError :message "ex-info's data must be a map" :expected "a map" :value data))
+   (make ExInfo :message msg :data data :cause cause :location (%location))))
+
+(defn ex-data
+  "Condition c's data: an ex-info's map, or the slots a runtime error says
+  what went wrong with ({:path … :reason :not-found} for a FileNotFound);
+  nil when there are none."
+  [c]
+  (cond (instance? ExInfo c) (:data c)
+        (instance? Condition c)
+        (let [m (into {} (keep (fn [s] (let [k (keyword (name (:name s))) v (get c k)]
+                                         (when (and (some? v) (not (contains? #{:message :trace :location} k))) [k v]))))
+                      (class-slots (class-of c)))]
+          (when (seq m) m))
+        :else nil))
+
+(defn ex-message "Condition c's message." [c] (when (instance? Condition c) (condition-message c)))
+(defn ex-cause "The condition that caused c (an ex-info's cause), or nil." [c] (when (instance? ExInfo c) (:cause c)))
