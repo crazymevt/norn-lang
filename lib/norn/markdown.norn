@@ -227,16 +227,20 @@
              ;; back up over blank lines that ended the list
              (loop [k j] (if (and (> k i) (blank? (nth lines (dec k)))) (recur (dec k)) k))]))))))
 
+(def ^:dynamic *starts*
+  "Bound to an atom by parse-lines: the top-level blocks' first lines."
+  nil)
+
 (defn blocks
   "The blocks of a vector of lines."
   [lines]
   (let [n (count lines)]
-    (loop [i 0 out []]
+    (loop [i 0 starts [] out []]
       (if (>= i n)
-        out
+        (do (when *starts* (reset! *starts* starts)) out)
         (let [l (nth lines i)]
           (cond
-            (blank? l) (recur (inc i) out)
+            (blank? l) (recur (inc i) starts out)
 
             (fence l)
             (let [[_ marks lang] (fence l)
@@ -244,13 +248,13 @@
                   close (re-pattern (str "^ {0,3}" marks (subs marks 0 1) "*\\s*$"))
                   end (loop [j (inc i)] (cond (>= j n) j (re-find close (nth lines j)) j :else (recur (inc j))))
                   body (mapv (fn [x] (strip x ind)) (slice lines (inc i) end))]
-              (recur (inc end) (conj out [:code-block (if (str/blank? lang) {} {:lang lang}) (str/join "\n" body)])))
+              (recur (inc end) (conj starts i) (conj out [:code-block (if (str/blank? lang) {} {:lang lang}) (str/join "\n" body)])))
 
             (atx l)
             (let [[_ hashes text] (atx l)]
-              (recur (inc i) (conj out (into [:heading {:level (count hashes)}] (inlines (or text ""))))))
+              (recur (inc i) (conj starts i) (conj out (into [:heading {:level (count hashes)}] (inlines (or text ""))))))
 
-            (hr? l) (recur (inc i) (conj out [:thematic-break]))
+            (hr? l) (recur (inc i) (conj starts i) (conj out [:thematic-break]))
 
             (quote? l)
             (let [[body nxt] (loop [j i acc []]
@@ -259,16 +263,16 @@
                                      ;; lazy continuation
                                      (and (seq acc) (not (blank? (peek acc))) (not (starts-block? (nth lines j)))) (recur (inc j) (conj acc (nth lines j)))
                                      :else [acc j]))]
-              (recur nxt (conj out (into [:block-quote] (blocks body)))))
+              (recur nxt (conj starts i) (conj out (into [:block-quote] (blocks body)))))
 
             (list-marker l)
-            (let [[b nxt] (parse-list lines i)] (recur nxt (conj out b)))
+            (let [[b nxt] (parse-list lines i)] (recur nxt (conj starts i) (conj out b)))
 
             ;; indented code
             (>= (indent l) 4)
             (let [end (loop [j i] (if (and (< j n) (or (blank? (nth lines j)) (>= (indent (nth lines j)) 4))) (recur (inc j)) j))
                   body (trim-trailing-blanks (mapv (fn [x] (strip x 4)) (slice lines i end)))]
-              (recur end (conj out [:code-block {} (str/join "\n" body)])))
+              (recur end (conj starts i) (conj out [:code-block {} (str/join "\n" body)])))
 
             ;; a table: a header row, then a delimiter row
             (and (str/includes? l "|") (< (inc i) n) (table-delim? (nth lines (inc i))))
@@ -283,7 +287,7 @@
                               cs (vec (take width (concat cs (repeat ""))))]
                           (into [:row {:head head}] (map (fn [c] (into [:cell] (inlines (str/replace c "\\|" "|")))) cs))))
                   end (loop [j (+ i 2)] (if (and (< j n) (not (blank? (nth lines j))) (str/includes? (nth lines j) "|")) (recur (inc j)) j))]
-              (recur end (conj out (into [:table {:align aligns} (row l true)] (map (fn [x] (row x false)) (slice lines (+ i 2) end))))))
+              (recur end (conj starts i) (conj out (into [:table {:align aligns} (row l true)] (map (fn [x] (row x false)) (slice lines (+ i 2) end))))))
 
             ;; a paragraph (or a setext heading)
             :else
@@ -297,14 +301,22 @@
                               (and (seq acc) (starts-block? x)) [acc j nil]
                               :else (recur (inc j) (conj acc (str/triml x)))))))
                   text (str/trimr (str/join "\n" para))]
-              (recur nxt (conj out (if setext
-                                     (into [:heading {:level setext}] (inlines text))
-                                     (into [:paragraph] (inlines text))))))))))))
+              (recur nxt (conj starts i) (conj out (if setext
+                                                     (into [:heading {:level setext}] (inlines text))
+                                                     (into [:paragraph] (inlines text))))))))))))
 
 (defn parse
   "Markdown text as Norn data: [:doc block…] (see the namespace docs)."
   [text]
   (into [:doc] (blocks (vec (str/split-lines (str/replace (str text) "\t" "    "))))))
+
+(defn parse-lines
+  "[doc lines]: what parse gives, and the line (0-based) each top-level
+  block starts on, in order (an editor's preview follows its caret by
+  them)."
+  [text]
+  (binding [*starts* (atom [])]
+    (let [doc (parse text)] [doc @*starts*])))
 
 ;; ---- output ----------------------------------------------------------------------------------
 

@@ -82,7 +82,7 @@ a design against Norn's fibers and conditions.
 
 ## Part 3 — the editor
 
-**Status (2026-11-14): 3.1 to 3.6 done.**
+**Status (2026-11-14): 3.1 to 3.7 done.**
 - **3.1, the shell:** built as planned, with a basic Explorer tree (3.6
   adds icons for Git status and the rest). The tools in the docks are
   placeholders until their parts.
@@ -115,6 +115,11 @@ a design against Norn's fibers and conditions.
   side, read from `git diff` with all the context. Commits and checkouts
   made outside show, as the folder watch passes `.git/index` and
   `.git/HEAD` through.
+- **3.7, Markdown:** built as planned: Source, Split and Preview, the
+  preview drawn by `norn-ui` from `norn.markdown`'s data; in Split, the
+  block at the caret comes to the top of the preview (by the line each
+  top-level block starts on, which `norn.markdown/parse-lines` gives).
+  Links open: web addresses in the browser, paths as documents.
 
 On the way:
 - `norn-ui` gained:
@@ -133,7 +138,8 @@ On the way:
   - `:gutter false` on the editor surface (the REPL's input has no line
     numbers);
   - tree rows with a badge (a Git status letter) and an icon colour of
-    their own; `editor-set-text!` taking a function applied in the same
+    their own; `markdown` taking `:block-id` (an id for each top-level
+    block, to measure and scroll to); `editor-set-text!` taking a function applied in the same
     change;
   - a fix: `focus!` and an editor's updates wait for a render in
     progress (a reentrant lock), as they name nodes of the last rendered
@@ -147,7 +153,9 @@ On the way:
     one), as `norn test` does, so the editor protocol's `:test` can too;
   - `norn FILE.norn ARGS…`, which runs the file with its arguments, as
     the usage line always said (it refused them);
-  - `tree-seq`;
+  - `tree-seq`, and `get-in` with a default;
+  - `norn.markdown/parse-lines`: the parse, and each top-level block's
+    first line;
   - `doseq` with several bindings, `:let` and `:when`, as `for` has
     (it silently ignored all but the first binding);
   - `io/canonical`, a path with its symbolic links resolved, as

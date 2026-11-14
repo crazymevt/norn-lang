@@ -49,3 +49,9 @@
 (deftest data-and-text
   (is (= [:doc [:heading {:level 1} "Hi"] [:paragraph "Some " [:em "text"] "."]] (md/parse "# Hi\n\nSome *text*.")))
   (is (= "Hi\nSome text.\n" (md/text "# Hi\n\nSome *text*."))))
+
+(deftest block-lines
+  (testing "parse-lines: the line each top-level block starts on"
+    (let [[doc lines] (md/parse-lines "# Title\n\nSome text\nand more.\n\n> quoted\n> - inside\n\n- a\n- b\n\n```\ncode\n```\n")]
+      (is (= doc (md/parse "# Title\n\nSome text\nand more.\n\n> quoted\n> - inside\n\n- a\n- b\n\n```\ncode\n```\n")))
+      (is (= [0 2 5 8 11] lines) "nested blocks (in the quote, the list) don't count"))))

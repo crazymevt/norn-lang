@@ -308,7 +308,15 @@
 (defn merge [& maps]
   (reduce (fn [acc m] (if m (conj (or acc {}) m) acc)) nil maps))
 
-(defn get-in [m ks] (reduce get m ks))
+(defn get-in
+  "The value at path ks in nested maps m, or not-found (default nil) if
+  any key along it is missing."
+  ([m ks] (reduce get m ks))
+  ([m ks not-found]
+   (loop [m m ks (seq ks)]
+     (if ks
+       (if (contains? m (first ks)) (recur (get m (first ks)) (next ks)) not-found)
+       m))))
 
 (defn assoc-in [m ks v]
   (let [k (first ks) more (next ks)]
