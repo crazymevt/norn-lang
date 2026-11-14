@@ -275,6 +275,12 @@
           (cond (or (= d ::stop) (%eof? d) (and (seq? d) (contains? #{'ns 'in-ns} (first d)))) acc
                 (and (seq? d) (symbol? (first d)) (= "declare" (name (first d))))
                 (recur (into acc (filter symbol? (rest d))))
+                ;; (definitions for compile time count too)
+                (and (seq? d) (symbol? (first d)) (= "begin-for-syntax" (name (first d))))
+                (recur (into acc (keep (fn [f] (when (and (seq? f) (symbol? (first f)) (contains? definer-heads (name (first f)))
+                                                          (symbol? (second f)))
+                                                 (second f)))
+                                       (rest d))))
                 (and (seq? d) (symbol? (first d)) (contains? definer-heads (name (first d))) (symbol? (second d)))
                 (recur (conj acc (second d)))
                 :else (recur acc)))))))
@@ -295,11 +301,14 @@
              (when-not (%eof? form)
                (binding [*where* {:file path :line (get lines i)} *source-syms* (symbols-in form)
                          *source-heads* (heads-in form) *exempt* (catch-bindings form)]
-                 (if (evaluated-form? form)
+                 (cond
+                   ;; compile-time definitions: analyzed as the code they are
+                   (and (seq? form) (= 'begin-for-syntax (first form))) (doseq [f (rest form)] (analyze {} f))
+                   (evaluated-form? form)
                    (when-not (and (= 'defmacro (first form))
                                   (when-let [v (resolve (second form))] (macro? v)))
                      (try (eval form) (catch Error e (warn :macro "evaluating " (first form) ": " (condition-message e)))))
-                   (analyze {} form)))
+                   :else (analyze {} form)))
                (recur (inc i)))))
          (catch Error e (swap! *warnings* conj {:file path :line nil :kind :read :message (condition-message e)}))
          (finally (in-ns (symbol (str here)))))

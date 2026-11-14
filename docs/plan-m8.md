@@ -247,3 +247,52 @@ template must still reach its own namespace's private functions, as
 - **Seen in passing:** `start_up_from_an_image_is_fast` (under 50 ms)
   fails when the whole suite runs in parallel. Alone it takes 40 ms and
   passes. The test's threshold or its isolation needs a look.
+
+**8.5, phases (2026-11-14): done, strict in modules, permissive at the
+REPL.**
+
+- **The measurement first.** Of every macro in `lib/norn`, `norn-ui`,
+  `norn-studio` and the tests, one called a non-core helper while expanding
+  (`norn.test/are`, using `norn.walk`). None used another macro of its own
+  module. So Racket's strictness cost one line of migration, plus one
+  test's helper that strict phases rightly refused.
+- **Instances.** A module's compile-time instance is a namespace of its
+  own, `name@1` (`name@2` one more up). Loading it runs the module's
+  source again into that namespace; requiring from a namespace at shift n
+  loads the library's instance at shift n.
+  - `norn.core`, `norn.syntax`, `norn.compiler` and `norn.expander` are the
+    language itself: one instance, shared by every phase. A library with no
+    source (a native extension's) has one instance too.
+- **Kernel form `(for-syntax e)`:** e is expanded one phase up, its names
+  resolved in compile-time instances. `defmacro` and `defsyntax` wrap
+  their transformers in it.
+- **Getting helpers to compile time:**
+  - `begin-for-syntax` defines them in the module's compile-time instance;
+  - `(:require-for-syntax spec…)` in `ns` (or `require-for-syntax`)
+    requires a library there.
+- **Resolving names one phase up:**
+  - a namespace written in full (`norn.walk/…`) means that phase's
+    instance;
+  - a name from the language itself means the same at every phase, however
+    the module required it, so `syn/datum->syntax` needs no second require.
+- **In a module,** a compile-time name not found one phase up is an error
+  that says what to do: `helper isn't available at compile time here:
+  define it inside begin-for-syntax, or require its module with
+  :require-for-syntax`, with the place.
+- **At the REPL and in scripts** (no `ns`), such a name is taken from run
+  time, as decided ("the top level is hopeless").
+- **What it guarantees.** Compile-time code works on its own instances, so
+  compiling a module neither depends on nor changes run-time state: a
+  counter bumped while compiling isn't the run-time one (`phase_test`).
+  Dynamic lookups (`resolve`, `find-ns`) still see every namespace, as
+  Racket's namespace reflection does.
+- **Not done: expanding a module in two passes** (every form expanded
+  before any runs, decision 2). Modules declare their definitions up front
+  and expand form by form. That gives forward references, and with phases a
+  form's compilation can't depend on earlier forms' run-time effects. The
+  two passes matter for the compiled-module cache (8.6), which wants a
+  module as one unit, so they're proposed for 8.6. A few stdlib macros look
+  things up dynamically while expanding (`resolve`), and these would need
+  care there.
+- **Tests:** `phase_test.norn`, 12 checks at both tiers. All suites pass, as
+  do `norn-ui`'s and `norn-studio`'s. The linter knows `begin-for-syntax`.

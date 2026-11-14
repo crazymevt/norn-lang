@@ -488,6 +488,15 @@
                       acc))]
         (reduce (fn [acc t] (f acc (await t))) init parts)))))
 
+;;; ---- phases (M8 part 8.5) ------------------------------------------------------------
+;;;
+;;; (for-syntax e): e is code for compile time, one phase up. The expander
+;;; resolves its names in compile-time instances of modules; without the
+;;; expander (boot, NORN_EXPANDER=off) it's just e.
+
+(def for-syntax (fn* for-syntax [e] e))
+(%set-macro! (var for-syntax))
+
 ;;; ---- vars -------------------------------------------------------------------------
 
 (defn alter-var-root [v f & args] (%set-root! v (apply f (var-get v) args)))
@@ -1623,7 +1632,7 @@
   (let [body (if (string? (first body)) (rest body) body)
         attrs (when (map? (first body)) (first body))
         body (if attrs (rest body) body)]
-    `(do (def ~mname (fn ~mname ~@body))
+    `(do (def ~mname (for-syntax (fn ~mname ~@body)))
          (%set-macro! (var ~mname))
          ~@(when (:indent attrs) [`(%set-indent! '~mname ~(:indent attrs))])
          (var ~mname))))
@@ -1747,7 +1756,39 @@
   (let [e %image-entry]
     (apply (if (var? e) (var-get e) e) args)))
 
-;;; ---- libraries: require (until modules arrive, M8) --------------------------------------
+;;; ---- libraries: require ----------------------------------------------------------------
+;;;
+;;; Phases (M8 part 8.5): code that runs while compiling (a macro's, and its
+;;; helpers') is one phase up, in its own instance of each module: namespace
+;;; name@1 for module name, name@2 one more up. Requiring from a namespace
+;;; at shift n loads the library's instance at shift n. norn.core,
+;;; norn.syntax, norn.compiler and norn.expander are the language itself:
+;;; one instance, shared by every phase.
+
+(def %shared-nss #{"norn.core" "norn.syntax" "norn.compiler" "norn.expander"})
+
+(defn %ns-shift
+  "The phase shift of namespace ns (a symbol): n for name@n, else 0."
+  [ns]
+  (let [n (str ns)
+        i (loop [i (dec (count n))]
+            (cond (< i 0) nil
+                  (= (nth n i) \@) i
+                  :else (recur (dec i))))]
+    (if i (or (%parse-number (subs n (inc i)) true) 0) 0)))
+
+(defn %base-ns
+  "Namespace ns's module name, without its phase shift."
+  [ns]
+  (let [n (str ns) s (%ns-shift ns)]
+    (if (zero? s) (symbol n) (symbol (subs n 0 (- (count n) (inc (count (str s)))))))))
+
+(defn %shifted
+  "The instance of module lib at phase shift s (a shared one has one)."
+  [lib s]
+  (if (or (zero? s) (contains? %shared-nss (str lib))) lib (symbol (str lib "@" s))))
+
+(def *load-shift* "The phase shift of the library being loaded." 0)
 ;;;
 ;;; (require 'norn.io) loads a library once: embedded in the binary
 ;;; (lib/norn/*.norn) or found as a/b.norn under NORN_PATH or the current
@@ -1770,19 +1811,30 @@
           (and (some (fn [n] (= (str n) (str lib))) (all-ns)) (seq (ns-publics lib))) nil
           :else (error "Can't find library" (str lib) "(not embedded, and not on NORN_PATH)"))))
 
-(defn %load-lib [lib]
-  (when (contains? *loading* lib)
-    (error "Circular require:" (str lib) "is already being loaded"))
+(declare %load-lib-at)
+
+(defn %load-lib
+  "Load library lib's instance at phase shift s (once); its namespace. A
+  library with no source (a native extension's) has one instance."
+  ([lib] (%load-lib lib 0))
+  ([lib s]
+   (let [key (if (and (pos? s) (nil? (%find-lib (str lib)))) lib (%shifted lib s))]
+     (%load-lib-at lib key (if (= key lib) 0 s))
+     key)))
+
+(defn- %load-lib-at [lib key s]
+  (when (contains? *loading* key)
+    (error "Circular require:" (str key) "is already being loaded"))
   (loop []
     (let [m @%libs
-          e (get m lib)]
+          e (get m key)]
       (cond (= e :loaded) nil
             (some? e) (do (take! e) (recur))      ; a channel, closed when that load ends
             :else (let [done (chan)]
-                    (if (compare-and-set! %libs m (assoc m lib done))
-                      (try (binding [*loading* (conj *loading* lib)] (%load-lib-source lib))
-                           (swap! %libs assoc lib :loaded)
-                           (catch Error c (swap! %libs dissoc lib) (throw c))
+                    (if (compare-and-set! %libs m (assoc m key done))
+                      (try (binding [*loading* (conj *loading* key) *load-shift* s] (%load-lib-source lib))
+                           (swap! %libs assoc key :loaded)
+                           (catch Error c (swap! %libs dissoc key) (throw c))
                            (finally (close! done)))
                       (recur)))))))
 
@@ -1798,22 +1850,55 @@
             opts (apply hash-map (remove (fn [o] (= o :reload)) opts))
             reload (or reload-all (some (fn [o] (= o :reload)) (if (vector? spec) spec [])))
             {:keys [as refer]} opts]
-        (when reload (swap! %libs dissoc lib))
-        (%load-lib lib)
-        (when as (%alias as lib))
-        (when refer
-          (let [publics (ns-publics lib)]
-            (doseq [s (if (= refer :all) (keys publics) refer)]
-              (%refer s (or (get publics s) (error "No such public var:" (str lib "/" s)))))))))
+        (let [shift (%ns-shift (symbol (str (current-ns))))
+              _ (when reload (swap! %libs dissoc (%shifted lib shift)))
+              target (%load-lib lib shift)]
+          (when as (%alias as target))
+          (when refer
+            (let [publics (ns-publics target)]
+              (doseq [s (if (= refer :all) (keys publics) refer)]
+                (%refer s (or (get publics s) (error "No such public var:" (str lib "/" s))))))))))
     nil))
 
+(defn %up-ns
+  "The namespace one phase up from the current one (made if need be)."
+  []
+  (let [here (symbol (str (current-ns)))
+        up (%shifted (%base-ns here) (inc (%ns-shift here)))]
+    (when (= up here) (error "A shared namespace has no compile-time instance:" (str here)))
+    up))
+
+(defn require-for-syntax
+  "Require libraries (as require) for compile time: into the current
+  module's instance one phase up, where its macros' code resolves names."
+  [& specs]
+  (let [here (symbol (str (current-ns)))]
+    (in-ns (%up-ns))
+    (try (apply require specs) (finally (in-ns here)))))
+
+(defn %eval-for-syntax
+  "Evaluate forms in the current module's instance one phase up."
+  [forms]
+  (let [here (symbol (str (current-ns)))]
+    (in-ns (%up-ns))
+    (try (loop [fs (seq forms) last nil] (if fs (recur (next fs) (eval (first fs))) last))
+         (finally (in-ns here)))))
+
+(defmacro begin-for-syntax
+  "Definitions and code for compile time: evaluated in this module's
+  instance one phase up, where its macros' code finds them."
+  [& forms]
+  `(%eval-for-syntax '~(vec forms)))
+
 (defmacro ns
-  "(ns name (:require spec…)…): switch to (creating) a namespace, then
-  require libraries as in `require`."
+  "(ns name (:require spec…) (:require-for-syntax spec…)…): switch to
+  (creating) a namespace, then require libraries as in `require`, and
+  for compile time as in `require-for-syntax`."
   [name & clauses]
-  (let [reqs (mapcat (fn [c] (when (and (seq? c) (= (first c) :require)) (rest c))) clauses)]
+  (let [of (fn [k] (mapcat (fn [c] (when (and (seq? c) (= (first c) k)) (rest c))) clauses))]
     `(do (in-ns '~name)
-         ~@(map (fn [r] `(require '~r)) reqs)
+         ~@(map (fn [r] `(require '~r)) (of :require))
+         ~@(map (fn [r] `(require-for-syntax '~r)) (of :require-for-syntax))
          nil)))
 
 ;;; ---- owned mutable objects (design §4.2) ---------------------------------------------------

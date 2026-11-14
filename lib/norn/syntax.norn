@@ -184,7 +184,7 @@
   keep the two apart)."
   [mname & body]
   (let [body (if (string? (first body)) (rest body) body)]
-    `(do (def ~mname (transformer ~(first body)))
+    `(do (def ~mname (transformer (for-syntax ~(first body))))
          (%set-macro! (var ~mname))
          (var ~mname))))
 

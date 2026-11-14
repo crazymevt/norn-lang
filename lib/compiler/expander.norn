@@ -35,7 +35,7 @@
   (error ExpandError :message (str (when (and (syn/syntax? s) (syn/syntax-loc s)) (str (syn/syntax-where s) ": "))
                                    (apply %message msg))))
 
-(def ^:private specials '#{quote if do def var fn* let* letrec* loop* recur quote-syntax})
+(def ^:private specials '#{quote if do def var fn* let* letrec* loop* recur quote-syntax for-syntax})
 
 ;; ---- namespaces' scopes ----
 
@@ -76,6 +76,55 @@
   (let [m @scope-nss]
     (or (some (fn [sc] (get m sc)) (syn/syntax-scopes id)) (ns-sym))))
 
+;; ---- phases (8.5) ----
+
+(def ^:dynamic *phase*
+  "How many phases up the code being expanded is: 0 for run time, 1 inside
+  (for-syntax …) (a macro's code), and so on."
+  0)
+
+(def ^:dynamic *strict*
+  "True while loading a module: compile-time code must find its names at
+  compile time. Elsewhere (the REPL, scripts) the top level is permissive:
+  a name missing one phase up is taken from run time."
+  false)
+
+(defn- phase-home
+  "The namespace identifier id's names resolve in at the current phase:
+  its home namespace's instance that many phases up."
+  [id]
+  (let [h (home-ns id)]
+    (if (zero? *phase*)
+      h
+      (let [up (%shifted (%base-ns h) (+ (%ns-shift h) *phase*))]
+        (%ensure-ns up)
+        up))))
+
+(defn- shift-qualified
+  "Qualified symbol sym as identifier id means it at the current phase: a
+  namespace written out in full is that phase's instance (an alias already
+  names one)."
+  [id sym]
+  (let [e (+ (%ns-shift (home-ns id)) *phase*)
+        nsp (symbol (namespace sym))]
+    (if (or (zero? e) (contains? (ns-aliases (phase-home id)) nsp))
+      sym
+      (symbol (str (%shifted nsp e)) (name sym)))))
+
+(defn- lookup
+  "The var identifier id (symbol sym) names at the current phase, or nil."
+  [id sym]
+  (or (%resolve-in (phase-home id) (if (namespace sym) (shift-qualified id sym) sym))
+      (let [home (home-ns id)]
+        (when (pos? (+ (%ns-shift home) *phase*))
+          ;; a name from the language itself (norn.core, norn.syntax…: one
+          ;; instance for every phase) means the same at every phase, however
+          ;; the module required it; anything else only at the REPL,
+          ;; permissively
+          (when-let [v (%resolve-in (%base-ns home) sym)]
+            (when (or (and (pos? *phase*) (not *strict*)) (contains? %shared-nss (namespace (symbol (%var-name v)))))
+              v))))))
+
 ;; ---- bindings ----
 
 (def ^:dynamic *bindings*
@@ -107,7 +156,7 @@
 (defn- resolve-global
   "The var identifier id names, looked up in its home namespace."
   [id]
-  (%resolve-in (home-ns id) (syn/syntax-e id)))
+  (lookup id (syn/syntax-e id)))
 
 (defn- special-form
   "The kernel form identifier id names (unless a local binding takes the
@@ -123,7 +172,7 @@
   "An error if global identifier id (sym, at home in namespace home) names
   another namespace's private var, unless it carries that namespace's
   access scope."
-  ([id sym home] (when-let [v (%resolve-in home sym)] (check-access id sym home v)))
+  ([id sym home] (when-let [v (lookup id sym)] (check-access id sym home v)))
   ([id sym home v]
    (when (private? v)
      (let [owner (var-ns-of v)]
@@ -137,13 +186,17 @@
   ([id] (global-ref id true))
   ([id check?]
    (let [sym (syn/syntax-e id)
-         home (home-ns id)]
+         home (phase-home id)]
      (when (and check? (namespace sym)) (check-access id sym home))
-     (if (= home (ns-sym))
-       sym
-       (if-let [v (%resolve-in home sym)]
-         (do (when check? (check-access id sym home v)) (symbol (%var-name v)))
-         sym)))))
+     (cond (and (zero? *phase*) (= home (ns-sym))
+                (or (zero? (%ns-shift home)) (%resolve-in home sym)))
+           sym
+           :else (if-let [v (lookup id sym)]
+                   (do (when check? (check-access id sym home v)) (symbol (%var-name v)))
+                   (if (and *strict* (pos? *phase*))
+                     (fail id (str sym) "isn't available at compile time here: define it inside"
+                           "begin-for-syntax, or require its module with :require-for-syntax")
+                     sym))))))
 
 (defn- free-id=? [a b]
   (let [la (resolve-local a) lb (resolve-local b)]
@@ -272,7 +325,9 @@
     "let*" (expand-let 'let* xs)
     "loop*" (expand-let 'loop* xs)
     "letrec*" (expand-letrec xs)
-    "recur" (apply list 'recur (expand-body (rest xs)))))
+    "recur" (apply list 'recur (expand-body (rest xs)))
+    "for-syntax" (do (when (not= 2 (count xs)) (fail s "for-syntax takes exactly one argument"))
+                     (binding [*phase* (inc *phase*)] (expand (nth xs 1))))))
 
 (defn- transformer? [x] (instance? syn/Transformer x))
 
@@ -392,7 +447,9 @@
             ()
             (let [xs (vec x)
                   h (first xs)
-                  hs (when (syn/identifier? h) (syn/syntax-e h))]
+                  hs (when (syn/identifier? h)
+                       ;; (syntax-quote qualifies for-syntax, being a core macro too)
+                       (let [e (syn/syntax-e h)] (if (= e 'norn.core/for-syntax) 'for-syntax e)))]
               (cond (nil? hs) (apply list (expand-body xs))
                     (resolve-local h) (apply list (expand-body xs))
                     (contains? specials hs) (expand-core (name hs) s xs)
@@ -543,12 +600,17 @@
         (if (= s :eof)
           nil
           (let [d (syn/syntax->datum s)
-                v (eval-located s src)]
-            (when (and (seq? d) (= 'ns (first d)))
-              (declare-module! (%reader-text r) src d))
-            (loop [last v]
-              (let [s (syn/read-syntax r)]
-                (if (= s :eof) last (recur (eval-located s src))))))))
+                module? (and (seq? d) (= 'ns (first d)) (symbol? (second d)))
+                ;; (a module loaded one phase up is that phase's instance)
+                s (if (and module? (pos? *load-shift*))
+                    (syn/%raw-syntax (apply list 'ns (%shifted (second d) *load-shift*) (drop 2 d)) #{} (syn/syntax-loc s))
+                    s)]
+            (binding [*strict* (or module? *strict*)]
+              (let [v (eval-located s src)]
+                (when module? (declare-module! (%reader-text r) src d))
+                (loop [last v]
+                  (let [s (syn/read-syntax r)]
+                    (if (= s :eof) last (recur (eval-located s src))))))))))
       (finally (%set-location! saved)))))
 
 (defn %install!

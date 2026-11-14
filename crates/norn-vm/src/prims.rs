@@ -264,6 +264,7 @@ prims! {
     "%make-proto" 7 Some(7) => make_proto;
     "%make-template" 3 Some(3) => |vm, a| { let ps = to_vec(vm, a[1])?; let cs = to_vec(vm, a[2])?; let arities = norn_rt::array::array_from(&mut vm.m, &ps); let caps = norn_rt::array::array_from(&mut vm.m, &cs); Ok(norn_rt::func::template_new(&mut vm.m, a[0], arities, caps)) };
     "%make-closure" 1 Some(1) => |vm, a| { expect(a[0], Kind::FnTemplate, "%make-closure")?; Ok(norn_rt::func::closure_new(&mut vm.m, a[0])) };
+    "%ensure-ns" 1 Some(1) => |_, a| { expect(a[0], Kind::Symbol, "%ensure-ns")?; rt().find_or_create_ns(a[0]); Ok(a[0]) };
     "%intern" 2 Some(2) => |vm, a| { let ns = rt().find_or_create_ns(a[0]); Ok(ns.intern(&mut vm.m, a[1])) };
     "%closure-template" 1 Some(1) => |_, a| { expect(a[0], Kind::Closure, "%closure-template")?; Ok(a[0].closure_template()) };
     "%template?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::FnTemplate)));

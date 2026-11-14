@@ -16,10 +16,12 @@
 
 (in-ns 'expander-test)
 
-(defn- template
-  "Data with syntax parts, as syntax with this namespace's context."
-  [d]
-  (syn/datum->syntax (quote-syntax here) d))
+;; (the transformers below call it while expanding: compile-time code)
+(begin-for-syntax
+ (defn template
+   "Data with syntax parts, as syntax with this namespace's context."
+   [d]
+   (syn/datum->syntax (quote-syntax here) d)))
 
 ;; (my-or a b): a's value if it's true, else b's — with a temporary `t`
 ;; that the user's own `t` mustn't see.

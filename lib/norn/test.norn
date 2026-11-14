@@ -24,7 +24,9 @@
 ;;;;   test --serial` runs everything one at a time.
 
 (ns norn.test
-  (:require [norn.string :as str] [norn.walk]))
+  (:require [norn.string :as str] [norn.walk])
+  ;; (are's code uses postwalk-replace while it expands)
+  (:require-for-syntax [norn.walk]))
 
 (declare %human %tap %junit)
 
