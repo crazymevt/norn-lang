@@ -75,3 +75,13 @@
     (binding [norn.expander/*cache-dir* nil norn.expander/*cache-stats* stats]
       (eval '(require 'ct.dep :reload)))
     (is (= 0 (:writes @stats) (:hits @stats)))))
+
+(deftest a-module-loaded-while-expanding-is-cached-as-itself
+  ;; (as when a macro's first use loads its library: the form being expanded
+  ;; is in another namespace)
+  (module! "lazy" "(ns ct.lazy)\n(def seven 7)\n(defn f [] seven)\n")
+  (let [form '(binding [norn.expander/*ns-sym* 'cache-test] (require 'ct.lazy :reload))]
+    (is (= {:misses 1 :writes 1} (counted form)))
+    (is (= {:hits 1} (counted form)))
+    (is (= 7 (run '(ct.lazy/f))))
+    (is (not (contains? (ns-interns 'cache-test) 'seven)) "its cached forms ran in ct.lazy, not here")))

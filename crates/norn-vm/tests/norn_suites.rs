@@ -91,6 +91,11 @@ fn cache_suite() {
 }
 
 #[test]
+fn pattern_suite() {
+    suite("pattern_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [

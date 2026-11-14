@@ -348,3 +348,70 @@ REPL.**
   forms run, which the stdlib's dynamic lookups at expansion time depend
   on. Proposed: drop them from decision 2, unless sealing turns out to
   need them.
+
+**8.7, the bootstrap (2026-11-14): done, with nothing to rebuild.**
+
+- **The base image already is what the expander makes.** `core`, the
+  compiler, `norn.syntax` and the expander are compiled at boot before the
+  expander is installed. `norn.expander/compare-expanded` compiles each
+  form of a source both ways and lists the forms whose code differs: for
+  all four (481 forms in `core` alone) the list is empty. So compiling them
+  again through the expander would give the same image, and the seed path
+  stays as it is. `%expander-source` gives the expander's text for the
+  check.
+- **The comparison does notice a difference** (a test: a form using
+  `quote-syntax`, which only the expander knows).
+- **The stdlib, `norn-ui` and `norn-studio` are already modules:** each
+  file starts with `ns`, so since 8.4 each loads as one.
+- **Hygiene's classic cases** are tested: `or` with the user's `t`, a
+  temporary in nested macros, a free name the user shadows, and a private
+  helper reached from another namespace. A shadowed `if` can't happen: a
+  local doesn't shadow a special form (as in Clojure), so a template's `if`
+  is always the special form.
+
+**8.3, pattern macros (2026-11-14): done.**
+
+- **In `norn.syntax`:**
+  - `syntax-case` (with fenders and literals), `syntax` (templates, with
+    `...`, `& x` and `(~? t u)`) and `syntax-rules`;
+  - `syntax-parse` and `syntax-parser`, with syntax classes (`x:id`,
+    `x:expr`, `x:str`, `x:nat`… and `define-syntax-class`), `~literal`,
+    `~or`, `~optional`, `~seq`, `~describe` and `...+`, and `attr` for a
+    pattern variable's match in plain code;
+  - `SyntaxError`, which `syntax-error` signals at a piece of syntax's
+    place.
+- **The `~` forms read as `(unquote x)`** (`~` is unquote for the reader),
+  and the matcher recognises them that way, so no reader change.
+- **The matcher backtracks** (written in continuation style, since there's
+  no lazy concatenation). A failure records how far into the syntax it got;
+  when nothing matches, the error is the furthest one, at that part's
+  place, naming what was expected there: `my-let: expected identifier`,
+  `p.norn:1:15: …`.
+- **The core forms' shapes are checked (decision 5).** Instead of
+  rewriting `let`, `loop`, `fn`, `defn`, `cond`, `case` and `ns` as
+  `syntax-parse` macros, they stay the `defmacro`s they were, and
+  `norn.validate` (an embedded library, loaded the first time a macro
+  expands) checks each call first:
+  - `(let [a 1 b] a)` → `let: expected a binding vector [name value …]`
+  - `(fn f [x 1] x)` → `fn: expected a parameter (a name, &, a vector or a map)`
+  - `(cond (= 1 1) :yes :else)` → `cond: expected a result after the test`
+  - `(ns foo (:requir [x]))` → `ns: expected an ns clause, (:require …) or (:require-for-syntax …)`
+    (a mistyped clause used to be ignored).
+
+  A quick look at each call's shape passes almost every call, and only one
+  it doesn't goes through the `syntax-parse` pattern. Uncached, this costs
+  about 5% of expansion (134 ms against 129 ms to expand `norn.lint`,
+  `norn.markdown` and `norn.test`; matching every call cost 80%). A cached
+  module isn't expanded, so it costs nothing there.
+- **A module-cache bug, found by it:** a module loaded while another form
+  was expanding (as `norn.validate` is) recorded its forms under that
+  form's namespace, so it broke when loaded from the cache. Running and
+  loading now use the current namespace; `cache_test` checks it.
+- **The linter knows hygienic macros:** it evaluates `defsyntax`,
+  `define-syntax-class` and `begin-for-syntax`, expands a hygienic macro's
+  call through the expander, and reports a call the macro refuses as a
+  `:macro` warning. A local passed to such a call counts as used.
+- **Image builds stay reproducible:** the validators are keyed by name
+  (keyed by var, the map's order followed identity hashes).
+- **Tests:** `pattern_test.norn`, 40 checks at both tiers, and a sixth
+  test in `cache_test`.

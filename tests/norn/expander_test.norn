@@ -100,3 +100,15 @@
     (is (= "(fn* [x] x)" (pr-str form)))
     (is (not= 'x x))
     (is (identical? x (nth form 2)))))
+
+(deftest the-bootstrap-is-what-the-expander-makes
+  ;; core, the compiler, norn.syntax and the expander are compiled at boot
+  ;; before the expander is installed: through it, every form gives the same
+  ;; code, so the base image holds exactly what the expander makes (M8 part
+  ;; 8.7)
+  (is (= [] (norn.expander/compare-expanded (%core-source) "core.norn" 'norn.core)))
+  (is (= [] (norn.expander/compare-expanded (%compiler-source) "compiler.norn" 'user)))
+  (is (= [] (norn.expander/compare-expanded (first (%find-lib "norn.syntax")) "syntax.norn" 'user)))
+  (is (= [] (norn.expander/compare-expanded (%expander-source) "expander.norn" 'user)))
+  (testing "and the comparison does notice a difference"
+    (is (= 1 (count (norn.expander/compare-expanded "(defn h [] (quote-syntax x))" "d" 'user))))))

@@ -148,10 +148,14 @@ fn build_is_reproducible_and_runs_the_entry_function() {
     let src = d.join("app.norn");
     std::fs::write(&src, "(ns app)\n(defn main [& args] (println \"app got\" (vec args)) (count args))\n").unwrap();
     let (a, b) = (d.join("a.nimg"), d.join("b.nimg"));
+    // (one cache folder for both: a build mustn't write to it, or the second
+    // would load from it)
+    let cache = d.join("cache");
     for img in [&a, &b] {
-        ok(norn().arg("build").arg(img).arg(&src).args(["--entry", "app/main"]).output().unwrap());
+        ok(norn().arg("build").arg(img).arg(&src).args(["--entry", "app/main"]).env("NORN_CACHE", &cache).output().unwrap());
     }
     assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap(), "same sources, same image");
+    assert!(std::fs::read_dir(&cache).map_or(true, |mut d| d.next().is_none()), "a build doesn't use the module cache");
     let o = norn().arg("--image").arg(&a).args(["x", "y"]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "app got [x y]");
     assert_eq!(o.status.code(), Some(2), "an integer result is the exit status");

@@ -20,12 +20,15 @@
 ;;;; - :macro — a macro call that fails to expand;
 ;;;; - :deprecated — a use of a definition marked {:deprecated "…"}.
 ;;;;
-;;;; Only `ns`, `in-ns`, `require` and `defmacro` forms are evaluated, so
-;;;; that later forms read and expand as they would when loaded. Warnings
+;;;; Only `ns`, `in-ns`, `require`, `defmacro`, `defsyntax`,
+;;;; `define-syntax-class` and `begin-for-syntax` forms are evaluated, so
+;;;; that later forms read and expand as they would when loaded. A hygienic
+;;;; macro's call is expanded by the expander, and a call it refuses (a
+;;;; syntax-parse pattern that doesn't match) is a :macro warning. Warnings
 ;;;; carry the line of the top-level form they're in.
 
 (ns norn.lint
-  (:require [norn.string :as str] [norn.fmt :as fmt]))
+  (:require [norn.string :as str] [norn.fmt :as fmt] [norn.syntax :as syn]))
 
 (def ^:private specials #{'quote 'quote-syntax 'if 'do 'def 'var 'fn* 'let* 'letrec* 'loop* 'recur '&})
 
@@ -179,11 +182,34 @@
       (swap! *file-generics* assoc (second form)
              [(count (take-while (fn [p] (not= p '&)) params)) (boolean (some (fn [p] (= p '&)) params))]))))
 
+(defn- special-head
+  "head as a special form's name: ns/quote-syntax, from syntax-quote in
+  another namespace and naming no var, is quote-syntax."
+  [head]
+  (if (and (symbol? head) (namespace head) (contains? specials (symbol (name head))) (nil? (resolve head)))
+    (symbol (name head))
+    head))
+
+(defn- hygienic-macro? [v] (instance? syn/Transformer (try (var-get v) (catch Error _ nil))))
+
 (defn- analyze-seq [env form]
-  (let [head (first form)]
+  (let [head (special-head (first form))]
     (cond
       (and (symbol? head) (not (get-in env [:locals head])) (contains? specials head))
       (case-head head form env)
+
+      ;; a hygienic macro: the expander expands it (the result's locals
+      ;; are its own symbols, its globals full names)
+      (and (symbol? head) (not (get-in env [:locals head]))
+           (when-let [v (resolve head)] (hygienic-macro? v)))
+      (let [[ok expansion] (try [true (norn.expander/expand-all (syn/datum->syntax nil form))]
+                                (catch Error e [false (condition-message e)]))]
+        ;; (a local the call passes is used, whatever the macro does with it)
+        (doseq [x (symbols-in (rest form))]
+          (when-let [used (get-in env [:locals x])] (reset! used true)))
+        (if ok
+          (analyze env expansion)
+          (warn :macro "expanding " head ": " expansion)))
 
       (and (symbol? head) (not (get-in env [:locals head]))
            (when-let [v (resolve head)] (macro? v)))
@@ -256,7 +282,7 @@
         :else #{}))
 
 (defn- evaluated-form? [form]
-  (and (seq? form) (contains? #{'ns 'in-ns 'require 'defmacro} (first form))))
+  (and (seq? form) (contains? #{'ns 'in-ns 'require 'defmacro 'defsyntax 'define-syntax-class} (first form))))
 
 (def ^:private definer-heads
   "Defining forms by head name, for the forward-reference prescan."
@@ -303,7 +329,10 @@
                          *source-heads* (heads-in form) *exempt* (catch-bindings form)]
                  (cond
                    ;; compile-time definitions: analyzed as the code they are
-                   (and (seq? form) (= 'begin-for-syntax (first form))) (doseq [f (rest form)] (analyze {} f))
+                   (and (seq? form) (= 'begin-for-syntax (first form)))
+                   (do (doseq [f (rest form)] (analyze {} f))
+                       ;; (and evaluated: macros later in the file may call them)
+                       (try (eval form) (catch Error e (warn :macro "evaluating begin-for-syntax: " (condition-message e)))))
                    (evaluated-form? form)
                    (when-not (and (= 'defmacro (first form))
                                   (when-let [v (resolve (second form))] (macro? v)))

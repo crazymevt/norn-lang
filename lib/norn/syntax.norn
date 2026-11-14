@@ -258,3 +258,421 @@
     (loop [out []]
       (let [s (read-syntax r)]
         (if (= s :eof) out (recur (conj out s)))))))
+
+;; ---- pattern macros: syntax-case, syntax, syntax-rules (M8 part 8.3) ----
+;;
+;; (syntax-case stx (literal…) [pattern fender? result]…): the first clause
+;; whose pattern matches stx (and whose fender, if any, is true) gives the
+;; result. In a pattern:
+;;
+;;   x          a pattern variable: matches anything, bound to it
+;;   _          matches anything
+;;   literal    an identifier in the literals list: matches an identifier
+;;              that means the same (free-identifier=?)
+;;   (p …)      a list; [p …] a vector
+;;   p ...      zero or more of p (once per list or vector)
+;;   & p        the rest of the list or vector, matched by p
+;;   :k 1 "s"   matches itself
+;;
+;; (syntax template) is template with the pattern variables of the clauses
+;; it's in replaced by what they matched; t ... repeats t for each match of
+;; the variables in it; & x splices the parts x matched. Other identifiers
+;; in a template keep the template's context: that's the hygiene.
+;;
+;; (syntax-rules (literal…) [pattern template]…) is a transformer (for
+;; defsyntax) made of syntax-case clauses whose results are templates.
+
+(defclass SyntaxError (RuntimeError)
+  ((stx :initarg :stx :doc "The syntax the error is about."))
+  (:doc "Syntax a macro couldn't make sense of."))
+
+(defn syntax-error
+  "Signal that syntax s is wrong: msg, at s's place."
+  [s & msg]
+  (error SyntaxError :stx s :message (str (when (and (syntax? s) (syntax-loc s)) (str (syntax-where s) ": ")) (apply %message msg))))
+
+(def ^:dynamic *pattern-env* "The pattern variables of the clauses being run: name → match." {})
+
+(defn- ident-named? [s n] (and (syntax? s) (= n (syntax-e s))))
+
+(defn- ellipsis? [s] (ident-named? s '...))
+
+(defn- parts-of [s] (let [e (syntax-e s)] (when (or (seq? e) (vector? e)) (vec e))))
+
+(declare %match head-is?)
+
+(defn- pattern-vars
+  "The pattern variables of pattern p (not literals, _ or ...)."
+  [p literals]
+  (let [e (syntax-e p)]
+    (cond (symbol? e) (if (or (contains? #{'_ '... '&} e) (some (fn [l] (= e l)) literals)) [] [e])
+          (or (seq? e) (vector? e)) (vec (mapcat (fn [x] (pattern-vars x literals)) e))
+          :else [])))
+
+(defn- match-seq
+  "Match the parts ss of a list or vector against pattern parts ps: env, or nil."
+  [ps ss literals ctx]
+  (let [[ps rest-p] (let [i (first (keep-indexed (fn [i p] (when (ident-named? p '&) i)) ps))]
+                      (if i [(subvec ps 0 i) (get ps (inc i))] [ps nil]))
+        ei (first (keep-indexed (fn [i p] (when (ellipsis? p) i)) ps))]
+    (if ei
+      (let [before (subvec ps 0 (dec ei))
+            each (get ps (dec ei))
+            after (subvec ps (inc ei))
+            nb (count before) na (count after)
+            fixed (+ nb na)]
+        (when (>= (count ss) fixed)
+          (let [env-before (match-seq before (subvec ss 0 nb) literals ctx)
+                mid (subvec ss nb (- (count ss) na))
+                envs (mapv (fn [x] (%match each x literals)) mid)
+                env-after (match-seq after (subvec ss (- (count ss) na)) literals ctx)]
+            (when (and env-before env-after (every? some? envs) (nil? rest-p))
+              (merge env-before env-after
+                     (into {} (map (fn [v] [v (mapv (fn [e] (get e v)) envs)])) (pattern-vars each literals)))))))
+      (let [n (count ps)]
+        (when (if rest-p (>= (count ss) n) (= (count ss) n))
+          (let [envs (map (fn [p s] (%match p s literals)) ps (subvec ss 0 n))]
+            (when (every? some? envs)
+              (let [env (apply merge {} envs)]
+                (if rest-p
+                  (when-let [r (%match rest-p (%make-syntax (apply list (subvec ss n)) (syntax-scopes ctx) (syntax-loc ctx) nil) literals)]
+                    (merge env r))
+                  env)))))))))
+
+(defn %match
+  "Match syntax s against pattern p (syntax): the pattern variables' matches,
+  or nil."
+  [p s literals]
+  (let [e (syntax-e p)]
+    (cond (= e '_) {}
+          (symbol? e)
+          (if (some (fn [l] (= e l)) literals)
+            (when (and (identifier? s) (free-identifier=? s p)) {})
+            {e s})
+          (seq? e) (when (seq? (syntax-e s)) (match-seq (vec e) (vec (syntax-e s)) literals s))
+          (vector? e) (when (vector? (syntax-e s)) (match-seq e (vec (syntax-e s)) literals s))
+          :else (when (= e (syntax->datum s)) {}))))
+
+(defn %syntax-case
+  "Run syntax-case's clauses ([pattern fender-fn result-fn]…) on syntax s."
+  [s literals clauses]
+  (or (some (fn [[p fender result]]
+              (when-let [env (%match p s literals)]
+                (binding [*pattern-env* (merge *pattern-env* env)]
+                  (when (fender) [(result)]))))
+            clauses)
+      (syntax-error s "bad syntax:" (pr-str (syntax->datum s)))))
+
+(defmacro syntax-case
+  "(syntax-case stx (literal…) [pattern fender? result]…): see above."
+  {:indent 2}
+  [stx literals & clauses]
+  `(first (%syntax-case ~stx '~literals
+                        [~@(map (fn [c]
+                                  (let [[p & more] c
+                                        [fender result] (if (= 2 (count more)) more [true (first more)])]
+                                    `[(quote-syntax ~p) (fn [] ~fender) (fn [] ~result)]))
+                                clauses)])))
+
+(defn- vars-in-template [t env]
+  (let [e (syntax-e t)]
+    (cond (symbol? e) (if (contains? env e) [e] [])
+          (or (seq? e) (vector? e)) (vec (mapcat (fn [x] (vars-in-template x env)) e))
+          :else [])))
+
+(defn %fill
+  "Template t (syntax) with the pattern variables of env replaced."
+  [env t]
+  (let [e (syntax-e t)]
+    (cond (symbol? e)
+          (if (contains? env e)
+            (let [v (get env e)]
+              (if (vector? v) (syntax-error t "pattern variable" (str e) "needs a ... after it here") v))
+            t)
+          (or (seq? e) (vector? e))
+          (let [ps (vec e)
+                out (loop [i 0 out []]
+                      (if (>= i (count ps))
+                        out
+                        (let [p (get ps i)
+                              nxt (get ps (inc i))]
+                          (cond (head-is? p (symbol "~?"))
+                                ;; (~? t): t if its variables matched something; (~? t u): else u
+                                (let [[_ t u] (vec (syntax-e p))
+                                      present (every? (fn [v] (some? (get env v))) (vars-in-template t env))]
+                                  (recur (inc i) (cond present (conj out (%fill env t))
+                                                       u (conj out (%fill env u))
+                                                       :else out)))
+                                (and (ident-named? p '&) nxt (symbol? (syntax-e nxt)) (contains? env (syntax-e nxt)))
+                                ;; & x: x's parts, spliced
+                                (recur (+ i 2) (into out (or (parts-of (get env (syntax-e nxt))) [])))
+                                (and nxt (ellipsis? nxt))
+                                (let [vs (filter (fn [v] (vector? (get env v))) (vars-in-template p env))]
+                                  (when (empty? vs) (syntax-error p "no pattern variable before ... in the template"))
+                                  (let [n (count (get env (first vs)))]
+                                    (recur (+ i 2) (into out (for [k (range n)]
+                                                               (%fill (merge env (into {} (map (fn [v] [v (nth (get env v) k)])) vs)) p))))))
+                                :else (recur (inc i) (conj out (%fill env p)))))))]
+            (%make-syntax (if (vector? e) out (apply list out)) (syntax-scopes t) (syntax-loc t) nil))
+          :else t)))
+
+(defmacro syntax
+  "(syntax template): template with its pattern variables filled in (see
+  syntax-case)."
+  [template]
+  `(%fill *pattern-env* (quote-syntax ~template)))
+
+(defmacro syntax-rules
+  "(syntax-rules (literal…) [pattern template]…): a transformer whose
+  clauses' results are their templates."
+  {:indent 1}
+  [literals & clauses]
+  (let [s (gensym "s")]
+    `(fn [~s] (syntax-case ~s ~literals ~@(map (fn [[p t]] [p `(syntax ~t)]) clauses)))))
+
+;; ---- syntax-parse (M8 part 8.3; its core: decision 4) ----
+;;
+;; (syntax-parse stx [pattern body…]…) and (syntax-parser [pattern body…]…),
+;; a transformer. Patterns as syntax-case's, plus:
+;;
+;;   x:class        x matched by a syntax class: id, expr (anything but a
+;;                  keyword), str, number, nat, integer, keyword, boolean,
+;;                  char, or one made by define-syntax-class
+;;   (~literal id)  an identifier meaning what id means here
+;;   (~or p …)      any of the patterns
+;;   (~optional p)  p, or nothing (its variables then match nil)
+;;   (~seq p …)     several parts of a list in a row (with ... after it,
+;;                  each repetition takes them all)
+;;   (~describe "what" p)  p, called "what" when it doesn't match
+;;   p ...+         one or more of p
+;;
+;; When no clause matches, the error is the one that got furthest into the
+;; syntax, at that part's place: "let: expected identifier or binding
+;; form". In templates, (~? t) is t when its pattern variables matched
+;; something, else nothing, and (~? t u) is u then. (attr x) is what x
+;; matched, in plain code.
+
+(def ^:private syntax-classes
+  "Syntax class name → {:desc :pred} (built in) or {:desc :patterns} (made
+  with define-syntax-class)."
+  (atom {'id {:desc "identifier" :pred identifier?}
+         'expr {:desc "expression" :pred (fn [s] (not (keyword? (syntax-e s))))}
+         'str {:desc "string" :pred (fn [s] (string? (syntax-e s)))}
+         'number {:desc "number" :pred (fn [s] (number? (syntax-e s)))}
+         'integer {:desc "integer" :pred (fn [s] (integer? (syntax-e s)))}
+         'nat {:desc "natural number" :pred (fn [s] (let [e (syntax-e s)] (and (integer? e) (>= e 0))))}
+         'keyword {:desc "keyword" :pred (fn [s] (keyword? (syntax-e s)))}
+         'boolean {:desc "boolean" :pred (fn [s] (boolean? (syntax-e s)))}
+         'char {:desc "character" :pred (fn [s] (char? (syntax-e s)))}}))
+
+(defn %define-syntax-class! [name desc patterns]
+  (swap! syntax-classes assoc name {:desc desc :patterns patterns}))
+
+(defmacro define-syntax-class
+  "(define-syntax-class name \"description\" pattern…): a syntax class: what
+  matches any of the patterns. Its description names it in errors."
+  {:indent 1}
+  [cname desc & patterns]
+  `(%define-syntax-class! '~cname ~desc [~@(map (fn [p] `(quote-syntax ~p)) patterns)]))
+
+(def ^:dynamic *failures* "The failures of the parse running now: [progress expected at]." nil)
+(def ^:dynamic *progress* "How far into the syntax the parse is: a path of indexes." [])
+
+(defn- fail! [expected at]
+  (when *failures* (swap! *failures* conj [*progress* expected at]))
+  nil)
+
+(defn- annotated
+  "x:class as [x class], or nil."
+  [sym]
+  (let [n (name sym) i (loop [i 0] (cond (>= i (count n)) nil (= (nth n i) \:) i :else (recur (inc i))))]
+    (when (and i (pos? i) (< i (dec (count n))))
+      [(symbol (subs n 0 i)) (symbol (subs n (inc i)))])))
+
+(defn- tilde-name
+  "s's name as a pattern keyword: ~seq is read (unquote seq) (~ being
+  unquote), so (unquote seq) is ~seq; a plain identifier is its name."
+  [s]
+  (let [e (syntax-e s)]
+    (cond (symbol? e) e
+          (and (seq? e) (= 2 (count e)) (ident-named? (first e) 'unquote) (identifier? (second e)))
+          (symbol (str "~" (syntax-e (second e))))
+          :else nil)))
+
+(defn- head-is? [p n] (let [e (syntax-e p)] (and (seq? e) (seq e) (= n (tilde-name (first e))))))
+
+(declare pmatch seq-match seq-cps)
+
+(defn- vars-of
+  "The pattern variables of syntax-parse pattern p."
+  [p]
+  (let [e (syntax-e p)]
+    (cond (symbol? e) (cond (contains? #{'_ '... '...+ '&} e) []
+                            (annotated e) [(first (annotated e))]
+                            :else [e])
+          (head-is? p (symbol "~literal")) []
+          (head-is? p (symbol "~describe")) (vars-of (nth (vec e) 2))
+          (or (seq? e) (vector? e)) (vec (mapcat vars-of (if (and (seq? e) (seq e) (contains? #{(symbol "~or") (symbol "~optional") (symbol "~seq")} (tilde-name (first e))))
+                                                           (rest e) e)))
+          :else [])))
+
+(defn- class-match [cls s]
+  (let [c (get @syntax-classes cls)]
+    (cond (nil? c) (syntax-error s "no syntax class" (str cls))
+          (:pred c) (if ((:pred c) s) true (fail! (:desc c) s))
+          :else (let [mark (when *failures* (count @*failures*))
+                      ok (some (fn [p] (pmatch p s)) (:patterns c))]
+                  (if ok
+                    true
+                    ;; (named by the class rather than by what inside it failed)
+                    (do (when *failures* (swap! *failures* (fn [fs] (conj (subvec fs 0 mark) [*progress* (:desc c) s]))))
+                        nil))))))
+
+(defn pmatch
+  "Match syntax s against syntax-parse pattern p: env, or nil (failures
+  recorded)."
+  [p s]
+  (let [e (syntax-e p)]
+    (cond (= e '_) {}
+          (symbol? e)
+          (if-let [[v cls] (annotated e)]
+            (when (class-match cls s) {v s})
+            {e s})
+          (head-is? p (symbol "~literal"))
+          (let [id (second (vec e))]
+            (if (and (identifier? s) (free-identifier=? s id)) {} (fail! (str "the identifier " (syntax-e id)) s)))
+          (head-is? p (symbol "~or"))
+          (some (fn [q] (pmatch q s)) (rest (vec e)))
+          (head-is? p (symbol "~describe"))
+          (let [[_ d q] (vec e)
+                mark (when *failures* (count @*failures*))]
+            (or (pmatch q s)
+                (do (when *failures* (swap! *failures* (fn [fs] (conj (subvec fs 0 mark) [*progress* (syntax-e d) s]))))
+                    nil)))
+          (seq? e) (if (seq? (syntax-e s)) (seq-match (vec e) 0 (vec (syntax-e s)) 0 {} s) (fail! "a list" s))
+          (vector? e) (if (vector? (syntax-e s)) (seq-match e 0 (vec (syntax-e s)) 0 {} s) (fail! "a vector" s))
+          :else (if (= e (syntax->datum s)) {} (fail! (pr-str e) s)))))
+
+(defn- absent [p] (into {} (map (fn [v] [v nil])) (vars-of p)))
+
+(defn- repeated
+  "envs (one per repetition) as one env: each variable → a vector."
+  [p envs]
+  (into {} (map (fn [v] [v (mapv (fn [e] (get e v)) envs)])) (vars-of p)))
+
+(defn- describe
+  "What pattern p wants, in words (for an error when the syntax ran out)."
+  [p]
+  (let [e (syntax-e p)]
+    (cond (symbol? e) (if-let [[_ cls] (annotated e)] (:desc (get @syntax-classes cls) (str cls)) "a form")
+          (head-is? p (symbol "~describe")) (syntax-e (second (vec e)))
+          (head-is? p (symbol "~literal")) (str "the identifier " (syntax-e (second (vec e))))
+          (head-is? p (symbol "~seq")) (describe (second (vec e)))
+          (or (head-is? p (symbol "~optional")) (head-is? p (symbol "~or")))
+          (apply str (interpose " or " (map describe (rest (vec e)))))
+          (seq? e) "a list"
+          (vector? e) "a vector"
+          :else (pr-str e))))
+
+(defn- item-cps
+  "Match pattern item p at ss[i]; on success call (succeed env next-i), whose
+  result (nil to try another way) is the result. ~seq and ~optional may
+  take several parts, or none."
+  [p ss i ctx succeed]
+  (cond (head-is? p (symbol "~seq"))
+        (seq-cps (vec (rest (syntax-e p))) 0 ss i {} ctx succeed)
+        (head-is? p (symbol "~optional"))
+        (let [q (second (vec (syntax-e p)))]
+          (or (item-cps q ss i ctx succeed) (succeed (absent q) i)))
+        (head-is? p (symbol "~or"))
+        (some (fn [q] (item-cps q ss i ctx succeed)) (rest (vec (syntax-e p))))
+        (< i (count ss))
+        (when-let [env (binding [*progress* (conj *progress* i)] (pmatch p (get ss i)))]
+          (succeed env (inc i)))
+        :else (binding [*progress* (conj *progress* i)] (fail! (describe p) ctx))))
+
+(defn- seq-cps
+  "Match pattern parts ps (from k) against ss (from i), the greediest way
+  first; on success call (succeed env end)."
+  [ps k ss i env ctx succeed]
+  (if (>= k (count ps))
+    (succeed env i)
+    (let [p (get ps k)
+          nxt (get ps (inc k))]
+      (cond (ident-named? p '&)
+            (let [rest-s (%make-syntax (apply list (subvec ss (min i (count ss)))) (syntax-scopes ctx) (syntax-loc ctx) nil)]
+              (when-let [e2 (pmatch (get ps (inc k)) rest-s)]
+                (succeed (merge env e2) (count ss))))
+            (and nxt (or (ellipsis? nxt) (ident-named? nxt '...+)))
+            (let [at-least (if (ellipsis? nxt) 0 1)
+                  reps (fn reps [i envs]
+                         ;; one more repetition first; else stop here
+                         (or (item-cps p ss i ctx (fn [e j] (when (> j i) (reps j (conj envs e)))))
+                             (when (>= (count envs) at-least)
+                               (seq-cps ps (+ k 2) ss i (merge env (repeated p envs)) ctx succeed))))]
+              (reps i []))
+            :else
+            (item-cps p ss i ctx (fn [e j] (seq-cps ps (inc k) ss j (merge env e) ctx succeed)))))))
+
+(defn- seq-match
+  "Match pattern parts ps against all of ss: env, or nil."
+  [ps k ss i env ctx]
+  (seq-cps ps k ss i env ctx
+           (fn [e j]
+             (if (= j (count ss))
+               e
+               (binding [*progress* (conj *progress* j)] (fail! "nothing more (an unexpected part)" (get ss j)))))))
+
+(defn- later? [a b]
+  ;; progress paths compared part by part; a longer one is further
+  (loop [a (seq a) b (seq b)]
+    (cond (and (nil? a) (nil? b)) false
+          (nil? b) true
+          (nil? a) false
+          (> (first a) (first b)) true
+          (< (first a) (first b)) false
+          :else (recur (next a) (next b)))))
+
+(defn %syntax-parse
+  "Run syntax-parse's clauses ([pattern body-fn]…) on syntax s."
+  [s clauses]
+  (let [failures (atom [])]
+    (or (binding [*failures* failures]
+          (some (fn [[p body]]
+                  (binding [*progress* []]
+                    (when-let [env (pmatch p s)]
+                      (binding [*pattern-env* (merge *pattern-env* env) *failures* nil]
+                        [(body)]))))
+                clauses))
+        (let [fs @failures
+              far (reduce (fn [best f] (if (or (nil? best) (later? (first f) (first best))) f best)) nil fs)
+              same (filter (fn [f] (= (first f) (first far))) fs)
+              what (vec (distinct (map second same)))
+              head (let [e (syntax-e s)] (when (and (seq? e) (seq e) (identifier? (first e))) (str (syntax-e (first e)) ": ")))
+              at (or (nth far 2 nil) s)]
+          (syntax-error at (str head (if (seq what)
+                                       (if (= what ["nothing more (an unexpected part)"])
+                                         "unexpected part"
+                                         (str "expected " (apply str (interpose " or " (remove (fn [w] (= w "nothing more (an unexpected part)")) what)))))
+                                       "bad syntax")))))))
+
+(defmacro syntax-parse
+  "(syntax-parse stx [pattern body…]…): see above."
+  {:indent 1}
+  [stx & clauses]
+  `(first (%syntax-parse ~stx [~@(map (fn [[p & body]] `[(quote-syntax ~p) (fn [] ~@body)]) clauses)])))
+
+(defmacro syntax-parser
+  "(syntax-parser [pattern body…]…): a transformer that syntax-parses its
+  call."
+  [& clauses]
+  (let [s (gensym "s")]
+    `(fn [~s] (syntax-parse ~s ~@clauses))))
+
+(defmacro attr "What pattern variable x matched (for plain code)." [x] `(get *pattern-env* '~x))
+
+(defn %define-pred-class!
+  "A syntax class defined by a predicate on syntax (for classes patterns
+  can't say, as a map binding form)."
+  [cname desc pred]
+  (swap! syntax-classes assoc cname {:desc desc :pred pred}))

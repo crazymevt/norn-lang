@@ -275,6 +275,7 @@ prims! {
     "%proto-parts" 1 Some(1) => proto_parts;
     "%seed-compile" 1 Some(1) => |vm, a| { vm.nested += 1; let r = crate::compiler::compile_toplevel(vm, a[0]); vm.nested -= 1; r };
     "%compiler-source" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, crate::eval::COMPILER_SRC));
+    "%expander-source" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, crate::eval::EXPANDER_SRC));
     // bytes (immutable byte strings)
     "bytes?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Bytes)));
     "bytes" 1 Some(1) => |vm, a| to_bytes(vm, a[0]);

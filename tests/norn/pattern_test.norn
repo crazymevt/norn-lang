@@ -1,0 +1,140 @@
+;;;; Pattern macros (M8 part 8.3): syntax-case, syntax-rules and
+;;;; syntax-parse, and the core forms' shapes checked with syntax-parse.
+
+(ns pattern-test
+  (:require [norn.test :refer [is deftest testing]] [norn.string :as str]
+            [norn.syntax :as syn :refer [defsyntax syntax-case syntax syntax-rules syntax-parse syntax-parser
+                                         define-syntax-class attr]]))
+
+(defn- message [form] (try (eval form) nil (catch Error e (condition-message e))))
+
+;; ---- syntax-rules ----
+
+(defsyntax my-or
+  (syntax-rules ()
+    [(_) false]
+    [(_ a) a]
+    [(_ a b & more) (let* [t a] (if t t (my-or b & more)))]))
+
+(defsyntax swap-pairs (syntax-rules () [(_ [a b] ...) [[b a] ...]]))
+
+(defsyntax my-cond
+  (syntax-rules (else)
+    [(_ [else e]) e]
+    [(_ [c e] & more) (if c e (my-cond & more))]))
+
+(deftest syntax-rules-macros
+  (testing "clauses, recursion and & rest"
+    (is (= false (my-or)))
+    (is (= 1 (my-or 1)))
+    (is (= 3 (my-or false nil 3))))
+  (testing "hygiene: the template's t isn't the user's"
+    (is (= 5 (let [t 5] (my-or false t)))))
+  (testing "ellipses"
+    (is (= [[2 1] [4 3]] (swap-pairs [1 2] [3 4])))
+    (is (= [] (swap-pairs))))
+  (testing "a literal matches only what it means where the macro is"
+    (is (= 3 (my-cond [false 1] [nil 2] [else 3])))
+    (is (some? (message '(let [else true] (pattern-test/my-cond [else 3])))) "a local else isn't the literal"))
+  (testing "no clause matches"
+    (is (str/includes? (message '(pattern-test/swap-pairs [1 2 3])) "bad syntax"))))
+
+;; ---- syntax-case ----
+
+(defsyntax count-args
+  (fn [s]
+    (syntax-case s ()
+      [(_ x ...) (syn/datum->syntax s (count (syn/syntax->list s)))])))
+
+(defsyntax only-ids
+  (fn [s]
+    (syntax-case s ()
+      [(_ x) (syn/identifier? (syntax x)) (syntax 'x)]
+      [(_ x) (syntax :not-an-id)])))
+
+(deftest syntax-case-macros
+  (is (= 4 (count-args a b c)) "the call, with its head")
+  (testing "a fender chooses between clauses"
+    (is (= 'foo (only-ids foo)))
+    (is (= :not-an-id (only-ids 3)))))
+
+;; ---- syntax-parse ----
+
+(defsyntax my-let
+  (syntax-parser
+   [(_ [(~seq name:id value:expr) ...] body ...+)
+    (syntax ((fn* [name ...] body ...) value ...))]))
+
+(defsyntax my-defn
+  (syntax-parser
+   [(_ name:id (~optional doc:str) [param:id ...] body ...)
+    (syntax (def name (~? doc) (fn* name [param ...] body ...)))]))
+
+(define-syntax-class binding-pair "binding pair" [name:id value:expr])
+
+(defsyntax pairs (syntax-parser [(_ p:binding-pair ...) (syntax ['p ...])]))
+
+(defsyntax kind
+  (syntax-parser
+   [(_ x:keyword) (syntax :keyword)]
+   [(_ x:nat) (syntax :nat)]
+   [(_ x:str) (syntax :string)]
+   [(_ (~or x:boolean x:char)) (syntax :other)]))
+
+(defsyntax head-name
+  (syntax-parser [(_ (~describe "a call" (f arg ...))) (syn/datum->syntax (quote-syntax here) (list 'quote (syn/syntax->datum (attr f))))]))
+
+(my-defn documented "adds one" [x] (inc x))
+(my-defn plain [x] (dec x))
+
+(deftest syntax-parse-macros
+  (testing "~seq, classes and ...+"
+    (is (= 3 (my-let [a 1 b 2] (+ a b)))))
+  (testing "~optional, and (~? …) in the template"
+    (is (= 2 (documented 1)))
+    (is (= 0 (plain 1))))
+  (testing "built-in classes"
+    (is (= [:keyword :nat :string :other :other] [(kind :k) (kind 3) (kind "s") (kind true) (kind \c)])))
+  (testing "a class of one's own"
+    (is (= '[[a 1] [b 2]] (pairs [a 1] [b 2]))))
+  (testing "attr, in plain code"
+    (is (= 'inc (head-name (inc 1))))))
+
+(deftest syntax-parse-errors
+  (testing "the error is the one that got furthest, saying what was expected"
+    (is (str/includes? (message '(pattern-test/my-let [a 1 b] a)) "my-let: expected expression"))
+    (is (str/includes? (message '(pattern-test/my-let [1 2] 3)) "my-let: expected identifier"))
+    (is (str/includes? (message '(pattern-test/my-let [a 1])) "my-let: expected"))
+    (is (str/includes? (message '(pattern-test/my-defn 3 [x] x)) "expected identifier")))
+  (testing "a class's description"
+    (is (str/includes? (message '(pattern-test/pairs [a 1] [:k 2])) "expected binding pair")))
+  (testing "~describe"
+    (is (str/includes? (message '(pattern-test/head-name 3)) "expected a call")))
+  (testing "it says where"
+    (let [[s] (syn/read-all-syntax "(pattern-test/my-let [a 1 b :k] a)" "p.norn")
+          m (try (norn.expander/eval s) nil (catch Error e (condition-message e)))]
+      (is (str/starts-with? m "p.norn:1:") m))))
+
+;; ---- the core forms' shapes ----
+
+(deftest core-forms-say-what-was-expected
+  (testing "malformed calls"
+    (is (= "let: expected a binding vector [name value …]" (message '(let [a 1 b] a))))
+    (is (= "let: expected a binding vector [name value …]" (message '(let (a 1) a))))
+    (is (= "loop: expected a binding vector [name value …]" (message '(loop [1 2] 3))))
+    (is (= "fn: expected a parameter (a name, &, a vector or a map)" (message '(fn f [x 1] x))))
+    (is (= "defn: expected identifier" (message '(defn 3 [] 1))))
+    (is (= "cond: expected a result after the test" (message '(cond (= 1 1) :yes :else))))
+    (is (= "case: expected an expression to choose by" (message '(case))))
+    (is (= "ns: expected an ns clause, (:require …) or (:require-for-syntax …)" (message '(ns foo (:requir [x]))))))
+  (testing "well-formed ones expand as always"
+    (is (= 6 (let [{:keys [a]} {:a 1} [b c] [2 3]] (+ a b c))))
+    (is (= [1 2] ((fn ([x] [x]) ([x y] [x y])) 1 2)))
+    (is (= [1 2] ((fn [& xs] (vec xs)) 1 2)))
+    (is (= 1 (cond false 0 :else 1)))
+    (is (= :b (case 2 1 :a 2 :b :c)))
+    (is (= 3 (loop [i 0] (if (< i 3) (recur (inc i)) i)))))
+  (testing "with where"
+    (let [[s] (syn/read-all-syntax "(let [a 1 b] a)" "v.norn")
+          m (try (norn.expander/eval s) nil (catch Error e (condition-message e)))]
+      (is (str/starts-with? m "v.norn:1:") m))))

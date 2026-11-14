@@ -43,6 +43,11 @@
 
 (defn- ns-sym [] (or *ns-sym* (symbol (str (current-ns)))))
 
+;; (outside expansion — running a form, loading a module — it's the current
+;; namespace: a module can load while another form is expanding, as when a
+;; macro's first use loads its library)
+(defn- current-ns-sym [] (symbol (str (current-ns))))
+
 (def ^:private ns-scopes "Namespace name → its scope." (atom {}))
 (def ^:private scope-nss "Scope → its namespace's name." (atom {}))
 
@@ -413,9 +418,28 @@
                        :else (syn/datum->syntax s x)))]
       (back result))))
 
+;; ---- checking core forms' shapes (8.3) ----
+;;
+;; norn.validate checks calls of the core forms people most often get wrong
+;; (let, fn, defn…) with syntax-parse before their macros run, so a malformed
+;; one is an error saying what was expected, where. It's loaded the first
+;; time a macro expands (so through the module cache), not at boot.
+
+(def ^:private validators (atom nil))
+(def ^:private loading-validators (atom false))
+
+(defn- validator-for [v]
+  (when (and (nil? @validators) (not @loading-validators) (%find-lib "norn.validate"))
+    (reset! loading-validators true)
+    (try (require 'norn.validate)
+         (reset! validators (var-get (%resolve-in 'norn.validate 'validators)))
+         (finally (reset! loading-validators false))))
+  (when-let [vs @validators] (get vs (%var-name v))))
+
 (defn- macro-step
   "The expansion of macro call s, whose head names macro var v."
   [v s]
+  (when-let [check (validator-for v)] (check s))
   (let [m (var-get v)]
     ;; (a macro's own error passes through as it is: its condition and
     ;; restarts are what a handler or the debugger should see)
@@ -448,8 +472,14 @@
             (let [xs (vec x)
                   h (first xs)
                   hs (when (syn/identifier? h)
-                       ;; (syntax-quote qualifies for-syntax, being a core macro too)
-                       (let [e (syn/syntax-e h)] (if (= e 'norn.core/for-syntax) 'for-syntax e)))]
+                       ;; (syntax-quote qualifies kernel forms the reader doesn't
+                       ;; know as such: for-syntax, a core macro too, and
+                       ;; quote-syntax; ns/quote-syntax, naming no var, is the form)
+                       (let [e (syn/syntax-e h)]
+                         (cond (= e 'norn.core/for-syntax) 'for-syntax
+                               (and (namespace e) (contains? specials (symbol (name e))) (nil? (resolve-global h)))
+                               (symbol (name e))
+                               :else e)))]
               (cond (nil? hs) (apply list (expand-body xs))
                     (resolve-local h) (apply list (expand-body xs))
                     (contains? specials hs) (expand-core (name hs) s xs)
@@ -492,7 +522,7 @@
   "Compile and run expanded form f; a compile error offers retry and
   use-value, as norn.compiler/eval does."
   [f s]
-  (when *recording* (swap! *recording* conj [(str (ns-sym)) f]))
+  (when *recording* (swap! *recording* conj [(str (current-ns-sym)) f]))
   (let [r (loop []
             (let [r (restart-case [:ok (norn.compiler/compile-toplevel f)]
                       (use-value [v] :report "Use a value instead of evaluating the form" [:value v])
@@ -698,7 +728,7 @@
 (defn- deps-of
   "The module instances an ns form requires, at the current shift."
   [d]
-  (let [shift (%ns-shift (ns-sym))
+  (let [shift (%ns-shift (current-ns-sym))
         names (fn [k] (for [clause (rest d) :when (and (seq? clause) (= k (first clause)))
                             spec (rest clause)]
                         (let [spec (if (and (seq? spec) (= 'quote (first spec))) (second spec) spec)]
@@ -744,7 +774,7 @@
   "The rest of module r (its ns form evaluated): from the cache if it's
   there and current, else read, expanded, run and cached."
   [r src d]
-  (let [nsym (ns-sym)
+  (let [nsym (current-ns-sym)
         text (%reader-text r)
         key (module-key text src nsym d)
         _ (swap! modules assoc-in [nsym :key] key)
@@ -808,3 +838,34 @@
   (%set-root! (var norn.core/eval) eval)
   (%set-root! (var norn.core/%eval-reader) eval-reader)
   :installed)
+
+;; ---- checking the expander against the plain compiler (8.7) ----
+
+(defn compare-expanded
+  "Compile every top-level form of source text src (read in namespace ns)
+  both through the expander and through the compiler alone, and compare
+  the code (ns and in-ns forms are run, not compared). The forms whose code
+  differs: for the bootstrap sources (core, the compiler, norn.syntax and
+  the expander itself, compiled at boot before the expander is installed)
+  none should, so the base image holds exactly what the expander makes."
+  [src source-name ns]
+  (let [r (%reader src source-name)
+        saved (current-ns)]
+    (in-ns ns)
+    (try
+      (loop [diffs []]
+        (let [f (%read r)]
+          (if (%eof? f)
+            diffs
+            (let [f2 (norn.compiler/macroexpand-all-top f)]
+              (if (and (seq? f2) (symbol? (first f2)) (contains? #{"in-ns" "ns"} (name (first f2))))
+                (do (norn.compiler/eval f2) (recur diffs))
+                (let [line (%reader-line r)
+                      a (try (norn.compiler/%signature (norn.compiler/compile-toplevel f2))
+                             (catch Error e {:error (condition-message e)}))
+                      b (try (norn.compiler/%signature
+                              (norn.compiler/compile-toplevel
+                               (expand-all (syn/%raw-syntax f #{(ns-scope (symbol (str (current-ns))))} nil))))
+                             (catch Error e {:error (condition-message e)}))]
+                  (recur (if (= a b) diffs (conj diffs {:form (take 2 f) :line line :plain (:error a) :expanded (:error b)})))))))))
+      (finally (in-ns (symbol (str saved)))))))
