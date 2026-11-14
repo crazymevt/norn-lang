@@ -1,0 +1,416 @@
+;;;; norn.http — an HTTP/1.1 client and server (M9 part 9.1).
+;;;;
+;;;; Messages are maps. A request is {:method :get :url … :headers {…}
+;;;; :body …} to the client, and {:method :path :query :query-params
+;;;; :headers :body :remote-addr :scheme :version} to a server's handler. A
+;;;; response is {:status :headers :body}. Header names are lower case; a
+;;;; header given more than once has its values joined with ", ".
+;;;;
+;;;; The client keeps connections open (per scheme, host and port) and
+;;;; reuses them, follows redirects, and times out the whole exchange.
+;;;;
+;;;; A server runs each connection in a fiber of its own, so a slow client
+;;;; holds up no one else. The handler is a function from a request map to
+;;;; a response map, so middleware is plain functions (as Ring's is). A
+;;;; response body may be nil, a string, bytes, a sequence of strings or
+;;;; bytes, or a norn.io stream; the last two are sent chunked.
+;;;;
+;;;; (get is this library's GET, so map lookups here say norn.core/get.)
+;;;;
+;;;; TLS is norn.net's (rustls): https:// URLs for the client, and :tls
+;;;; with :cert-file and :key-file for a server. HTTP/2 and WebSockets come
+;;;; when something needs them.
+
+(ns norn.http
+  (:require [norn.io :as io] [norn.net :as net] [norn.uri :as uri] [norn.string :as str]))
+
+;; ---- reading messages (RFC 9112) ----
+
+(def ^:private max-line 16384)
+(def ^:private max-headers 128)
+
+(defn- message-error [status msg] (error (str "HTTP " status ": " msg)))
+
+(defn- conn-reader [sock] {:sock sock :buf (atom (bytes []))})
+
+(defn- fill!
+  "Read more of r's connection into its buffer: false at the end."
+  [r]
+  (if-let [b (io/read (:sock r) 65536)]
+    (do (swap! (:buf r) bytes-concat b) true)
+    false))
+
+(defn- read-line!
+  "r's next line, without its CRLF; nil at the end of the input if
+  nothing was read."
+  [r]
+  (loop []
+    (let [b @(:buf r)
+          i (%bytes-index-of b 10)]
+      (cond (>= i 0)
+            (do (reset! (:buf r) (subbytes b (inc i)))
+                (let [line (bytes->string (subbytes b 0 i))]
+                  (if (str/ends-with? line "\r") (subs line 0 (dec (count line))) line)))
+            (> (count b) max-line) (message-error 431 "a line too long")
+            (fill! r) (recur)
+            (zero? (count b)) nil
+            :else (message-error 400 "the connection ended in the middle of a line")))))
+
+(defn- read-n!
+  "Exactly n bytes from r."
+  [r n]
+  (loop []
+    (let [b @(:buf r)]
+      (cond (>= (count b) n) (do (reset! (:buf r) (subbytes b n)) (subbytes b 0 n))
+            (fill! r) (recur)
+            :else (message-error 400 (str "the body ended after " (count b) " of " n " bytes"))))))
+
+(defn- read-to-end! [r]
+  (loop [] (if (fill! r) (recur) (let [b @(:buf r)] (reset! (:buf r) (bytes [])) b))))
+
+(defn- read-headers!
+  "Header lines up to the blank one: a map, names in lower case."
+  [r]
+  (loop [m {} n 0]
+    (let [line (read-line! r)]
+      (cond (nil? line) (message-error 400 "the connection ended in the headers")
+            (= "" line) m
+            (>= n max-headers) (message-error 431 "too many headers")
+            :else (let [i (str/index-of line ":")]
+                    (when (or (nil? i) (zero? i)) (message-error 400 (str "a bad header line: " line)))
+                    (let [k (str/lower-case (str/trim (subs line 0 i)))
+                          v (str/trim (subs line (inc i)))]
+                      (recur (assoc m k (if-let [old (norn.core/get m k)] (str old ", " v) v)) (inc n))))))))
+
+(defn- parse-length [s]
+  (if (and s (re-matches #"[0-9]{1,18}" (str/trim s)))
+    (reduce (fn [n c] (+ (* 10 n) (str/index-of "0123456789" (str c)))) 0 (str/trim s))
+    (message-error 400 (str "a bad Content-Length: " s))))
+
+(defn- read-chunked!
+  "A chunked body (RFC 9112 §7.1), its trailers read and dropped."
+  [r limit]
+  (loop [acc (bytes [])]
+    (let [line (or (read-line! r) (message-error 400 "the body ended in a chunk size"))
+          size-text (str/trim (first (str/split line #";")))
+          size (if (re-matches #"[0-9A-Fa-f]{1,15}" size-text)
+                 (reduce (fn [n c] (+ (* 16 n) (str/index-of "0123456789abcdef" (str/lower-case (str c))))) 0 size-text)
+                 (message-error 400 (str "a bad chunk size: " line)))]
+      (if (zero? size)
+        (do (loop [] (let [t (read-line! r)] (when (and t (not= t "")) (recur)))) acc)
+        (let [acc (bytes-concat acc (read-n! r size))]
+          (when (and limit (> (count acc) limit)) (message-error 413 "the body is too large"))
+          (read-line! r)
+          (recur acc))))))
+
+(defn- chunked? [headers]
+  (some (fn [t] (= "chunked" (str/lower-case (str/trim t)))) (str/split (norn.core/get headers "transfer-encoding" "") #",")))
+
+;; ---- writing messages ----
+
+(def ^:private reasons
+  {100 "Continue" 101 "Switching Protocols" 200 "OK" 201 "Created" 202 "Accepted" 204 "No Content"
+   206 "Partial Content" 301 "Moved Permanently" 302 "Found" 303 "See Other" 304 "Not Modified"
+   307 "Temporary Redirect" 308 "Permanent Redirect" 400 "Bad Request" 401 "Unauthorized" 403 "Forbidden"
+   404 "Not Found" 405 "Method Not Allowed" 408 "Request Timeout" 409 "Conflict" 411 "Length Required"
+   413 "Content Too Large" 415 "Unsupported Media Type" 429 "Too Many Requests"
+   431 "Request Header Fields Too Large" 500 "Internal Server Error" 501 "Not Implemented"
+   502 "Bad Gateway" 503 "Service Unavailable" 504 "Gateway Timeout"})
+
+(defn reason "The usual reason phrase for HTTP status code n." [n] (norn.core/get reasons n "Unknown"))
+
+(defn- streamed? [body] (or (sequential? body) (and (some? body) (not (string? body)) (not (bytes? body)))))
+
+(defn- whole-body [body] (cond (nil? body) nil (string? body) (bytes body) (bytes? body) body :else nil))
+
+(defn- write-head! [sock first-line headers]
+  (io/write sock (str first-line "\r\n"
+                      (apply str (for [[k v] headers :when (some? v)] (str (name k) ": " v "\r\n")))
+                      "\r\n")))
+
+(defn- write-chunked! [sock body]
+  (let [chunk! (fn [x] (let [b (bytes x)] (when (pos? (count b)) (io/write sock (str (format "%x" (count b)) "\r\n")) (io/write sock b) (io/write sock "\r\n"))))]
+    (if (sequential? body)
+      (doseq [x body] (chunk! x))
+      (loop [] (when-let [b (io/read body 65536)] (chunk! b) (recur))))
+    (io/write sock "0\r\n\r\n")))
+
+(defn- header-names-lower [headers]
+  (into {} (map (fn [[k v]] [(str/lower-case (name k)) v])) headers))
+
+;; ---- the client ----
+
+(def ^:private pool "[scheme host port ca-file] → idle connections, each {:sock :reader}." (atom {}))
+(def ^:private max-idle 8)
+
+(defn- take-idle! [k]
+  (let [got (atom nil)]
+    (swap! pool (fn [p] (let [cs (norn.core/get p k)] (reset! got (first cs)) (if (seq cs) (assoc p k (rest cs)) p))))
+    @got))
+
+(defn- give-back! [k c]
+  (swap! pool (fn [p] (let [cs (norn.core/get p k)] (if (< (count cs) max-idle) (assoc p k (cons c cs)) (do (io/close (:sock c)) p))))))
+
+(defn close-idle!
+  "Close the client's idle connections (they're reused for later requests
+  to the same place, and otherwise close when their server closes them)."
+  []
+  (let [p (first (reset-vals! pool {}))]
+    (doseq [[_ cs] p c cs] (try (io/close (:sock c)) (catch Error _ nil)))))
+
+(defn- open! [u opts]
+  (let [sock (net/connect (:host u) (uri/port-of u) :tls (= "https" (:scheme u))
+                          :ca-file (:ca-file opts) :server-name (:host u))]
+    {:sock sock :reader (conn-reader sock)}))
+
+(def ^:private idempotent #{:get :head :put :delete :options :trace})
+
+(defn- send-request! [c u req]
+  (let [method (or (:method req) :get)
+        body (:body req)
+        whole (whole-body body)
+        target (str (if (empty? (:path u)) "/" (:path u)) (when (:query u) (str "?" (:query u))))
+        host (str (if (str/includes? (:host u) ":") (str "[" (:host u) "]") (:host u))
+                  (when (and (:port u) (not= (:port u) (uri/default-port (:scheme u)))) (str ":" (:port u))))
+        given (header-names-lower (:headers req))
+        headers (merge {"host" host "user-agent" "norn" "accept" "*/*"}
+                       (cond whole {"content-length" (count whole)}
+                             (some? body) {"transfer-encoding" "chunked"}
+                             (contains? #{:post :put :patch} method) {"content-length" 0}
+                             :else {})
+                       given)]
+    (write-head! (:sock c) (str (str/upper-case (name method)) " " target " HTTP/1.1") headers)
+    (cond whole (io/write (:sock c) whole)
+          (some? body) (write-chunked! (:sock c) body))
+    method))
+
+(defn- read-response! [c method]
+  (let [r (:reader c)
+        status-line (read-line! r)]
+    (when (nil? status-line) (error "The server closed the connection without answering"))
+    (let [[_ version code reason-text] (or (re-matches #"(HTTP/\d\.\d) (\d{3})(?: (.*))?" status-line)
+                                           (error (str "A bad HTTP status line: " status-line)))
+          status (parse-length code)
+          headers (read-headers! r)]
+      (if (and (< status 200) (not= status 101))
+        (recur c method) ; (an interim response, 100 Continue: the real one follows)
+        (let [no-body (or (= method :head) (= status 204) (= status 304))
+              body (cond no-body (bytes [])
+                         (chunked? headers) (read-chunked! r nil)
+                         (norn.core/get headers "content-length") (read-n! r (parse-length (norn.core/get headers "content-length")))
+                         :else (read-to-end! r))
+              closes (or (= "close" (str/lower-case (norn.core/get headers "connection" "")))
+                         (= version "HTTP/1.0")
+                         (and (not no-body) (not (chunked? headers)) (nil? (norn.core/get headers "content-length"))))]
+          {:status status :reason (or reason-text "") :version version :headers headers :body body :closes closes})))))
+
+(defn- exchange!
+  "One request and its response, on a pooled connection if there is one
+  (again on a new one if a pooled one turns out closed, for a request
+  that can be repeated)."
+  [u req opts]
+  ;; (a connection is shared only by requests that trust the same CAs: one
+  ;; verified against a private CA mustn't serve a request that doesn't)
+  (let [k [(:scheme u) (:host u) (uri/port-of u) (:ca-file opts)]
+        attempt (fn [c pooled?]
+                  (let [r (try (let [m (send-request! c u req)] {:ok (read-response! c m)})
+                               (catch Error e (try (io/close (:sock c)) (catch Error _ nil)) {:error e}))]
+                    (cond (:ok r) (let [resp (:ok r)]
+                                    (if (or (:closes resp) (false? (:keep-alive opts)))
+                                      (io/close (:sock c))
+                                      (give-back! k c))
+                                    resp)
+                          (and pooled? (contains? idempotent (or (:method req) :get))) ::retry
+                          :else (throw (:error r)))))
+        idle (take-idle! k)
+        r (if idle (attempt idle true) ::retry)]
+    (if (= r ::retry) (attempt (open! u opts) false) r)))
+
+(defn- with-timeout
+  "(f), or an error if it takes more than ms (nil: no limit). It runs in a
+  fiber of its own, cancelled if the time runs out."
+  [ms what f]
+  (if-not ms
+    (f)
+    (let [ch (chan 1)
+          w (spawn-detached (put! ch (try {:ok (f)} (catch Error e {:error e}))))
+          [v port] (alts! [ch (timeout ms)])]
+      (if (identical? port ch)
+        (if (contains? v :ok) (:ok v) (throw (:error v)))
+        (do (cancel! w) (error (str what " timed out after " ms " ms")))))))
+
+(defn- as-body [resp as]
+  (case as
+    :bytes resp
+    (update resp :body (fn [b] (bytes->string b true)))))
+
+(defn request
+  "Send request req and return the response: {:status :reason :headers
+  :body :url}. A status that isn't 2xx is a response like any other, not
+  an error; a connection that fails, or a timeout, is an error. Request
+  keys:
+    :method        :get (default) :post :put :delete :head :patch :options
+    :url           \"http://…\" or \"https://…\"
+    :query-params  a map added to the URL's query
+    :headers       a map of name to value
+    :body          a string, bytes, or a sequence or stream (sent chunked)
+    :as            :text (default; UTF-8) or :bytes, for the response body
+    :timeout       ms for the whole exchange, redirects included
+    :follow-redirects  true (default) or false; :max-redirects 5
+    :keep-alive    false to close the connection after this request
+    :ca-file       a PEM file of certificates to trust (a private CA)"
+  [req]
+  (let [start (:url req)
+        u0 (uri/parse start)
+        u0 (if-let [qp (:query-params req)]
+             (let [extra (uri/query-string qp)] (assoc u0 :query (if (:query u0) (str (:query u0) "&" extra) extra)))
+             u0)
+        follow (not (false? (:follow-redirects req)))
+        limit (or (:max-redirects req) 5)]
+    (when-not (contains? #{"http" "https"} (:scheme u0)) (error (str "Not an http or https URL: " start)))
+    (with-timeout (:timeout req) (str "The request to " start)
+                  (fn []
+                    (loop [u u0 req req n 0]
+                      (let [resp (exchange! u req req)
+                            loc (norn.core/get (:headers resp) "location")]
+                        (if (and follow loc (contains? #{301 302 303 307 308} (:status resp)))
+                          (do (when (>= n limit) (error (str "More than " limit " redirects from " start)))
+                              (let [next-u (uri/parse (uri/resolve (uri/format u) loc))
+                                    ;; (303, and a POST's 301 or 302, become a GET, as browsers do)
+                                    get? (or (= 303 (:status resp)) (and (contains? #{301 302} (:status resp)) (= :post (:method req))))]
+                                (recur next-u (if get? (-> req (assoc :method :get) (dissoc :body)) req) (inc n))))
+                          (-> (as-body (dissoc resp :closes) (:as req))
+                              (assoc :url (uri/format u))))))))))
+
+(defn get "A GET request to url (options as request's)." [url & {:as opts}] (request (assoc opts :method :get :url url)))
+(defn head "A HEAD request to url." [url & {:as opts}] (request (assoc opts :method :head :url url)))
+(defn post "A POST of body to url." [url body & {:as opts}] (request (assoc opts :method :post :url url :body body)))
+(defn put "A PUT of body to url." [url body & {:as opts}] (request (assoc opts :method :put :url url :body body)))
+(defn delete "A DELETE request to url." [url & {:as opts}] (request (assoc opts :method :delete :url url)))
+
+;; ---- the server ----
+
+(defn- read-request!
+  "The next request on connection r, or nil when the client has closed it."
+  [r sock {:keys [max-body scheme remote]}]
+  (let [line (loop [] (let [l (read-line! r)] (if (= l "") (recur) l)))] ; (blank lines before one are allowed)
+    (when line
+      (let [[_ method target version] (or (re-matches #"([A-Za-z]+) (\S+) (HTTP/1\.[01])" line)
+                                          (message-error 400 (str "a bad request line: " line)))
+            headers (read-headers! r)
+            u (uri/parse target)]
+        (when (= "100-continue" (str/lower-case (norn.core/get headers "expect" "")))
+          (io/write sock "HTTP/1.1 100 Continue\r\n\r\n"))
+        (let [body (cond (chunked? headers) (read-chunked! r max-body)
+                         (norn.core/get headers "content-length")
+                         (let [n (parse-length (norn.core/get headers "content-length"))]
+                           (when (> n max-body) (message-error 413 (str "a body of " n " bytes")))
+                           (read-n! r n))
+                         :else nil)]
+          {:method (keyword (str/lower-case method)) :target target :path (:path u) :query (:query u)
+           :query-params (uri/query-params (:query u)) :headers headers :body body
+           :version version :scheme scheme :remote-addr remote})))))
+
+(defn- write-response! [sock req resp]
+  (let [resp (cond (map? resp) resp
+                   (string? resp) {:status 200 :body resp}
+                   :else {:status 500 :body (str "The handler returned " (pr-str resp) ", not a response map")})
+        status (or (:status resp) 200)
+        body (:body resp)
+        head? (= :head (:method req))
+        whole (whole-body body)
+        stream? (and (streamed? body) (not head?))
+        headers (merge (when (string? body) {"content-type" "text/plain; charset=utf-8"})
+                       (header-names-lower (:headers resp))
+                       (cond stream? {"transfer-encoding" "chunked"}
+                             (or (= status 204) (= status 304)) {}
+                             :else {"content-length" (if whole (count whole) 0)}))]
+    (write-head! sock (str "HTTP/1.1 " status " " (reason status)) headers)
+    (cond head? nil
+          stream? (write-chunked! sock body)
+          whole (io/write sock whole))
+    resp))
+
+(defn- keep-alive? [req resp]
+  (let [c (str/lower-case (norn.core/get (:headers req) "connection" ""))
+        rc (str/lower-case (str (norn.core/get (header-names-lower (:headers resp)) "connection" "")))]
+    (and (not= c "close") (not= rc "close")
+         (or (= "HTTP/1.1" (:version req)) (= c "keep-alive")))))
+
+(defn- error-response [e]
+  (let [m (condition-message e)
+        [_ code text] (re-matches #"HTTP (\d{3}): (.*)" (or m ""))]
+    (when code {:status (parse-length code) :headers {"connection" "close"} :body (str text "\n")})))
+
+(defn- serve-connection! [server sock handler opts]
+  (let [r (conn-reader sock)
+        gen (atom 0)
+        idle (:idle-timeout opts)
+        arm! (fn [] (let [g (swap! gen inc)]
+                      (spawn-detached (sleep idle) (when (= g @gen) (try (io/close sock) (catch Error _ nil))))))]
+    (swap! (:connections server) conj sock)
+    (try
+      (loop []
+        (arm!)
+        (let [req (try (read-request! r sock opts)
+                       (catch Error e
+                         (when-let [resp (error-response e)]
+                           (swap! gen inc)
+                           (try (write-response! sock {} resp) (catch Error _ nil)))
+                         nil))]
+          (swap! gen inc)
+          (when req
+            (let [resp (try (handler req)
+                            (catch Error e
+                              ((:on-error opts) e req)
+                              {:status 500 :body "Internal Server Error\n"}))
+                  resp (write-response! sock req resp)]
+              (when (keep-alive? req resp) (recur))))))
+      (catch Error _ nil) ; (a connection that breaks is that connection's end)
+      (finally
+        (swap! gen inc)
+        (swap! (:connections server) disj sock)
+        (try (io/close sock) (catch Error _ nil))))))
+
+(defn serve
+  "Serve HTTP with handler (a function from a request map to a response
+  map): a server, {:port :address}, running until stop!. Options:
+    :host          \"127.0.0.1\" (default); \"0.0.0.0\" for every interface
+    :port          0 (default) picks a free one
+    :tls           true, with :cert-file and :key-file (PEM)
+    :max-body      bytes a request body may have (default 16 MB)
+    :idle-timeout  ms a kept-alive connection may wait for its next
+                   request (default 30000)
+    :on-error      (fn [error request]), called when the handler fails;
+                   the client gets a 500 (default: print the error)"
+  [handler & {:keys [host port tls cert-file key-file max-body idle-timeout on-error]}]
+  (let [listener (net/listen (or host "127.0.0.1") (or port 0))
+        server {:listener listener :connections (atom #{}) :running (atom true)
+                :address (net/local-address listener) :port (net/port (net/local-address listener))}
+        opts {:max-body (or max-body (* 16 1024 1024)) :idle-timeout (or idle-timeout 30000)
+              :scheme (if tls :https :http)
+              :on-error (or on-error (fn [e req] (println "norn.http: the handler failed on" (:method req) (:target req) "-" (condition-text e))))}]
+    (spawn-detached
+      (loop []
+        (when @(:running server)
+          (when-let [sock (try (if tls (net/accept listener :tls true :cert-file cert-file :key-file key-file) (net/accept listener))
+                               (catch Error _ nil))]
+            (spawn-detached (serve-connection! server sock handler (assoc opts :remote (try (net/peer-address sock) (catch Error _ nil))))))
+          (recur))))
+    (assoc (dissoc server :running :connections :listener) :stop! (fn []
+                                                                    (reset! (:running server) false)
+                                                                    (try (io/close listener) (catch Error _ nil))
+                                                                    (doseq [s @(:connections server)] (try (io/close s) (catch Error _ nil)))))))
+
+(defn stop! "Stop server: no more connections, and the open ones closed." [server] ((:stop! server)))
+
+;; ---- helpers ----
+
+(defn body-text "Message m's body as text (UTF-8)." [m]
+  (let [b (:body m)] (cond (nil? b) "" (string? b) b :else (bytes->string b true))))
+
+(defn form-params
+  "Request req's form fields (an application/x-www-form-urlencoded body),
+  as query-params gives them."
+  [req]
+  (uri/query-params (body-text req)))

@@ -106,6 +106,11 @@ fn verify_suite() {
 }
 
 #[test]
+fn http_suite() {
+    suite("http_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [

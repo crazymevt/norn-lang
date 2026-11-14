@@ -1,0 +1,208 @@
+;;;; norn.uri — URIs (RFC 3986): parsing, building, percent-encoding,
+;;;; query parameters, and resolving a reference against a base (M9 part
+;;;; 9.1).
+;;;;
+;;;; A URI is a map of its parts, each as it's written (still
+;;;; percent-encoded), absent when the URI has none:
+;;;;
+;;;;   (parse "https://ann@example.com:8443/a/b?x=1&y=2#top")
+;;;;   ;=> {:scheme "https" :user-info "ann" :host "example.com" :port 8443
+;;;;        :path "/a/b" :query "x=1&y=2" :fragment "top"}
+;;;;
+;;;; :path is always there (perhaps ""). An IPv6 host is given without its
+;;;; brackets. format puts a map back together; decode and query-params
+;;;; give the parts' text.
+
+(ns norn.uri
+  (:require [norn.string :as str]))
+
+(defn- index-of [s ch from]
+  (loop [i from]
+    (cond (>= i (count s)) nil
+          (= ch (nth s i)) i
+          :else (recur (inc i)))))
+
+(defn- first-of [s chars from]
+  (loop [i from]
+    (cond (>= i (count s)) nil
+          (str/includes? chars (str (nth s i))) i
+          :else (recur (inc i)))))
+
+(defn- scheme-end
+  "Where s's scheme ends (its colon), or nil if it has none."
+  [s]
+  (when-let [i (index-of s \: 0)]
+    (when (and (pos? i)
+               (re-matches #"[A-Za-z][A-Za-z0-9+.-]*" (subs s 0 i)))
+      i)))
+
+(defn- parse-authority [a]
+  (let [at (loop [i (dec (count a))] (cond (neg? i) nil (= \@ (nth a i)) i :else (recur (dec i))))
+        user-info (when at (subs a 0 at))
+        hp (if at (subs a (inc at)) a)
+        [host port] (if (str/starts-with? hp "[")
+                      (let [close (or (index-of hp \] 0) (error (str "A bad URI host (an unclosed [): " hp)))]
+                        [(subs hp 1 close) (when (and (< (inc close) (count hp)) (= \: (nth hp (inc close)))) (subs hp (+ 2 close)))])
+                      (if-let [c (index-of hp \: 0)] [(subs hp 0 c) (subs hp (inc c))] [hp nil]))]
+    (cond-> {:host host}
+            user-info (assoc :user-info user-info)
+            (seq port) (assoc :port (if (re-matches #"[0-9]+" port)
+                                      (reduce (fn [n c] (+ (* 10 n) (str/index-of "0123456789" (str c)))) 0 port)
+                                      (error (str "A bad URI port: " port)))))))
+
+(defn parse
+  "URI string s's parts, as a map (see above)."
+  [s]
+  (let [s (str s)
+        [frag-at fragment] (if-let [i (index-of s \# 0)] [i (subs s (inc i))] [(count s) nil])
+        s (subs s 0 frag-at)
+        [query-at query] (if-let [i (index-of s \? 0)] [i (subs s (inc i))] [(count s) nil])
+        s (subs s 0 query-at)
+        se (scheme-end s)
+        scheme (when se (subs s 0 se))
+        rest (if se (subs s (inc se)) s)
+        [auth path] (if (str/starts-with? rest "//")
+                      (let [e (or (first-of rest "/" 2) (count rest))] [(subs rest 2 e) (subs rest e)])
+                      [nil rest])]
+    (cond-> {:path path}
+            scheme (assoc :scheme (str/lower-case scheme))
+            auth (merge (parse-authority auth))
+            query (assoc :query query)
+            fragment (assoc :fragment fragment))))
+
+(defn format
+  "URI map u as a string (parse's inverse)."
+  [u]
+  (let [{:keys [scheme user-info host port path query fragment]} u
+        host-text (when host (if (str/includes? host ":") (str "[" host "]") host))]
+    (str (when scheme (str scheme ":"))
+         (when host (str "//" (when user-info (str user-info "@")) host-text (when port (str ":" port))))
+         (or path "")
+         (when query (str "?" query))
+         (when fragment (str "#" fragment)))))
+
+(defn default-port "The port a scheme uses when a URI gives none, or nil." [scheme]
+  (get {"http" 80 "https" 443 "ws" 80 "wss" 443 "ftp" 21} scheme))
+
+(defn port-of "URI u's port: its own, or its scheme's default." [u]
+  (or (:port u) (default-port (:scheme u))))
+
+;; ---- percent-encoding ----
+
+(def ^:private unreserved "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+(def ^:private hex "0123456789ABCDEF")
+
+(defn encode
+  "Text s percent-encoded for a URI part: every byte of its UTF-8 but the
+  unreserved characters (letters, digits, - . _ ~). Characters in keep
+  (a string, e.g. \"/\" for a path) stay as they are."
+  ([s] (encode s ""))
+  ([s keep]
+   (let [ok (str unreserved keep)]
+     (apply str (for [b (bytes (str s))
+                      :let [b (bit-and b 255) c (char b)]]
+                  (if (and (< b 128) (str/includes? ok (str c)))
+                    (str c)
+                    (str "%" (nth hex (quot b 16)) (nth hex (rem b 16)))))))))
+
+(defn- hex-digit [c]
+  (let [i (str/index-of "0123456789abcdef" (str/lower-case (str c)))]
+    (or i (error (str "A bad percent-encoding: %" c)))))
+
+(defn decode
+  "Text s with its percent-encodings decoded (as UTF-8). With plus?, a +
+  is a space, as in a form's query."
+  ([s] (decode s false))
+  ([s plus?]
+   (let [s (str s)
+         n (count s)]
+     (if-not (or (str/includes? s "%") (and plus? (str/includes? s "+")))
+       s
+       (loop [i 0 out []]
+         (if (>= i n)
+           (bytes->string (bytes out))
+           (let [c (nth s i)]
+             (cond (= c \%)
+                   (if (<= (+ i 3) n)
+                     (recur (+ i 3) (conj out (+ (* 16 (hex-digit (nth s (inc i)))) (hex-digit (nth s (+ i 2))))))
+                     (error (str "A bad percent-encoding at the end of: " s)))
+                   (and plus? (= c \+)) (recur (inc i) (conj out 32))
+                   :else (recur (inc i) (into out (map (fn [b] (bit-and b 255)) (bytes (str c)))))))))))))
+
+;; ---- queries ----
+
+(defn query-pairs
+  "Query string q (or URI u's) as [name value] pairs, decoded, in order (a
+  name without = has the value \"\")."
+  [q]
+  (let [q (if (map? q) (:query q) q)]
+    (if (empty? q)
+      []
+      (vec (for [part (str/split q #"&")
+                 :when (seq part)]
+             (let [i (index-of part \= 0)]
+               (if i
+                 [(decode (subs part 0 i) true) (decode (subs part (inc i)) true)]
+                 [(decode part true) ""])))))))
+
+(defn query-params
+  "Query string q (or URI u's) as a map of name to value, decoded; a name
+  given more than once has a vector of its values."
+  [q]
+  (reduce (fn [m [k v]]
+            (if (contains? m k)
+              (update m k (fn [old] (if (vector? old) (conj old v) [old v])))
+              (assoc m k v)))
+          {} (query-pairs q)))
+
+(defn query-string
+  "Parameters ps (a map, or [name value] pairs; a vector value is several)
+  as an encoded query string. Names and values are strings, keywords
+  (their names) or anything str gives text for."
+  [ps]
+  (let [text (fn [x] (if (keyword? x) (name x) (str x)))]
+    (str/join "&" (for [[k v] ps
+                        v (if (vector? v) v [v])]
+                    (str (encode (text k)) "=" (encode (text v)))))))
+
+;; ---- references (RFC 3986 §5.2) ----
+
+(defn- remove-dots
+  "Path p with its . and .. segments resolved (RFC 3986 §5.2.4)."
+  [p]
+  (loop [in p out []]
+    (cond (empty? in) (apply str out)
+          (str/starts-with? in "../") (recur (subs in 3) out)
+          (str/starts-with? in "./") (recur (subs in 2) out)
+          (str/starts-with? in "/./") (recur (subs in 2) out)
+          (= in "/.") (recur "/" out)
+          (str/starts-with? in "/../") (recur (subs in 3) (if (seq out) (pop out) out))
+          (= in "/..") (recur "/" (if (seq out) (pop out) out))
+          (or (= in ".") (= in "..")) (recur "" out)
+          :else (let [start (if (str/starts-with? in "/") 1 0)
+                      e (or (index-of in \/ start) (count in))]
+                  (recur (subs in e) (conj out (subs in 0 e)))))))
+
+(defn- merge-paths [base ref-path]
+  (if (and (:host base) (empty? (:path base)))
+    (str "/" ref-path)
+    (let [bp (:path base)
+          i (loop [i (dec (count bp))] (cond (neg? i) nil (= \/ (nth bp i)) i :else (recur (dec i))))]
+      (str (if i (subs bp 0 (inc i)) "") ref-path))))
+
+(defn resolve
+  "Reference ref (a string or map) made absolute against base (RFC 3986
+  §5.2), as a string: what a link, or a redirect's Location, means."
+  [base ref]
+  (let [b (if (map? base) base (parse base))
+        r (if (map? ref) ref (parse ref))
+        t (cond (:scheme r) (assoc r :path (remove-dots (:path r)))
+                (:host r) (assoc r :scheme (:scheme b) :path (remove-dots (:path r)))
+                (empty? (:path r)) (cond-> (assoc (dissoc b :fragment) :query (or (:query r) (:query b)))
+                                           (nil? (or (:query r) (:query b))) (dissoc :query)
+                                           (:fragment r) (assoc :fragment (:fragment r)))
+                :else (cond-> (assoc (dissoc b :query :fragment)
+                                     :path (remove-dots (if (str/starts-with? (:path r) "/") (:path r) (merge-paths b (:path r)))))
+                              (:query r) (assoc :query (:query r))
+                              (:fragment r) (assoc :fragment (:fragment r))))]
+    (format t)))

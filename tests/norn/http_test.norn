@@ -1,0 +1,169 @@
+;;;; norn.uri and norn.http (M9 part 9.1): URIs per RFC 3986, and an
+;;;; HTTP/1.1 client and server talking to each other (and, for the edges,
+;;;; to a raw socket) on 127.0.0.1.
+
+(ns http-test
+  (:require [norn.test :refer [is deftest testing]] [norn.uri :as uri] [norn.http :as http]
+            [norn.net :as net] [norn.io :as io] [norn.sys :as sys] [norn.string :as str]))
+
+(defn- message [f] (try (f) nil (catch Error e (condition-message e))))
+
+;; This file's folder (the test certificates are beside it).
+(def here (let [loc (%location)]
+            (io/parent (subs loc 0 (str/last-index-of loc ":")))))
+
+;; ---- URIs ----
+
+(deftest parsing-and-formatting
+  (is (= {:scheme "https" :user-info "ann" :host "example.com" :port 8443 :path "/a/b" :query "x=1&y=2" :fragment "top"}
+         (uri/parse "https://ann@example.com:8443/a/b?x=1&y=2#top")))
+  (is (= {:scheme "http" :host "::1" :port 8080 :path "/p"} (uri/parse "http://[::1]:8080/p")) "an IPv6 host")
+  (is (= {:scheme "mailto" :path "a@b.c"} (uri/parse "mailto:a@b.c")))
+  (is (= {:path "/rel" :query "q"} (uri/parse "/rel?q")))
+  (is (= "HTTP" (str/upper-case (:scheme (uri/parse "HTTP://x/")))) "a scheme is lower case")
+  (doseq [s ["https://ann@example.com:8443/a/b?x=1&y=2#top" "http://[::1]:8080/p" "mailto:a@b.c" "/rel?q" "//h/p" ""]]
+    (is (= s (uri/format (uri/parse s))) s))
+  (is (= 443 (uri/port-of (uri/parse "https://x/"))))
+  (is (some? (message (fn [] (uri/parse "http://h:8x/")))) "a bad port"))
+
+(deftest percent-encoding-and-queries
+  (is (= "a%20b%2F%E2%82%AC%3F" (uri/encode "a b/€?")))
+  (is (= "a%20b/c" (uri/encode "a b/c" "/")) "keeping /")
+  (is (= "a b€" (uri/decode "a%20b%E2%82%AC")))
+  (is (= "a b" (uri/decode "a+b" true)) "+ is a space in a form")
+  (is (= {"a" ["1" "2"] "b" "x y" "flag" ""} (uri/query-params "a=1&b=x%20y&a=2&flag")))
+  (is (= "q=a%20b&m=x&m=y" (uri/query-string [["q" "a b"] ["m" ["x" "y"]]]))))
+
+(deftest resolving-references
+  ;; RFC 3986 §5.4.1, every normal example
+  (let [base "http://a/b/c/d;p?q"]
+    (doseq [[r want] [["g:h" "g:h"] ["g" "http://a/b/c/g"] ["./g" "http://a/b/c/g"] ["g/" "http://a/b/c/g/"]
+                      ["/g" "http://a/g"] ["//g" "http://g"] ["?y" "http://a/b/c/d;p?y"] ["g?y" "http://a/b/c/g?y"]
+                      ["#s" "http://a/b/c/d;p?q#s"] ["g#s" "http://a/b/c/g#s"] ["g?y#s" "http://a/b/c/g?y#s"]
+                      [";x" "http://a/b/c/;x"] ["g;x" "http://a/b/c/g;x"] ["" "http://a/b/c/d;p?q"]
+                      ["." "http://a/b/c/"] ["./" "http://a/b/c/"] [".." "http://a/b/"] ["../" "http://a/b/"]
+                      ["../g" "http://a/b/g"] ["../.." "http://a/"] ["../../" "http://a/"] ["../../g" "http://a/g"]]]
+      (is (= want (uri/resolve base r)) r))))
+
+;; ---- HTTP ----
+
+(def connections (atom #{}))
+(def errors (atom []))
+
+(defn- handler [req]
+  (swap! connections conj (:remote-addr req))
+  (case (:path req)
+    "/hello" {:status 200 :body (str "hello " (get (:query-params req) "name" "world"))}
+    "/echo" {:status 200 :headers {"Content-Type" "application/octet-stream"} :body (:body req)}
+    "/info" {:status 200 :body (pr-str [(:method req) (get (:headers req) "x-thing") (count (:body req))])}
+    "/chunks" {:status 200 :body ["one " "two " "three"]}
+    "/file" {:status 200 :body (io/open (io/path (sys/temp-dir) (str "norn-http-test-" (sys/pid) ".txt")) :read)}
+    "/moved" {:status 302 :headers {"location" "hello?name=redirected"}}
+    "/see-other" {:status 303 :headers {"location" "/info"}}
+    "/loop" {:status 302 :headers {"location" "/loop"}}
+    "/slow" (do (sleep 1000) {:status 200 :body "late"})
+    "/close" {:status 200 :headers {"connection" "close"} :body "bye"}
+    "/boom" (error "kaboom")
+    {:status 404 :body "nope"}))
+
+(def server (http/serve handler :on-error (fn [e req] (swap! errors conj [(:path req) (condition-message e)]))))
+(def base (str "http://127.0.0.1:" (:port server)))
+(defn- url [p] (str base p))
+
+(defn- raw
+  "Send text over a new connection; everything the server answers until it closes."
+  [text]
+  (let [s (net/connect "127.0.0.1" (:port server))]
+    (io/write s text)
+    (try (bytes->string (io/read-all s) true) (finally (io/close s)))))
+
+(deftest requests-and-responses
+  (testing "a GET with query parameters"
+    (let [r (http/get (url "/hello") :query-params {"name" "ann lee"})]
+      (is (= 200 (:status r)))
+      (is (= "OK" (:reason r)))
+      (is (= "hello ann lee" (:body r)))
+      (is (= "text/plain; charset=utf-8" (get-in r [:headers "content-type"])))))
+  (testing "bodies both ways"
+    (is (= "posted €" (:body (http/post (url "/echo") "posted €"))))
+    (is (= [1 2 250] (vec (:body (http/post (url "/echo") (bytes [1 2 250]) :as :bytes)))) "bytes")
+    (is (= "a chunked request" (:body (http/post (url "/echo") ["a " "chunked " "request"]))) "a sequence goes chunked")
+    (let [big (apply str (repeat 100000 "0123456789"))]
+      (is (= (count big) (count (:body (http/post (url "/echo") big)))) "a megabyte")))
+  (testing "a chunked response, and a stream as a body"
+    (is (= "one two three" (:body (http/get (url "/chunks")))))
+    (io/write-text (io/path (sys/temp-dir) (str "norn-http-test-" (sys/pid) ".txt")) "from a file")
+    (is (= "from a file" (:body (http/get (url "/file"))))))
+  (testing "headers, methods"
+    (is (= "[:put \"yes\" 3]" (:body (http/request {:method :put :url (url "/info") :headers {"X-Thing" "yes"} :body "abc"}))))
+    (is (= "[:delete nil 0]" (:body (http/delete (url "/info")))))
+    (let [r (http/head (url "/hello"))]
+      (is (= ["" "11"] [(:body r) (get-in r [:headers "content-length"])]) "HEAD: the length, no body")))
+  (testing "statuses that aren't 2xx are responses"
+    (is (= [404 "nope"] ((juxt :status :body) (http/get (url "/nothing")))))
+    (is (= 500 (:status (http/get (url "/boom")))))
+    (is (= ["/boom" "kaboom"] (last @errors)) "the handler's error went to :on-error")))
+
+(deftest redirects
+  (let [r (http/get (url "/moved"))]
+    (is (= "hello redirected" (:body r)) "a relative Location, resolved")
+    (is (= (url "/hello?name=redirected") (:url r))))
+  (is (= "[:get nil 0]" (:body (http/post (url "/see-other") "data"))) "303: a GET, without the body")
+  (is (= 302 (:status (http/get (url "/moved") :follow-redirects false))))
+  (is (= (str "More than 5 redirects from " (url "/loop")) (message (fn [] (http/get (url "/loop")))))))
+
+(deftest connections-are-kept-alive
+  (http/close-idle!)
+  (reset! connections #{})
+  (dotimes [_ 5] (http/get (url "/hello")))
+  (is (= 1 (count @connections)) "five requests, one connection")
+  (http/get (url "/close"))
+  (http/get (url "/hello"))
+  (is (= 2 (count @connections)) "Connection: close, then a new one"))
+
+(deftest a-stale-pooled-connection-is-replaced
+  (let [short (http/serve handler :idle-timeout 100)
+        u (str "http://127.0.0.1:" (:port short) "/hello")]
+    (is (= 200 (:status (http/get u))))
+    (sleep 400) ; (the server has closed the pooled connection meanwhile)
+    (is (= 200 (:status (http/get u))) "a GET is sent again on a new connection")
+    (http/stop! short)))
+
+(deftest timeouts
+  (let [t0 (nano-time)
+        m (message (fn [] (http/get (url "/slow") :timeout 150)))]
+    (is (= (str "The request to " (url "/slow") " timed out after 150 ms") m))
+    (is (< (/ (- (nano-time) t0) 1e6) 900) "it didn't wait for the handler")))
+
+(deftest the-edges-of-the-protocol
+  (testing "a malformed request: 400, and the connection closes"
+    (is (str/starts-with? (raw "NONSENSE\r\n\r\n") "HTTP/1.1 400 Bad Request")))
+  (testing "a body over the limit: 413"
+    (let [small (http/serve handler :max-body 10)
+          s (net/connect "127.0.0.1" (:port small))]
+      (io/write s "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello world")
+      (is (str/starts-with? (bytes->string (io/read-all s) true) "HTTP/1.1 413"))
+      (io/close s)
+      (http/stop! small)))
+  (testing "Expect: 100-continue"
+    (let [r (raw "POST /echo HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi")]
+      (is (str/starts-with? r "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK"))
+      (is (str/ends-with? r "\r\n\r\nhi"))))
+  (testing "HTTP/1.0 closes after the response"
+    (is (str/ends-with? (raw "GET /hello HTTP/1.0\r\n\r\n") "hello world"))))
+
+(deftest tls
+  (let [certs (io/path here "certs")
+        secure (http/serve handler :tls true :cert-file (io/path certs "server.pem") :key-file (io/path certs "server.key"))
+        u (str "https://localhost:" (:port secure) "/hello?name=tls")]
+    (is (= "hello tls" (:body (http/get u :ca-file (io/path certs "ca.pem")))))
+    (is (some? (message (fn [] (http/get u :keep-alive false)))) "an untrusted certificate is refused")
+    (http/stop! secure)))
+
+(deftest stopping
+  (let [s (http/serve handler)
+        u (str "http://127.0.0.1:" (:port s) "/hello")]
+    (is (= 200 (:status (http/get u :keep-alive false))))
+    (http/stop! s)
+    (sleep 50)
+    (is (some? (message (fn [] (http/get u :keep-alive false)))) "nothing listens after stop!")))
