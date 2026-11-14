@@ -33,6 +33,7 @@ const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --ser
        norn fmt [--check] [PATH…]
        norn lint [PATH…]
        norn check [PATH…]
+       norn expand [--steps] FILE.norn | -e EXPR
        norn doc NAMESPACE | NAME | NS/NAME …
        norn image info IMG.nimg | norn image diff A.nimg B.nimg";
 
@@ -112,7 +113,7 @@ pub fn run() {
         });
     }
 
-    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check")) = args.first().map(String::as_str) {
+    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand")) = args.first().map(String::as_str) {
         // `norn test …`, `norn fmt …`: the library's main returns the exit status.
         let call = format!(
             "(do (require 'norn.{tool}) (norn.{tool}/main {}))",

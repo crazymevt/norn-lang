@@ -68,3 +68,17 @@ fn a_script_gets_its_arguments() {
     std::fs::write(d.join("args.norn"), "(require '[norn.string :as str] '[norn.sys :as sys])\n(prn (vec (rest (drop-while (fn [a] (not (str/ends-with? a \"args.norn\"))) (sys/args)))))\n").unwrap();
     assert_eq!(norn(&d, &["args.norn", "one", "two words"]), r#"["one" "two words"]"#);
 }
+
+#[test]
+fn norn_expand_shows_each_macro_step() {
+    // (M8 part 8.9) each form is run after it's shown, so my.app's require
+    // and my.util's macro are there for the forms after it
+    let d = scratch("expand");
+    let out = norn(&d, &["expand", "--steps", "my/app.norn"]);
+    assert!(out.contains("my.util/twice (defmacro)"), "{out}");
+    assert!(out.contains("=> (norn.core/str (my.util/shout \"c\") (my.util/shout \"c\"))"), "{out}");
+    assert!(out.contains("Fully expanded:"), "{out}");
+    let plain = norn(&d, &["expand", "-e", "(when a b)"]);
+    assert!(plain.ends_with("(if a (do b))"), "{plain}");
+}
+

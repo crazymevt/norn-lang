@@ -428,16 +428,22 @@
 (def ^:private validators (atom nil))
 (def ^:private loading-validators (atom false))
 
+(def ^:dynamic *on-step*
+  "While the macro stepper watches an expansion (M8 part 8.9): called with
+  each macro step's var, call, result and introduction scope (nil for a
+  defmacro's step), in the order they happen."
+  nil)
+
 (defn- validator-for [v]
   (when (and (nil? @validators) (not @loading-validators) (%find-lib "norn.validate"))
     (reset! loading-validators true)
-    (try (require 'norn.validate)
+    (try (binding [*on-step* nil] (require 'norn.validate))
          (reset! validators (var-get (%resolve-in 'norn.validate 'validators)))
          (finally (reset! loading-validators false))))
   (when-let [vs @validators] (get vs (%var-name v))))
 
-(defn- macro-step
-  "The expansion of macro call s, whose head names macro var v."
+(defn- apply-macro
+  "Macro call s's expansion, and the introduction scope it used (or nil)."
   [v s]
   (when-let [check (validator-for v)] (check s))
   (let [m (var-get v)]
@@ -448,8 +454,19 @@
             out ((slot-value m :f) (syn/add-scope s intro))]
         (when-not (syn/syntax? out)
           (fail s "The macro" (pr-str v) "returned" (pr-str out) "where syntax was expected"))
-        (syn/flip-scope out intro))
-      (datum-step m s (access-scope (var-ns-of v))))))
+        [(syn/flip-scope out intro) intro])
+      [(datum-step m s (access-scope (var-ns-of v))) nil])))
+
+(defn- macro-step
+  "The expansion of macro call s, whose head names macro var v."
+  [v s]
+  (if-let [hook *on-step*]
+    ;; (what the macro's own code expands, as it runs, isn't a step of this
+    ;; expansion)
+    (let [[out intro] (binding [*on-step* nil] (apply-macro v s))]
+      (hook v s out intro)
+      out)
+    (first (apply-macro v s))))
 
 (defn- macro-of
   "The macro var a call's head names, or nil."
@@ -616,6 +633,12 @@
       (when-not (when-let [v (%resolve-in (symbol (str here)) n)] (= (var-ns-of v) (symbol (str here))))
         (%intern here n)))
     (swap! modules assoc (symbol (str here)) {:path src :requires (requires-of ns-form) :defines (vec (distinct names))})))
+
+(defn %declare-module!
+  "Declare the names a module's text defines, as loading it does (for tools
+  that go through a module form by form, as the macro stepper does)."
+  [text src ns-form]
+  (declare-module! text src ns-form))
 
 (defn- eval-located
   "Evaluate syntax s read from src, noting where (for errors and the

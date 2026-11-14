@@ -168,6 +168,8 @@ fn the_editor_finds_definitions_docs_and_vars() {
     assert!(vars.contains(":name \"area\""), "{vars}");
     let m = ed.request(&format!(":op :macroexpand :ns \"user\" :code {}", quote("(when ok (go))")));
     assert!(m.contains("(if ok"), "{m}");
+    let steps = ed.request(&format!(":op :expand-steps :ns \"user\" :code {}", quote("(when ok (go))")));
+    assert!(steps.contains(":macro \"norn.core/when\"") && steps.contains(":expanded \"(if ok (do (go)))\""), "{steps}");
 }
 
 #[test]

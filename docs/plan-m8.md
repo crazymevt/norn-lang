@@ -453,3 +453,45 @@ REPL.**
   any of the three.
 - **Tests:** `module_test`'s linter test now has 12 checks covering each
   rule and the cases each must not report.
+
+**8.9, the macro stepper (2026-11-14): done (Studio's view of it is for
+later).**
+
+- **`norn.expand/macro-steps`** expands a form fully, recording each macro
+  step as the expander takes it, outermost first, through a hook in the
+  expander (`*on-step*`). What a macro's own code expands while it runs
+  isn't a step of the form's expansion, so the hook is off inside it.
+  Each step gives:
+  - the macro;
+  - whether it's hygienic;
+  - where the call is;
+  - the call before and after;
+  - the names it introduced.
+
+  The full expansion comes last.
+- **What a step introduced.** A hygienic macro's names are exactly the
+  identifiers its introduction scope marks after the flip, and the step
+  reports that scope. A defmacro works on data, so its names are found by
+  name: those in its result that its arguments didn't hold. A name it
+  introduces that the call also wrote (`aif`'s `it`) isn't listed.
+- **Renames.** In the full expansion, locals that share a name are
+  numbered apart, which is what hygiene did:
+  `(let [t 5] (my-or false t))` →
+  `(let* [t#1 5] (let* [t#2 false] (if t#2 t#2 t#1)))`, with
+  "t#1, t#2: different locals, each written t". A template's syntax shows
+  as the `quote-syntax` it came from.
+- **Where it's available:**
+  - **The REPL:** `(macro-steps '(…))` prints the steps.
+  - **The command line:** `norn expand [--steps] FILE | -e EXPR` prints
+    each top-level form's full expansion, or every step with `--steps`. A
+    file's forms run after they're shown (a module's names are declared
+    first, as loading does), so later forms see their macros; an
+    expression is only expanded.
+  - **Editors:** the `:expand-steps` op returns the steps with forms as
+    text, plus the whole thing as `:text`. Studio doesn't show it yet.
+- **Tests:**
+  - `expander_test`: 13 checks covering the steps, introduced names,
+    scopes, renames and text;
+  - the editor protocol test (`:expand-steps`);
+  - a CLI test (`norn expand --steps` on a module that uses another's
+    macro, and `-e`).

@@ -9,7 +9,7 @@
 //! Ops (implemented in Norn, `%serve-request` in core.norn): `:eval`,
 //! `:load-file`, `:interrupt`, `:debugging`, `:backtrace`, `:restart`,
 //! `:restart-frame`, `:abort`, `:eval-in-frame`, `:complete`, `:doc`,
-//! `:definition`, `:macroexpand`, `:inspect`, `:ns-vars`, `:test`,
+//! `:definition`, `:macroexpand`, `:expand-steps`, `:inspect`, `:ns-vars`, `:test`,
 //! `:format` and `:lint`. What an evaluation prints streams as
 //! `{:event :out :id … :text …}` events. Each request runs in its own root fiber,
 //! so a request that waits in the debugger doesn't block the connection:

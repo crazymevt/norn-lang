@@ -1453,6 +1453,14 @@
   ((var-get (resolve 'norn.core/require)) lib)
   (apply (var-get (resolve (symbol (name lib) (name f)))) args))
 
+(defn macro-steps
+  "Print form's expansion a macro step at a time: each call, what it
+  became and the names it introduced, then the full expansion with its
+  renamed locals (M8 part 8.9). norn.expand/macro-steps gives the steps as
+  data."
+  [form]
+  (println (%tool-call 'norn.expand 'steps-text (%tool-call 'norn.expand 'macro-steps form))))
+
 (defn %serve-request
   "One editor-protocol request (a map, as a line of Norn data) → the response line."
   [line]
@@ -1472,6 +1480,7 @@
                    (= op :macroexpand) (do (in-ns (symbol (or (:ns req) "user")))
                                            (let [f (read-string (:code req))]
                                              {:value (pr-str (if (:all req) (macroexpand f) (macroexpand-1 f)))}))
+                   (= op :expand-steps) (%tool-call 'norn.expand 'expand-steps-for-editor (:code req) (:ns req))
                    (= op :inspect) (%serve-inspect req)
                    (= op :inspect-clear) (do (reset! %inspected {:next 0 :values {}}) {:value "true"})
                    (= op :ns-vars) (%serve-ns-vars req)

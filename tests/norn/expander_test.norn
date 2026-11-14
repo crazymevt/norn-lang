@@ -2,7 +2,8 @@
 ;;;; output from quote-syntax pieces; pattern templates come with 8.3.
 
 (ns expander-test
-  (:require [norn.test :refer [is deftest testing]] [norn.syntax :as syn :refer [defsyntax]]))
+  (:require [norn.test :refer [is deftest testing]] [norn.syntax :as syn :refer [defsyntax]]
+            [norn.expand] [norn.string :as str]))
 
 ;; Another namespace, with a macro whose template calls a private helper of
 ;; its own.
@@ -112,3 +113,29 @@
   (is (= [] (norn.expander/compare-expanded (%expander-source) "expander.norn" 'user)))
   (testing "and the comparison does notice a difference"
     (is (= 1 (count (norn.expander/compare-expanded "(defn h [] (quote-syntax x))" "d" 'user))))))
+
+(deftest the-macro-stepper
+  ;; (M8 part 8.9)
+  (let [r (norn.expand/macro-steps '(let [t 5] (expander-test/my-or false t)))
+        steps (:steps r)]
+    (testing "each macro step, outermost first"
+      (is (= '[norn.core/let expander-test/my-or] (mapv :macro steps)))
+      (is (= '(expander-test/my-or false t) (:before (second steps))))
+      (is (= '(let* [t false] (if t t t)) (:after (second steps)))))
+    (testing "what a hygienic step introduced: its scope marks them"
+      (is (= [false true] (mapv :hygienic steps)))
+      (is (= '[let* t if] (:introduced (second steps))))
+      (is (integer? (:scope (second steps)))))
+    (testing "a defmacro's: the names its arguments didn't hold"
+      (is (= '[let*] (:introduced (first steps)))))
+    (testing "the full expansion, its same-named locals numbered apart"
+      (is (= '(let* [t#1 5] (let* [t#2 false] (if t#2 t#2 t#1))) (:expanded r)))
+      (is (= '[{:local t :as [t#1 t#2]}] (:renames r))))
+    (testing "as text"
+      (let [text (norn.expand/steps-text r)]
+        (is (str/includes? text "2. expander-test/my-or (hygienic)") text)
+        (is (str/includes? text "t#1, t#2: different locals, each written t") text))))
+  (testing "a form with no macros"
+    (is (= [] (:steps (norn.expand/macro-steps '(if 1 2 3))))))
+  (testing "a syntax template shows as the quote-syntax it was"
+    (is (= '(fn* [] (quote-syntax x)) (:expanded (norn.expand/macro-steps '(fn* [] (quote-syntax x))))))))
