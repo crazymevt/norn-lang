@@ -1739,11 +1739,18 @@
   (%save-image path entry (not= fibers :none) (if layered true false))
   (%save-image-outcome))
 
+(def %restore-hooks
+  "Functions run after an image is loaded, before its resources are
+  restored (settings that depend on the machine, as the module cache's
+  folder does)."
+  (atom []))
+
 (defn %image-restored
-  "Run once after an image is loaded: resources become dead, then each gets
-  on-image-restore."
+  "Run once after an image is loaded: the restore hooks run, resources
+  become dead, then each gets on-image-restore."
   []
   (alter-var-root (var %image-generation) inc)
+  (doseq [f @%restore-hooks] (f))
   (doseq [e @%resources]
     (when-let [r (weak-get (first e))]
       (handler-case (when (on-image-restore r) (%mark-live! r))
@@ -1760,7 +1767,7 @@
 ;;;
 ;;; Phases (M8 part 8.5): code that runs while compiling (a macro's, and its
 ;;; helpers') is one phase up, in its own instance of each module: namespace
-;;; name@1 for module name, name@2 one more up. Requiring from a namespace
+;;; name$1 for module name, name$2 one more up. Requiring from a namespace
 ;;; at shift n loads the library's instance at shift n. norn.core,
 ;;; norn.syntax, norn.compiler and norn.expander are the language itself:
 ;;; one instance, shared by every phase.
@@ -1768,12 +1775,12 @@
 (def %shared-nss #{"norn.core" "norn.syntax" "norn.compiler" "norn.expander"})
 
 (defn %ns-shift
-  "The phase shift of namespace ns (a symbol): n for name@n, else 0."
+  "The phase shift of namespace ns (a symbol): n for name$n, else 0."
   [ns]
   (let [n (str ns)
         i (loop [i (dec (count n))]
             (cond (< i 0) nil
-                  (= (nth n i) \@) i
+                  (= (nth n i) \$) i
                   :else (recur (dec i))))]
     (if i (or (%parse-number (subs n (inc i)) true) 0) 0)))
 
@@ -1786,7 +1793,7 @@
 (defn %shifted
   "The instance of module lib at phase shift s (a shared one has one)."
   [lib s]
-  (if (or (zero? s) (contains? %shared-nss (str lib))) lib (symbol (str lib "@" s))))
+  (if (or (zero? s) (contains? %shared-nss (str lib))) lib (symbol (str lib "$" s))))
 
 (def *load-shift* "The phase shift of the library being loaded." 0)
 ;;;
@@ -1851,7 +1858,9 @@
             reload (or reload-all (some (fn [o] (= o :reload)) (if (vector? spec) spec [])))
             {:keys [as refer]} opts]
         (let [shift (%ns-shift (symbol (str (current-ns))))
-              _ (when reload (swap! %libs dissoc (%shifted lib shift)))
+              ;; (every phase's instance: each loads again when next
+              ;; required, so none is left stale)
+              _ (when reload (swap! %libs (fn [m] (into {} (remove (fn [e] (= lib (%base-ns (first e)))) m)))))
               target (%load-lib lib shift)]
           (when as (%alias as target))
           (when refer

@@ -51,9 +51,9 @@
     (is (= 2 (run '(pt.user/run-count))))
     (is (= 2 (run '@pt.counter/n)) "run time's counter only counted run time"))
   (testing "they're namespaces of their own"
-    (is (some (fn [n] (= "pt.counter@1" (str n))) (all-ns)))
-    (is (not-any? (fn [n] (str/starts-with? (str n) "norn.core@")) (all-ns)) "the language has one instance")
-    (is (not-any? (fn [n] (str/starts-with? (str n) "norn.syntax@")) (all-ns)))))
+    (is (some (fn [n] (= "pt.counter$1" (str n))) (all-ns)))
+    (is (not-any? (fn [n] (str/starts-with? (str n) "norn.core$")) (all-ns)) "the language has one instance")
+    (is (not-any? (fn [n] (str/starts-with? (str n) "norn.syntax$")) (all-ns)))))
 
 (deftest helpers-are-for-compile-time
   (testing "an ordinary helper is refused, saying what to do"
@@ -66,7 +66,7 @@
 (deftest full-names-mean-the-compile-time-instance
   (run '(pt.counter/bump!))
   (run '(require 'pt.full))
-  (is (= 1 (run '(pt.full/seen))) "pt.counter@1/n (bumped once, compiling pt.user), not run time's"))
+  (is (= 1 (run '(pt.full/seen))) "pt.counter$1/n (bumped once, compiling pt.user), not run time's"))
 
 (deftest the-repl-is-permissive
   ;; (no ns form: not a module; a REPL macro may use a REPL helper)

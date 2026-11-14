@@ -70,6 +70,23 @@ pub(crate) fn add_lib_path(dir: String) {
     }
 }
 
+/// Where compiled modules are cached (M8 part 8.6): NORN_CACHE (a folder,
+/// or `off`), else the system's cache folder.
+pub(crate) fn cache_dir() -> Option<String> {
+    match std::env::var("NORN_CACHE") {
+        Ok(v) if v == "off" => return None,
+        Ok(v) if !v.is_empty() => return Some(v),
+        _ => {}
+    }
+    if let Ok(x) = std::env::var("XDG_CACHE_HOME")
+        && !x.is_empty()
+    {
+        return Some(format!("{x}/norn"));
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(if cfg!(target_os = "macos") { format!("{home}/Library/Caches/norn") } else { format!("{home}/.cache/norn") })
+}
+
 pub(crate) fn find_lib(name: &str) -> Option<(String, String)> {
     if let Some((_, src)) = LIBS.iter().chain(crate::ext::libs()).find(|(n, _)| *n == name) {
         return Some(((*src).to_owned(), format!("<{name}>")));

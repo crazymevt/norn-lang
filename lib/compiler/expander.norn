@@ -483,16 +483,24 @@
   [s]
   (binding [*bindings* (atom {}) *datums* (atom {}) *ns-sym* (symbol (str (current-ns)))] (expand s)))
 
+(def ^:dynamic *recording*
+  "While a module loads: an atom collecting the units (namespace, expanded
+  form) compiled for the source form being evaluated, for the module cache."
+  nil)
+
 (defn- run
   "Compile and run expanded form f; a compile error offers retry and
   use-value, as norn.compiler/eval does."
   [f s]
+  (when *recording* (swap! *recording* conj [(str (ns-sym)) f]))
   (let [r (loop []
             (let [r (restart-case [:ok (norn.compiler/compile-toplevel f)]
                       (use-value [v] :report "Use a value instead of evaluating the form" [:value v])
                       (retry [] :report "Compile the form again (e.g. after defining what it needs)" [:retry]))]
               (if (= (first r) :retry) (recur) r)))]
-    (if (= (first r) :ok) ((second r)) (second r))))
+    ;; (what the code evaluates while it runs isn't this module's own)
+    (binding [*recording* nil]
+      (if (= (first r) :ok) ((second r)) (second r)))))
 
 (defn eval-syntax
   "Evaluate syntax s: a top-level do form by form, anything else expanded
@@ -589,6 +597,184 @@
     (%note-definition! d src line)
     (eval s)))
 
+;; ---- the compiled-module cache (8.6) ----
+;;
+;; A module's expanded code, unit by unit (each top-level form compiled and
+;; run, with the namespace it was compiled in), is written to a file in the
+;; cache folder, keyed by a hash of the build, the module's name, place and
+;; source, and the keys of the modules its ns form requires. When the key
+;; matches, loading reads the source only as data (for the definitions
+;; index and error places) and compiles and runs the cached units: nothing
+;; is expanded again.
+;;
+;; Expanded code holds two things that don't print as themselves: locals
+;; (uninterned symbols: two `t`s must stay two) and syntax objects (from
+;; hygienic templates), whose scopes are numbers that mean nothing in
+;; another process. Locals are written as %%local/name#n; a scope as its
+;; namespace's, its namespace's access scope, or a number that stands for
+;; the same fresh scope throughout the module. Anything that doesn't read
+;; back as it was written (a function as a constant…) leaves the module
+;; uncached rather than cached wrong.
+
+(def ^:dynamic *cache-dir*
+  "Where compiled modules are cached (nil: not at all). NORN_CACHE sets it
+  at start (off for none); the default is the system's cache folder. Bind
+  it to cache somewhere else for a while."
+  (%cache-dir))
+
+(defn set-cache-dir! "Cache compiled modules in dir from now on (nil: not at all)." [dir]
+  (%set-root! (var *cache-dir*) dir))
+
+;; (an image may run on another machine: its cache folder is found there)
+(swap! %restore-hooks conj (fn [] (set-cache-dir! (%cache-dir))))
+
+(def ^:dynamic *cache-stats*
+  "An atom counting modules loaded from the cache, compiled, written, or not
+  cacheable. Bind a fresh one to count a stretch of loading on its own."
+  (atom {:hits 0 :misses 0 :writes 0 :uncacheable 0}))
+
+(defn- uninterned? [x] (and (symbol? x) (nil? (namespace x)) (not (identical? x (symbol (name x))))))
+
+(defn- scope-spec [sc]
+  (if-let [n (get @scope-nss sc)]
+    [:ns n]
+    (if-let [n (some (fn [[k v]] (when (= v sc) k)) @access-scopes)]
+      [:access n]
+      [:s sc])))
+
+(defn- encode
+  "Expanded code x as data that prints and reads back as itself."
+  [x locals]
+  (cond (uninterned? x)
+        (symbol "%%local" (str (name x) "#" (or (get @locals x)
+                                                (let [n (count @locals)] (swap! locals assoc x n) n))))
+        (syn/syntax? x)
+        (if (syn/%raw? x)
+          (list '%%syntax/raw (syn/%raw-e x) (mapv scope-spec (syn/syntax-scopes x)) (syn/syntax-loc x) (syn/syntax-props x))
+          (list '%%syntax/obj (encode (syn/syntax-e x) locals) (mapv scope-spec (syn/syntax-scopes x)) (syn/syntax-loc x)
+                (syn/syntax-props x)))
+        ;; (a var as a constant, as defmethod's expansion has: by its name)
+        (var? x) (list '%%syntax/var (%var-name x))
+        (seq? x) (apply list (map (fn [y] (encode y locals)) x))
+        (vector? x) (mapv (fn [y] (encode y locals)) x)
+        (map? x) (into {} (map (fn [[k v]] [(encode k locals) (encode v locals)])) x)
+        (set? x) (into #{} (map (fn [y] (encode y locals))) x)
+        :else x))
+
+(defn- last-index-of [s ch]
+  (loop [i (dec (count s))] (cond (< i 0) 0 (= (nth s i) (first ch)) i :else (recur (dec i)))))
+
+(defn- decode
+  "Code written by encode, back: locals as fresh uninterned symbols (one per
+  name#n), scopes through module-scopes (an atom: written → fresh)."
+  [x locals module-scopes]
+  (let [scope (fn [[k v]]
+                (case k
+                  :ns (ns-scope v)
+                  :access (access-scope v)
+                  :s (or (get @module-scopes v) (let [sc (syn/new-scope)] (swap! module-scopes assoc v sc) sc))))
+        dec (fn dec [y]
+              (cond (and (symbol? y) (= "%%local" (namespace y)))
+                    (or (get @locals y)
+                        (let [n (name y)
+                              u (%uninterned-symbol (subs n 0 (last-index-of n "#")))]
+                          (swap! locals assoc y u)
+                          u))
+                    (and (seq? y) (= '%%syntax/var (first y)))
+                    (let [sym (symbol (second y))] (%intern (symbol (namespace sym)) (symbol (name sym))))
+                    (and (seq? y) (= '%%syntax/raw (first y)))
+                    (let [[_ e scopes loc] y]
+                      (syn/%raw-syntax e (into #{} (map scope) scopes) loc))
+                    (and (seq? y) (= '%%syntax/obj (first y)))
+                    (let [[_ e scopes loc props] y]
+                      (syn/%make-syntax (dec e) (into #{} (map scope) scopes) loc props))
+                    (seq? y) (apply list (map dec y))
+                    (vector? y) (mapv dec y)
+                    (map? y) (into {} (map (fn [[k v]] [(dec k) (dec v)])) y)
+                    (set? y) (into #{} (map dec) y)
+                    :else y))]
+    (dec x)))
+
+(defn- deps-of
+  "The module instances an ns form requires, at the current shift."
+  [d]
+  (let [shift (%ns-shift (ns-sym))
+        names (fn [k] (for [clause (rest d) :when (and (seq? clause) (= k (first clause)))
+                            spec (rest clause)]
+                        (let [spec (if (and (seq? spec) (= 'quote (first spec))) (second spec) spec)]
+                          (if (vector? spec) (first spec) spec))))]
+    (concat (map (fn [l] (%shifted l shift)) (names :require))
+            (map (fn [l] (%shifted l (inc shift))) (names :require-for-syntax)))))
+
+(defn- module-key [text src nsym d]
+  (%hash-text (pr-str [(%build-id) (str nsym) src (%hash-text text)
+                       (mapv (fn [dep] [(str dep) (get-in @modules [dep :key])]) (deps-of d))])))
+
+(defn- cache-file [dir nsym src] (str dir "/" (%hash-text (str nsym "|" src)) ".nmod"))
+
+(defn- read-cache [file key]
+  (try (let [m (read-string (slurp file))]
+         (when (and (map? m) (= key (:key m))) m))
+       (catch Error _ nil)))
+
+(defn- prune-cache!
+  "Keep the cache folder to at most 1000 entries, dropping the oldest
+  (modules that came and went, as tests' do, would otherwise pile up)."
+  [dir]
+  (let [names (filter (fn [n] (= ".nmod" (subs n (max 0 (- (count n) 5))))) (try (%fs-list dir) (catch Error _ [])))]
+    (when (> (count names) 1000)
+      (doseq [[_ p] (take (- (count names) 800)
+                          (sort-by first (map (fn [n] (let [p (str dir "/" n)] [(or (:modified (%fs-info p)) 0) p])) names)))]
+        (try (%fs-delete p false) (catch Error _ nil))))))
+
+(defn- write-cache! [dir file key forms]
+  (let [text (pr-str {:key key :forms (mapv (fn [units] (mapv (fn [[n f]] [n (encode f (atom {}))]) units)) forms)})]
+    ;; written only if it reads back as written
+    (if (try (= text (pr-str (read-string text))) (catch Error _ false))
+      (try (%fs-mkdirs dir)
+           (let [tmp (str file "." (nano-time) ".tmp")]
+             (spit tmp text)
+             (%fs-rename tmp file))
+           (swap! *cache-stats* update :writes inc)
+           (prune-cache! dir)
+           (catch Error _ nil))
+      (swap! *cache-stats* update :uncacheable inc))))
+
+(defn- load-module-body
+  "The rest of module r (its ns form evaluated): from the cache if it's
+  there and current, else read, expanded, run and cached."
+  [r src d]
+  (let [nsym (ns-sym)
+        text (%reader-text r)
+        key (module-key text src nsym d)
+        _ (swap! modules assoc-in [nsym :key] key)
+        dir *cache-dir*
+        file (when dir (cache-file dir nsym src))
+        cached (when file (read-cache file key))]
+    (if cached
+      (do (swap! *cache-stats* update :hits inc)
+          (let [module-scopes (atom {})]
+            (loop [forms (seq (:forms cached)) last nil]
+              (let [d (%read r)]
+                (if (or (%eof? d) (empty? forms))
+                  last
+                  (let [line (%reader-line r)]
+                    (%set-location! (str src ":" line))
+                    (%note-definition! d src line)
+                    (recur (next forms)
+                           (reduce (fn [_ [n f]]
+                                     (when-not (= n (str (current-ns))) (in-ns (symbol n)))
+                                     (run (decode f (atom {}) module-scopes) nil))
+                                   last (first forms)))))))))
+      (do (swap! *cache-stats* update :misses inc)
+          (loop [forms [] last nil]
+            (let [s (syn/read-syntax r)]
+              (if (= s :eof)
+                (do (when file (write-cache! dir file key forms)) last)
+                (let [units (atom [])
+                      v (binding [*recording* units] (eval-located s src))]
+                  (recur (conj forms @units) v)))))))))
+
 (defn eval-reader
   "Evaluate every form reader r reads, as syntax with places. A source that
   starts with (ns …) is a module: its definitions are declared first."
@@ -607,10 +793,12 @@
                     s)]
             (binding [*strict* (or module? *strict*)]
               (let [v (eval-located s src)]
-                (when module? (declare-module! (%reader-text r) src d))
-                (loop [last v]
-                  (let [s (syn/read-syntax r)]
-                    (if (= s :eof) last (recur (eval-located s src))))))))))
+                (if module?
+                  (do (declare-module! (%reader-text r) src d)
+                      (load-module-body r src d))
+                  (loop [last v]
+                    (let [s (syn/read-syntax r)]
+                      (if (= s :eof) last (recur (eval-located s src)))))))))))
       (finally (%set-location! saved)))))
 
 (defn %install!

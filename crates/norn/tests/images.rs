@@ -11,6 +11,11 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::Instant;
 
+/// The image tests run in parallel threads; the start-up timing runs alone
+/// (others hold this shared, it holds it exclusively), so it measures
+/// start-up rather than how busy the machine is.
+static ALONE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 fn norn() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_norn"));
     c.current_dir(format!("{}/../..", env!("CARGO_MANIFEST_DIR")));
@@ -44,6 +49,7 @@ fn eval(image: Option<&PathBuf>, expr: &str) -> String {
 
 #[test]
 fn saved_fibers_resume_after_load() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("fibers");
     let img = d.join("fibers.nimg");
     // A worker that crashes into the debugger, a channel reader, a sleeper, a
@@ -80,6 +86,7 @@ fn saved_fibers_resume_after_load() {
 
 #[test]
 fn the_saving_fiber_and_unsaved_fibers_end_with_an_error() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("dead");
     let (parked, none) = (d.join("parked.nimg"), d.join("none.nimg"));
     let setup = |path: &PathBuf, opts: &str| {
@@ -106,6 +113,7 @@ fn the_saving_fiber_and_unsaved_fibers_end_with_an_error() {
 
 #[test]
 fn suites_pass_in_a_runtime_started_from_an_image() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("suites");
     let base = d.join("base.nimg");
     ok(norn().arg("build").arg(&base).output().unwrap());
@@ -118,6 +126,7 @@ fn suites_pass_in_a_runtime_started_from_an_image() {
 
 #[test]
 fn layered_images_store_only_what_changed() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("layers");
     let (l0, l1, l2) = (d.join("l0.nimg"), d.join("l1.nimg"), d.join("l2.nimg"));
     eval(None, &format!("(:objects (save-image \"{}\"))", l0.display()));
@@ -134,6 +143,7 @@ fn layered_images_store_only_what_changed() {
 
 #[test]
 fn build_is_reproducible_and_runs_the_entry_function() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("build");
     let src = d.join("app.norn");
     std::fs::write(&src, "(ns app)\n(defn main [& args] (println \"app got\" (vec args)) (count args))\n").unwrap();
@@ -149,6 +159,7 @@ fn build_is_reproducible_and_runs_the_entry_function() {
 
 #[test]
 fn resources_are_dead_after_a_restore_until_reconnected() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("resources");
     let img = d.join("res.nimg");
     let setup = format!(
@@ -172,6 +183,7 @@ fn resources_are_dead_after_a_restore_until_reconnected() {
 
 #[test]
 fn damaged_images_are_refused() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("damaged");
     let good = d.join("good.nimg");
     eval(None, &format!("(:objects (save-image \"{}\"))", good.display()));
@@ -197,6 +209,7 @@ fn damaged_images_are_refused() {
 
 #[test]
 fn start_up_from_an_image_is_fast() {
+    let _alone = ALONE.write().unwrap_or_else(|e| e.into_inner());
     let d = scratch("startup");
     let img = d.join("app.nimg");
     ok(norn().arg("build").arg(&img).output().unwrap());
@@ -215,6 +228,7 @@ fn start_up_from_an_image_is_fast() {
 
 #[test]
 fn weak_references_keep_only_what_else_is_saved() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("weak");
     let img = d.join("weak.nimg");
     eval(
@@ -234,6 +248,7 @@ fn weak_references_keep_only_what_else_is_saved() {
 
 #[test]
 fn a_file_handle_from_an_image_is_lost_until_reconnected() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("file-handle");
     let (img, file) = (d.join("fh.nimg"), d.join("log.txt"));
     eval(
@@ -258,6 +273,7 @@ fn a_file_handle_from_an_image_is_lost_until_reconnected() {
 
 #[test]
 fn foreign_functions_work_again_after_a_restore() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("ffi");
     let img = d.join("ffi.nimg");
     eval(
@@ -275,6 +291,7 @@ fn foreign_functions_work_again_after_a_restore() {
 
 #[test]
 fn mutable_objects_owned_by_the_saver_are_free_after_a_restore() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("owned");
     let img = d.join("owned.nimg");
     eval(
@@ -293,6 +310,7 @@ fn mutable_objects_owned_by_the_saver_are_free_after_a_restore() {
 
 #[test]
 fn sorted_collections_and_queues_survive_an_image() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("colls");
     let img = d.join("colls.nimg");
     eval(None, &format!(r#"(do (def sm (sorted-map 3 :c 1 :a)) (def q (queue 1 2)) (def ss (sorted-set 5 4)) (save-image "{}"))"#, img.display()));

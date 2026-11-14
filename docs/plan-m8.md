@@ -257,7 +257,8 @@ REPL.**
   module. So Racket's strictness cost one line of migration, plus one
   test's helper that strict phases rightly refused.
 - **Instances.** A module's compile-time instance is a namespace of its
-  own, `name@1` (`name@2` one more up). Loading it runs the module's
+  own, `name$1` (`name$2` one more up; `$`, since
+  `@` ends a symbol for the reader). Loading it runs the module's
   source again into that namespace; requiring from a namespace at shift n
   loads the library's instance at shift n.
   - `norn.core`, `norn.syntax`, `norn.compiler` and `norn.expander` are the
@@ -296,3 +297,54 @@ REPL.**
   care there.
 - **Tests:** `phase_test.norn`, 12 checks at both tiers. All suites pass, as
   do `norn-ui`'s and `norn-studio`'s. The linter knows `begin-for-syntax`.
+
+**8.6, the compiled-module cache (2026-11-14): done.**
+
+- **What's cached:** a module's expanded code, unit by unit (each compiled
+  top-level form, with the namespace it was compiled in), in a file in the
+  cache folder (`NORN_CACHE`, `off` for none; else the system's cache
+  folder).
+- **The key:** a hash of the build (runtime and embedded libraries), the
+  module's name, place and source, and the keys of the modules its `ns`
+  form requires, at both phases. A change anywhere recompiles what depends
+  on it.
+- **On a hit:** the source is read only as data (for the definitions index
+  and error places), and the cached units are compiled and run. Nothing is
+  expanded again.
+- **Hygiene across processes.** Expanded code holds three things that don't
+  print as themselves, and each is encoded:
+  - **locals** (uninterned symbols), by identity;
+  - **syntax objects** from hygienic templates, whose scopes become their
+    namespace's, its access scope, or a number standing for one fresh scope
+    throughout the module;
+  - **vars as constants** (in `defmethod`'s expansion), by name.
+- **Anything else that doesn't read back as written** (a function as a
+  constant) leaves the module uncached rather than cached wrong;
+  `*cache-stats*` counts it.
+- **Housekeeping:**
+  - the folder keeps at most 1,000 entries, dropping the oldest;
+  - a damaged entry is ignored and rewritten;
+  - `norn build` compiles fresh, so the same sources still give the same
+    image (an image is the cache for its own start-up), and an image finds
+    its cache folder on the machine it runs on (`%restore-hooks`).
+- **Compile-time instances are named `name$1`, not `name@1`:** `@` ends a
+  symbol for the reader, so code naming one couldn't be written and read
+  back.
+- **`(require 'm :reload)` now drops every phase's instance of `m`,** so a
+  dependent's macros don't run against a stale compile-time instance.
+- **Studio's code loads in 0.54 s from a warm cache.** That compares with
+  0.77 s through the uncached expander and 0.47 s before it. The first load
+  after a change takes 1.3 s, writing 39 entries.
+- **Tests:** `cache_test.norn`, 15 checks at both tiers: hits; recompiling
+  on a change to the module or to a dependency; hygiene and phases surviving
+  the cache; an uncacheable module; a damaged entry; no cache folder. The
+  whole suite passes twice against one cache, the second run entirely from
+  it.
+- **`start_up_from_an_image_is_fast`** now runs alone among the image tests
+  (a lock), and passes in full runs.
+- **Two-pass expansion is still not done,** and it isn't needed for the
+  cache. Recording units in order makes the cached module one unit, which
+  is what sealing needs too. The two passes would change when run-time
+  forms run, which the stdlib's dynamic lookups at expansion time depend
+  on. Proposed: drop them from decision 2, unless sealing turns out to
+  need them.

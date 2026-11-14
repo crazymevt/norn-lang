@@ -86,6 +86,11 @@ fn phase_suite() {
 }
 
 #[test]
+fn cache_suite() {
+    suite("cache_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [

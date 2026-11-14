@@ -242,6 +242,9 @@ fn build(args: &[String]) -> i32 {
         eprintln!("{e}");
         exit(1)
     });
+    // Same sources, same image: everything is compiled here, not taken
+    // from the module cache (the image is the cache for its start-up).
+    norn.run(RootTask::EvalRaw("(when-let [v (resolve 'norn.expander/set-cache-dir!)] (v nil))".into()), "user");
     for f in files {
         if !run_task(norn, RootTask::Load(f), false) {
             return 1;

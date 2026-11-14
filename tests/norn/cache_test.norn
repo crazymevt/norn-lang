@@ -1,0 +1,77 @@
+;;;; The compiled-module cache (M8 part 8.6): a module's expanded code is
+;;;; cached, keyed by its source, the build and its dependencies; a current
+;;;; entry loads without expanding, and hygiene and phases survive it. The
+;;;; modules and the cache are in a temporary folder.
+
+(ns cache-test
+  (:require [norn.test :refer [is deftest testing]] [norn.io :as io] [norn.sys :as sys]))
+
+(def dir (io/path (sys/temp-dir) (str "norn-cache-test-" (sys/pid) "-" (nano-time))))
+(def cache (io/path dir "cache"))
+(io/mkdirs! (io/path dir "ct"))
+(add-lib-path! dir)
+
+(defn- module! [name text] (io/write-text (io/path dir "ct" (str name ".norn")) text))
+(defn- run [form] (binding [norn.expander/*cache-dir* cache] (eval form)))
+(defn- counted
+  "The cache's counts for running form (only its own loading: other test
+  files load in parallel)."
+  [form]
+  (let [stats (atom {:hits 0 :misses 0 :writes 0 :uncacheable 0})]
+    (binding [norn.expander/*cache-stats* stats] (run form))
+    (into {} (filter (fn [[_ v]] (pos? v))) @stats)))
+
+(module! "dep" "(ns ct.dep)\n(defn base [] 10)\n")
+
+(module! "app" (str "(ns ct.app\n  (:require [ct.dep :as d] [norn.syntax :as syn :refer [defsyntax]])\n"
+                    "  (:require-for-syntax [ct.dep :as d]))\n"
+                    ;; hygiene: the macro's t and the user's t
+                    "(defsyntax my-or (fn [s] (let [[_ a b] (syn/syntax->list s)]\n"
+                    "  (syn/datum->syntax (quote-syntax here) (list (quote-syntax let*) (vector (quote-syntax t) a)\n"
+                    "    (list (quote-syntax if) (quote-syntax t) (quote-syntax t) b))))))\n"
+                    "(defn hygienic [] (let [t 5] (my-or false t)))\n"
+                    ;; phases: a macro calling a dependency while compiling
+                    "(defmacro at-compile [] (d/base))\n"
+                    "(defn compiled [] (at-compile))\n"
+                    "(defn total [] (+ (d/base) (compiled)))\n"))
+
+(deftest a-module-is-cached-and-loads-from-the-cache
+  (is (= {:misses 3 :writes 3} (counted '(require 'ct.app))) "ct.app, ct.dep and ct.dep$1, compiled and written")
+  (is (= {:hits 1} (counted '(require 'ct.app :reload))) "the second time, from the cache")
+  (testing "what it does is the same"
+    (is (= 5 (run '(ct.app/hygienic))) "the macro's t didn't capture the user's")
+    (is (= 10 (run '(ct.app/compiled))))
+    (is (= 20 (run '(ct.app/total))))))
+
+(deftest a-change-compiles-again
+  (testing "the module's own source"
+    (module! "app" (str "(ns ct.app\n  (:require [ct.dep :as d])\n  (:require-for-syntax [ct.dep :as d]))\n"
+                        "(defmacro at-compile [] (* 2 (d/base)))\n"
+                        "(defn total [] (+ (d/base) (at-compile)))\n"))
+    (is (= {:misses 1 :writes 1} (counted '(require 'ct.app :reload))))
+    (is (= 30 (run '(ct.app/total)))))
+  (testing "a module it requires"
+    (module! "dep" "(ns ct.dep)\n(defn base [] 100)\n")
+    (run '(require 'ct.dep :reload))
+    (is (= {:misses 2 :writes 2} (counted '(require 'ct.app :reload)))
+        "its key includes ct.dep's; ct.dep$1, dropped with ct.dep's reload, loads again")
+    (is (= 300 (run '(ct.app/total))))))
+
+(deftest what-cant-be-cached-still-loads
+  ;; a function as a constant in the code: it can't be written and read back
+  (module! "odd" "(ns ct.odd)\n(defmacro const-fn [] inc)\n(defn two [] ((const-fn) 1))\n")
+  (is (= {:misses 1 :uncacheable 1} (counted '(require 'ct.odd))))
+  (is (= 2 (run '(ct.odd/two))))
+  (is (= {:misses 1 :uncacheable 1} (counted '(require 'ct.odd :reload))) "not written, so compiled again"))
+
+(deftest a-damaged-entry-is-ignored
+  (run '(require 'ct.dep :reload))
+  (doseq [f (io/list-dir cache)] (io/write-text (io/path cache f) "{:key"))
+  (is (= {:misses 1 :writes 1} (counted '(require 'ct.dep :reload))))
+  (is (= 100 (run '(ct.dep/base)))))
+
+(deftest no-cache-folder-no-cache
+  (let [stats (atom {:hits 0 :misses 0 :writes 0 :uncacheable 0})]
+    (binding [norn.expander/*cache-dir* nil norn.expander/*cache-stats* stats]
+      (eval '(require 'ct.dep :reload)))
+    (is (= 0 (:writes @stats) (:hits @stats)))))

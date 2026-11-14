@@ -46,6 +46,12 @@
   [d scopes loc]
   (%instance Syntax [d scopes loc nil (compound? d) nil nil]))
 
+(defn %make-syntax
+  "A syntax object from its parts (for norn.expander's module cache): e's
+  parts are syntax already."
+  [e scopes loc props]
+  (%instance Syntax [e scopes loc nil false props nil]))
+
 (defn syntax? "Is x a syntax object?" [x] (instance? Syntax x))
 
 (declare wrap-parts change-scopes)

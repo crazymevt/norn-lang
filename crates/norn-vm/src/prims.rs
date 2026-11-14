@@ -259,6 +259,9 @@ prims! {
     "%reader-line" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-line")?; Ok(Value::fix(a[0].word(3) as i64)) };
     "%reader-name" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-name")?; Ok(a[0].field(2)) };
     "add-lib-path!" 1 Some(1) => |_, a| { crate::eval::add_lib_path(text(a[0])); Ok(Value::NIL) };
+    "%build-id" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, &format!("{:016x}", crate::image::build_id())));
+    "%hash-text" 1 Some(1) => |vm, a| { let t = text(a[0]); let mut h: u64 = 0xcbf2_9ce4_8422_2325; for &b in t.as_bytes() { h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3); } Ok(str_new(&mut vm.m, &format!("{h:016x}"))) };
+    "%cache-dir" 0 Some(0) => |vm, _| Ok(match crate::eval::cache_dir() { Some(d) => str_new(&mut vm.m, &d), None => Value::NIL });
     "%reader-text" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-text")?; Ok(a[0].field(0)) };
     // building and inspecting compiled code (the Norn compiler, lib/compiler)
     "%make-proto" 7 Some(7) => make_proto;
