@@ -106,6 +106,11 @@ pub(crate) fn find_lib(name: &str) -> Option<(String, String)> {
     })
 }
 
+/// A reading error, as a ParseError with :source and :line.
+fn parse_error(msg: String, source: &str, line: usize) -> Error {
+    Error::of("ParseError", msg).with("source", crate::vm::ErrData::Str(source.to_owned())).with("line", crate::vm::ErrData::Int(line as i64))
+}
+
 /// A VM for carrier `id`, positioned in norn.core.
 pub(crate) fn carrier_vm(id: usize) -> Vm {
     let mut m = Mutator::new();
@@ -227,7 +232,7 @@ impl Vm {
             let form = match r.read(self) {
                 Ok(f) => f,
                 Err(ReadError::Eof) => return Ok(last),
-                Err(e) => return Err(Error::new(format!("{source_name}:{}: {e}", r.line()))),
+                Err(e) => return Err(parse_error(format!("{source_name}:{}: {e}", r.line()), source_name, r.line())),
             };
             last = self.eval(form).map_err(|mut e| {
                 e.msg = format!("{source_name}:{line}: {}", e.msg);
@@ -280,7 +285,7 @@ pub(crate) fn read_syntax_next(vm: &mut Vm, r: Value) -> Result<Value> {
         Err(ReadError::Eof) => Ok(Value::EOF),
         Err(e) => {
             let name = norn_rt::print::pr_str(r.field(2), false);
-            Err(Error::new(format!("{name}:{}: {e}", rd.line())))
+            Err(parse_error(format!("{name}:{}: {e}", rd.line()), &name, rd.line()))
         }
     }
 }
@@ -298,7 +303,7 @@ pub(crate) fn read_next(vm: &mut Vm, r: Value) -> Result<Value> {
         Err(ReadError::Eof) => Ok(Value::EOF),
         Err(e) => {
             let name = norn_rt::print::pr_str(r.field(2), false);
-            Err(Error::new(format!("{name}:{}: {e}", rd.line())))
+            Err(parse_error(format!("{name}:{}: {e}", rd.line()), &name, rd.line()))
         }
     }
 }

@@ -595,14 +595,24 @@ pub fn wake_error(err: Value) -> Error {
         cancel_error(err.as_fixnum())
     } else if err.is(Kind::Fiber) {
         error_from_fiber(err)
+    } else if err.is(Kind::Vector) && err.vec_count() == 3 {
+        // (a blocking job's failure with its class: [message class data])
+        let mut e = Error::new(pr_str(err.vec_nth(0), false));
+        e.class = Some(crate::vm::ErrClass::Value(err));
+        e
     } else {
         Error::new(pr_str(err, false))
     }
 }
 
-/// Rebuild the error a fiber died with.
+/// Rebuild the error a fiber died with: its condition, signalled again
+/// (class and data intact), when it ended with one.
 pub fn error_from_fiber(f: Value) -> Error {
     let mut e = Error::new(pr_str(f.field(fiber::ERROR), false));
+    let c = f.field(fiber::CONDITION);
+    if !c.is_nil() {
+        e.class = Some(crate::vm::ErrClass::Value(c));
+    }
     let trace = f.field(fiber::TRACE);
     if trace.is(Kind::Vector) {
         trace.vec_for_each(|t| {
@@ -625,19 +635,24 @@ fn finish(vm: &mut Vm, f: Value, r: Result<Value, Error>) {
         Ok(v) => (v, None),
         Err(e) => (Value::NIL, Some(e)),
     };
-    let (emsg, etrace) = match &err {
+    let (emsg, etrace, econd) = match &err {
         Some(e) => {
             let msg = str_new(&mut vm.m, &e.msg);
             let lines: Vec<Value> = e.trace.iter().map(|t| str_new(&mut vm.m, t)).collect();
-            (msg, vec_from_slice(&mut vm.m, &lines))
+            let cond = match &e.class {
+                Some(crate::vm::ErrClass::Value(c)) if !c.is(Kind::Vector) => *c,
+                _ => Value::NIL,
+            };
+            (msg, vec_from_slice(&mut vm.m, &lines), cond)
         }
-        None => (Value::NIL, Value::NIL),
+        None => (Value::NIL, Value::NIL, Value::NIL),
     };
     let joiners = {
         let _g = spin_lock(f, fiber::LOCK);
         f.set_field(fiber::RESULT, val);
         f.set_field(fiber::ERROR, emsg);
         f.set_field(fiber::TRACE, etrace);
+        f.set_field(fiber::CONDITION, econd);
         f.set_field(fiber::SEG, Value::NIL);
         aset(f, fiber::PARK, Value::NIL);
         f.fiber_state().store(fiber::DONE, Ordering::Release);

@@ -42,14 +42,14 @@
         user-info (when at (subs a 0 at))
         hp (if at (subs a (inc at)) a)
         [host port] (if (str/starts-with? hp "[")
-                      (let [close (or (index-of hp \] 0) (error (str "A bad URI host (an unclosed [): " hp)))]
+                      (let [close (or (index-of hp \] 0) (error ParseError :message (str "A bad URI host (an unclosed [): " hp) :source "URI"))]
                         [(subs hp 1 close) (when (and (< (inc close) (count hp)) (= \: (nth hp (inc close)))) (subs hp (+ 2 close)))])
                       (if-let [c (index-of hp \: 0)] [(subs hp 0 c) (subs hp (inc c))] [hp nil]))]
     (cond-> {:host host}
             user-info (assoc :user-info user-info)
             (seq port) (assoc :port (if (re-matches #"[0-9]+" port)
                                       (reduce (fn [n c] (+ (* 10 n) (str/index-of "0123456789" (str c)))) 0 port)
-                                      (error (str "A bad URI port: " port)))))))
+                                      (error ParseError :message (str "A bad URI port: " port) :source "URI"))))))
 
 (defn parse
   "URI string s's parts, as a map (see above)."
@@ -108,7 +108,7 @@
 
 (defn- hex-digit [c]
   (let [i (str/index-of "0123456789abcdef" (str/lower-case (str c)))]
-    (or i (error (str "A bad percent-encoding: %" c)))))
+    (or i (error ParseError :message (str "A bad percent-encoding: %" c) :source "URI"))))
 
 (defn decode
   "Text s with its percent-encodings decoded (as UTF-8). With plus?, a +
@@ -126,7 +126,7 @@
              (cond (= c \%)
                    (if (<= (+ i 3) n)
                      (recur (+ i 3) (conj out (+ (* 16 (hex-digit (nth s (inc i)))) (hex-digit (nth s (+ i 2))))))
-                     (error (str "A bad percent-encoding at the end of: " s)))
+                     (error ParseError :message (str "A bad percent-encoding at the end of: " s) :source "URI"))
                    (and plus? (= c \+)) (recur (inc i) (conj out 32))
                    :else (recur (inc i) (into out (map (fn [b] (bit-and b 255)) (bytes (str c)))))))))))))
 

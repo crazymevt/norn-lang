@@ -21,7 +21,7 @@ use norn_rt::{Kind, Value};
 use std::sync::atomic::Ordering;
 
 fn ownership(msg: String) -> Error {
-    Error::new(format!("Ownership: {msg}"))
+    Error::of("OwnershipError", format!("Ownership: {msg}"))
 }
 
 fn describe(inst: Value) -> String {

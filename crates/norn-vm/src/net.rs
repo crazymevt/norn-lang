@@ -13,7 +13,7 @@ use crate::vm::{Error, Result, Vm};
 use norn_rt::runtime::rt;
 use norn_rt::string::{bytes_new, str_new};
 use norn_rt::vector::vec_from_slice;
-use norn_rt::{Mutator, Value};
+use norn_rt::{Kind, Mutator, Value};
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
@@ -23,7 +23,29 @@ fn kw(m: &mut Mutator, k: &str) -> Value {
 }
 
 fn io_err(e: std::io::Error) -> Error {
-    Error::new(e.to_string())
+    Error::io(e.to_string(), &e)
+}
+
+/// A TLS stream's error: rustls's own (a bad certificate, a broken record)
+/// arrive as InvalidData, and are TlsErrors; the rest are I/O errors.
+pub(crate) fn tls_error(what: &str, e: &std::io::Error) -> Error {
+    if e.kind() == std::io::ErrorKind::InvalidData {
+        Error::of("TlsError", format!("{what}: {e}")).with("reason", crate::vm::ErrData::Kw("tls"))
+    } else {
+        Error::io(format!("{what}: {e}"), e)
+    }
+}
+
+/// Handle h's "host:port", from its info, for an error's :address.
+fn address_of(m: &mut Mutator, h: Value) -> Option<String> {
+    let info = h.field(norn_rt::conc::handle::INFO);
+    if !info.is(Kind::Map) {
+        return None;
+    }
+    let (kh, kp) = (kw(m, "host"), kw(m, "port"));
+    let host = info.map_get(kh).filter(|v| v.is(Kind::String))?;
+    let port = info.map_get(kp).filter(|v| v.is_fixnum())?;
+    Some(format!("{}:{}", norn_rt::print::pr_str(host, false), port.as_fixnum()))
 }
 
 fn parse_addr(s: &str) -> Result<SocketAddr> {
@@ -63,7 +85,11 @@ pub(crate) fn raise_fd_limit() {
 pub(crate) fn resolve(vm: &mut Vm, host: String, port: u16) -> Result<Value> {
     crate::blocking::run(vm, move || {
         use std::net::ToSocketAddrs;
-        let r = (host.as_str(), port).to_socket_addrs().map(|a| a.map(|a| a.to_string()).collect::<Vec<_>>()).map_err(|e| format!("Can't resolve {host}: {e}"));
+        let r = (host.as_str(), port).to_socket_addrs().map(|a| a.map(|a| a.to_string()).collect::<Vec<_>>()).map_err(|e| {
+            crate::vm::Failure::of("ConnectionError", format!("Can't resolve {host}: {e}"))
+                .with("address", crate::vm::FailData::Str(host.clone()))
+                .with("reason", crate::vm::FailData::Kw("host-not-found"))
+        });
         Box::new(move |m: &mut Mutator| {
             let addrs = r?;
             let vs: Vec<Value> = addrs.iter().map(|a| str_new(m, a)).collect();
@@ -77,7 +103,8 @@ pub(crate) fn resolve(vm: &mut Vm, host: String, port: u16) -> Result<Value> {
 /// Start connecting to `addr` (non-blocking): a `:tcp` handle that
 /// `%tcp-check` reports on.
 pub(crate) fn tcp_connect(vm: &mut Vm, addr: &str, info: Value) -> Result<Value> {
-    let s = mio::net::TcpStream::connect(parse_addr(addr)?).map_err(io_err)?;
+    let s = mio::net::TcpStream::connect(parse_addr(addr)?)
+        .map_err(|e| Error::io(format!("Can't connect to {addr}: {e}"), &e).with("address", crate::vm::ErrData::Str(addr.to_owned())))?;
     reactor::register(&mut vm.m, Io::Tcp(s), "tcp", info).map_err(Error::new)
 }
 
@@ -103,13 +130,20 @@ pub(crate) fn tcp_check(vm: &mut Vm, h: Value) -> Result<Value> {
             Ok(Value::TRUE)
         }
         Ok(false) => Ok(kw(&mut vm.m, "again-write")),
-        Err(e) => Err(Error::new(format!("Can't connect: {e}"))),
+        Err(e) => {
+            let mut err = Error::io(format!("Can't connect: {e}"), &e);
+            if let Some(a) = address_of(&mut vm.m, h) {
+                err = err.with("address", crate::vm::ErrData::Str(a));
+            }
+            Err(err)
+        }
     }
 }
 
 /// Listen on `addr`: a `:tcp-listener` handle.
 pub(crate) fn tcp_listen(vm: &mut Vm, addr: &str, info: Value) -> Result<Value> {
-    let l = mio::net::TcpListener::bind(parse_addr(addr)?).map_err(|e| Error::new(format!("Can't listen on {addr}: {e}")))?;
+    let l = mio::net::TcpListener::bind(parse_addr(addr)?)
+        .map_err(|e| Error::io(format!("Can't listen on {addr}: {e}"), &e).with("address", crate::vm::ErrData::Str(addr.to_owned())))?;
     reactor::register(&mut vm.m, Io::TcpListener(l), "tcp-listener", info).map_err(Error::new)
 }
 
@@ -128,7 +162,7 @@ pub(crate) fn tcp_accept(vm: &mut Vm, h: Value) -> Result<Value> {
             reactor::register(&mut vm.m, Io::Tcp(s), "tcp", info).map_err(Error::new)
         }
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(kw(&mut vm.m, "again")),
-        Err(e) => Err(Error::new(format!("accept failed: {e}"))),
+        Err(e) => Err(Error::io(format!("accept failed: {e}"), &e)),
     }
 }
 
@@ -177,7 +211,7 @@ pub(crate) fn udp_send(vm: &mut Vm, h: Value, data: &[u8], to: &str) -> Result<V
     match r {
         Ok(n) => Ok(Value::fix(n as i64)),
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(kw(&mut vm.m, "again-write")),
-        Err(e) => Err(Error::new(format!("send failed: {e}"))),
+        Err(e) => Err(Error::io(format!("send failed: {e}"), &e)),
     }
 }
 
@@ -195,7 +229,7 @@ pub(crate) fn udp_recv(vm: &mut Vm, h: Value, n: usize) -> Result<Value> {
             Ok(vec_from_slice(&mut vm.m, &[b, f]))
         }
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(kw(&mut vm.m, "again")),
-        Err(e) => Err(Error::new(format!("receive failed: {e}"))),
+        Err(e) => Err(Error::io(format!("receive failed: {e}"), &e)),
     }
 }
 

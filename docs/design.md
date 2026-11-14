@@ -396,6 +396,20 @@ As built (M3):
   `with-simple-restart`, `signal`, `warn`.
 - **Condition classes** are CLOS classes: `Condition` > `SeriousCondition` > `Error` >
   `SimpleError`/`RuntimeError`, and `Warning`. Define your own with `defclass`.
+- **What the runtime raises has a class and data** (M9 part 9.13), so a
+  handler chooses by class and reads slots, not messages:
+  - `RuntimeError`, a mistake in the program: `TypeError` (`:expected`,
+    `:value`), `ArityError` (`:function`, `:given`), `UnboundVarError`
+    (`:var`), `IndexError` (`:index`), `ArithmeticError`, `OwnershipError`;
+  - `IOError`, the world outside (`:reason`, and `:path` or `:address`):
+    `FileNotFound`, `PermissionDenied`, `FileExists`, `ConnectionError`
+    (with `TlsError` under it);
+  - `TimeoutError` (`:after`), for I/O and anything else that waits;
+  - `ParseError` (`:source`, `:line`, `:column`): source, EDN, JSON, URIs,
+    HTTP messages.
+
+  A fiber that fails keeps its condition, and `await` and scopes signal
+  that same condition again.
 - **Every runtime error is resumable.** Errors raised inside the runtime
   (divide by zero, unbound symbol, wrong arity, a failed `await`…) are
   signalled as `RuntimeError` at the failing operation, with two restarts:

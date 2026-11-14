@@ -35,7 +35,7 @@ const DELIMS: &[u8] = b"()[]{}\";";
 impl Cst<'_> {
     fn err(&self, msg: &str) -> Error {
         let line = self.s[..self.i.min(self.s.len())].matches('\n').count() + 1;
-        Error::new(format!("Syntax error at line {line}: {msg}"))
+        Error::of("ParseError", format!("Syntax error at line {line}: {msg}")).with("line", crate::vm::ErrData::Int(line as i64))
     }
 
     fn kw(vm: &mut Vm, k: &str) -> Value {

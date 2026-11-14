@@ -374,7 +374,7 @@ pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
         Box::new(move |m: &mut Mutator| {
             drop(prep);
             crate::sched::unroot_many(key);
-            result(m, ret, r, outs)
+            result(m, ret, r, outs).map_err(crate::vm::Failure::from)
         }) as crate::blocking::Finish
     })
 }

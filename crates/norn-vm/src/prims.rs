@@ -51,7 +51,7 @@ prims! {
     "eval" 1 Some(1) => |_, _| unreachable!("eval is handled by the interpreter");
     "%throw" 2 Some(2) => |_, _| Err(Error::new("throw is only possible inside a fiber"));
     "%restart-frame" 2 Some(2) => |_, _| Err(Error::new("%restart-frame is only possible inside a fiber"));
-    "%abort-fiber" 2 Some(2) => |_, a| Err(Error::fatal(pr_str(a[0], false), vec![]));
+    "%abort-fiber" 2 Some(3) => |_, a| { let mut e = Error::fatal(pr_str(a[0], false), vec![]); if let Some(&c) = a.get(2) && !c.is_nil() { e.class = Some(crate::vm::ErrClass::Value(c)); } Err(e) };
     // numbers
     "+" 0 VAR => |vm, a| arith(vm, a, Op::Add);
     "-" 1 VAR => |vm, a| arith(vm, a, Op::Sub);
@@ -172,7 +172,7 @@ prims! {
     "unreduced" 1 Some(1) => |_, a| Ok(if a[0].is(Kind::Reduced) { a[0].field(0) } else { a[0] });
     "slurp" 1 Some(1) => |vm, a| crate::sys::read(vm, text(a[0]), true);
     "spit" 2 Some(2) => |vm, a| crate::sys::write(vm, text(a[0]), text(a[1]).into_bytes(), false);
-    "read-string" 1 Some(1) => |vm, a| { let s = text(a[0]); let mut r = crate::reader::Reader::new(&s); match r.read(vm) { Ok(v) => Ok(v), Err(crate::reader::ReadError::Eof) => Ok(Value::NIL), Err(e) => Err(Error::new(e.to_string())) } };
+    "read-string" 1 Some(1) => |vm, a| { let s = text(a[0]); let mut r = crate::reader::Reader::new(&s); match r.read(vm) { Ok(v) => Ok(v), Err(crate::reader::ReadError::Eof) => Ok(Value::NIL), Err(e) => Err(Error::of("ParseError", e.to_string()).with("source", crate::vm::ErrData::Str("<string>".into()))) } };
     // evaluation and namespaces
     "macroexpand-1" 1 Some(1) => |vm, a| Ok(vm.macroexpand_1(a[0])?.0);
     "macroexpand" 1 Some(1) => |vm, a| vm.macroexpand(a[0]);
@@ -249,7 +249,8 @@ prims! {
     "%mark-dynamic!" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "%mark-dynamic!")?; a[0].var_set_flag(norn_rt::func::VAR_DYNBOUND); Ok(a[0]) };
     "%register-frame-kinds!" 5 Some(5) => register_frame_kinds;
     "%retry-marker" 0 Some(0) => |_, _| Ok(Value::RETRY);
-    "%die" 2 Some(2) => |vm, a| { let lines = to_vec(vm, a[1]).unwrap_or_default().iter().map(|&t| pr_str(t, false)).collect(); Err(Error::fatal(pr_str(a[0], false), lines)) };
+    // (how: [trace condition]; the condition, if any, is kept by the fiber)
+    "%die" 2 Some(2) => |vm, a| { let (trace, cond) = if a[1].is(Kind::Vector) && a[1].vec_count() == 2 { (a[1].vec_nth(0), a[1].vec_nth(1)) } else { (a[1], Value::NIL) }; let lines = to_vec(vm, trace).unwrap_or_default().iter().map(|&t| pr_str(t, false)).collect(); let mut e = Error::fatal(pr_str(a[0], false), lines); if !cond.is_nil() { e.class = Some(crate::vm::ErrClass::Value(cond)); } Err(e) };
     "%message" 0 VAR => |vm, a| Ok(str_new(&mut vm.m, &join(a, false)));
     "%frames" 1 Some(1) => frames;
     "%post-event" 1 Some(1) => |_, a| { crate::sched::post_event(text(a[0])); Ok(Value::NIL) };
@@ -475,7 +476,9 @@ pub fn install(vm: &mut Vm) {
 // ---- helpers ------------------------------------------------------------------
 
 fn type_err(op: &str, wanted: &str, got: Value) -> Error {
-    Error::new(format!("{op} expects {wanted}, got {}: {}", got.type_name(), pr_str(got, true)))
+    Error::of("TypeError", format!("{op} expects {wanted}, got {}: {}", got.type_name(), pr_str(got, true)))
+        .with("expected", crate::vm::ErrData::Str(wanted.to_owned()))
+        .with("value", crate::vm::ErrData::Val(got))
 }
 
 pub(crate) fn expect(v: Value, k: Kind, op: &str) -> Result<()> {
@@ -774,11 +777,11 @@ fn io_read(vm: &mut Vm, h: Value, n: i64) -> Result<Value> {
         R::Plain(Ok(0)) => Ok(Value::NIL),
         R::Plain(Ok(k)) => Ok(norn_rt::string::bytes_new(&mut vm.m, &buf[..k])),
         R::Plain(Err(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => Ok(again(vm)),
-        R::Plain(Err(e)) => Err(Error::new(format!("read failed: {e}"))),
+        R::Plain(Err(e)) => Err(Error::io(format!("read failed: {e}"), &e)),
         R::Tls(Ok(Some(b))) => Ok(norn_rt::string::bytes_new(&mut vm.m, &b)),
         R::Tls(Ok(None)) => Ok(Value::NIL),
         R::Tls(Err(Ok(w))) => Ok(tls_wait(vm, w)),
-        R::Tls(Err(Err(e))) => Err(Error::new(format!("TLS read failed: {e}"))),
+        R::Tls(Err(Err(e))) => Err(crate::net::tls_error("TLS read failed", &e)),
     }
 }
 
@@ -801,9 +804,9 @@ fn io_write(vm: &mut Vm, h: Value, b: Value, start: i64) -> Result<Value> {
     match r {
         R::Plain(Ok(k)) | R::Tls(Ok(k)) => Ok(Value::fix(k as i64)),
         R::Plain(Err(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => Ok(again_write(vm)),
-        R::Plain(Err(e)) => Err(Error::new(format!("write failed: {e}"))),
+        R::Plain(Err(e)) => Err(Error::io(format!("write failed: {e}"), &e)),
         R::Tls(Err(Ok(w))) => Ok(tls_wait(vm, w)),
-        R::Tls(Err(Err(e))) => Err(Error::new(format!("TLS write failed: {e}"))),
+        R::Tls(Err(Err(e))) => Err(crate::net::tls_error("TLS write failed", &e)),
     }
 }
 
@@ -816,7 +819,7 @@ fn tls_handshake(vm: &mut Vm, h: Value) -> Result<Value> {
     match r {
         Ok(()) => Ok(Value::NIL),
         Err(Ok(w)) => Ok(tls_wait(vm, w)),
-        Err(Err(e)) => Err(Error::new(format!("TLS handshake failed: {e}"))),
+        Err(Err(e)) => Err(crate::net::tls_error("TLS handshake failed", &e)),
     }
 }
 
@@ -917,7 +920,7 @@ fn transient_check(vm: &Vm, t: Value) -> Result<()> {
         return Err(Error::new("Transient used after persistent!"));
     }
     if t.field(T_OWNER) != vm.current {
-        return Err(Error::new("Ownership: a transient belongs to the fiber that made it"));
+        return Err(Error::of("OwnershipError", "Ownership: a transient belongs to the fiber that made it"));
     }
     Ok(())
 }
@@ -944,7 +947,7 @@ fn transient_op(vm: &mut Vm, t: Value, op: TOp) -> Result<Value> {
             TOp::Assoc(k, v) => match index_of(k).filter(|&i| i <= n) {
                 Some(i) if i == n => return transient_op(vm, t, TOp::Conj(v)),
                 Some(i) => buf.arr_set(i, v),
-                None => return Err(Error::new(format!("Index out of bounds: {}", pr_str(k, true)))),
+                None => return Err(Error::of("IndexError", format!("Index out of bounds: {}", pr_str(k, true))).with("index", crate::vm::ErrData::Val(k))),
             },
             TOp::Pop => {
                 if n == 0 {
@@ -1030,7 +1033,7 @@ fn nth(_: &mut Vm, a: &[Value]) -> Result<Value> {
     match (r, a.get(2)) {
         (Some(v), _) => Ok(v),
         (None, Some(&d)) => Ok(d),
-        (None, None) => Err(Error::new(format!("Index out of bounds: {i}"))),
+        (None, None) => Err(Error::of("IndexError", format!("Index out of bounds: {i}")).with("index", crate::vm::ErrData::Int(i as i64))),
     }
 }
 
@@ -1055,7 +1058,7 @@ fn assoc(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         } else if c.is(Kind::Vector) {
             match index_of(kv[0]).filter(|&i| i <= c.vec_count()) {
                 Some(i) => vec_assoc(&mut vm.m, c, i, kv[1]),
-                None => return Err(Error::new(format!("Index out of bounds: {}", pr_str(kv[0], true)))),
+                None => return Err(Error::of("IndexError", format!("Index out of bounds: {}", pr_str(kv[0], true))).with("index", crate::vm::ErrData::Val(kv[0]))),
             }
         } else {
             return Err(type_err("assoc", "a map or vector", c));

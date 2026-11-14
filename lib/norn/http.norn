@@ -21,6 +21,10 @@
 ;;;; TLS is norn.net's (rustls): https:// URLs for the client, and :tls
 ;;;; with :cert-file and :key-file for a server. HTTP/2 and WebSockets come
 ;;;; when something needs them.
+;;;;
+;;;; Errors are conditions a handler can choose by (M9 part 9.13): a failed
+;;;; connection is a ConnectionError (TlsError for a certificate), a
+;;;; timeout a TimeoutError (:after ms), a malformed message a ParseError.
 
 (ns norn.http
   (:refer-core :rename {get core-get})
@@ -31,7 +35,10 @@
 (def ^:private max-line 16384)
 (def ^:private max-headers 128)
 
-(defn- message-error [status msg] (error (str "HTTP " status ": " msg)))
+(defn- message-error
+  "A malformed HTTP message: a ParseError (a server answers it with status)."
+  [status msg]
+  (error ParseError :message (str "HTTP " status ": " msg) :source "HTTP message"))
 
 (defn- conn-reader [sock] {:sock sock :buf (atom (bytes []))})
 
@@ -189,9 +196,9 @@
 (defn- read-response! [c method]
   (let [r (:reader c)
         status-line (read-line! r)]
-    (when (nil? status-line) (error "The server closed the connection without answering"))
+    (when (nil? status-line) (error ConnectionError :message "The server closed the connection without answering" :reason :closed))
     (let [[_ version code reason-text] (or (re-matches #"(HTTP/\d\.\d) (\d{3})(?: (.*))?" status-line)
-                                           (error (str "A bad HTTP status line: " status-line)))
+                                           (error ParseError :message (str "A bad HTTP status line: " status-line) :source "HTTP response"))
           status (parse-length code)
           headers (read-headers! r)]
       (if (and (< status 200) (not= status 101))
@@ -239,7 +246,7 @@
           [v port] (alts! [ch (timeout ms)])]
       (if (identical? port ch)
         (if (contains? v :ok) (:ok v) (throw (:error v)))
-        (do (cancel! w) (error (str what " timed out after " ms " ms")))))))
+        (do (cancel! w) (error TimeoutError :message (str what " timed out after " ms " ms") :after ms))))))
 
 (defn- as-body [resp as]
   (case as

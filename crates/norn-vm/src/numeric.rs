@@ -79,7 +79,9 @@ pub(crate) fn num(v: Value) -> Result<Num> {
     } else if v.is(Kind::Ratio) {
         Ok(Num::R(ratio_of(v).unwrap()))
     } else {
-        Err(Error::new(format!("Expected a number, got {}: {}", v.type_name(), pr_str(v, true))))
+        Err(Error::of("TypeError", format!("Expected a number, got {}: {}", v.type_name(), pr_str(v, true)))
+            .with("expected", crate::vm::ErrData::Str("a number".into()))
+            .with("value", crate::vm::ErrData::Val(v)))
     }
 }
 
@@ -102,7 +104,7 @@ pub(crate) enum Op {
 }
 
 fn divide_by_zero() -> Error {
-    Error::new("Divide by zero")
+    Error::of("ArithmeticError", "Divide by zero")
 }
 
 pub(crate) fn arith2(x: Num, y: Num, op: Op) -> Result<Num> {

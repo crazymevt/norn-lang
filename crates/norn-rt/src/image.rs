@@ -178,7 +178,7 @@ impl<'a> Writer<'a> {
                     let o = 2 + i;
                     match i {
                         // A dead fiber keeps no stack and waits on nothing.
-                        fiber::SEG | fiber::PARK if dead => f(o, Value::NIL),
+                        fiber::SEG | fiber::PARK | fiber::CONDITION if dead => f(o, Value::NIL),
                         fiber::ERROR if dead => f(o, Value::UNBOUND),
                         _ => f(o, word(o)),
                     }

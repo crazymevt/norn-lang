@@ -371,7 +371,10 @@ impl JsonReader<'_> {
         let before = &self.src[..self.i.min(self.src.len())];
         let line = before.matches('\n').count() + 1;
         let col = before.rsplit('\n').next().map(|l| l.chars().count()).unwrap_or(0) + 1;
-        Error::new(format!("JSON: {what} at line {line}, column {col}"))
+        Error::of("ParseError", format!("JSON: {what} at line {line}, column {col}"))
+            .with("source", crate::vm::ErrData::Str("JSON".into()))
+            .with("line", crate::vm::ErrData::Int(line as i64))
+            .with("column", crate::vm::ErrData::Int(col as i64))
     }
 
     fn ws(&mut self) {

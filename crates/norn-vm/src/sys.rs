@@ -6,7 +6,7 @@
 
 use crate::blocking::{self, Finish};
 use crate::reactor::{self, Io};
-use crate::vm::{Error, Result, Vm};
+use crate::vm::{Error, FailData, Failure, Result, Vm};
 use norn_rt::map::{map_assoc, map_empty};
 use norn_rt::runtime::rt;
 use norn_rt::string::{bytes_new, str_new};
@@ -32,14 +32,16 @@ fn strings(m: &mut Mutator, xs: &[String]) -> Value {
     vec_from_slice(m, &vs)
 }
 
-fn err(op: &str, p: &str, e: std::io::Error) -> String {
-    format!("{op} {p}: {e}")
+/// A file operation's failure, as the condition its kind makes
+/// (FileNotFound, PermissionDenied…), with :path and :reason.
+fn err(op: &str, p: &str, e: std::io::Error) -> Failure {
+    Failure::io_path(op, p, &e)
 }
 
 /// Run blocking `f` on the pool; `done` builds the Norn value.
 fn pooled<T: Send + 'static>(
     vm: &mut Vm,
-    f: impl FnOnce() -> std::result::Result<T, String> + Send + 'static,
+    f: impl FnOnce() -> std::result::Result<T, Failure> + Send + 'static,
     done: impl FnOnce(&mut Mutator, T) -> Value + Send + 'static,
 ) -> Result<Value> {
     blocking::run(vm, move || {
@@ -56,7 +58,10 @@ pub(crate) fn read(vm: &mut Vm, path: String, text: bool) -> Result<Value> {
         move || {
             let b = std::fs::read(&path).map_err(|e| err("Can't read", &path, e))?;
             if text {
-                String::from_utf8(b).map(Ok).map_err(|_| format!("Can't read {path} as text: it isn't valid UTF-8"))
+                String::from_utf8(b).map(Ok).map_err(|_| {
+                    Failure::of("ParseError", format!("Can't read {path} as text: it isn't valid UTF-8"))
+                        .with("source", FailData::Str(path.clone()))
+                })
             } else {
                 Ok(Err(b))
             }
@@ -215,9 +220,9 @@ pub(crate) fn file_read(vm: &mut Vm, h: Value, n: usize) -> Result<Value> {
         move || {
             use std::io::Read;
             let mut io = e.io.lock().unwrap();
-            let Some(Io::File(f)) = io.as_mut() else { return Err("The handle is closed".to_string()) };
+            let Some(Io::File(f)) = io.as_mut() else { return Err(Failure::from("The handle is closed")) };
             let mut buf = vec![0u8; n.clamp(1, 1 << 24)];
-            let k = f.read(&mut buf).map_err(|e| format!("read failed: {e}"))?;
+            let k = f.read(&mut buf).map_err(|e| { let (c, r) = crate::vm::io_kind(&e); Failure::of(c, format!("read failed: {e}")).with("reason", FailData::Kw(r)) })?;
             buf.truncate(k);
             Ok(buf)
         },
@@ -233,8 +238,8 @@ pub(crate) fn file_write(vm: &mut Vm, h: Value, data: Vec<u8>) -> Result<Value> 
         move || {
             use std::io::Write;
             let mut io = e.io.lock().unwrap();
-            let Some(Io::File(f)) = io.as_mut() else { return Err("The handle is closed".to_string()) };
-            f.write_all(&data).map_err(|e| format!("write failed: {e}"))?;
+            let Some(Io::File(f)) = io.as_mut() else { return Err(Failure::from("The handle is closed")) };
+            f.write_all(&data).map_err(|e| { let (c, r) = crate::vm::io_kind(&e); Failure::of(c, format!("write failed: {e}")).with("reason", FailData::Kw(r)) })?;
             Ok(data.len())
         },
         |_, n| Value::fix(n as i64),

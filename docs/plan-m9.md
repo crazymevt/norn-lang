@@ -243,3 +243,55 @@ Added the same day, from what earlier milestones left open (the user,
     pooled connection; timeouts; malformed requests; the body limit;
     `100-continue`; HTTP/1.0; TLS, with an untrusted certificate
     refused; and `stop!`.
+
+**9.13, conditions for the runtime's errors (2026-11-14): done.**
+
+- **The hierarchy, in `norn.core`:**
+  - `RuntimeError`, a mistake in the program, keeping its `use-value` and
+    `retry` restarts: `TypeError` (`:expected`, `:value`), `ArityError`
+    (`:function`, `:given`), `UnboundVarError` (`:var`), `IndexError`
+    (`:index`), `ArithmeticError`, `OwnershipError`;
+  - `IOError`, the world outside, with `:reason` (`:not-found`,
+    `:refused`, `:reset`, `:timed-out`…) and `:path` or `:address`:
+    `FileNotFound`, `PermissionDenied`, `FileExists` and `ConnectionError`
+    (`TlsError` under it);
+  - `TimeoutError` (`:after`), of its own, since what times out needn't be
+    I/O;
+  - `ParseError` (`:source`, `:line`, `:column`).
+
+  I/O errors aren't `RuntimeError`s any more: a handler for program
+  mistakes no longer catches a missing file. Every message is as it was.
+- **Rust raises them with their data.**
+  - `Error` gains a class: a `norn.core` class by name with slot values,
+    or a Norn value (a condition to signal again).
+  - `%runtime-error` makes that class. The old recognising of
+    `OwnershipError` by its message's text is gone.
+  - `io::ErrorKind` maps to the I/O classes. rustls's failures
+    (`InvalidData`) are `TlsError`s.
+  - A blocking-pool job fails with a `Failure` (a message and its class,
+    safe to cross threads), which reaches the waiting fiber intact.
+- **Where each class comes from:**
+  - `TypeError` from the type checks;
+  - `ArityError` from calls of closures and primitives;
+  - `IndexError` and `UnboundVarError` where they happen;
+  - `ArithmeticError` from division by zero;
+  - the I/O classes from files, sockets, DNS (`ConnectionError`,
+    `:reason :host-not-found`), accept, read, write and the TLS handshake;
+  - `ParseError` from the reader, the comment-keeping reader, JSON (with
+    the line and column), `norn.uri`, and HTTP messages.
+
+  `norn.http` raises `TimeoutError` (`:after`), `ConnectionError` (a
+  server that closes without answering) and `ParseError`.
+- **A failed fiber keeps its condition** (a new fiber field, `CONDITION`),
+  and `await` and scopes signal that same object again, class and data
+  intact. Until now they made a new `RuntimeError` from its message. The
+  VM's own `%abort-fiber` and die paths carry the condition through the
+  unwinding. An image's dead fibers drop theirs.
+- **Tests:** `errors_test.norn`, 28 checks at both tiers:
+  - each class with its data;
+  - the hierarchy, and restarts still offered;
+  - files, a refused connection with its address, an untrusted
+    certificate, an HTTP timeout;
+  - JSON, source, URI and not-HTTP parse errors;
+  - conditions through `await`, scopes, and a condition of one's own.
+

@@ -62,11 +62,12 @@ pub mod fiber {
     pub const JOINING: usize = 19; //    scope it is joining, or nil
     pub const DYN: usize = 20; //        dynamic environment: map var → value (or nil)
     pub const LOC: usize = 21; //        source location being loaded ("file:line"), or nil
-    pub const WORDS: usize = 22;
+    pub const CONDITION: usize = 22; //  the condition it ended with, or nil (M9 part 9.13)
+    pub const WORDS: usize = 23;
 
     /// Fields holding values (everything else is raw).
     pub const VALUE_FIELDS: &[usize] = &[
-        SEG, FP, WAKE_VALUE, WAKE_AUX, RESULT, ERROR, TRACE, JOINERS, THUNK, SCOPE, PARK, WAKE_ERR, JOINING, DYN, LOC,
+        SEG, FP, WAKE_VALUE, WAKE_AUX, RESULT, ERROR, TRACE, JOINERS, THUNK, SCOPE, PARK, WAKE_ERR, JOINING, DYN, LOC, CONDITION,
     ];
 
     // States.

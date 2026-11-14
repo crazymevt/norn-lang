@@ -1024,7 +1024,37 @@
 (defclass SeriousCondition (Condition) ())
 (defclass Error (SeriousCondition) ())
 (defclass SimpleError (Error) ())
+
+;; What the runtime raises (M9 part 9.13). A handler chooses by class, and
+;; reads what went wrong from slots rather than from the message.
+;;
+;; RuntimeError: an operation the program asked for can't be done as asked
+;; (a mistake in the program, usually), with use-value and retry restarts.
 (defclass RuntimeError (Error) ())
+(defclass TypeError (RuntimeError) ((expected :initform nil) (value :initform nil)))
+(defclass ArityError (RuntimeError) ((function :initform nil) (given :initform nil)))
+(defclass UnboundVarError (RuntimeError) ((var :initform nil)))
+(defclass IndexError (RuntimeError) ((index :initform nil)))
+(defclass ArithmeticError (RuntimeError) ())
+
+;; IOError: the world outside didn't cooperate. :reason is a keyword
+;; (:not-found, :refused, :reset, :timed-out…); :path or :address says
+;; where, when it's known.
+(defclass IOError (Error) ((path :initform nil) (address :initform nil) (reason :initform nil)))
+(defclass FileNotFound (IOError) ())
+(defclass PermissionDenied (IOError) ())
+(defclass FileExists (IOError) ())
+(defclass ConnectionError (IOError) ())
+(defclass TlsError (ConnectionError) ())
+
+;; TimeoutError: something didn't happen in time (:after ms, when known). A
+;; class of its own, since what timed out needn't be I/O (a future, a
+;; channel); an I/O timeout is one too.
+(defclass TimeoutError (Error) ((after :initform nil) (reason :initform nil) (address :initform nil)))
+
+;; ParseError: text that isn't what it should be (:source, :line, :column
+;; where known): Norn source, EDN, JSON, a URI, an HTTP message.
+(defclass ParseError (Error) ((source :initform nil) (line :initform nil) (column :initform nil)))
 
 (defn condition-message [c] (:message c))
 (defn condition-text [c]
@@ -1062,7 +1092,7 @@
 (defn %abort
   "Unwind this fiber completely (running cleanups) and end it with c."
   [c]
-  (%abort-fiber (condition-text c) (or (:trace c) [])))
+  (%abort-fiber (condition-text c) (or (:trace c) []) c))
 
 (declare %debug-park)
 
@@ -1182,17 +1212,22 @@
 ;; of the failed operation: its value becomes the operation's value.
 (declare OwnershipError)
 
-(defn %runtime-error [msg trace]
-  ;; Errors from Rust carry only a message; "Ownership: …" ones are
-  ;; OwnershipErrors (owned mutable objects, design §4.2).
-  (let* [cls (if (and (string? msg) (>= (count msg) 11) (= "Ownership: " (subs msg 0 11)))
-               (var-get (var OwnershipError))
-               RuntimeError)
-         r (restart-case (error (make cls :message msg :trace trace))
-             (use-value [v] :report "Return a value from the failed operation instead" v)
-             (retry [] :report "Try the failed operation again (e.g. after defining or fixing something)"
-                    (%retry-marker)))]
-    r))
+(defn %runtime-error
+  "Signal an error from Rust as a condition: of class cls (a symbol naming
+  a norn.core class; none, RuntimeError) with slots from data, or cond
+  itself when there's one (a failed fiber's, signalled again)."
+  ([msg trace] (%runtime-error msg trace nil nil nil))
+  ([msg trace cls data cond]
+   (let* [c (if cond
+              cond
+              (let* [v (when cls (%resolve-in 'norn.core cls))
+                     k (if v (var-get v) RuntimeError)]
+                (apply make k :message msg :trace trace (mapcat identity data))))
+          r (restart-case (error c)
+              (use-value [v] :report "Return a value from the failed operation instead" v)
+              (retry [] :report "Try the failed operation again (e.g. after defining or fixing something)"
+                     (%retry-marker)))]
+     r)))
 
 (%register-frame-kinds! %catch* %unwind-protect* %with-bindings* %finish-unwind %runtime-error)
 

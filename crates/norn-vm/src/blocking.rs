@@ -12,7 +12,7 @@
 //! demand up to `MAX_THREADS`, and idle threads above `MIN_THREADS` exit.
 
 use crate::sched;
-use crate::vm::{Error, Result, Vm};
+use crate::vm::{Error, Failure, Result, Vm};
 use norn_rt::conc::{claim_new, fiber, try_claim, waiter, waiter_new};
 use norn_rt::{Mutator, Value};
 use std::collections::VecDeque;
@@ -21,7 +21,7 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 /// Builds the Norn result of a job (on a pool thread, as a running participant).
-pub(crate) type Finish = Box<dyn FnOnce(&mut Mutator) -> std::result::Result<Value, String> + Send>;
+pub(crate) type Finish = Box<dyn FnOnce(&mut Mutator) -> std::result::Result<Value, Failure> + Send>;
 type Job = Box<dyn FnOnce() -> Finish + Send>;
 
 struct Pending {
@@ -52,7 +52,7 @@ const MAX_THREADS: usize = 64;
 pub(crate) fn run(vm: &mut Vm, job: impl FnOnce() -> Finish + Send + 'static) -> Result<Value> {
     if !vm.can_park() {
         let finish = job();
-        return finish(&mut vm.m).map_err(Error::new);
+        return finish(&mut vm.m).map_err(Failure::into_error);
     }
     let me = vm.current;
     let claim = claim_new(&mut vm.m);
@@ -114,8 +114,8 @@ fn worker() {
                 match r {
                     Ok(v) => sched::deliver(w, v, Value::NIL),
                     Err(e) => {
-                        let msg = norn_rt::string::str_new(&mut m, &e);
-                        crate::sched::aset(w.field(waiter::FIBER), fiber::WAKE_ERR, msg);
+                        let err = crate::vm::failure_value(&mut m, &e);
+                        crate::sched::aset(w.field(waiter::FIBER), fiber::WAKE_ERR, err);
                         sched::deliver(w, Value::NIL, Value::NIL);
                     }
                 }

@@ -57,21 +57,175 @@ pub struct Error {
     pub msg: String,
     pub trace: Vec<String>,
     pub kind: ErrKind,
+    /// The condition it becomes (M9 part 9.13); none: a `RuntimeError`.
+    pub class: Option<ErrClass>,
+}
+
+/// Which condition a Rust error becomes.
+#[derive(Debug, Clone)]
+pub enum ErrClass {
+    /// A condition class of norn.core, by name, with values for its slots.
+    Named(&'static str, Vec<(&'static str, ErrData)>),
+    /// A Norn value already: a condition to signal again (a failed
+    /// fiber's), or `[message class-symbol data-map]` (from the blocking
+    /// pool).
+    Value(Value),
+}
+
+/// A slot's value in an `ErrClass::Named`.
+#[derive(Debug, Clone)]
+pub enum ErrData {
+    Str(String),
+    Int(i64),
+    /// A keyword, by name.
+    Kw(&'static str),
+    Val(Value),
 }
 
 impl Error {
     pub fn new(msg: impl Into<String>) -> Error {
-        Error { msg: msg.into(), trace: Vec::new(), kind: ErrKind::Runtime }
+        Error { msg: msg.into(), trace: Vec::new(), kind: ErrKind::Runtime, class: None }
+    }
+    /// An error that becomes condition class `class` of norn.core.
+    pub fn of(class: &'static str, msg: impl Into<String>) -> Error {
+        Error { class: Some(ErrClass::Named(class, Vec::new())), ..Error::new(msg) }
+    }
+    /// The same, with slot `k` set to `v`.
+    pub fn with(mut self, k: &'static str, v: ErrData) -> Error {
+        if let Some(ErrClass::Named(_, data)) = &mut self.class {
+            data.push((k, v));
+        }
+        self
     }
     pub fn abort(msg: impl Into<String>) -> Error {
-        Error { msg: msg.into(), trace: Vec::new(), kind: ErrKind::Abort }
+        Error { msg: msg.into(), trace: Vec::new(), kind: ErrKind::Abort, class: None }
     }
     pub fn fatal(msg: impl Into<String>, trace: Vec<String>) -> Error {
-        Error { msg: msg.into(), trace, kind: ErrKind::Fatal }
+        Error { msg: msg.into(), trace, kind: ErrKind::Fatal, class: None }
     }
     /// Ask the interpreter to realize stream `s` (one cell, or `all` of it).
     pub fn force(s: Value, all: bool) -> Error {
-        Error { msg: "A stream had to be realized outside a fiber".into(), trace: Vec::new(), kind: ErrKind::Force(s, all) }
+        Error {
+            msg: "A stream had to be realized outside a fiber".into(),
+            trace: Vec::new(),
+            kind: ErrKind::Force(s, all),
+            class: None,
+        }
+    }
+    /// An I/O error, as its class (by its kind) with :reason, and :path or
+    /// :address when given.
+    pub fn io(msg: impl Into<String>, e: &std::io::Error) -> Error {
+        let (class, reason) = io_kind(e);
+        Error::of(class, msg).with("reason", ErrData::Kw(reason))
+    }
+}
+
+/// The condition class and :reason of an I/O error.
+pub fn io_kind(e: &std::io::Error) -> (&'static str, &'static str) {
+    use std::io::ErrorKind as K;
+    match e.kind() {
+        K::NotFound => ("FileNotFound", "not-found"),
+        K::PermissionDenied => ("PermissionDenied", "permission-denied"),
+        K::AlreadyExists => ("FileExists", "exists"),
+        K::ConnectionRefused => ("ConnectionError", "refused"),
+        K::ConnectionReset => ("ConnectionError", "reset"),
+        K::ConnectionAborted => ("ConnectionError", "aborted"),
+        K::NotConnected => ("ConnectionError", "not-connected"),
+        K::BrokenPipe => ("ConnectionError", "broken-pipe"),
+        K::HostUnreachable | K::NetworkUnreachable | K::NetworkDown => ("ConnectionError", "unreachable"),
+        K::AddrInUse => ("ConnectionError", "address-in-use"),
+        K::AddrNotAvailable => ("ConnectionError", "address-not-available"),
+        K::TimedOut => ("TimeoutError", "timed-out"),
+        K::UnexpectedEof => ("IOError", "unexpected-end"),
+        K::InvalidData => ("IOError", "invalid-data"),
+        _ => ("IOError", "other"),
+    }
+}
+
+/// A blocking-pool job's failure (it's made on a pool thread, with no
+/// heap access): a message, and the condition it becomes.
+#[derive(Debug, Clone)]
+pub struct Failure {
+    pub msg: String,
+    pub class: Option<(&'static str, Vec<(&'static str, FailData)>)>,
+}
+
+/// A slot's value in a Failure (no heap values: it crosses threads).
+#[derive(Debug, Clone)]
+pub enum FailData {
+    Str(String),
+    Int(i64),
+    Kw(&'static str),
+}
+
+impl Failure {
+    pub fn of(class: &'static str, msg: impl Into<String>) -> Failure {
+        Failure { msg: msg.into(), class: Some((class, Vec::new())) }
+    }
+    pub fn with(mut self, k: &'static str, v: FailData) -> Failure {
+        if let Some((_, data)) = &mut self.class {
+            data.push((k, v));
+        }
+        self
+    }
+    /// An I/O error about `path`: "op path: what happened", as its class.
+    pub fn io_path(op: &str, path: &str, e: &std::io::Error) -> Failure {
+        let (class, reason) = io_kind(e);
+        Failure::of(class, format!("{op} {path}: {e}")).with("path", FailData::Str(path.to_owned())).with("reason", FailData::Kw(reason))
+    }
+    /// As an Error (on the thread that raises it).
+    pub fn into_error(self) -> Error {
+        match self.class {
+            None => Error::new(self.msg),
+            Some((c, data)) => {
+                let data = data
+                    .into_iter()
+                    .map(|(k, v)| {
+                        (k, match v {
+                            FailData::Str(s) => ErrData::Str(s),
+                            FailData::Int(n) => ErrData::Int(n),
+                            FailData::Kw(w) => ErrData::Kw(w),
+                        })
+                    })
+                    .collect();
+                Error { class: Some(ErrClass::Named(c, data)), ..Error::new(self.msg) }
+            }
+        }
+    }
+}
+
+/// Failure f as a fiber's WAKE_ERR: its message, or [message class data]
+/// when it has a class.
+pub fn failure_value(m: &mut Mutator, f: &Failure) -> Value {
+    let msg = str_new(m, &f.msg);
+    match &f.class {
+        None => msg,
+        Some((c, data)) => {
+            let cls = rt().symbol(m, None, c);
+            let mut map = norn_rt::map::map_empty();
+            for (k, v) in data {
+                let key = rt().keyword(m, None, k);
+                let val = match v {
+                    FailData::Str(s) => str_new(m, s),
+                    FailData::Int(n) => Value::fix(*n),
+                    FailData::Kw(w) => rt().keyword(m, None, w),
+                };
+                map = norn_rt::map::map_assoc(m, map, key, val);
+            }
+            vec_from_slice(m, &[msg, cls, map])
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(msg: String) -> Failure {
+        Failure { msg, class: None }
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(msg: &str) -> Failure {
+        Failure { msg: msg.to_owned(), class: None }
     }
 }
 
@@ -259,7 +413,9 @@ pub struct Vm {
 }
 
 fn arity_error(f: Value, n: usize) -> Error {
-    Error::new(format!("Wrong number of args ({n}) passed to: {}", pr_str(f, true)))
+    Error::of("ArityError", format!("Wrong number of args ({n}) passed to: {}", pr_str(f, true)))
+        .with("function", ErrData::Val(f))
+        .with("given", ErrData::Int(n as i64))
 }
 
 /// The arity of closure `f` that accepts `argc` arguments.
@@ -641,7 +797,7 @@ impl Vm {
                 if i.is_fixnum() && i.as_fixnum() >= 0 && (i.as_fixnum() as usize) < f.vec_count() {
                     Ok(f.vec_nth(i.as_fixnum() as usize))
                 } else {
-                    Err(Error::new(format!("Index out of bounds: {}", pr_str(i, true))))
+                    Err(Error::of("IndexError", format!("Index out of bounds: {}", pr_str(i, true))).with("index", ErrData::Val(i)))
                 }
             }
             _ => Err(not_fn()),
@@ -651,7 +807,7 @@ impl Vm {
     fn deref_var(f: Value) -> Result<Value> {
         let v = f.var_root();
         if v == Value::UNBOUND {
-            return Err(Error::new(format!("Unbound var: {}", pr_str(f, true))));
+            return Err(Error::of("UnboundVarError", format!("Unbound var: {}", pr_str(f, true))).with("var", ErrData::Val(f)));
         }
         Ok(v)
     }
@@ -725,8 +881,12 @@ impl Vm {
                             return self.unwind(st, target, kw, Value::NIL, Value::NIL);
                         }
                         ABORT_FIBER => {
+                            // (dying: the message, and [trace condition], the
+                            // condition kept for whoever awaits the fiber)
                             let kw = rt().keyword(&mut self.m, None, "die");
-                            return self.unwind(st, Target::Bottom, kw, args[0], args[1]);
+                            let cond = args.get(2).copied().unwrap_or(Value::NIL);
+                            let how = vec_from_slice(&mut self.m, &[args[1], cond]);
+                            return self.unwind(st, Target::Bottom, kw, args[0], how);
                         }
                         _ => self.call_prim(f, args)?,
                     }
@@ -898,7 +1058,10 @@ impl Vm {
         let msg = str_new(&mut self.m, &e.msg);
         let r = unsafe {
             match (e.kind, dest) {
-                (ErrKind::Runtime, Some(d)) => self.invoke(st, fk.runtime_error, &[msg, trace], d),
+                (ErrKind::Runtime, Some(d)) => {
+                    let (cls, data, cond) = self.class_values(&e);
+                    self.invoke(st, fk.runtime_error, &[msg, trace, cls, data, cond], d)
+                }
                 (ErrKind::Force(s, all), Some(d)) => {
                     let var = self.core_fn("%force-stream", &FORCE_VAR);
                     let force = if var.is(Kind::Var) { var.var_root() } else { var };
@@ -908,7 +1071,8 @@ impl Vm {
                     // Honoured: let cleanups run without being cancelled again.
                     self.current.atomic_word(fiber::CANCEL).store(0, std::sync::atomic::Ordering::SeqCst);
                     let kw = rt().keyword(&mut self.m, None, "die");
-                    self.unwind(st, Target::Bottom, kw, msg, trace)
+                    let how = vec_from_slice(&mut self.m, &[trace, Value::NIL]);
+                    self.unwind(st, Target::Bottom, kw, msg, how)
                 }
             }
         };
@@ -916,6 +1080,31 @@ impl Vm {
             e2.kind = ErrKind::Fatal;
             self.fail(st, e2)
         })
+    }
+
+    /// Error e's class as Norn values for `%runtime-error`: (class symbol,
+    /// data map, condition to signal again), nil where there's none.
+    fn class_values(&mut self, e: &Error) -> (Value, Value, Value) {
+        match &e.class {
+            None => (Value::NIL, Value::NIL, Value::NIL),
+            Some(ErrClass::Named(name, data)) => {
+                let cls = rt().symbol(&mut self.m, None, name);
+                let mut map = norn_rt::map::map_empty();
+                for (k, v) in data {
+                    let key = rt().keyword(&mut self.m, None, k);
+                    let val = match v {
+                        ErrData::Str(s) => str_new(&mut self.m, s),
+                        ErrData::Int(n) => Value::fix(*n),
+                        ErrData::Kw(w) => rt().keyword(&mut self.m, None, w),
+                        ErrData::Val(v) => *v,
+                    };
+                    map = norn_rt::map::map_assoc(&mut self.m, map, key, val);
+                }
+                (cls, map, Value::NIL)
+            }
+            Some(ErrClass::Value(v)) if v.is(Kind::Vector) && v.vec_count() == 3 => (v.vec_nth(1), v.vec_nth(2), Value::NIL),
+            Some(ErrClass::Value(v)) => (Value::NIL, Value::NIL, *v),
+        }
     }
 
     // ---- entry points ----
@@ -1172,7 +1361,7 @@ impl Vm {
                             v = x;
                         }
                         if v == Value::UNBOUND {
-                            Err(Error::new(format!("Unbound var: {}", pr_str(var, true))))
+                            Err(Error::of("UnboundVarError", format!("Unbound var: {}", pr_str(var, true))).with("var", ErrData::Val(var)))
                         } else {
                             *regs.add(ra) = v;
                             continue;

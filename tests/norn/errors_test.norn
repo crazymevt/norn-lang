@@ -1,0 +1,87 @@
+;;;; The runtime's errors as conditions (M9 part 9.13): each has a class a
+;;;; handler can choose by, and slots saying what went wrong, whether Rust
+;;;; or a library raised it, and through fibers too.
+
+(ns errors-test
+  (:require [norn.test :refer [is deftest testing]] [norn.io :as io] [norn.net :as net]
+            [norn.json :as json] [norn.uri :as uri] [norn.http :as http] [norn.sys :as sys]
+            [norn.string :as str]))
+
+(defn- caught
+  "The condition f signals (nil if none)."
+  [f]
+  (try (f) nil (catch Error e e)))
+
+(defn- class-of-name [c] (when c (name (class-name (class-of c)))))
+
+(def here (let [loc (%location)] (io/parent (subs loc 0 (str/last-index-of loc ":")))))
+
+(deftest program-mistakes-are-runtime-errors
+  (let [c (caught (fn [] (+ 1 :a)))]
+    (is (= "TypeError" (class-of-name c)))
+    (is (= ["a number" :a] [(:expected c) (:value c)])))
+  (let [c (caught (fn [] (count 5 6)))]
+    (is (= "ArityError" (class-of-name c)))
+    (is (= 2 (:given c))))
+  (let [c (caught (fn [] (nth [1 2] 5)))]
+    (is (= ["IndexError" 5] [(class-of-name c) (:index c)])))
+  (is (= "ArithmeticError" (class-of-name (caught (fn [] (/ 1 0))))))
+  (testing "they're RuntimeErrors, with the restarts they always had"
+    (is (instance? RuntimeError (caught (fn [] (/ 1 0)))))
+    (is (= 42 (handler-bind [ArithmeticError (fn [_] (invoke-restart 'use-value 42))] (/ 1 0))))))
+
+(deftest the-world-outside-is-io-errors
+  (testing "files"
+    (let [missing (io/path (sys/temp-dir) (str "norn-errors-test-" (nano-time)) "nothing")
+          c (caught (fn [] (io/read-text missing)))]
+      (is (= "FileNotFound" (class-of-name c)))
+      (is (= [missing :not-found] [(:path c) (:reason c)]))
+      (is (instance? IOError c) "under IOError")
+      (is (not (instance? RuntimeError c)) "not a mistake in the program")
+      (is (= "default" (handler-bind [FileNotFound (fn [_] (invoke-restart 'use-value "default"))] (io/read-text missing)))
+          "use-value still offered")))
+  (testing "connections"
+    (let [port (let [l (net/listen "127.0.0.1" 0) p (net/port (net/local-address l))] (io/close l) p)
+          c (caught (fn [] (net/connect "127.0.0.1" port)))]
+      (is (= "ConnectionError" (class-of-name c)))
+      (is (= :refused (:reason c)))
+      (is (= (str "127.0.0.1:" port) (:address c)))))
+  (testing "TLS"
+    (let [certs (io/path here "certs")
+          s (http/serve (fn [_] {:status 200 :body "ok"}) :tls true
+                        :cert-file (io/path certs "server.pem") :key-file (io/path certs "server.key"))
+          c (caught (fn [] (http/get (str "https://localhost:" (:port s) "/") :keep-alive false)))]
+      (is (= "TlsError" (class-of-name c)) "an untrusted certificate")
+      (is (instance? ConnectionError c))
+      (http/stop! s))))
+
+(deftest timeouts
+  (let [s (http/serve (fn [_] (sleep 1000) {:status 200}))
+        c (caught (fn [] (http/get (str "http://127.0.0.1:" (:port s) "/") :timeout 100)))]
+    (is (= "TimeoutError" (class-of-name c)))
+    (is (= 100 (:after c)))
+    (http/stop! s)))
+
+(deftest text-that-isnt-what-it-should-be
+  (let [c (caught (fn [] (json/read-string "{\"a\": [1, 2,\n  }")))]
+    (is (= "ParseError" (class-of-name c)))
+    (is (= ["JSON" 2 3] [(:source c) (:line c) (:column c)])))
+  (let [c (caught (fn [] (load-string "(defn f []\n  (+ 1 2")))]
+    (is (= "ParseError" (class-of-name c)) "Norn source"))
+  (is (= ["ParseError" "URI"] ((juxt class-of-name :source) (caught (fn [] (uri/parse "http://h:8x/"))))))
+  (let [s (net/listen "127.0.0.1" 0)
+        port (net/port (net/local-address s))]
+    (spawn-detached (let [c (net/accept s)] (io/read c 100) (io/write c "NOT HTTP\r\n\r\n") (io/close c)))
+    (is (= "ParseError" (class-of-name (caught (fn [] (http/get (str "http://127.0.0.1:" port "/") :keep-alive false)))))
+        "a server that doesn't speak HTTP")
+    (io/close s)))
+
+(deftest a-fibers-condition-survives-it
+  ;; (await and a scope signal the very condition the fiber ended with)
+  (let [c (caught (fn [] (await (spawn-detached (io/read-text "/no/such/file/here")))))]
+    (is (= ["FileNotFound" "/no/such/file/here"] [(class-of-name c) (:path c)])))
+  (let [c (caught (fn [] (with-scope [s] (spawn s (+ 1 :b)))))]
+    (is (= ["TypeError" :b] [(class-of-name c) (:value c)])))
+  (testing "a condition of one's own, with its data"
+    (let [c (caught (fn [] (await (spawn-detached (error TimeoutError :message "slow" :after 7)))))]
+      (is (= ["TimeoutError" 7 "slow"] [(class-of-name c) (:after c) (condition-message c)])))))
