@@ -2,8 +2,15 @@
 //!
 //! M0 limits, each reported as a clear error rather than silently misread:
 //! ratios that don't reduce to integers, bignums, regex literals, complex
-//! numbers. Metadata (`^…`) is read and discarded. Source locations are
-//! tracked only for error messages; syntax objects arrive with hygiene (M6).
+//! numbers. Metadata (`^…`) is read and discarded.
+//!
+//! With locations on (`Reader::with_locations`), it also records where each
+//! form came from, as a tree that parallels the form: a node is
+//! `[line column start end kids elements]` (1-based line and column,
+//! character offsets, `kids` the nodes of its parts, `elements` a map's or
+//! set's parts in source order). A form the reader rewrites (syntax-quote,
+//! `#(…)`) has kids that don't line up with its parts; `norn.syntax` gives
+//! those parts the whole form's place.
 
 use crate::vm::Vm;
 use norn_rt::list::list_from;
@@ -67,6 +74,51 @@ pub struct Reader<'a> {
     src: &'a str,
     pos: usize,
     fn_args: Option<FnArgs>,
+    locs: Option<Locs>,
+}
+
+/// Where a form came from: 1-based line and column, character offsets.
+#[derive(Clone, Copy, Default)]
+struct Place {
+    line: usize,
+    col: usize,
+    at: usize,
+}
+
+/// A form being read: where it began, and its parts' nodes so far.
+struct Frame {
+    start: Place,
+    kids: Vec<LocNode>,
+    elems: Option<Vec<Value>>,
+}
+
+pub struct LocNode {
+    start: Place,
+    end: Place,
+    kids: Vec<LocNode>,
+    elems: Option<Vec<Value>>,
+}
+
+impl LocNode {
+    /// As Norn data: `[line column start end kids elements]`.
+    pub fn to_value(&self, vm: &mut Vm) -> Value {
+        let kids: Vec<Value> = self.kids.iter().map(|k| k.to_value(vm)).collect();
+        let kids = vec_from_slice(&mut vm.m, &kids);
+        let elems = match &self.elems {
+            Some(xs) => vec_from_slice(&mut vm.m, xs),
+            None => Value::NIL,
+        };
+        let n = |x: usize| Value::fix(x as i64);
+        vec_from_slice(&mut vm.m, &[n(self.start.line), n(self.start.col), n(self.start.at), n(self.end.at), kids, elems])
+    }
+}
+
+/// Location tracking: the frames open, the finished top form, and a cache
+/// of the last place found (places are asked for in increasing order).
+struct Locs {
+    frames: Vec<Frame>,
+    done: Option<LocNode>,
+    cache: (usize, Place),
 }
 
 const SPECIALS: &[&str] = &["quote", "if", "do", "def", "var", "fn*", "let*", "letrec*", "loop*", "recur", "&"];
@@ -81,12 +133,88 @@ fn is_terminator(c: char) -> bool {
 
 impl<'a> Reader<'a> {
     pub fn new(src: &'a str) -> Self {
-        Reader { src, pos: 0, fn_args: None }
+        Reader { src, pos: 0, fn_args: None, locs: None }
     }
 
     /// A reader starting at byte offset `pos`.
     pub fn new_at(src: &'a str, pos: usize) -> Self {
-        Reader { src, pos: pos.min(src.len()), fn_args: None }
+        Reader { src, pos: pos.min(src.len()), fn_args: None, locs: None }
+    }
+
+    /// This reader, recording where each form comes from (`take_locations`).
+    pub fn with_locations(mut self) -> Self {
+        self.locs = Some(Locs { frames: Vec::new(), done: None, cache: (0, Place { line: 1, col: 1, at: 0 }) });
+        self
+    }
+
+    /// The location tree of the form just read, if locations are on.
+    pub fn take_locations(&mut self) -> Option<LocNode> {
+        self.locs.as_mut().and_then(|l| l.done.take())
+    }
+
+    /// The place of byte offset `b`, going on from the last one asked for.
+    fn place(&mut self, b: usize) -> Place {
+        let src = self.src;
+        let Some(l) = self.locs.as_mut() else { return Place::default() };
+        let (from, mut p) = l.cache;
+        if b < from {
+            // (not expected: start again from the top)
+            l.cache = (0, Place { line: 1, col: 1, at: 0 });
+            return self.place(b);
+        }
+        for c in src[from..b].chars() {
+            p.at += 1;
+            if c == '\n' {
+                p.line += 1;
+                p.col = 1;
+            } else {
+                p.col += 1;
+            }
+        }
+        l.cache = (b, p);
+        p
+    }
+
+    fn open_frame(&mut self) {
+        if self.locs.is_some() {
+            let start = self.place(self.pos);
+            self.locs.as_mut().unwrap().frames.push(Frame { start, kids: Vec::new(), elems: None });
+        }
+    }
+
+    /// The form whose frame is on top is finished: it becomes a node of
+    /// its parent (or the finished top form).
+    fn close_frame(&mut self) {
+        if self.locs.is_some() {
+            let end = self.place(self.pos);
+            let l = self.locs.as_mut().unwrap();
+            let f = l.frames.pop().unwrap();
+            let node = LocNode { start: f.start, end, kids: f.kids, elems: f.elems };
+            match l.frames.last_mut() {
+                Some(parent) => parent.kids.push(node),
+                None => l.done = Some(node),
+            }
+        }
+    }
+
+    /// The form whose frame is on top was discarded (a comment, `#_`).
+    fn drop_frame(&mut self) {
+        if let Some(l) = self.locs.as_mut() {
+            l.frames.pop();
+        }
+    }
+
+    fn frame(&mut self) -> Option<&mut Frame> {
+        self.locs.as_mut().and_then(|l| l.frames.last_mut())
+    }
+
+    /// The form on top was rewritten (syntax-quote, `#(…)`): its parts
+    /// don't match the source's, so it keeps no kids, and they all get its
+    /// place.
+    fn rewritten(&mut self) {
+        if let Some(f) = self.frame() {
+            f.kids.clear();
+        }
     }
 
     /// Current byte offset.
@@ -167,6 +295,10 @@ impl<'a> Reader<'a> {
 
     /// Read the next form. `Err(Eof)` when input is exhausted.
     pub fn read(&mut self, vm: &mut Vm) -> RResult<Value> {
+        if let Some(l) = self.locs.as_mut() {
+            l.frames.clear();
+            l.done = None;
+        }
         match self.read_inner(vm) {
             Err(ReadError::Closer(c)) => {
                 self.bump();
@@ -188,17 +320,38 @@ impl<'a> Reader<'a> {
         loop {
             self.skip_ws();
             let Some(c) = self.peek() else { return Err(ReadError::Eof) };
+            if matches!(c, ')' | ']' | '}') {
+                return Err(ReadError::Closer(c));
+            }
+            self.open_frame();
+            match self.read_one(vm, c) {
+                Ok(Some(v)) => {
+                    self.close_frame();
+                    return Ok(v);
+                }
+                // a comment, a discarded form or metadata: keep going
+                Ok(None) => self.drop_frame(),
+                Err(e) => {
+                    self.drop_frame();
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    /// One form starting with `c`, or None for something that isn't one.
+    fn read_one(&mut self, vm: &mut Vm, c: char) -> RResult<Option<Value>> {
+        {
             match c {
-                ')' | ']' | '}' => return Err(ReadError::Closer(c)),
                 '(' => {
                     self.bump();
                     let xs = self.read_delimited(vm, ')')?;
-                    return Ok(list_from(&mut vm.m, &xs));
+                    return Ok(Some(list_from(&mut vm.m, &xs)));
                 }
                 '[' => {
                     self.bump();
                     let xs = self.read_delimited(vm, ']')?;
-                    return Ok(vec_from_slice(&mut vm.m, &xs));
+                    return Ok(Some(vec_from_slice(&mut vm.m, &xs)));
                 }
                 '{' => {
                     self.bump();
@@ -210,60 +363,75 @@ impl<'a> Reader<'a> {
                     for kv in xs.chunks(2) {
                         map = map_assoc(&mut vm.m, map, kv[0], kv[1]);
                     }
-                    return Ok(map);
+                    if let Some(f) = self.frame() {
+                        f.elems = Some(xs);
+                    }
+                    return Ok(Some(map));
                 }
                 '"' => {
                     self.bump();
-                    return self.read_string(vm);
+                    return self.read_string(vm).map(Some);
                 }
                 '\'' => {
                     self.bump();
-                    return self.wrap(vm, "quote");
+                    return self.wrap(vm, "quote").map(Some);
                 }
                 '`' => {
                     self.bump();
                     let form = self.read_required(vm)?;
                     let mut gensyms = HashMap::new();
-                    return syntax_quote(vm, form, &mut gensyms).map_err(ReadError::Syntax);
+                    self.rewritten();
+                    return syntax_quote(vm, form, &mut gensyms).map(Some).map_err(ReadError::Syntax);
                 }
                 '~' => {
                     self.bump();
                     if self.peek() == Some('@') {
                         self.bump();
-                        return self.wrap(vm, "unquote-splicing");
+                        return self.wrap(vm, "unquote-splicing").map(Some);
                     }
-                    return self.wrap(vm, "unquote");
+                    return self.wrap(vm, "unquote").map(Some);
                 }
                 '@' => {
                     self.bump();
-                    return self.wrap(vm, "deref");
+                    return self.wrap(vm, "deref").map(Some);
                 }
                 '^' => {
-                    // Metadata is read and dropped in M0.
+                    // Metadata is read and dropped (and its place with it);
+                    // the form after it is read as the next form.
                     self.bump();
                     self.read_required(vm)?;
-                    return self.read_required(vm);
+                    if let Some(f) = self.frame() {
+                        f.kids.pop();
+                    }
+                    if self.at_end() {
+                        return Err(ReadError::Incomplete("EOF after metadata".into()));
+                    }
+                    return Ok(None);
                 }
                 '\\' => {
                     self.bump();
-                    return self.read_char();
+                    return self.read_char().map(Some);
                 }
-                '#' => {
-                    if let Some(v) = self.read_dispatch(vm)? {
-                        return Ok(v);
-                    }
-                    // A comment or discarded form: keep going.
-                }
+                '#' => self.read_dispatch(vm),
                 _ => {
                     let tok = self.token();
-                    return self.parse_token(vm, tok);
+                    self.parse_token(vm, tok).map(Some)
                 }
             }
         }
     }
 
     fn wrap(&mut self, vm: &mut Vm, head: &str) -> RResult<Value> {
+        // The marker (' @ ~ #') stands for the head symbol: its place is the
+        // marker's.
+        let marker_end = if self.locs.is_some() { Some(self.place(self.pos)) } else { None };
         let form = self.read_required(vm)?;
+        if let Some(end) = marker_end
+            && let Some(f) = self.frame()
+        {
+            let start = f.start;
+            f.kids.insert(0, LocNode { start, end, kids: Vec::new(), elems: None });
+        }
         let h = vm.sym(head);
         Ok(list_from(&mut vm.m, &[h, form]))
     }
@@ -297,14 +465,19 @@ impl<'a> Reader<'a> {
                 self.bump();
                 let xs = self.read_delimited(vm, '}')?;
                 let mut s = set_empty();
-                for x in xs {
+                for &x in &xs {
                     s = set_conj(&mut vm.m, s, x);
+                }
+                if let Some(f) = self.frame() {
+                    f.elems = Some(xs);
                 }
                 Ok(Some(s))
             }
             '(' => {
                 self.bump();
-                self.read_fn_literal(vm).map(Some)
+                let f = self.read_fn_literal(vm);
+                self.rewritten();
+                f.map(Some)
             }
             '\'' => {
                 self.bump();
@@ -377,14 +550,7 @@ impl<'a> Reader<'a> {
                     return Ok(Some(norn_rt::string::bytes_new(&mut vm.m, &b)));
                 }
                 if tok == "lang" {
-                    // `#lang norn` selects the base language (design.md §8.1).
-                    let start = self.pos;
-                    self.skip_line();
-                    let lang = self.src[start..self.pos].trim();
-                    if lang != "norn" {
-                        return Err(ReadError::Syntax(format!("Unknown #lang: {lang} (only `norn` exists so far)")));
-                    }
-                    Ok(None)
+                    Err(ReadError::Syntax("#lang isn't part of Norn (design.md §8.1): a file's language is Norn".into()))
                 } else {
                     Err(ReadError::Syntax(format!("Unknown reader dispatch: #{tok}")))
                 }

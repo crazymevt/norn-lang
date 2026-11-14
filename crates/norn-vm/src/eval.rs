@@ -52,6 +52,7 @@ pub const LIBS: &[(&str, &str)] = &[
     ("norn.doc", include_str!("../../../lib/norn/doc.norn")),
     ("norn.image", include_str!("../../../lib/norn/image.norn")),
     ("norn.check", include_str!("../../../lib/norn/check.norn")),
+    ("norn.syntax", include_str!("../../../lib/norn/syntax.norn")),
 ];
 
 /// `(%find-lib "a.b-c")`: the source of library `a.b-c` and where it came
@@ -213,6 +214,32 @@ pub(crate) fn form_at(vm: &mut Vm, src: &str, line: usize) -> Result<Value> {
     match rd.read(vm) {
         Ok(_) => Ok(norn_rt::string::str_new(&mut vm.m, &src[start..rd.pos()])),
         Err(_) => Ok(Value::NIL),
+    }
+}
+
+/// `(%read-syntax reader)`: the next form and where its parts came from,
+/// `[form location-tree]` (reader.rs), or the EOF marker.
+pub(crate) fn read_syntax_next(vm: &mut Vm, r: Value) -> Result<Value> {
+    let src = r.field(0).as_str();
+    let pos = r.word(1) as usize;
+    let mut rd = Reader::new_at(src, pos).with_locations();
+    let _ = rd.at_end();
+    r.set_word(3, rd.line() as u64);
+    let res = rd.read(vm);
+    r.set_word(1, rd.pos() as u64);
+    match res {
+        Ok(v) => {
+            let loc = match rd.take_locations() {
+                Some(l) => l.to_value(vm),
+                None => Value::NIL,
+            };
+            Ok(norn_rt::vector::vec_from_slice(&mut vm.m, &[v, loc]))
+        }
+        Err(ReadError::Eof) => Ok(Value::EOF),
+        Err(e) => {
+            let name = norn_rt::print::pr_str(r.field(2), false);
+            Err(Error::new(format!("{name}:{}: {e}", rd.line())))
+        }
     }
 }
 

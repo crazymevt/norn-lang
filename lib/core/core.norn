@@ -1,4 +1,3 @@
-#lang norn
 ;;;; norn.core — the language's core macros and functions.
 ;;;;
 ;;;; Loaded by the seed compiler at start-up, on top of the kernel forms

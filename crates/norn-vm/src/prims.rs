@@ -178,6 +178,7 @@ prims! {
     "macroexpand" 1 Some(1) => |vm, a| vm.macroexpand(a[0]);
     "%reader" 2 Some(2) => |vm, a| { expect(a[0], Kind::String, "%reader")?; Ok(norn_rt::conc::reader_new(&mut vm.m, a[0], a[1])) };
     "%read" 1 Some(1) => |vm, a| { expect(a[0], Kind::Reader, "%read")?; crate::eval::read_next(vm, a[0]) };
+    "%read-syntax" 1 Some(1) => |vm, a| { expect(a[0], Kind::Reader, "%read-syntax")?; crate::eval::read_syntax_next(vm, a[0]) };
     "%eof?" 1 Some(1) => |_, a| Ok(Value::bool(a[0] == Value::EOF));
     "in-ns" 1 Some(1) => |vm, a| { if !a[0].is_symbol() { return Err(type_err("in-ns", "a symbol", a[0])); } vm.ns = rt().find_or_create_ns(a[0]); Ok(a[0]) };
     "current-ns" 0 Some(0) => |vm, _| Ok(vm.ns.name);

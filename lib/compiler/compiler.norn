@@ -1,4 +1,3 @@
-#lang norn
 ;;;; norn.compiler — the Norn compiler, written in Norn (runtime.md §9).
 ;;;;
 ;;;; Forms → tier-0 bytecode. It is a faithful port of the Rust seed compiler

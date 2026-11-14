@@ -193,13 +193,6 @@ impl Cst<'_> {
                 _ => {
                     let end = self.token_end(self.i + 1);
                     let tag = &self.s[self.i..end];
-                    if tag == "#lang" {
-                        let start = self.i;
-                        while !matches!(self.peek(0), None | Some(b'\n' | b'\r')) {
-                            self.i += 1;
-                        }
-                        return Ok(Self::text(vm, "token", &self.s[start..self.i]));
-                    }
                     return self.prefix(vm, end - self.i);
                 }
             },

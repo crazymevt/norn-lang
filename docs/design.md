@@ -59,8 +59,9 @@ CL/Racket conveniences.
 - **[decided] Truthiness:** `nil` and `false` are falsey; everything else
   (including `()`, `0`, `""`) is truthy. `()` is not `nil`.
 - **[decided] Extensible reader, but scoped.** CL-style reader macros are
-  allowed only through a module's `#lang` / readtable declaration — never
-  globally mutated — so one library can't break another's parsing.
+  allowed only through a module's own readtable declaration (in its `ns`
+  form, now that `#lang` is dropped) — never globally mutated — so one
+  library can't break another's parsing. None exists yet.
 - **[decided] Syntax objects carry source locations** everywhere, so errors,
   the debugger and editor tooling always point at real source.
 
@@ -589,11 +590,11 @@ Images work as described above, with these details and gaps (runtime.md §7.5):
 
 - One file = one module = one namespace. Symbols are just names; vars live in
   namespaces (Clojure's model, not CL's global symbol interning).
-- `#lang` line (optional, Racket-style) selects reader + base language, so
-  DSLs and alternate syntaxes are first-class.
+- ~~`#lang` line (optional, Racket-style) selects reader + base language~~:
+  dropped (2026-11-14) unless a need appears. Modules, hygiene and phases
+  all work from the `ns` form.
 
 ```clojure
-#lang norn
 (ns myapp.core
   (:require [norn.async :as a]
             [myapp.db :refer [query]]))

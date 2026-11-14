@@ -1,0 +1,160 @@
+;;;; norn.syntax — syntax objects (M8 part 8.1; design §2 and §8.2).
+;;;;
+;;;; A syntax object is a datum with a set of scopes and the place it came
+;;;; from. Its datum is a symbol, a number, a string… or a list, vector, map
+;;;; or set whose parts are syntax objects too (syntax-e gives that datum;
+;;;; syntax->datum takes all the wrapping off). Scopes are what hygiene is
+;;;; made of: the expander adds one for each binding form and each macro
+;;;; step, and an identifier refers to the binding whose scopes are the
+;;;; largest subset of its own (Racket's sets of scopes).
+;;;;
+;;;; A place is [source line column position span]: 1-based line and
+;;;; column, and the character offset and length in the source.
+
+(ns norn.syntax)
+
+(defclass Syntax ()
+  ((e :doc "The datum, its parts wrapped too.")
+   (scopes :doc "The scopes, a set of integers.")
+   (loc :doc "[source line column position span], or nil."))
+  (:doc "A datum with its scopes and the place it came from.")
+  (:equality :identity))
+
+(defn- make-syntax [e scopes loc] (%instance Syntax [e scopes loc]))
+
+(defn syntax? "Is x a syntax object?" [x] (instance? Syntax x))
+
+(defn syntax-e "The datum of syntax s, with its parts still syntax objects." [s] (slot-value s :e))
+(defn syntax-scopes "The scopes of syntax s." [s] (slot-value s :scopes))
+(defn syntax-loc "Where syntax s came from: [source line column position span], or nil." [s] (slot-value s :loc))
+
+(defn syntax-source "The name of the source s came from (a path), or nil." [s] (nth (syntax-loc s) 0 nil))
+(defn syntax-line "The 1-based line s starts on, or nil." [s] (nth (syntax-loc s) 1 nil))
+(defn syntax-column "The 1-based column s starts at, or nil." [s] (nth (syntax-loc s) 2 nil))
+(defn syntax-position "The character offset of s in its source, or nil." [s] (nth (syntax-loc s) 3 nil))
+(defn syntax-span "How many characters s takes in its source, or nil." [s] (nth (syntax-loc s) 4 nil))
+
+(defn syntax-where
+  "Where s came from, as source:line:column (for messages)."
+  [s]
+  (if-let [[src line col] (syntax-loc s)]
+    (str (or src "?") ":" line ":" col)
+    "?"))
+
+(defn identifier? "Is x a syntax object of a symbol?" [x] (and (syntax? x) (symbol? (syntax-e x))))
+
+;; ---- datum <-> syntax ----
+
+(defn- wrap-parts [x f]
+  (cond (list? x) (apply list (map f x))
+        (seq? x) (apply list (map f x))
+        (vector? x) (mapv f x)
+        (map? x) (into {} (map (fn [[k v]] [(f k) (f v)])) x)
+        (set? x) (into #{} (map f) x)
+        :else x))
+
+(defn datum->syntax
+  "Datum v as syntax, with the scopes of ctx (a syntax object, or nil for
+  none) and place loc (default: ctx's). Parts that are syntax already stay
+  as they are."
+  ([ctx v] (datum->syntax ctx v (when ctx (syntax-loc ctx))))
+  ([ctx v loc]
+   (let [scopes (if ctx (syntax-scopes ctx) #{})]
+     (letfn [(wrap [x] (if (syntax? x) x (make-syntax (wrap-parts x wrap) scopes loc)))]
+       (wrap v)))))
+
+(defn syntax->datum
+  "Syntax s with all its wrapping taken off (any datum passes through)."
+  [s]
+  (let [x (if (syntax? s) (syntax-e s) s)]
+    (wrap-parts x syntax->datum)))
+
+(defn syntax->list
+  "The parts of a list or vector syntax s, as a list of syntax objects (nil
+  if s isn't a list or vector)."
+  [s]
+  (let [x (syntax-e s)]
+    (when (or (seq? x) (vector? x)) (apply list x))))
+
+;; ---- scopes ----
+
+(def ^:private scope-ids (atom 0))
+
+(defn new-scope "A scope no syntax object has yet." [] (swap! scope-ids inc))
+
+(defn- map-scopes
+  "s with (f scopes) as the scopes of it and of all its parts."
+  [s f]
+  (letfn [(walk [x] (if (syntax? x)
+                      (make-syntax (wrap-parts (syntax-e x) walk) (f (syntax-scopes x)) (syntax-loc x))
+                      x))]
+    (walk s)))
+
+(defn add-scope "s and all its parts with scope sc added." [s sc] (map-scopes s (fn [ss] (conj ss sc))))
+(defn remove-scope "s and all its parts without scope sc." [s sc] (map-scopes s (fn [ss] (disj ss sc))))
+
+(defn flip-scope
+  "s and all its parts with scope sc added where it's missing and removed
+  where it's present (how a macro step marks what the macro introduced)."
+  [s sc]
+  (map-scopes s (fn [ss] (if (contains? ss sc) (disj ss sc) (conj ss sc)))))
+
+(defn bound-identifier=?
+  "Would binding a and binding b bind the same thing: the same name, with
+  the same scopes?"
+  [a b]
+  (and (= (syntax-e a) (syntax-e b)) (= (syntax-scopes a) (syntax-scopes b))))
+
+;; ---- reading ----
+;;
+;; The reader's location tree parallels the form it read: a node is [line
+;; column start end kids elements]. Kids line up with a list's or vector's
+;; parts; a map's or set's line up with its elements in source order. A
+;; form the reader rewrote (syntax-quote, #(…)) has kids that don't line
+;; up: its parts all get its place.
+
+(defn- loc-of [source node]
+  (let [[line col start end] node]
+    [source line col start (- end start)]))
+
+(defn- wrap-at
+  "x as syntax with place loc for it and all its parts."
+  [x loc]
+  (letfn [(wrap [y] (make-syntax (wrap-parts y wrap) #{} loc))]
+    (wrap x)))
+
+(defn- with-places [source x node]
+  (let [loc (loc-of source node)
+        kids (nth node 4)
+        elems (nth node 5)
+        part (fn [y k] (with-places source y k))]
+    (cond (or (seq? x) (vector? x))
+          (if (= (count x) (count kids))
+            (make-syntax (let [ps (map part x kids)] (if (vector? x) (vec ps) (apply list ps))) #{} loc)
+            (make-syntax (wrap-parts x (fn [y] (wrap-at y loc))) #{} loc))
+          (and (or (map? x) (set? x)) elems (= (count elems) (count kids)))
+          (let [ps (mapv part elems kids)]
+            (make-syntax (if (map? x)
+                           (into {} (map vec (partition 2 ps)))
+                           (set ps))
+                         #{} loc))
+          (or (map? x) (set? x)) (wrap-at x loc)
+          :else (make-syntax x #{} loc))))
+
+(defn read-syntax
+  "The next form from reader r (made by %reader), as syntax with each
+  part's place; :eof at the end."
+  [r]
+  (let [got (%read-syntax r)]
+    (if (%eof? got)
+      :eof
+      (let [[form node] got]
+        (if node (with-places (%reader-name r) form node) (wrap-at form nil))))))
+
+(defn read-all-syntax
+  "Every form in text, as syntax; source names where it came from (a path)."
+  [text source]
+  (let [r (%reader text source)]
+    (loop [out []]
+      (let [s (read-syntax r)]
+        (if (= s :eof) out (recur (conj out s)))))))

@@ -224,8 +224,7 @@
       (let [t (fmt/node-text n)
             next-line (+ line (count (filter (fn [c] (= c \newline)) t)))
             form? (and (contains? #{:token :coll :prefix} (first n))
-                       (not (and (= :prefix (first n)) (= "#_" (nth n 1))))
-                       (not (str/starts-with? t "#lang")))]
+                       (not (and (= :prefix (first n)) (= "#_" (nth n 1)))))]
         (recur (next nodes) next-line (if form? (conj out line) out)))
       out)))
 
