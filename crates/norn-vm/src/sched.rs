@@ -997,7 +997,15 @@ fn carrier_loop(vm: &mut Vm) {
         }
         vm.drop_spare();
         safepoint::enter_safe();
-        let g = s.idle_cv.wait_timeout(g, Duration::from_millis(100)).unwrap().0;
+        // Every way of giving carriers work wakes them (schedule, requeue,
+        // submit, resume_all), so a regular carrier sleeps until woken: an
+        // idle process doesn't wake 10 times a second per carrier. A spare
+        // wakes now and then, to see whether it should retire.
+        let g = if me < s.n {
+            s.idle_cv.wait(g).unwrap()
+        } else {
+            s.idle_cv.wait_timeout(g, Duration::from_millis(100)).unwrap().0
+        };
         s.idle_count.fetch_sub(1, Ordering::AcqRel);
         drop(g);
         safepoint::leave_safe();

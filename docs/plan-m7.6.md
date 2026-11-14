@@ -128,6 +128,29 @@ a design against Norn's fibers and conditions.
   each change unless Approve for Me is on; Chat mode refuses changes.
   The tests use fake CLIs (written in Norn) that speak both protocols;
   the real Claude Code and Codex haven't been run against it yet.
+- **3.10, the done-check, the measured part (2026-11-14):**
+  - **A keystroke repaints a line:** the edited line and the caret's
+    place in the status bar, about 11,900 square pixels (a line is
+    10,374), down from 35,000 to 64,000. Three things had been
+    repainting too: the status bar's Ln/Col changed width (it reflowed
+    the bar), every text field repainted after any layout, and
+    completion offered the word being typed, so its popup closed and
+    opened again on every key. `tests/budgets_test.norn` holds it.
+  - **The idle editor under 0.5% CPU:** 0.0% (no CPU time in 30
+    seconds), and its project `norn` too; it had been 0.47%. Norn's
+    idle carriers woke ten times a second each to look for work, though
+    everything that gives them work wakes them; now only a spare carrier
+    wakes on a timer (to retire).
+  - **Speed in use:** the Markdown preview and scrolling stalled in a
+    debug build of `norn-ui` (5.8 seconds to show a 222-line document's
+    preview; half a second a scroll step). A release build is 10 to 20
+    times faster (0.3 seconds; 25 to 30 ms a step), so `bin/norn-studio`
+    runs the release build when it's the newer one. The preview's first
+    layout (0.25 seconds in release) lays out every block, in view or
+    not: one to improve if it bothers.
+  - **Still to do: the working stretch** — Norn's own development in the
+    editor (editing `lib/` and `tests/`, the REPL, the debugger,
+    formatting and linting), and what it turns up.
 
 On the way:
 - `norn-ui` gained:
@@ -148,6 +171,9 @@ On the way:
   - a fix: an editor's reveal before its first layout scrolled as if the
     view were a line short (a newly opened document hid its first line);
     it now waits for the layout;
+  - text fields repaint after a layout only when their caret or scroll
+    moved; `NORN_UI_DAMAGE=1` (headless) prints what each frame repaints,
+    and `NORN_UI_OPS=1` the ops each render sends;
   - tree rows with a badge (a Git status letter) and an icon colour of
     their own; `markdown` taking `:block-id` (an id for each top-level
     block, to measure and scroll to); `editor-set-text!` taking a function applied in the same
@@ -160,6 +186,7 @@ On the way:
     render loop was rendering the same window sent the engine two diffs
     against one old tree, and later ops named nodes that were gone.
 - Norn gained:
+  - idle carriers that sleep until woken (an idle process uses no CPU);
   - `norn.test/run-files` taking directories (every `*_test.norn` under
     one), as `norn test` does, so the editor protocol's `:test` can too;
   - `norn FILE.norn ARGS…`, which runs the file with its arguments, as

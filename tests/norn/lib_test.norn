@@ -80,7 +80,7 @@
 (is (= nil (io/extension "README")))
 (is (= true (= (io/absolute "x") (io/path (sys/cwd) "x"))))
 (is (nil? (io/canonical "/no/such/path/here")))
-(is (= (io/canonical (sys/cwd)) (io/canonical (io/path (sys/cwd) "." "lib" "..")))
+(is (= (io/canonical (io/parent (sys/cwd))) (io/canonical (io/path (sys/cwd) "." "..")))
     "canonical resolves . and ..")
 
 ;;; ---- norn.io: streams ----
