@@ -82,7 +82,7 @@ a design against Norn's fibers and conditions.
 
 ## Part 3 — the editor
 
-**Status (2026-11-14): 3.1 to 3.3 done.**
+**Status (2026-11-14): 3.1 to 3.4 done.**
 - **3.1, the shell:** built as planned, with a basic Explorer tree (3.6
   adds icons for Git status and the rest). The tools in the docks are
   placeholders until their parts.
@@ -97,6 +97,12 @@ a design against Norn's fibers and conditions.
   where the probe lands. ⇧⌘I formats with the project's `norn` (it knows
   the project's macros' `{:indent n}`), or `norn.fmt` in the editor when
   it doesn't run.
+- **3.4, the REPL and evaluation:** built as planned. A failed evaluation
+  waits in the project's `norn`'s debugger: the console shows the error
+  with buttons for its restarts (3.5 adds backtraces, locals and
+  evaluating in a frame), and an error at a document's line goes to
+  Problems. ⌘⏎ sets up the document's namespace first (its `ns` form)
+  if this `norn` hasn't seen it.
 
 On the way:
 - `norn-ui` gained:
@@ -112,6 +118,8 @@ On the way:
     forgets it, and gets its carets and decorations again when shown;
     edits to a hidden model sent ops to a removed node, and the engine
     rejected them;
+  - `:gutter false` on the editor surface (the REPL's input has no line
+    numbers);
   - a fix: a window's renders are serialized. A `refresh!` while the
     render loop was rendering the same window sent the engine two diffs
     against one old tree, and later ops named nodes that were gone.
