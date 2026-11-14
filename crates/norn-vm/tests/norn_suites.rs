@@ -126,6 +126,11 @@ fn match_suite() {
 }
 
 #[test]
+fn contracts_suite() {
+    suite("contracts_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [

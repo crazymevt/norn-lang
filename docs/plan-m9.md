@@ -382,3 +382,71 @@ done.**
   pattern, nesting, guards falling through, `recur` in a body, the
   `MatchError`, mistakes found when expanding, and how the code grows.
 
+**9.3 and 9.4, types and contracts (2026-11-14): done, as decisions 2–4
+describe.**
+
+- **Contracts, in core:**
+  - a predicate, a class, `:any`, or a combination: `fn-of` (arguments,
+    a result, and `:rest`), `any-of`, `all-of`, `vec-of`, `map-of`,
+    `nilable`;
+  - `->contract`, `contract-name` and `contract?`;
+  - a violation is a `ContractError` with `:function`, `:position` ("its
+    2nd argument", "its result"), `:expected`, `:value` and `:blame`.
+
+  **The names differ from the plan's.** `or/c` would read as the name
+  `c` in a namespace called `or`, since `/` divides a namespace from a
+  name, and `->` is already core's threading macro. So the combinators
+  are `fn-of`, `any-of`, `all-of`, `vec-of`, `map-of` and `nilable`.
+- **Signatures:**
+  - `(defn f ^Integer [^Integer a ^(Vec Number) xs & ^Number more] …)`.
+    A type is a class, `Any`, `(? T)`, `(U A B…)`, `(Vec T)`,
+    `(Map K V)` or `(-> A… R)`. A name that isn't one (`^even?`) is an
+    error when the module loads, pointing to `defcontract` for
+    predicates.
+  - `defcontract` gives a function's contract from a `fn-of`.
+  - Either way, the contract lives in a private `f%contract` var beside
+    the function, which is flagged.
+- **Checked at module boundaries.** When another namespace (a module, or
+  the REPL) names a flagged function, the expander puts in its place a
+  private wrapper var in the *calling* namespace, made once per function
+  and namespace. Its def runs before the form that first needs it, and
+  the module cache records it with the rest.
+  - The module's own calls go direct.
+  - `*check-contracts*` (read when code is expanded) is `:boundaries` by
+    default, or `:all`, or `:none`.
+  - A function passed as a value from the other module is the wrapper,
+    so it keeps its contract.
+  - The wrapper reads the contract on each call, so redefining the
+    function, with or without types, takes effect.
+- **Blame, as Racket does it:**
+  - a bad argument blames the calling module (with its file):
+    `ct2.lib/add: its 2nd argument should be Integer, got "2", blaming
+    ct2.user (…/ct2/user.norn)`;
+  - a bad result blames the function's own module;
+  - a `fn-of` argument's bad result blames the function it was given.
+- **`(declare (optimize …) (type …))`** is recorded in `%declarations`
+  with where it's written, for M10. `(declare name…)` is as it was.
+- **Three things the work turned up:**
+  - **A reader bug.** A collection's metadata was lost when its parts had
+    their own (`^String [^Integer x]`): one slot held pending metadata.
+    It's a stack now.
+  - **Where to read a signature.** `fn` rebuilds its parameter vector, and
+    `defn` usually goes through the fast path (plain data in and out),
+    both of which drop metadata. So signatures are read from the `defn`
+    and `fn` calls' own syntax, in `macro-step`, before either runs.
+  - **Cost.** Uncached expansion is about 5% slower (180 to 189 ms for
+    four libraries), from looking up each name a module writes to see if
+    it has a contract. A first version cost 17%: it put the macro vars
+    behind delays (each deref a generic function call now), and checked
+    namespaces before the cheap flag. Cached loads don't expand, so they
+    don't pay it.
+- **Tests:** `contracts_test.norn`, 31 checks at both tiers, with modules
+  in a temporary folder:
+  - arguments and results, and their blame;
+  - `(Vec T)`, the rest of the arguments, `(U …)`, `(? T)`, `(-> …)`;
+  - a name that isn't a type;
+  - the module's own calls, a function passed as a value, the REPL, an
+    unchecked function;
+  - `defcontract`, redefinitions, `:none`;
+  - contracts used directly, and `declare`.
+

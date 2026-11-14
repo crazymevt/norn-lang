@@ -195,6 +195,8 @@ prims! {
     "macro?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Var) && a[0].var_is_macro()));
     "%set-private!" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "%set-private!")?; a[0].var_set_flag(norn_rt::func::VAR_PRIVATE); Ok(a[0]) };
     "private?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Var) && a[0].var_is_private()));
+    "%set-contracted!" 2 Some(2) => |_, a| { expect(a[0], Kind::Var, "%set-contracted!")?; if a[1].truthy() { a[0].var_set_flag(norn_rt::func::VAR_CONTRACTED); } else { a[0].var_clear_flag(norn_rt::func::VAR_CONTRACTED); } Ok(a[0]) };
+    "%contracted?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Var) && a[0].var_flags() & norn_rt::func::VAR_CONTRACTED != 0));
     "error" 1 VAR => |_, a| Err(Error::new(join(a, false)));
     "disassemble" 1 Some(1) => disassemble;
     // system

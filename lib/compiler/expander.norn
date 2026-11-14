@@ -185,10 +185,48 @@
        (when-not (or (= owner home) (contains? (syn/syntax-scopes id) (get @access-scopes owner)))
          (fail id (%var-name v) "is private to" (str owner)))))))
 
+;; ---- contracts at module boundaries (M9 parts 9.3, 9.4) ----
+;;
+;; A function with a contract (its signature, or defcontract: a private
+;; var name%contract beside it) is called from another namespace through a
+;; wrapper that checks it: the expander names the wrapper, a private var
+;; in the calling namespace (one per function and namespace), in the
+;; function's place. Its def is run before the form that first needs it.
+
+(def ^:dynamic *wrappers*
+  "While a top-level form expands: an atom of the wrapper defs it needs,
+  run before it (nil: none are made, as for expansion tools)."
+  nil)
+
+(defn- contracted?
+  "Does var v have a contract to check? (a flag on the var: this is asked
+  of every reference to another namespace's var)"
+  [v]
+  (%contracted? v))
+
+(defn- wrapper-for
+  "The name, in the current namespace, of the function that checks var
+  v's contract when this namespace calls it (queuing its def), or nil."
+  [v]
+  (when (and *wrappers* (zero? *phase*) (not= norn.core/*check-contracts* :none) (contracted? v))
+    (let [n (%var-name v)
+          here (ns-sym)
+          w (symbol (str (apply str (map (fn [c] (if (= c \/) "%" (str c))) n)) "%checked"))]
+      (when-not (or (some? (%bound-value (symbol (str here) (str w))))
+                    (some (fn [d] (= w (second (second d)))) @*wrappers*))
+        (let [loc (or (%location) "")
+              file (let [i (%str-index loc ":" nil false)] (if i (subs loc 0 i) loc))
+              caller (str here (when (seq file) (str " (" file ")")))]
+          (%intern here w)
+          (swap! *wrappers* conj
+                 (list 'do (list 'def w (list 'norn.core/%wrap-for (list 'var (symbol n)) caller))
+                       (list 'norn.core/%set-private! (list 'var w))))))
+      w)))
+
 (defn- global-ref
   "What the compiler should see for global identifier id: the symbol as
   written when its home is the current namespace, else the var's full
-  name."
+  name (or, for a function with a contract, its checking wrapper)."
   ([id] (global-ref id true))
   ([id check?]
    (let [sym (syn/syntax-e id)
@@ -196,9 +234,19 @@
      (when (and check? (namespace sym)) (check-access id sym home))
      (cond (and (zero? *phase*) (= home (ns-sym))
                 (or (zero? (%ns-shift home)) (%resolve-in home sym)))
-           sym
+           ;; (written here: as written, unless it names a function with a
+           ;; contract from elsewhere, or anywhere when checking :all)
+           (or (when *wrappers*
+                 (when-let [v (%resolve-in home sym)]
+                   ;; (the flag first: most vars have no contract)
+                   (when (and (%contracted? v)
+                              (or (not= (str (var-ns-of v)) (str home)) (= norn.core/*check-contracts* :all)))
+                     (wrapper-for v))))
+               sym)
            :else (if-let [v (lookup id sym)]
-                   (do (when check? (check-access id sym home v)) (symbol (%var-name v)))
+                   (do (when check? (check-access id sym home v))
+                       (or (when (and (%contracted? v) (not= (str (var-ns-of v)) (str (ns-sym)))) (wrapper-for v))
+                           (symbol (%var-name v))))
                    (if (and *strict* (pos? *phase*))
                      (fail id (str sym) "isn't available at compile time here: define it inside"
                            "begin-for-syntax, or require its module with :require-for-syntax")
@@ -244,6 +292,32 @@
                 (let [u (local-sym p)] (bind! p {:local u}) u))))
         (parts ps "fn* requires a parameter vector")))
 
+(def ^:dynamic *signatures*
+  "While a top-level form expands: an atom of the types its defn calls
+  wrote, by the name defined (defn hands fn data, which drops them)."
+  nil)
+
+(def ^:dynamic *fn-signature*
+  "While a def's value expands: an atom, ::none until the first fn* in it
+  records its arities' types there (M9 part 9.3)."
+  nil)
+
+(defn- tag-of [x] (let [p (syn/syntax-props x)] (when (map? p) (get p :tag))))
+
+(defn- arity-signature
+  "Parameter vector syntax ps's types: {:args [type…] :rest type :result
+  type :variadic bool} (nil where none is written)."
+  [ps]
+  (let [elems (vec (syn/syntax-e ps))
+        amp (first (keep-indexed (fn [i p] (when (= '& (syn/syntax-e p)) i)) elems))
+        fixed (if amp (subvec elems 0 amp) elems)]
+    {:args (mapv tag-of fixed) :rest (when amp (tag-of (nth elems (inc amp) nil))) :result (tag-of ps)
+     :variadic (some? amp) :nfixed (count fixed)}))
+
+(defn- record-signature! [ps-list]
+  (when (and *fn-signature* (= ::none @*fn-signature*))
+    (reset! *fn-signature* (mapv arity-signature ps-list))))
+
 (defn- expand-fn
   "(fn* name? [params] body…) or (fn* name? ([params] body…)…)."
   [xs]
@@ -259,6 +333,9 @@
                       params (expand-params ps)]
                   (apply list params (expand-body body))))]
     (when (empty? rst) (fail (first xs) "fn* requires a parameter vector"))
+    (record-signature! (if (vector? (syn/syntax-e (first rst)))
+                         [(first rst)]
+                         (keep (fn [sig] (let [e (syn/syntax-e sig)] (when (and (seq? e) (seq e)) (first e)))) rst)))
     (let [arities (if (vector? (syn/syntax-e (first rst)))
                     [(arity (first rst) (rest rst))]
                     (mapv (fn [sig]
@@ -311,18 +388,36 @@
     "do" (apply list 'do (expand-body (rest xs)))
     "def" (let [id (nth xs 1 nil)]
             (when-not (and id (syn/identifier? id)) (fail s "First argument to def must be a symbol"))
-            (let [d (apply list 'def (syn/syntax-e id)
-                           (case (count xs)
-                             2 nil
-                             3 [(expand (nth xs 2))]
-                             4 (if (string? (syn/syntax-e (nth xs 2)))
-                                 [(syn/syntax-e (nth xs 2)) (expand (nth xs 3))]
-                                 (fail s "Too many arguments to def"))
-                             (fail s "Too many arguments to def")))]
-              ;; (def ^:private x …): only this namespace may name it
-              (if (syn/syntax-property id :private)
-                (list 'do d (list 'norn.core/%set-private! (list 'var (syn/syntax-e id))))
-                d)))
+            (let [sig (atom ::none)
+                  value (fn [x] (binding [*fn-signature* (when (zero? *phase*) sig)] (expand x)))
+                  init (case (count xs)
+                         2 nil
+                         3 [(value (nth xs 2))]
+                         4 (if (string? (syn/syntax-e (nth xs 2)))
+                             [(syn/syntax-e (nth xs 2)) (value (nth xs 3))]
+                             (fail s "Too many arguments to def"))
+                         (fail s "Too many arguments to def"))
+                  nm (syn/syntax-e id)
+                  d (apply list 'def nm init)
+                  ;; (a function whose parameters or result say their types:
+                  ;; its contract, beside it, checked from other modules)
+                  ;; (what defn's call wrote, if it was a defn; else what fn's,
+                  ;; or fn*'s, did)
+                  sigs (or (when *signatures* (get @*signatures* nm)) (when (vector? @sig) @sig))
+                  f (last init)
+                  typed (and (vector? sigs) (seq? f) (= 'fn* (first f))
+                             (some (fn [a] (or (some some? (:args a)) (:rest a) (:result a))) sigs))
+                  was (when (zero? *phase*) (%resolve-in (ns-sym) nm))
+                  extra (concat (when (syn/syntax-property id :private)
+                                  [(list 'norn.core/%set-private! (list 'var nm))])
+                                ;; (redefined without its types: no contract now)
+                                (when (and (not typed) was (%contracted? was) (= (str (var-ns-of was)) (str (ns-sym))))
+                                  [(list 'norn.core/%drop-contract! (list 'var nm))])
+                                (when typed
+                                  (let [c (symbol (str (name nm) "%contract"))]
+                                    [(list 'def c (list 'norn.core/%signature-parts (list 'quote sigs) (list 'quote (ns-sym)) (str (ns-sym) "/" nm)))
+                                     (list 'norn.core/%set-private! (list 'var c))])))]
+              (if (seq extra) (apply list 'do d extra) d)))
     "var" (let [id (nth xs 1 nil)]
             (when-not (and id (syn/identifier? id)) (fail s "var takes a symbol"))
             ;; (#'other/private reaches a private var, as in Clojure: on purpose)
@@ -458,9 +553,32 @@
         [(syn/flip-scope out intro) intro])
       [(datum-step m s (access-scope (var-ns-of v))) nil])))
 
+(def ^:private fn-macro "norn.core/fn: its calls' parameter vectors carry their types." (%resolve-in 'norn.core 'fn))
+(def ^:private defn-macro "norn.core/defn, likewise." (%resolve-in 'norn.core 'defn))
+
+(defn- fn-param-vectors
+  "The parameter vectors of a (fn name? [params] body…) or (defn name
+  doc? attrs? [params] body…) call s, or their ([params] body…) arities."
+  [s]
+  (let [xs (rest (vec (syn/syntax-e s)))
+        xs (if (and (seq xs) (syn/identifier? (first xs))) (rest xs) xs)
+        xs (if (and (seq xs) (string? (syn/syntax-e (first xs)))) (rest xs) xs)
+        xs (if (and (seq xs) (map? (syn/syntax-e (first xs)))) (rest xs) xs)]
+    (if (and (seq xs) (vector? (syn/syntax-e (first xs))))
+      [(first xs)]
+      (keep (fn [a] (let [e (syn/syntax-e a)] (when (and (seq? e) (seq e) (vector? (syn/syntax-e (first e)))) (first e)))) xs))))
+
 (defn- macro-step
   "The expansion of macro call s, whose head names macro var v."
   [v s]
+  ;; (fn rebuilds its parameter vectors, dropping what's written on them:
+  ;; a def's signature is read from the call, M9 part 9.3)
+  (when (and *fn-signature* (= ::none @*fn-signature*) (identical? v fn-macro))
+    (record-signature! (fn-param-vectors s)))
+  (when (and *signatures* (identical? v defn-macro))
+    (let [nm (nth (vec (syn/syntax-e s)) 1 nil)]
+      (when (and nm (syn/identifier? nm))
+        (swap! *signatures* assoc (syn/syntax-e nm) (mapv arity-signature (fn-param-vectors s))))))
   (if-let [hook *on-step*]
     ;; (what the macro's own code expands, as it runs, isn't a step of this
     ;; expansion)
@@ -552,13 +670,17 @@
 
 (defn eval-syntax
   "Evaluate syntax s: a top-level do form by form, anything else expanded
-  and compiled."
+  and compiled (after the contract wrappers it needs: M9 part 9.4)."
   [s]
-  (let [s (binding [*datums* (atom {}) *ns-sym* (symbol (str (current-ns)))] (expand-top s))]
-    (if (top-do? s)
-      (loop [xs (rest (syn/syntax-e s)) last nil]
-        (if (seq xs) (recur (rest xs) (eval-syntax (first xs))) last))
-      (run (expand-all s) s))))
+  (binding [*signatures* (or *signatures* (atom {}))]
+    (let [s (binding [*datums* (atom {}) *ns-sym* (symbol (str (current-ns)))] (expand-top s))]
+      (if (top-do? s)
+        (loop [xs (rest (syn/syntax-e s)) last nil]
+          (if (seq xs) (recur (rest xs) (eval-syntax (first xs))) last))
+        (let [ws (atom [])
+              e (binding [*wrappers* ws] (expand-all s))]
+          (doseq [w @ws] (run w nil))
+          (run e s))))))
 
 (defn eval
   "Evaluate form (data or syntax) through the expander, in the current

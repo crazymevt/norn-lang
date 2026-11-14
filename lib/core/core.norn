@@ -3177,3 +3177,224 @@
                        (if ~ok (let* ~bind ~body) ~nxt))))
                 fail
                 (reverse clauses)))))
+
+;;; ---- contracts, with blame (M9 part 9.4) ---------------------------------------------------
+;;;
+;;; A contract says what a value must be: a predicate (int?), a class
+;;; (String), or a combination (fn-of, any-of, all-of, vec-of, map-of,
+;;; nilable). A function's contract is checked on calls from other modules
+;;; (and the REPL), through a wrapper the expander puts in the caller's
+;;; place; the module's own calls go direct. A violation is a
+;;; ContractError blaming the side at fault: the calling module for a bad
+;;; argument, the function's own module for a bad result. A signature
+;;; (9.3: ^Integer x) is a contract too; defcontract gives one directly.
+
+(defclass ContractError (Error)
+  ((function :initform nil) (position :initform nil) (expected :initform nil)
+                            (value :initform nil) (blame :initform nil)))
+
+;; check: (fn [v fail] …) gives v (or v wrapped, for a function contract),
+;; or calls (fail). parts: a function contract's {:args :rest :result}.
+(defclass Contract () ((name :initarg :name) (check :initarg :check) (parts :initform nil)))
+
+(def ^:dynamic *check-contracts*
+  "Which calls check contracts, when code is expanded: :boundaries
+  (calls from other modules: the default), :all (the module's own too),
+  or :none."
+  :boundaries)
+
+(defn contract? "Is x a contract (made by fn-of and the rest)?" [x] (instance? Contract x))
+
+(defn- %after [s sep] (let [i (%str-index s sep nil false)] (if i (subs s (+ i (count sep))) s)))
+
+(defn- %fn-label
+  "Function f's name, as pr-str shows it (norn.core/int?), or fn."
+  [f]
+  (let [s (pr-str f)
+        s (cond (= 0 (%str-index s "#<primitive " nil false)) (subs s 12)
+                (= 0 (%str-index s "#<fn " nil false)) (subs s 5)
+                :else (str s ">"))]
+    (subs s 0 (dec (count s)))))
+
+(defn ->contract
+  "x as a contract: a contract itself; a class (an instance of it); a
+  predicate; nil or :any (anything)."
+  [x]
+  (cond (contract? x) x
+        (or (nil? x) (= x :any)) (make Contract :name "anything" :check (fn [v _] v))
+        (class? x) (make Contract :name (name (class-name x)) :check (fn [v fail] (if (instance? x v) v (fail))))
+        (fn? x) (make Contract :name (%after (%fn-label x) "/") :check (fn [v fail] (if (x v) v (fail))))
+        :else (error TypeError :message (str "Not a contract: " (pr-str x)) :expected "a contract, class or predicate" :value x)))
+
+(defn contract-name "What contract c says, as text." [c] (:name (->contract c)))
+
+(defn %contract-check
+  "v checked against contract c: v (or v wrapped, for a function
+  contract), else a ContractError. ctx: {:function :position :blame}."
+  [c v ctx]
+  (let [c (->contract c)]
+    ((:check c) v (fn [] (error ContractError
+                                :message (str (:function ctx) ": " (:position ctx) " should be " (:name c) ", got " (pr-str v)
+                                              ", blaming " (:blame ctx))
+                                :function (:function ctx) :position (:position ctx) :expected (:name c)
+                                :value v :blame (:blame ctx))))))
+
+(defn nilable "A contract: nil, or what c says." [c]
+  (let [c (->contract c)]
+    (make Contract :name (str "nil or " (:name c)) :check (fn [v fail] (if (nil? v) v ((:check c) v fail))))))
+
+(defn any-of "A contract: what any of cs says (the first that holds)." [& cs]
+  (let [cs (mapv ->contract cs)]
+    (make Contract :name (apply str (interpose " or " (map :name cs)))
+          :check (fn [v fail]
+                   (loop [cs (seq cs)]
+                     (if (nil? cs)
+                       (fail)
+                       (let [r (catch-tag ::failed ((:check (first cs)) v (fn [] (throw-tag ::failed ::failed))))]
+                         (if (= r ::failed) (recur (next cs)) r))))))))
+
+(defn all-of "A contract: what every one of cs says." [& cs]
+  (let [cs (mapv ->contract cs)]
+    (make Contract :name (apply str (interpose " and " (map :name cs)))
+          :check (fn [v fail] (reduce (fn [x c] ((:check c) x fail)) v cs)))))
+
+(defn vec-of "A contract: a vector whose every item is what c says." [c]
+  (let [c (->contract c)]
+    (make Contract :name (str "a vector of " (:name c))
+          :check (fn [v fail] (if (vector? v) (mapv (fn [x] ((:check c) x fail)) v) (fail))))))
+
+(defn map-of "A contract: a map whose keys are what kc says, and values vc." [kc vc]
+  (let [kc (->contract kc) vc (->contract vc)]
+    (make Contract :name (str "a map of " (:name kc) " to " (:name vc))
+          :check (fn [v fail]
+                   (if (map? v)
+                     (into {} (map (fn [[k x]] [((:check kc) k fail) ((:check vc) x fail)])) v)
+                     (fail))))))
+
+(defn- %ordinal [n]
+  (str n (cond (and (>= (rem n 100) 11) (<= (rem n 100) 13)) "th"
+               (= 1 (rem n 10)) "st" (= 2 (rem n 10)) "nd" (= 3 (rem n 10)) "rd" :else "th")))
+
+(defn %check-call
+  "Call f with args, checking them against parts' :args (and the rest
+  against :rest) and its result against :result. who: the function's
+  name; caller and provider: who's blamed for a bad argument, and a bad
+  result."
+  [f args parts who caller provider]
+  (let [{arg-cs :args rest-c :rest result-c :result} parts
+        n (count arg-cs)
+        checked (vec (map-indexed (fn [i a]
+                                    (let [c (if (< i n) (nth arg-cs i) rest-c)]
+                                      (if c (%contract-check c a {:function who :position (str "its " (%ordinal (inc i)) " argument") :blame caller}) a)))
+                                  args))
+        r (apply f checked)]
+    (if result-c (%contract-check result-c r {:function who :position "its result" :blame provider}) r)))
+
+(defn fn-of
+  "A contract: a function whose arguments are what arg-cs say (a vector)
+  and whose result is what result-c says (:rest c: the arguments after
+  them). Calling the function it wraps blames the caller for a bad
+  argument and the function's giver for a bad result."
+  [arg-cs result-c & {:keys [rest]}]
+  (let [parts {:args (mapv ->contract arg-cs) :result (->contract result-c) :rest (when rest (->contract rest))}]
+    (with (make Contract :name (str "(fn-of [" (apply str (interpose " " (map :name (:args parts)))) "] " (:name (:result parts)) ")")
+                :check (fn [v fail]
+                         (if (fn? v)
+                           (fn [& args] (%check-call v args parts (%fn-label v) "the function's caller" "the function"))
+                           (fail))))
+          :parts parts)))
+
+;; ---- a function's contract, at module boundaries ----
+
+(defn %contract-of
+  "Var v's contract: parts {:args :rest :result} (or a vector of them, one
+  per arity, each with :nfixed and :variadic), or nil."
+  [v]
+  (when (%contracted? v) (%bound-value (symbol (str (%var-name v) "%contract")))))
+
+(defn- %arity-parts [parts n]
+  (if (map? parts)
+    parts
+    (or (some (fn [p] (when (and (not (:variadic p)) (= n (:nfixed p))) p)) parts)
+        (some (fn [p] (when (and (:variadic p) (>= n (:nfixed p))) p)) parts))))
+
+(defn %wrap-for
+  "The function another module (caller) calls in var v's place: v's
+  function with its contract checked, read on each call so a
+  redefinition takes effect."
+  [v caller]
+  (let [n (%var-name v)
+        module (subs n 0 (%str-index n "/" nil false))]
+    (fn [& args]
+      (if-let [parts (%arity-parts (%contract-of v) (count args))]
+        (%check-call (var-get v) args parts n caller module)
+        (apply (var-get v) args)))))
+
+(defn %drop-contract! "Function var v has no contract now." [v] (%set-contracted! v false) nil)
+
+(defn %type->contract
+  "Type t (written as ^t: a class, Any, or (? T) (U A B…) (Vec T) (Map K V)
+  (-> A… R)) as a contract, its names read in namespace home."
+  [t home where]
+  (let [bad (fn [] (error TypeError :message (str where ": ^" (pr-str t) " isn't a type: a type is a class, Any, "
+                                                  "(? T), (U A B…), (Vec T), (Map K V) or (-> A… R); "
+                                                  "for a predicate, say defcontract")
+                          :expected "a type" :value t))
+        sub (fn [x] (%type->contract x home where))]
+    (cond (nil? t) nil
+          (= t 'Any) (->contract :any)
+          (symbol? t) (let [v (%resolve-in home t)
+                            c (when v (%bound-value (symbol (%var-name v))))]
+                        (if (class? c) (->contract c) (bad)))
+          (and (seq? t) (seq t))
+          (case (first t)
+            ? (if (= 2 (count t)) (nilable (sub (second t))) (bad))
+            U (apply any-of (map sub (rest t)))
+            Vec (if (= 2 (count t)) (vec-of (sub (second t))) (bad))
+            Map (if (= 3 (count t)) (map-of (sub (second t)) (sub (nth t 2))) (bad))
+            -> (if (>= (count t) 2) (fn-of (mapv sub (butlast (rest t))) (sub (last t))) (bad))
+            (bad))
+          :else (bad))))
+
+(defn %signature-parts
+  "The contract a function's signature says (sigs: its arities' types, as
+  the expander reads them), its names read in namespace home; marks the
+  function as having one. who: its full name."
+  [sigs home who]
+  (let [parts (mapv (fn [a]
+                      (assoc a
+                             :args (mapv (fn [t] (%type->contract t home who)) (:args a))
+                             :rest (%type->contract (:rest a) home who)
+                             :result (%type->contract (:result a) home who)))
+                    sigs)]
+    (%set-contracted! (%resolve-in home (symbol (%after who "/"))) true)
+    (if (= 1 (count parts)) (first parts) parts)))
+
+(defmacro defcontract
+  "(defcontract f (fn-of [arg-contract…] result-contract)): function f's
+  contract, checked on calls from other modules (and the REPL), blaming
+  the caller for a bad argument and f's module for a bad result."
+  [fname c]
+  (let [cname (symbol (str (name fname) "%contract"))]
+    `(do (def ~cname
+           (let [c# ~c]
+             (or (:parts c#) (error TypeError :message "defcontract takes (fn-of …)" :expected "(fn-of …)" :value c#))))
+         (%set-private! (var ~cname))
+         (%set-contracted! (var ~fname) true)
+         (var ~fname))))
+
+;; ---- declarations for the optimiser (M9 part 9.3) ----
+
+(def %declarations
+  "[place declarations] for each (declare (optimize …) (type …)…) read,
+  for M10's optimiser."
+  (atom []))
+
+(defmacro declare
+  "(declare name…): declare names defined later. (declare (optimize (speed
+  3)) (type Integer x)…): declarations for the optimiser (M10), recorded
+  with where they're written and otherwise doing nothing yet."
+  [& xs]
+  (if (and (seq xs) (every? seq? xs))
+    (do (swap! %declarations conj [(%location) (vec xs)]) nil)
+    `(do ~@(map (fn [n] (list 'def n)) xs))))

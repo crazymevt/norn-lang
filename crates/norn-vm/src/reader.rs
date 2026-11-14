@@ -121,8 +121,10 @@ struct Locs {
     frames: Vec<Frame>,
     done: Option<LocNode>,
     cache: (usize, Place),
-    /// Metadata read (`^…`) for the next form at depth `.1`.
-    meta: Option<(Value, usize)>,
+    /// Metadata read (`^…`), each for the next form at its depth (`.1`):
+    /// a stack, since a collection's waits while its parts take their own
+    /// (`^String [^Integer x]`).
+    meta: Vec<(Value, usize)>,
 }
 
 const SPECIALS: &[&str] = &["quote", "if", "do", "def", "var", "fn*", "let*", "letrec*", "loop*", "recur", "&"];
@@ -147,7 +149,7 @@ impl<'a> Reader<'a> {
 
     /// This reader, recording where each form comes from (`take_locations`).
     pub fn with_locations(mut self) -> Self {
-        self.locs = Some(Locs { frames: Vec::new(), done: None, cache: (0, Place { line: 1, col: 1, at: 0 }), meta: None });
+        self.locs = Some(Locs { frames: Vec::new(), done: None, cache: (0, Place { line: 1, col: 1, at: 0 }), meta: Vec::new() });
         self
     }
 
@@ -194,9 +196,9 @@ impl<'a> Reader<'a> {
             let l = self.locs.as_mut().unwrap();
             let depth = l.frames.len() - 1;
             let f = l.frames.pop().unwrap();
-            let meta = match l.meta {
-                Some((m, d)) if d == depth => {
-                    l.meta = None;
+            let meta = match l.meta.last() {
+                Some(&(m, d)) if d == depth => {
+                    l.meta.pop();
                     m
                 }
                 _ => Value::NIL,
@@ -421,11 +423,10 @@ impl<'a> Reader<'a> {
                         let m = meta_map(vm, m);
                         let l = self.locs.as_mut().unwrap();
                         let depth = l.frames.len() - 1;
-                        let m = match l.meta {
-                            Some((old, d)) if d == depth => merge_meta(vm, old, m),
-                            _ => m,
-                        };
-                        l.meta = Some((m, depth));
+                        match l.meta.last_mut() {
+                            Some((old, d)) if *d == depth => *old = merge_meta(vm, *old, m),
+                            _ => l.meta.push((m, depth)),
+                        }
                     }
                     if self.at_end() {
                         return Err(ReadError::Incomplete("EOF after metadata".into()));

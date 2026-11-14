@@ -25,6 +25,9 @@ pub const VAR_DYNAMIC: u64 = 2;
 pub const VAR_DYNBOUND: u64 = 4;
 /// Private to its namespace (defn-, ^:private): other code can't name it.
 pub const VAR_PRIVATE: u64 = 8;
+/// Has a contract (a signature, or defcontract): calls from other
+/// namespaces go through a wrapper that checks it (M9 part 9.4).
+pub const VAR_CONTRACTED: u64 = 16;
 
 pub fn var_new(m: &mut Mutator, ns: Value, name: Value) -> Value {
     let v = alloc(m, Kind::Var, 4);
@@ -62,6 +65,10 @@ impl Value {
 
     pub fn var_set_flag(self, flag: u64) {
         self.atomic_word(3).fetch_or(flag, Ordering::Relaxed);
+    }
+
+    pub fn var_clear_flag(self, flag: u64) {
+        self.atomic_word(3).fetch_and(!flag, Ordering::Relaxed);
     }
 
     pub fn var_is_macro(self) -> bool {

@@ -664,6 +664,21 @@ Dynamically typed with **optional, gradual annotations**: CL-style
   ...)
 ```
 
+As built (M9 parts 9.3 and 9.4):
+- **Types are Norn's classes:** `^Integer x`, `^String [...]` for the
+  result, `(? T)` (nil-able), `(U A B)`, `(Vec T)`, `(Map K V)`,
+  `(-> A … R)` and `Any`.
+- **A signature is checked dynamically** on calls from other modules (and
+  the REPL), through a wrapper the expander puts in the caller's place.
+  Calls inside the module go direct, and there's no static checker.
+- **`defcontract` gives a contract directly,** from predicates and
+  combinators: `fn-of`, `any-of`, `all-of`, `vec-of`, `map-of`,
+  `nilable`. (Racket's `or/c` style can't be used: `/` divides a
+  namespace from a name.)
+- **A `ContractError` blames** the calling module for a bad argument, and
+  the function's module for a bad result.
+- **`(declare (optimize …) (type …))` is recorded for M10.**
+
 ---
 
 ## 9. Interop
