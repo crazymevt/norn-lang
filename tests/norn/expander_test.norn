@@ -1,0 +1,100 @@
+;;;; norn.expander: hygiene (M8 part 8.2). Hygienic macros here build their
+;;;; output from quote-syntax pieces; pattern templates come with 8.3.
+
+(ns expander-test
+  (:require [norn.test :refer [is deftest testing]] [norn.syntax :as syn :refer [defsyntax]]))
+
+;; Another namespace, with a macro whose template calls a private helper of
+;; its own.
+(ns expander-test.lib
+  (:require [norn.syntax :as syn :refer [defsyntax]]))
+
+(defn- secret [] :secret)
+
+(defsyntax use-secret
+  (fn [_] (syn/datum->syntax (quote-syntax here) (list (quote-syntax secret)))))
+
+(in-ns 'expander-test)
+
+(defn- template
+  "Data with syntax parts, as syntax with this namespace's context."
+  [d]
+  (syn/datum->syntax (quote-syntax here) d))
+
+;; (my-or a b): a's value if it's true, else b's — with a temporary `t`
+;; that the user's own `t` mustn't see.
+(defsyntax my-or
+  (fn [s]
+    (let [[_ a b] (syn/syntax->list s)]
+      (template (list (quote-syntax let*) (vector (quote-syntax t) a)
+                      (list (quote-syntax if) (quote-syntax t) (quote-syntax t) b))))))
+
+(defn helper [] :helper)
+
+(defsyntax call-helper
+  (fn [_] (template (list (quote-syntax helper)))))
+
+(defsyntax with-t
+  (fn [s]
+    (let [[_ body] (syn/syntax->list s)]
+      (template (list (quote-syntax let*) (vector (quote-syntax t) 1) body)))))
+
+(defsyntax names-list?
+  (fn [s]
+    (let [[_ x] (syn/syntax->list s)]
+      (if (syn/free-identifier=? x (quote-syntax list)) (quote-syntax :yes) (quote-syntax :no)))))
+
+(defmacro aif [test then else] `(let [~'it ~test] (if ~'it ~then ~else)))
+
+(deftest hygiene
+  (testing "a macro's binding doesn't capture the user's name"
+    (is (= 5 (let [t 5] (my-or false t))))
+    (is (= 1 (my-or 1 (error "not evaluated"))))
+    (is (= 7 (let [t 7] (with-t t)))))
+  (testing "the user's binding doesn't capture a macro's free name"
+    (is (= [:user :helper] (let [helper (fn [] :user)] [(helper) (call-helper)]))))
+  (testing "a macro's names mean what they meant where it was defined"
+    (is (= :secret (expander-test.lib/use-secret)))
+    (is (= [:mine :secret] (let [secret (fn [] :mine)] [(secret) (expander-test.lib/use-secret)]))))
+  (testing "hygienic macros inside each other"
+    (is (= 3 (let [t 3] (my-or (my-or false false) t))))
+    (is (= 9 (let [t 9] (with-t (my-or false t))))))
+  (testing "a macro's own binding isn't visible to the user's code"
+    (is (thrown? Error (eval '(expander-test/with-t t)))))
+  (testing "free-identifier=?: the same binding, not just the same name"
+    (is (= :yes (names-list? list)))
+    (is (= :no (let [list 1] (names-list? list)))))
+  (testing "defmacro is as it was: it may capture on purpose"
+    (is (= 3 (aif 3 it 0)))
+    (is (= 0 (aif nil it 0)))))
+
+(deftest kernel-forms
+  (testing "let* rebinds a name in order, as Clojure's does"
+    (is (= 2 (let* [x 1 x (inc x)] x))))
+  (testing "a local named like a global shadows it"
+    (is (= 3 (let [inc (fn [x] (+ x 2))] (inc 1)))))
+  (testing "fn* with a name, and several arities"
+    (is (= 120 ((fn* fact ([n] (fact n 1)) ([n acc] (if (zero? n) acc (fact (dec n) (* acc n))))) 5))))
+  (testing "letrec*"
+    (is (= true (letrec* [ev? (fn* [n] (if (zero? n) true (od? (dec n))))
+                          od? (fn* [n] (if (zero? n) false (ev? (dec n))))]
+                  (ev? 10)))))
+  (testing "quote-syntax gives syntax"
+    (is (syn/syntax? (quote-syntax (a b))))
+    (is (= '(a b) (syn/syntax->datum (quote-syntax (a b))))))
+  (testing "a top-level do: a macro defined in it applies after it"
+    (is (= 42 (eval '(do (defmacro forty-two [] 42) (forty-two)))))))
+
+(deftest errors-say-where
+  (let [[s] (syn/read-all-syntax "(let* [1 2] 3)" "e.norn")
+        msg (try (norn.expander/eval s) nil (catch Error e (condition-message e)))]
+    (is (= "e.norn:1:8: Bad binding form in let*: 1" msg))))
+
+(deftest locals-print-as-written
+  ;; (each local is an uninterned symbol, so a macro's `t` and the user's
+  ;; stay apart, but it shows as the name the user wrote)
+  (let [form (norn.expander/expand-all (syn/datum->syntax nil '(fn* [x] x)))
+        x (first (second form))]
+    (is (= "(fn* [x] x)" (pr-str form)))
+    (is (not= 'x x))
+    (is (identical? x (nth form 2)))))

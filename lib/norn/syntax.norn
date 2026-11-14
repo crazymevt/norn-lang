@@ -10,23 +10,61 @@
 ;;;;
 ;;;; A place is [source line column position span]: 1-based line and
 ;;;; column, and the character offset and length in the source.
+;;;;
+;;;; Scopes reach a form's parts lazily (as in Racket): adding one to a list
+;;;; changes the list's own scopes and notes the change as pending; its
+;;;; parts get it when syntax-e looks inside. So a binding form's scope
+;;;; costs nothing for the parts the expander never looks at again.
+;;;;
+;;;; Wrapping is lazy too: a raw syntax object holds plain data, and its
+;;;; parts become syntax objects (with its scopes and place) only when
+;;;; syntax-e looks inside. Code arrives as data and most of it only ever
+;;;; meets defmacro macros, which want data: for a raw form that's no work.
 
 (ns norn.syntax)
 
 (defclass Syntax ()
   ((e :doc "The datum, its parts wrapped too.")
    (scopes :doc "The scopes, a set of integers.")
-   (loc :doc "[source line column position span], or nil."))
+   (loc :doc "[source line column position span], or nil.")
+   (pending :doc "Scope changes not yet passed to the parts: [[op scope]…], or nil.")
+   (raw :doc "True when e is plain data whose parts take this object's scopes and place."))
   (:doc "A datum with its scopes and the place it came from.")
   (:equality :identity))
 
-(defn- make-syntax [e scopes loc] (%instance Syntax [e scopes loc]))
+(defn- make-syntax
+  ([e scopes loc] (%instance Syntax [e scopes loc nil false]))
+  ([e scopes loc pending] (%instance Syntax [e scopes loc pending false])))
+
+(declare compound?)
+
+(defn %raw-syntax
+  "Plain data d as syntax with scopes and place loc, its parts wrapped only
+  when looked at (d holds no syntax objects)."
+  [d scopes loc]
+  (%instance Syntax [d scopes loc nil (compound? d)]))
 
 (defn syntax? "Is x a syntax object?" [x] (instance? Syntax x))
 
-(defn syntax-e "The datum of syntax s, with its parts still syntax objects." [s] (slot-value s :e))
-(defn syntax-scopes "The scopes of syntax s." [s] (slot-value s :scopes))
-(defn syntax-loc "Where syntax s came from: [source line column position span], or nil." [s] (slot-value s :loc))
+(declare wrap-parts change-scopes)
+
+;; (slots by position, in the order defclass gives them: e scopes loc pending raw)
+(defn %raw-e "Syntax s's datum, its parts as they are (pending scopes not passed on)." [s] (%slot-ref s 0))
+(defn %raw? "Is syntax s raw (plain data inside)?" [s] (%slot-ref s 4))
+
+(defn syntax-e
+  "The datum of syntax s, with its parts still syntax objects."
+  [s]
+  (let [e (%slot-ref s 0)]
+    (if (%slot-ref s 4)
+      (let [scopes (%slot-ref s 1) loc (%slot-ref s 2)]
+        (wrap-parts e (fn [x] (%instance Syntax [x scopes loc nil (compound? x)]))))
+      (let [p (%slot-ref s 3)]
+        (if p (wrap-parts e (fn [x] (change-scopes x p))) e)))))
+
+(defn syntax-scopes "The scopes of syntax s." [s] (%slot-ref s 1))
+(defn syntax-loc "Where syntax s came from: [source line column position span], or nil." [s] (%slot-ref s 2))
+(defn %pending "Syntax s's scope changes not yet passed to its parts." [s] (%slot-ref s 3))
 
 (defn syntax-source "The name of the source s came from (a path), or nil." [s] (nth (syntax-loc s) 0 nil))
 (defn syntax-line "The 1-based line s starts on, or nil." [s] (nth (syntax-loc s) 1 nil))
@@ -66,8 +104,10 @@
 (defn syntax->datum
   "Syntax s with all its wrapping taken off (any datum passes through)."
   [s]
-  (let [x (if (syntax? s) (syntax-e s) s)]
-    (wrap-parts x syntax->datum)))
+  ;; (scopes don't matter here: the parts as they are, pending or not)
+  (cond (not (syntax? s)) (wrap-parts s syntax->datum)
+        (%slot-ref s 4) (%slot-ref s 0)
+        :else (wrap-parts (%slot-ref s 0) syntax->datum)))
 
 (defn syntax->list
   "The parts of a list or vector syntax s, as a list of syntax objects (nil
@@ -82,28 +122,76 @@
 
 (defn new-scope "A scope no syntax object has yet." [] (swap! scope-ids inc))
 
-(defn- map-scopes
-  "s with (f scopes) as the scopes of it and of all its parts."
-  [s f]
-  (letfn [(walk [x] (if (syntax? x)
-                      (make-syntax (wrap-parts (syntax-e x) walk) (f (syntax-scopes x)) (syntax-loc x))
-                      x))]
-    (walk s)))
+(defn- apply-op [ss [op sc]]
+  (case op
+    :add (conj ss sc)
+    :remove (disj ss sc)
+    :flip (if (contains? ss sc) (disj ss sc) (conj ss sc))))
 
-(defn add-scope "s and all its parts with scope sc added." [s sc] (map-scopes s (fn [ss] (conj ss sc))))
-(defn remove-scope "s and all its parts without scope sc." [s sc] (map-scopes s (fn [ss] (disj ss sc))))
+(defn- compound? [e] (or (seq? e) (vector? e) (map? e) (set? e)))
+
+(defn- change-scopes
+  "s with scope changes ops ([[op scope]…]) made to it now and, pending,
+  to its parts (anything not syntax passes through)."
+  [s ops]
+  (cond (not (syntax? s)) s
+        ;; a raw object's parts take its scopes when they're looked at
+        (%slot-ref s 4) (%instance Syntax [(%slot-ref s 0) (reduce apply-op (syntax-scopes s) ops) (syntax-loc s) nil true])
+        :else (let [e (%slot-ref s 0)]
+                (make-syntax e (reduce apply-op (syntax-scopes s) ops) (syntax-loc s)
+                             (when (compound? e) (into (or (%slot-ref s 3) []) ops))))))
+
+(defn %change-scopes
+  "s with scope changes ops ([[:add|:remove|:flip scope]…]) made to it and
+  its parts (for norn.expander)."
+  [s ops]
+  (change-scopes s ops))
+
+(defn add-scope "s and all its parts with scope sc added." [s sc] (change-scopes s [[:add sc]]))
+(defn remove-scope "s and all its parts without scope sc." [s sc] (change-scopes s [[:remove sc]]))
 
 (defn flip-scope
   "s and all its parts with scope sc added where it's missing and removed
   where it's present (how a macro step marks what the macro introduced)."
   [s sc]
-  (map-scopes s (fn [ss] (if (contains? ss sc) (disj ss sc) (conj ss sc)))))
+  (change-scopes s [[:flip sc]]))
 
 (defn bound-identifier=?
   "Would binding a and binding b bind the same thing: the same name, with
   the same scopes?"
   [a b]
   (and (= (syntax-e a) (syntax-e b)) (= (syntax-scopes a) (syntax-scopes b))))
+
+;; ---- hygienic macros ----
+
+(defclass Transformer ()
+  ((f :doc "The function from the call's syntax to its expansion's."))
+  (:doc "A hygienic macro's transformer: syntax in, syntax out.")
+  (:equality :identity))
+
+(defn transformer "A transformer that calls f." [f] (%instance Transformer [f]))
+
+(defmacro defsyntax
+  "Define a hygienic macro: transformer is a function from the call's
+  syntax to its expansion's (norn.expander adds and flips the scopes that
+  keep the two apart)."
+  [mname & body]
+  (let [body (if (string? (first body)) (rest body) body)]
+    `(do (def ~mname (transformer ~(first body)))
+         (%set-macro! (var ~mname))
+         (var ~mname))))
+
+(def ^:private free-id-fn (atom nil))
+
+(defn %set-free-identifier=! "For norn.expander, which knows the bindings." [f] (reset! free-id-fn f))
+
+(defn free-identifier=?
+  "Do identifiers a and b refer to the same binding (in the expansion
+  running now)?"
+  [a b]
+  (if-let [f @free-id-fn]
+    (f a b)
+    (= (syntax-e a) (syntax-e b))))
 
 ;; ---- reading ----
 ;;

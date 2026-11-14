@@ -16,6 +16,7 @@ use norn_rt::{Mutator, Value};
 
 pub const CORE_SRC: &str = include_str!("../../../lib/core/core.norn");
 pub const COMPILER_SRC: &str = include_str!("../../../lib/compiler/compiler.norn");
+pub const EXPANDER_SRC: &str = include_str!("../../../lib/compiler/expander.norn");
 
 /// The standard libraries (`lib/norn/*.norn`), embedded so `norn` is a
 /// single file. `(require 'norn.x)` loads one the first time it is needed.
@@ -89,6 +90,12 @@ pub(crate) fn boot(vm: &mut Vm) -> Result<()> {
     vm.load_str(COMPILER_SRC, "compiler.norn")?;
     if std::env::var("NORN_COMPILER").as_deref() != Ok("seed") {
         vm.load_str("(norn.compiler/%install!)", "<boot>")?;
+        // The hygienic expander (M8), compiled by the compiler; from here
+        // on every form goes through it (unless NORN_EXPANDER=off).
+        if std::env::var("NORN_EXPANDER").as_deref() != Ok("off") {
+            vm.load_str(EXPANDER_SRC, "expander.norn")?;
+            vm.load_str("(norn.expander/%install!)", "<boot>")?;
+        }
     }
     let user = vm.sym("user");
     rt().find_or_create_ns(user);

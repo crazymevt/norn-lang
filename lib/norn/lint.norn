@@ -27,7 +27,7 @@
 (ns norn.lint
   (:require [norn.string :as str] [norn.fmt :as fmt]))
 
-(def ^:private specials #{'quote 'if 'do 'def 'var 'fn* 'let* 'letrec* 'loop* 'recur '&})
+(def ^:private specials #{'quote 'quote-syntax 'if 'do 'def 'var 'fn* 'let* 'letrec* 'loop* 'recur '&})
 
 (def ^:dynamic *warnings* nil)
 (def ^:dynamic *where* nil) ; {:file :line}
@@ -35,6 +35,7 @@
 (def ^:dynamic *source-heads* #{}) ; symbols written in call position in it
 (def ^:dynamic *exempt* #{}) ; catch bindings: unused is fine
 (def ^:dynamic *file-defs* nil) ; atom: name → arities ([nfixed variadic?] …) or :unknown
+(def ^:dynamic *file-qualified* nil) ; atom: ns/name of every def in the file, in whichever namespace
 (def ^:dynamic *file-generics* nil) ; atom: generic name → [nreq rest?]
 
 (defn- warn [kind & msg]
@@ -103,6 +104,7 @@
     (reset! used true)
     (when-not (or (contains? specials sym)
                   (and (nil? (namespace sym)) (contains? (deref *file-defs*) sym))
+                  (contains? (deref *file-qualified*) sym)
                   (resolve sym)
                   (str/ends-with? (name sym) ".")) ; constructor-style names
       (warn :unresolved "unresolved symbol " sym))
@@ -140,6 +142,7 @@
     (when (and (contains? specials name) (not= "norn.core" (str (current-ns))))
       (warn :shadow "definition of " name " shadows norn.core's " name))
     (swap! *file-defs* assoc name (if (and (seq? expanded) (= 'fn* (first expanded))) (fn*-shapes expanded) :unknown))
+    (swap! *file-qualified* conj (symbol (str (current-ns)) (str name)))
     (when (seq more) (analyze env init))))
 
 (defn- check-call [env head n]
@@ -198,7 +201,7 @@
           (check-call env head (count (rest form)))))))
 
 (defn- case-head [head form env]
-  (cond (= head 'quote) nil
+  (cond (or (= head 'quote) (= head 'quote-syntax)) nil
         (= head 'var) (when (symbol? (second form)) (analyze-symbol {} (second form)))
         (= head 'fn*) (analyze-fn env form)
         (or (= head 'let*) (= head 'loop*)) (analyze-let env form)
@@ -263,7 +266,7 @@
    (let [lines (try (top-level-lines s) (catch Error _ []))
          here (current-ns)
          r (%reader s path)]
-     (binding [*warnings* (atom []) *file-defs* (atom {}) *file-generics* (atom {})]
+     (binding [*warnings* (atom []) *file-defs* (atom {}) *file-qualified* (atom #{}) *file-generics* (atom {})]
        (try
          (loop [i 0]
            (let [form (%read r)]

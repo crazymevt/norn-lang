@@ -185,6 +185,9 @@ prims! {
     "all-ns" 0 Some(0) => |vm, _| { let names: Vec<Value> = rt().all_namespaces().iter().map(|n| n.name).collect(); Ok(list_from(&mut vm.m, &names)) };
     "ns-publics" 1 Some(1) => |vm, a| { let ns = rt().find_ns(a[0]).ok_or_else(|| Error::new(format!("No namespace: {}", pr_str(a[0], true))))?; let mut m = map_empty(); for (k, v) in ns.mappings() { if v.var_ns() == ns.name { m = map_assoc(&mut vm.m, m, k, v); } } Ok(m) };
     "resolve" 1 Some(1) => |vm, a| Ok(vm.resolve(a[0]).unwrap_or(Value::NIL));
+    "%resolve-in" 2 Some(2) => |vm, a| { expect(a[0], Kind::Symbol, "%resolve-in")?; expect(a[1], Kind::Symbol, "%resolve-in")?; let core = vm.core; Ok(rt().find_ns(a[0]).and_then(|ns| rt().resolve(&mut vm.m, ns, core, a[1])).unwrap_or(Value::NIL)) };
+    "%identity-hash" 1 Some(1) => |_, a| Ok(Value::fix(((a[0].0 >> 3) & 0x3fff_ffff_ffff_ffff) as i64));
+    "%uninterned-symbol" 1 Some(1) => |vm, a| { let n = text(a[0]); Ok(rt().symbol_uninterned(&mut vm.m, &n)) };
     "var-get" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "var-get")?; Ok(a[0].var_root()) };
     "%set-root!" 2 Some(2) => |_, a| { expect(a[0], Kind::Var, "%set-root!")?; a[0].var_set_root(a[1]); Ok(a[1]) };
     "%set-macro!" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "%set-macro!")?; a[0].var_set_flag(VAR_MACRO); Ok(a[0]) };
@@ -429,6 +432,7 @@ prims! {
     "%bump-class-epoch" 0 Some(0) => |_, _| { norn_rt::clos::bump_class_epoch(); Ok(Value::NIL) };
     "%instance" 2 Some(2) => instance_new;
     "slot-value" 2 Some(2) => |vm, a| slot_value(vm, a[0], a[1]);
+    "%slot-ref" 2 Some(2) => |vm, a| slot_ref(vm, a[0], a[1]);
     "with" 1 VAR => |vm, a| { expect(a[0], Kind::Instance, "with")?; if a.len() % 2 != 1 { return Err(Error::new("with expects an instance and slot/value pairs")); } crate::owned::check(vm, a[0], false)?; Ok(norn_rt::clos::instance_with(&mut vm.m, a[0], &a[1..], vm.current)?) };
     // owned mutable objects (owned.rs; design §4.2)
     "%set-slot!" 3 Some(3) => |vm, a| crate::owned::set_slot(vm, a[0], a[1], a[2]);
@@ -1349,6 +1353,23 @@ fn instance_new(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         return Err(Error::new(format!("%instance: expected {n} slot values, got {}", vals.len())));
     }
     Ok(norn_rt::clos::instance_new(&mut vm.m, a[0], &vals, vm.current))
+}
+
+/// `(%slot-ref inst i)`: slot i of the class's current layout, without
+/// looking its name up (for hot paths like norn.syntax's accessors).
+fn slot_ref(vm: &mut Vm, inst: Value, i: Value) -> Result<Value> {
+    expect(inst, Kind::Instance, "%slot-ref")?;
+    let i = int(i, "%slot-ref")? as usize;
+    let current = inst.instance_class().class_field(norn_rt::clos::class::LAYOUT);
+    if i >= norn_rt::clos::layout_len(current) {
+        return Err(Error::new(format!("%slot-ref: no slot {i}")));
+    }
+    if inst.instance_layout() == current {
+        crate::owned::check(vm, inst, false)?;
+        return Ok(inst.instance_raw(i));
+    }
+    // (an instance from before the class was redefined)
+    slot_value(vm, inst, norn_rt::clos::layout_keys(current)[i])
 }
 
 fn slot_value(vm: &mut Vm, inst: Value, k: Value) -> Result<Value> {

@@ -1,0 +1,425 @@
+;;;; norn.expander — the hygienic macro expander (M8 part 8.2; design §8.2).
+;;;;
+;;;; It takes syntax (norn.syntax) and gives the compiler the kernel forms
+;;;; (quote if do def var fn* let* letrec* loop* recur) with every name
+;;;; resolved, using Racket's sets of scopes:
+;;;;
+;;;; - Each binding form adds a fresh scope to what it binds over, and
+;;;;   records each name it binds, with its scopes, in the expansion's
+;;;;   binding table. A name refers to the binding whose scopes are the
+;;;;   largest subset of its own; of two with the same scopes, the later
+;;;;   one (so (let* [x 1 x (inc x)] x) works as in Clojure).
+;;;; - A local becomes an uninterned symbol with the user's name: the
+;;;;   compiler matches locals by identity, so a macro's `t` and the user's
+;;;;   `t` stay apart, and the debugger still shows `t`.
+;;;; - A name with no local binding is a global, looked up in the namespace
+;;;;   whose scope it carries: a hygienic macro's template means what it
+;;;;   meant where the macro was defined. Code read in a namespace carries
+;;;;   that namespace's scope.
+;;;; - A macro defined with defmacro gets plain data, as it always has, and
+;;;;   its result takes the call's scopes and place, so the 83 macros of the
+;;;;   standard library mean what they meant. One defined with defsyntax
+;;;;   gets syntax: a fresh scope is added to its input, and flipped on its
+;;;;   output, so what the macro introduced is told from what it was given.
+;;;;
+;;;; The REPL's top level is permissive (design §8.2): a top-level do is
+;;;; evaluated form by form, so a macro defined in it applies to the forms
+;;;; after it.
+
+(ns norn.expander
+  (:require [norn.syntax :as syn]))
+
+(defclass ExpandError (norn.compiler/CompileError) ())
+
+(defn- fail [s & msg]
+  (error ExpandError :message (str (when (and (syn/syntax? s) (syn/syntax-loc s)) (str (syn/syntax-where s) ": "))
+                                   (apply %message msg))))
+
+(def ^:private specials '#{quote if do def var fn* let* letrec* loop* recur quote-syntax})
+
+;; ---- namespaces' scopes ----
+
+(def ^:dynamic *ns-sym* "The current namespace's name, while expanding a form." nil)
+
+(defn- ns-sym [] (or *ns-sym* (symbol (str (current-ns)))))
+
+(def ^:private ns-scopes "Namespace name → its scope." (atom {}))
+(def ^:private scope-nss "Scope → its namespace's name." (atom {}))
+
+(defn ns-scope
+  "The scope of the code read in namespace ns (a symbol)."
+  [ns]
+  (or (get @ns-scopes ns)
+      (let [sc (syn/new-scope)]
+        (swap! ns-scopes assoc ns sc)
+        (swap! scope-nss assoc sc ns)
+        sc)))
+
+(defn- home-ns
+  "The namespace whose scope identifier id carries (the current one when
+  it carries none)."
+  [id]
+  (let [m @scope-nss]
+    (or (some (fn [sc] (get m sc)) (syn/syntax-scopes id)) (ns-sym))))
+
+;; ---- bindings ----
+
+(def ^:dynamic *bindings*
+  "This expansion's binding table: name → [[scopes binding]…], latest last."
+  nil)
+
+(defn- bind!
+  "Record that identifier id binds to b."
+  [id b]
+  (swap! *bindings* update (syn/syntax-e id) (fn [bs] (conj (or bs []) [(syn/syntax-scopes id) b]))))
+
+(defn- subset? [a b] (every? (fn [x] (contains? b x)) a))
+
+(defn resolve-local
+  "The local binding identifier id refers to, or nil."
+  [id]
+  (let [sym (syn/syntax-e id)]
+    (when (and *bindings* (nil? (namespace sym)))
+      (let [ss (syn/syntax-scopes id)
+            cands (filter (fn [c] (subset? (first c) ss)) (get @*bindings* sym))]
+        (when (seq cands)
+          (let [best (reduce (fn [a c] (if (>= (count (first c)) (count (first a))) c a)) cands)]
+            (when (some (fn [c] (and (not (subset? (first c) (first best))))) cands)
+              (fail id "Ambiguous name:" (pr-str sym) "(it could refer to more than one binding)"))
+            (second best)))))))
+
+(defn- resolve-global
+  "The var identifier id names, looked up in its home namespace."
+  [id]
+  (%resolve-in (home-ns id) (syn/syntax-e id)))
+
+(defn- special-form
+  "The kernel form identifier id names (unless a local binding takes the
+  name), as a string, or nil."
+  [id]
+  (let [sym (syn/syntax-e id)]
+    (when (and (contains? specials sym) (nil? (resolve-local id)))
+      (name sym))))
+
+(defn- global-ref
+  "What the compiler should see for global identifier id: the symbol as
+  written when its home is the current namespace, else the var's full
+  name."
+  [id]
+  (let [sym (syn/syntax-e id)
+        home (home-ns id)]
+    (if (= home (ns-sym))
+      sym
+      (if-let [v (%resolve-in home sym)]
+        (symbol (%var-name v))
+        sym))))
+
+(defn- free-id=? [a b]
+  (let [la (resolve-local a) lb (resolve-local b)]
+    (cond (or la lb) (identical? la lb)
+          :else (let [ga (resolve-global a) gb (resolve-global b)]
+                  (if (or ga gb)
+                    (identical? ga gb)
+                    (= (syn/syntax-e a) (syn/syntax-e b)))))))
+
+(syn/%set-free-identifier=! free-id=?)
+
+;; ---- expansion ----
+
+(declare expand)
+
+(defn- expand-body [ss] (doall (map expand ss)))
+
+(defn- parts
+  "The parts of list or vector syntax s (an error if it isn't one)."
+  [s what]
+  (let [x (syn/syntax-e s)]
+    (if (or (seq? x) (vector? x)) (vec x) (fail s what))))
+
+(defn- local-sym [id] (%uninterned-symbol (name (syn/syntax-e id))))
+
+(defn- check-binder [id what]
+  (let [x (syn/syntax-e id)]
+    (when-not (and (symbol? x) (nil? (namespace x)))
+      (fail id (str "Bad binding form in " what ":") (pr-str (syn/syntax->datum id))))))
+
+(defn- expand-params
+  "Bind parameter vector syntax ps (its scope added already); the
+  parameters for the compiler."
+  [ps]
+  (mapv (fn [p]
+          (if (= '& (syn/syntax-e p))
+            '&
+            (do (check-binder p "fn*")
+                (let [u (local-sym p)] (bind! p {:local u}) u))))
+        (parts ps "fn* requires a parameter vector")))
+
+(defn- expand-fn
+  "(fn* name? [params] body…) or (fn* name? ([params] body…)…)."
+  [xs]
+  (let [sc (syn/new-scope)
+        xs (mapv (fn [x] (syn/add-scope x sc)) xs)
+        named (syn/identifier? (nth xs 1 nil))
+        self (when named (let [u (local-sym (nth xs 1))] (bind! (nth xs 1) {:local u}) u))
+        rst (subvec xs (if named 2 1))
+        arity (fn [ps body]
+                (let [ac (syn/new-scope)
+                      ps (syn/add-scope ps ac)
+                      body (map (fn [b] (syn/add-scope b ac)) body)
+                      params (expand-params ps)]
+                  (apply list params (expand-body body))))]
+    (when (empty? rst) (fail (first xs) "fn* requires a parameter vector"))
+    (let [arities (if (vector? (syn/syntax-e (first rst)))
+                    [(arity (first rst) (rest rst))]
+                    (mapv (fn [sig]
+                            (let [s (parts sig "fn* arity must look like ([params] body...)")]
+                              (when-not (and (seq? (syn/syntax-e sig)) (seq s) (vector? (syn/syntax-e (first s))))
+                                (fail sig "fn* arity must look like ([params] body...)"))
+                              (arity (first s) (rest s))))
+                          rst))]
+      (apply list 'fn* (concat (when named [self])
+                               (if (vector? (syn/syntax-e (first rst)))
+                                 (let [[ps & body] (first arities)] (cons ps body))
+                                 arities))))))
+
+(defn- binding-pairs [s what]
+  (let [bv (parts s (str what " requires a vector for its bindings"))]
+    (when-not (vector? (syn/syntax-e s)) (fail s what "requires a vector for its bindings"))
+    (when (odd? (count bv)) (fail s what "requires an even number of forms in its binding vector"))
+    (partition 2 bv)))
+
+(defn- expand-let
+  "let* and loop*: each binding sees the ones before it."
+  [head xs]
+  (let [what (name head)
+        sc (syn/new-scope)
+        [_ bv & body] (mapv (fn [x] (syn/add-scope x sc)) xs)
+        out (reduce (fn [acc [id init]]
+                      (check-binder id what)
+                      (let [e (expand init)
+                            u (local-sym id)]
+                        (bind! id {:local u})
+                        (conj acc u e)))
+                    [] (binding-pairs bv what))]
+    (apply list head out (expand-body body))))
+
+(defn- expand-letrec [xs]
+  (let [sc (syn/new-scope)
+        [_ bv & body] (mapv (fn [x] (syn/add-scope x sc)) xs)
+        pairs (binding-pairs bv "letrec*")
+        us (mapv (fn [[id _]] (check-binder id "letrec*") (let [u (local-sym id)] (bind! id {:local u}) u)) pairs)
+        inits (mapv (fn [[_ init]] (expand init)) pairs)]
+    (apply list 'letrec* (vec (interleave us inits)) (expand-body body))))
+
+(defn- expand-core [form s xs]
+  (case form
+    "quote" (do (when (not= 2 (count xs)) (fail s "quote takes exactly one argument"))
+                (list 'quote (syn/syntax->datum (nth xs 1))))
+    "quote-syntax" (do (when (not= 2 (count xs)) (fail s "quote-syntax takes exactly one argument"))
+                       (list 'quote (nth xs 1)))
+    "if" (apply list 'if (expand-body (rest xs)))
+    "do" (apply list 'do (expand-body (rest xs)))
+    "def" (let [id (nth xs 1 nil)]
+            (when-not (and id (syn/identifier? id)) (fail s "First argument to def must be a symbol"))
+            (apply list 'def (syn/syntax-e id)
+                   (case (count xs)
+                     2 nil
+                     3 [(expand (nth xs 2))]
+                     4 (if (string? (syn/syntax-e (nth xs 2)))
+                         [(syn/syntax-e (nth xs 2)) (expand (nth xs 3))]
+                         (fail s "Too many arguments to def"))
+                     (fail s "Too many arguments to def"))))
+    "var" (let [id (nth xs 1 nil)]
+            (when-not (and id (syn/identifier? id)) (fail s "var takes a symbol"))
+            (list 'var (global-ref id)))
+    "fn*" (expand-fn xs)
+    "let*" (expand-let 'let* xs)
+    "loop*" (expand-let 'loop* xs)
+    "letrec*" (expand-letrec xs)
+    "recur" (apply list 'recur (expand-body (rest xs)))))
+
+(defn- transformer? [x] (instance? syn/Transformer x))
+
+(defn- compound? [x] (or (seq? x) (vector? x) (map? x) (set? x)))
+
+(def ^:dynamic *datums*
+  "This expansion's cache of syntax as data: identity hash of a syntax
+  object's raw parts → [[parts datum]…]. A syntax object's data doesn't
+  depend on its scopes, and adding scopes keeps the same raw parts, so a
+  subtree converted for one macro is a lookup for the next."
+  nil)
+
+(defn- rebuild [e f]
+  (cond (seq? e) (apply list (map f e))
+        (vector? e) (mapv f e)
+        (map? e) (into {} (map (fn [[k v]] [(f k) (f v)])) e)
+        :else (into #{} (map f) e)))
+
+(defn- raw-datum
+  "Syntax x as data (cached for this expansion)."
+  [x]
+  (if (syn/syntax? x)
+    (let [e (syn/%raw-e x)]
+      (if (syn/%raw? x)
+        e
+        (if (compound? e)
+          (let [h (%identity-hash e)]
+            (or (some (fn [[k d]] (when (identical? k e) d)) (get @*datums* h))
+                (let [d (rebuild e raw-datum)]
+                  (swap! *datums* update h conj [e d])
+                  d)))
+          e)))
+    x))
+
+(declare precise-step)
+
+(defn- datum-step
+  "A defmacro macro m's expansion of call s. It gets the arguments as
+  data. The parts of its result that are the very data it was given go back
+  to being the syntax they came from, keeping their scopes and places (for
+  the arguments and the two levels inside them, which is where macros take
+  what they keep); the rest takes the call's."
+  [m s]
+  (let [args (rest (syn/syntax-e s))
+        scopes (syn/syntax-scopes s)]
+    (if (every? (fn [a] (and (or (syn/%raw? a) (not (compound? (syn/%raw-e a))))
+                             (= scopes (syn/syntax-scopes a))))
+                args)
+      ;; the usual case: plain data with the call's scopes, in and out
+      (syn/%raw-syntax (apply m (map syn/%raw-e args)) scopes (syn/syntax-loc s))
+      (precise-step m s args))))
+
+(defn- precise-step
+  "datum-step for arguments that aren't all plain data with the call's
+  scopes: what the macro keeps goes back to being the syntax it was."
+  [m s args]
+  (binding [*datums* (or *datums* (atom {}))]
+    (let [seen (atom {})
+          record (fn record [x ops depth]
+                   ;; x's data, noting which syntax (and which pending scope
+                   ;; changes not yet made to it) it came from
+                   (let [d (raw-datum x)]
+                     (when (and (syn/syntax? x) (compound? (syn/%raw-e x)))
+                       (swap! seen update (%identity-hash d) conj [d x ops])
+                       ;; (a raw object's parts have its scopes: nothing to note)
+                       (when (and (< depth 2) (not (syn/%raw? x)))
+                         (let [ops (into ops (or (syn/%pending x) []))
+                               e (syn/%raw-e x)]
+                           (doseq [c (if (map? e) (mapcat identity e) e)]
+                             (record c ops (inc depth))))))
+                     d))
+          args (mapv (fn [a] (record a [] 0)) args)
+          result (apply m args)
+          known @seen
+          back (fn back [x]
+                 (cond (syn/syntax? x) x
+                       (compound? x)
+                       (if-let [[_ stx ops] (some (fn [k] (when (identical? (first k) x) k)) (get known (%identity-hash x)))]
+                         (if (seq ops) (syn/%change-scopes stx ops) stx)
+                         (syn/datum->syntax s (rebuild x back)))
+                       :else (syn/datum->syntax s x)))]
+      (back result))))
+
+(defn- macro-step
+  "The expansion of macro call s, whose head names macro var v."
+  [v s]
+  (let [m (var-get v)]
+    ;; (a macro's own error passes through as it is: its condition and
+    ;; restarts are what a handler or the debugger should see)
+    (if (transformer? m)
+      (let [intro (syn/new-scope)
+            out ((slot-value m :f) (syn/add-scope s intro))]
+        (when-not (syn/syntax? out)
+          (fail s "The macro" (pr-str v) "returned" (pr-str out) "where syntax was expected"))
+        (syn/flip-scope out intro))
+      (datum-step m s))))
+
+(defn- macro-of
+  "The macro var a call's head names, or nil."
+  [h]
+  (when (and (syn/identifier? h) (nil? (resolve-local h)) (nil? (special-form h)))
+    (let [v (resolve-global h)]
+      (when (and v (macro? v)) v))))
+
+(defn expand
+  "Syntax s, fully expanded: kernel forms and calls, for the compiler."
+  [s]
+  (let [x (syn/syntax-e s)]
+    (cond (symbol? x)
+          (if-let [b (resolve-local s)]
+            (:local b)
+            (global-ref s))
+          (seq? x)
+          (if (empty? x)
+            ()
+            (let [xs (vec x)
+                  h (first xs)
+                  hs (when (syn/identifier? h) (syn/syntax-e h))]
+              (cond (nil? hs) (apply list (expand-body xs))
+                    (resolve-local h) (apply list (expand-body xs))
+                    (contains? specials hs) (expand-core (name hs) s xs)
+                    :else (let [v (resolve-global h)]
+                            (if (and v (macro? v))
+                              (expand (macro-step v s))
+                              (apply list (expand-body xs)))))))
+          (vector? x) (mapv expand x)
+          (map? x) (into {} (map (fn [[k v]] [(expand k) (expand v)])) x)
+          (set? x) (into #{} (map expand) x)
+          :else x)))
+
+;; ---- the top level ----
+
+(defn expand-top
+  "Expand top-level macros in syntax s until it's a kernel form or a call."
+  [s]
+  (loop [s s]
+    (let [x (syn/syntax-e s)]
+      (if-let [v (and (seq? x) (seq x) (macro-of (first x)))]
+        (recur (macro-step v s))
+        s))))
+
+(defn- top-do? [s]
+  (let [x (syn/syntax-e s)]
+    (and (seq? x) (seq x) (= "do" (special-form (first x))))))
+
+(defn expand-all
+  "Syntax s fully expanded, with a fresh binding table (no top-level do
+  splitting: for macroexpansion tools and tests)."
+  [s]
+  (binding [*bindings* (atom {}) *datums* (atom {}) *ns-sym* (symbol (str (current-ns)))] (expand s)))
+
+(defn- run
+  "Compile and run expanded form f; a compile error offers retry and
+  use-value, as norn.compiler/eval does."
+  [f s]
+  (let [r (loop []
+            (let [r (restart-case [:ok (norn.compiler/compile-toplevel f)]
+                      (use-value [v] :report "Use a value instead of evaluating the form" [:value v])
+                      (retry [] :report "Compile the form again (e.g. after defining what it needs)" [:retry]))]
+              (if (= (first r) :retry) (recur) r)))]
+    (if (= (first r) :ok) ((second r)) (second r))))
+
+(defn eval-syntax
+  "Evaluate syntax s: a top-level do form by form, anything else expanded
+  and compiled."
+  [s]
+  (let [s (binding [*datums* (atom {}) *ns-sym* (symbol (str (current-ns)))] (expand-top s))]
+    (if (top-do? s)
+      (loop [xs (rest (syn/syntax-e s)) last nil]
+        (if (seq xs) (recur (rest xs) (eval-syntax (first xs))) last))
+      (run (expand-all s) s))))
+
+(defn eval
+  "Evaluate form (data or syntax) through the expander, in the current
+  namespace."
+  [form]
+  (let [sc (ns-scope (symbol (str (current-ns))))]
+    (eval-syntax (if (syn/syntax? form)
+                   (syn/add-scope form sc)
+                   (syn/%raw-syntax form #{sc} nil)))))
+
+(defn %install!
+  "Make the expander the way eval (and so load-file, the REPL…) expands."
+  []
+  (%set-root! (var norn.core/eval) eval)
+  :installed)

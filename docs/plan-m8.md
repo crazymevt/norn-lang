@@ -143,3 +143,63 @@ The draft's proposals, accepted:
 - **Scopes are added eagerly,** walking the whole tree. Racket propagates
   them lazily. If the expander's speed needs it, laziness can go in behind
   the same functions.
+
+**8.2, the expander (2026-11-14): done, and the stdlib passes through it
+unchanged.**
+
+`lib/compiler/expander.norn` loads at boot after the compiler and becomes
+`eval`. Every form goes through it: `NORN_EXPANDER=off` keeps the old path,
+for comparison. It gives the compiler kernel forms with names resolved,
+using Racket's sets of scopes:
+
+- **Bindings:** a binding form adds one scope. Of two bindings of a name with
+  the same scopes, the later wins, so `(let* [x 1 x (inc x)] x)` is still 2.
+- **Locals** become uninterned symbols with the user's names. The compiler
+  matches locals by identity, so hygiene needs no renaming the user can
+  see. The debug info names them with plain symbols, so the debugger and
+  `eval-in-frame` are as before.
+- **Globals** resolve in the namespace whose scope the name carries (code
+  read in a namespace carries its scope). A hygienic macro's template
+  therefore means what it meant where the macro was defined, its own
+  private functions included.
+- **`defmacro` macros** get plain data, as before; their result takes the
+  call's scopes. Parts of the result that are the very data the macro was
+  given go back to being the syntax they were.
+- **`defsyntax` macros** (in `norn.syntax`) get syntax. A fresh scope is
+  added to their input and flipped on their output. `quote-syntax` is a new
+  kernel form, and `free-identifier=?` asks the expansion running now.
+- **A macro's own errors pass through as they are,** keeping their condition
+  and restarts. The expander's own errors say where:
+  `e.norn:1:8: Bad binding form in let*: 1`.
+
+Tests: `expander_test.norn` has 24 checks at both tiers, covering the
+classic hygiene cases both ways, macros from another namespace,
+`free-identifier=?`, and anaphoric `defmacro`. All 1,180 checks of the
+suites pass through the expander, as do `norn-ui`'s and `norn-studio`'s. The
+linter knows `quote-syntax`, and resolves names defined earlier in the
+same file under another namespace.
+
+**What it costs, and why.** The old path only looked at the head of each
+list; the expander visits every part. Three changes cut the cost:
+
+- **Lazy wrapping:** code arrives as data, and a raw syntax object wraps
+  its parts only when looked at.
+- **Lazy scopes** (pending scope changes).
+- **A fast path for `defmacro` steps whose arguments are plain data with
+  the call's scopes,** the usual case: the macro's own work, and no more.
+
+The remaining costs:
+
+| | Old path | Expander |
+|---|---|---|
+| `fmt`, `lint`, `markdown`, `format` from source | 55 ms | 101 ms |
+| Norn Studio's code | 0.44 s | 0.77 s |
+| Start-up from source (boot compiles the expander) | 40 ms | 60 ms |
+| Start-up from an image | 40 ms | 40 ms |
+
+The compiled-module cache (8.6) takes the loading cost away for anything
+unchanged.
+
+**For 8.4:** private vars aren't enforced yet. When they are, a macro's
+template must still reach its own namespace's private functions, as
+`expander_test` checks, while other code can't.

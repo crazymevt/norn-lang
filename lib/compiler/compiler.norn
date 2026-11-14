@@ -72,8 +72,11 @@
 
 (defn- free-to! [cs r] (upd-ar! cs (fn [a] (assoc a :next r))))
 
+;; Locals are matched by identity (the expander makes each one an uninterned
+;; symbol); the debug info names them with the plain symbol, for the
+;; debugger and eval-in-frame.
 (defn- bind-local! [cs s r]
-  (upd-ar! cs (fn [a] (-> a (update :locals conj [s r]) (update :debug conj [s r])))))
+  (upd-ar! cs (fn [a] (-> a (update :locals conj [s r]) (update :debug conj [(symbol (name s)) r])))))
 
 (defn- jump-offset [from to]
   (let [off (- to (inc from))]

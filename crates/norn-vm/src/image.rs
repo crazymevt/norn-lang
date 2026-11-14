@@ -61,6 +61,7 @@ pub fn build_id() -> u64 {
         }
         eat(crate::eval::CORE_SRC.as_bytes());
         eat(crate::eval::COMPILER_SRC.as_bytes());
+        eat(crate::eval::EXPANDER_SRC.as_bytes());
         for (name, src) in crate::eval::LIBS {
             eat(name.as_bytes());
             eat(src.as_bytes());

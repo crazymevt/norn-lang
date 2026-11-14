@@ -5,7 +5,8 @@
 (ns compiler-test
   (:require [norn.test :refer [is deftest testing]]))
 
-(is (= norn.compiler/eval norn.core/eval))
+;; The expander (M8) runs in front of the compiler.
+(is (= norn.expander/eval norn.core/eval))
 
 ;;; Byte-identical output to the seed compiler on the whole core library
 ;;; (compiled in its own namespace) and on the compiler itself.
@@ -33,6 +34,7 @@
 (load-string (%compiler-source))
 (norn.compiler/%install!)
 (def stage3 (snapshot))
+(norn.expander/%install!)
 (is (= true (> (count stage1) 50)))
 (is (= true (= stage1 stage2)))
 (is (= true (= stage2 stage3)))

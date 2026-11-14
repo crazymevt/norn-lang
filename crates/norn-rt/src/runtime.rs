@@ -226,6 +226,17 @@ impl Runtime {
         intern_in(&self.symbols, m, Kind::Symbol, ns, name)
     }
 
+    /// A symbol with this name that isn't interned: it prints as the name
+    /// but is identical only to itself (the expander's local variables).
+    pub fn symbol_uninterned(&self, m: &mut Mutator, name: &str) -> Value {
+        let name_v = str_new(m, name);
+        let s = alloc(m, Kind::Symbol, 3);
+        s.set_field(SYM_NS, Value::NIL);
+        s.set_field(SYM_NAME, name_v);
+        s.set_word(SYM_HASH, mix64(hash_str(name) ^ Kind::Symbol as u64));
+        s
+    }
+
     /// Intern from text, splitting on the first `/`.
     pub fn symbol_from(&self, m: &mut Mutator, s: &str) -> Value {
         let (ns, name) = split_qualified(s);
