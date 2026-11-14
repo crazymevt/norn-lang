@@ -2,7 +2,7 @@
 
 Drafted 2026-11-13; the review questions are settled (below). The decisions behind it are in design
 §9.1 (the editor is essentially Xeon Studio rebuilt in Norn; Norn-only
-language support first; three panels phased) and the M7.6 row of
+language support first; four panels phased) and the M7.6 row of
 runtime.md §11. This plan says how to build it and in what order.
 
 **What M7.6 is for.** It's the first real Norn program, written while the
@@ -257,12 +257,14 @@ On the way:
 | 3.6 | **Explorer, Git, Project and Outline:** a file tree with icons and Git status (colours and letters, dots on folders, ignored files hidden or dimmed), Source Control (stage, unstage, commit, and a side-by-side diff), the Project view, and the Outline (top-level forms of the document). |
 | 3.7 | **Markdown:** Source, Split and Preview modes (⇧⌘V), with the preview drawn natively from `norn.markdown`, following the caret. |
 | 3.8 | **AI chat:** Claude Code (stream-json) and Codex (app-server) through `norn.process` and `norn.json`, rendered as rich text. Agent mode can read and edit documents and drive the REPL, with approval; Chat mode can't make changes. |
-| 3.9 | **Team chat**, last in M7.6, after the done-check's work: Xeon Studio's team of agents, with plans, tasks in Git worktrees, reviews and merges. |
+| 3.9 | **Team chat:** moved out of M7.6 to the phased panels (below) on 2026-11-14. |
 | 3.10 | **Done-check** (runtime.md §11, M7.6): Norn's own development happens in the editor for a working stretch: editing `lib/` and `tests/`, the REPL, the debugger, formatting and linting. What it needed is fixed or scheduled before M8. Also measured: the idle editor under 0.5% CPU, and a keystroke repainting one line. |
 
 Phased, as design §9.1 says: the API/HTTP workbench (after M9's HTTP
-client), the Databases view (after M9's drivers) and the terminal panel
-(after pseudo-terminals in `norn.process`).
+client), the Databases view (after M9's drivers), the terminal panel
+(after pseudo-terminals in `norn.process`), and team chat (after M7.6; it
+needs no new library). Team chat is Xeon Studio's team of agents, with
+plans, tasks in Git worktrees, reviews and merges.
 
 ## Decisions (the user, 2026-11-13)
 
@@ -271,7 +273,8 @@ client), the Databases view (after M9's drivers) and the terminal panel
    from `~/projects/loom` to `~/projects/norn` on 2026-11-13, and
    `loom-lang` became `norn-lang`.)
 2. **Team chat** (about 4,000 lines in Xeon Studio, and not needed by the
-   done-check) **is built last in M7.6**, after the done-check's work, so
-   it never blocks the rest.
+   done-check) was to be built last in M7.6. On 2026-11-14 it **moved to
+   the phased panels**: it comes after M7.6, so M7.6 ends with the
+   done-check.
 3. **`norn.markdown` goes in the stdlib** (part 1.3), since sealing is
    still ahead.

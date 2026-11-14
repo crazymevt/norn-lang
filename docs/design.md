@@ -778,19 +778,23 @@ editor, built on JavaFX and RichTextFX.)
   later, if wanted. So `norn.ui` 0.1 needs everything in the scope list
   above: the terminal's cell-grid view, the virtualized grid, rich text
   flow for Markdown and chat, and the code-editor surface.
-- **Phased panels** (decided 2026-11-13). M7.6's editor ships without the
-  three panels whose libraries come later; its done-check is unchanged
-  (Norn's own development happens in the editor). Each phased panel
-  arrives when its library lands, so the editor exercises that library too:
+- **Phased panels** (decided 2026-11-13; team chat added 2026-11-14).
+  M7.6's editor ships without four panels; its done-check is unchanged
+  (Norn's own development happens in the editor). Three of them arrive when
+  their library lands, so the editor exercises that library too:
   - the API/HTTP workbench follows M9's HTTP client;
   - the Databases view follows M9's database drivers (SQLite first);
   - the terminal panel follows pseudo-terminal support in `norn.process`
     (in M9's library list; small, so it can come earlier if convenient).
 
+  Team chat needs no new library: it uses the `claude` and `codex`
+  command-line tools, `norn.json`, and Git worktrees through `git`. It
+  comes after M7.6.
+
   Everything else is in M7.6: the explorer, Git status and source control
   (through the `git` command), project and outline views, dock tabs, the
-  REPL, Problems, Debugger and Inspector, Markdown preview, and AI chat and
-  team chat (the `claude` and `codex` command-line tools plus `norn.json`).
+  REPL, Problems, Debugger and Inspector, Markdown preview, and AI chat (the
+  `claude` and `codex` command-line tools plus `norn.json`).
   `norn.ui` 0.1 still includes the terminal cell-grid view and the
   virtualized grid, as general widgets, but they can land in a later 0.x
   release if M7.5 runs long.
