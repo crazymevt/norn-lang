@@ -99,6 +99,7 @@ prims! {
     "queue?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Queue)));
     "transient?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Transient)));
     "seq?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_cons() || (a[0].is_obj() && matches!(a[0].obj_kind(), Kind::EmptyList | Kind::VecSeq | Kind::Range))));
+    "sequential?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_cons() || (a[0].is_obj() && matches!(a[0].obj_kind(), Kind::EmptyList | Kind::VecSeq | Kind::Range | Kind::Vector | Kind::Stream))));
     "coll?" 1 Some(1) => |_, a| Ok(Value::bool(seq::is_seqable(a[0]) && !a[0].is_nil() && !a[0].is(Kind::String)));
     "seqable?" 1 Some(1) => |_, a| Ok(Value::bool(seq::is_seqable(a[0])));
     "var?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Var)));
