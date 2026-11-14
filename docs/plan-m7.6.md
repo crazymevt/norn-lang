@@ -82,13 +82,21 @@ a design against Norn's fibers and conditions.
 
 ## Part 3 — the editor
 
-**Status (2026-11-14): 3.1 and 3.2 done.**
+**Status (2026-11-14): 3.1 to 3.3 done.**
 - **3.1, the shell:** built as planned, with a basic Explorer tree (3.6
   adds icons for Git status and the rest). The tools in the docks are
   placeholders until their parts.
 - **3.2, documents:** built as planned. Each folder's open documents
   come back with it. Go to definition reads the project for top-level
   `def` forms until 3.4 asks the running `norn` (`:definition`).
+- **3.3, Norn editing:** built as planned. The project's `norn --server`
+  starts with the folder (the top-bar chip: start, stop, its output), a
+  step ahead of 3.4, since lint, completion and signatures come from it.
+  Enter and Tab indent by `norn.fmt`'s own rules, run in the editor:
+  format the top-level form up to the caret with a probe line, and see
+  where the probe lands. ⇧⌘I formats with the project's `norn` (it knows
+  the project's macros' `{:indent n}`), or `norn.fmt` in the editor when
+  it doesn't run.
 
 On the way:
 - `norn-ui` gained:
@@ -97,6 +105,13 @@ On the way:
   - `dock-dragging?` (to show empty docks as drop targets);
   - close buttons and context menus on dock tabs;
   - `set-title!`, `window-size`, `editor-goto!` and `editor-open-find!`;
+  - editor hooks (`editor-hooks!`: the app's keys and typing first) and
+    editing by index (`editor-change!`, `editor-insert!`,
+    `editor-index`, `editor-pos`, `editor-text-range`);
+  - a fix: an editor model whose node leaves the window (a tab hidden)
+    forgets it, and gets its carets and decorations again when shown;
+    edits to a hidden model sent ops to a removed node, and the engine
+    rejected them;
   - a fix: a window's renders are serialized. A `refresh!` while the
     render loop was rendering the same window sent the engine two diffs
     against one old tree, and later ops named nodes that were gone.
