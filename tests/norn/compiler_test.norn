@@ -29,14 +29,20 @@
                            (when (fn? v) [(first e) (norn.compiler/%signature v)])))
                  (ns-interns 'norn.compiler))))
 
+;; (each stage compiled by the one before, through its own eval: not by
+;; installing it as everyone's, since other suites share this runtime)
+(defn- compile-by-compiler [src]
+  (let [r (%reader src "compiler.norn")
+        saved (current-ns)
+        ev norn.compiler/eval] ; (this stage's, for the whole load)
+    (try (loop [] (let [f (%read r)] (when-not (%eof? f) (ev f) (recur))))
+         (finally (in-ns (symbol (str saved)))))))
+
 (def stage1 (snapshot))
-(load-string (%compiler-source))
-(norn.compiler/%install!)
+(compile-by-compiler (%compiler-source))
 (def stage2 (snapshot))
-(load-string (%compiler-source))
-(norn.compiler/%install!)
+(compile-by-compiler (%compiler-source))
 (def stage3 (snapshot))
-(norn.expander/%install!)
 (is (= true (> (count stage1) 50)))
 (is (= true (= stage1 stage2)))
 (is (= true (= stage2 stage3)))

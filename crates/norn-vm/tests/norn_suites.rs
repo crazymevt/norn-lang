@@ -214,3 +214,8 @@ fn stm_suite() {
 fn ffi_suite() {
     suite("ffi_test.norn");
 }
+
+#[test]
+fn sqlite_suite() {
+    suite("sqlite_test.norn");
+}

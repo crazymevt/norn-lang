@@ -1,0 +1,135 @@
+;;;; SQLite (M9 part 9.9): connections, statements, parameters, rows as
+;;;; maps, transactions and savepoints, errors, and fibers sharing a
+;;;; connection, on norn.ffi and the system's libsqlite3.
+
+(ns sqlite-test
+  (:require [norn.test :refer [is deftest testing]] [norn.sqlite :as sql] [norn.io :as io] [norn.sys :as sys]
+            [norn.string :as str]))
+
+(def dir (io/path (sys/temp-dir) (str "norn-sqlite-test-" (sys/pid) "-" (nano-time))))
+(io/mkdirs! dir)
+
+(defn- caught [f] (try (f) nil (catch Error e e)))
+(defn- class-name-of [c] (when c (name (class-name (class-of c)))))
+
+(defn- people []
+  (let [db (sql/open ":memory:")]
+    (sql/exec! db "CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, age INTEGER, score REAL, photo BLOB);
+                   INSERT INTO people (name, age) VALUES ('ada', 36), ('alan', 41);")
+    db))
+
+(deftest values-round-trip
+  (sql/with-connection [db ":memory:"]
+    (sql/execute! db "CREATE TABLE v (i INTEGER, r REAL, t TEXT, b BLOB, n)")
+    (sql/execute! db ["INSERT INTO v VALUES (?, ?, ?, ?, ?)" -9007199254740993 2.5 "héllo\nwörld" (bytes [0 1 255]) nil])
+    (is (= [{:i -9007199254740993 :r 2.5 :t "héllo\nwörld" :b (bytes [0 1 255]) :n nil}] (sql/query db "SELECT * FROM v")))
+    (testing "booleans and keywords"
+      (sql/execute! db ["INSERT INTO v (i, t) VALUES (?, ?)" true :a-keyword])
+      (is (= {:i 1 :t "a-keyword"} (sql/query-one db "SELECT i, t FROM v WHERE r IS NULL"))))
+    (testing "empty text and blobs, and NUL inside text"
+      (sql/execute! db ["INSERT INTO v (t, b) VALUES (?, ?)" "a\u0000b" (bytes [])])
+      (is (= {:t "a\u0000b" :b (bytes [])} (sql/query-one db "SELECT t, b FROM v WHERE typeof(b) = 'blob' AND length(b) = 0"))))))
+
+(deftest parameters
+  (let [db (people)]
+    (is (= {:name "ada"} (sql/query-one db ["SELECT name FROM people WHERE age = ?" 36])))
+    (is (= {:name "alan"} (sql/query-one db ["SELECT name FROM people WHERE age > ?1 AND age < ?1 + 10" 40])))
+    (is (= [{:name "ada"}] (sql/query db ["SELECT name FROM people WHERE name = :n OR age = @age" {:n "ada" :age 0}])))
+    (is (= [["ada" 36] ["alan" 41]] (sql/query db "SELECT name, age FROM people ORDER BY id" {:as :vectors})))
+    (testing "mistakes"
+      (is (str/includes? (condition-message (caught (fn [] (sql/query db ["SELECT * FROM people WHERE id = ?" 1 2]))))
+                         "takes 1 parameters, given 2"))
+      (is (str/includes? (condition-message (caught (fn [] (sql/query db ["SELECT * FROM people WHERE id = :id" {:x 1}]))))
+                         "No value for parameter :id"))
+      (is (str/includes? (condition-message (caught (fn [] (sql/query db "SELECT 1; SELECT 2")))) "One statement at a time")))
+    (sql/close! db)))
+
+(deftest changes-and-ids
+  (let [db (people)]
+    (is (= 1 (sql/execute! db ["INSERT INTO people (name) VALUES (?)" "grace"])))
+    (is (= 3 (sql/last-insert-id db)))
+    (is (= 3 (sql/execute! db "UPDATE people SET age = 50")))
+    (is (= ["people"] (sql/tables db)))
+    (sql/close! db)))
+
+(deftest errors
+  (let [db (people)]
+    (let [c (caught (fn [] (sql/execute! db ["INSERT INTO people (name) VALUES (?)" "ada"])))]
+      (is (= "ConstraintError" (class-name-of c)))
+      (is (instance? sql/DatabaseError c))
+      (is (= [19 2067] [(:code c) (:extended-code c)]) "UNIQUE: SQLITE_CONSTRAINT_UNIQUE")
+      (is (str/starts-with? (condition-message c) "UNIQUE constraint failed: people.name"))
+      (is (= "INSERT INTO people (name) VALUES (?)" (:sql c))))
+    (let [c (caught (fn [] (sql/query db "SELECT nope FROM people")))]
+      (is (= ["DatabaseError" 1] [(class-name-of c) (:code c)]))
+      (is (str/includes? (condition-message c) "no such column: nope")))
+    (sql/close! db)
+    (sql/close! db)
+    (is (str/includes? (condition-message (caught (fn [] (sql/query db "SELECT 1")))) "is closed")))
+  (is (str/starts-with? (condition-message (caught (fn [] (sql/open (io/path dir "no" "such" "dir" "x.db"))))) "Can't open")))
+
+(deftest transactions
+  (let [db (people)
+        n (fn [] (:n (sql/query-one db "SELECT count(*) AS n FROM people")))]
+    (testing "committed"
+      (is (= :done (sql/with-transaction [db] (sql/execute! db "INSERT INTO people (name) VALUES ('x')") :done)))
+      (is (= 3 (n))))
+    (testing "rolled back on an error, which goes on"
+      (is (= "ArithmeticError" (class-name-of (caught (fn [] (sql/with-transaction [db] (sql/execute! db "DELETE FROM people") (/ 1 0)))))))
+      (is (= 3 (n)))
+      (is (not (sql/in-transaction? db))))
+    (testing "inside another: a savepoint, rolled back alone"
+      (sql/with-transaction [db]
+        (sql/execute! db "INSERT INTO people (name) VALUES ('kept')")
+        (caught (fn [] (sql/with-transaction [db] (sql/execute! db "INSERT INTO people (name) VALUES ('dropped')") (/ 1 0))))
+        (is (sql/in-transaction? db)))
+      (is (= [{:name "kept"}] (sql/query db "SELECT name FROM people WHERE name IN ('kept', 'dropped')"))))
+    (testing ":immediate"
+      (sql/with-transaction [db :mode :immediate] (sql/execute! db "DELETE FROM people WHERE name = 'kept'"))
+      (is (= 3 (n))))
+    (sql/close! db)))
+
+(deftest a-file-and-two-connections
+  (let [path (io/path dir "two.db")]
+    (sql/with-connection [a path]
+      (sql/execute! a "CREATE TABLE t (x)")
+      (sql/with-connection [b path :busy-timeout 50]
+        (testing "one sees what the other committed"
+          (sql/execute! a ["INSERT INTO t VALUES (?)" 1])
+          (is (= [{:x 1}] (sql/query b "SELECT x FROM t"))))
+        (testing "a write while the other holds the lock: busy"
+          (let [c (sql/with-transaction [a :mode :exclusive]
+                    (sql/execute! a ["INSERT INTO t VALUES (?)" 2])
+                    (caught (fn [] (sql/execute! b ["INSERT INTO t VALUES (?)" 3]))))]
+            (is (= ["BusyError" 5] [(class-name-of c) (:code c)]))))
+        (is (= [{:x 1} {:x 2}] (sql/query b "SELECT x FROM t ORDER BY x")))))
+    (sql/with-connection [r path :readonly true]
+      (let [c (caught (fn [] (sql/execute! r "INSERT INTO t VALUES (9)")))]
+        (is (= ["DatabaseError" 8] [(class-name-of c) (:code c)]) "read-only: SQLITE_READONLY")))))
+
+(deftest fibers-sharing-a-connection
+  (let [db (sql/open ":memory:")]
+    (sql/execute! db "CREATE TABLE c (fiber INTEGER, i INTEGER)")
+    (run! await (mapv (fn [f]
+                        (spawn-detached
+                          (dotimes [i 50]
+                            (sql/with-transaction [db]
+                              (sql/execute! db ["INSERT INTO c VALUES (?, ?)" f i])
+                              (sleep 0)
+                              (sql/execute! db ["INSERT INTO c VALUES (?, ?)" f (- i)])))))
+                      (range 8)))
+    (is (= {:n 800 :s 0} (sql/query-one db "SELECT count(*) AS n, sum(i) AS s FROM c")) "each transaction whole")
+    (sql/close! db)))
+
+(deftest blocking-connections
+  (sql/with-connection [db (io/path dir "blocking.db") :blocking true]
+    (sql/exec! db "CREATE TABLE t (x); INSERT INTO t VALUES (1), (2);")
+    (is (= 3 (:s (sql/query-one db "SELECT sum(x) AS s FROM t"))))))
+
+(deftest statements-are-reused
+  (let [db (people)]
+    (dotimes [i 200] (sql/query db ["SELECT name FROM people WHERE age > ?" i]))
+    (is (= 1 (count @(:statements db))) "one statement for one text")
+    (dotimes [i 100] (sql/query db (str "SELECT " i)))
+    (is (<= (count @(:statements db)) 64) "and no more than 64 kept")
+    (sql/close! db)))

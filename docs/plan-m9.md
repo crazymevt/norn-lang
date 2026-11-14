@@ -733,9 +733,64 @@ describe.**
   and `%al` for a variadic call, which Cranelift can't set) and Windows:
   they come with M12's ports, and are an error until then.
 - **A race it showed up** (from 8.3): the expander loads `norn.validate`
-  the first time a macro expands. Another fiber expanding meanwhile skipped
-  the checks, so a suite running beside another (`cargo test` runs them in
-  one runtime) sometimes got the seed compiler's messages. Now it waits
-  for the load. 40 runs of the suites in a row passed after the fix.
+  the first time a macro expands, and another fiber expanding meanwhile
+  skipped the checks. Now it waits for the load. (That wasn't all of the
+  flaky `pattern_test`, though: see 9.9.)
 - **Tests:** `ffi_test.norn`, now 78 checks at both tiers. Run ten times
   at both tiers without a failure.
+
+**9.9, SQLite (2026-11-14): done.**
+
+- **`norn.sqlite`,** written in Norn on `norn.ffi` and the system's
+  libsqlite3 (`NORN_SQLITE` names another). It's the FFI's first real
+  user, and needed nothing new from it.
+  - `open` (a path or `":memory:"`; `:readonly`, `:create`,
+    `:busy-timeout`, `:blocking`), `close!` and `with-connection`.
+  - `query` (rows as maps of column keywords, or `{:as :vectors}`),
+    `query-one`, `execute!` (the rows changed), `exec!` (a script),
+    `last-insert-id`, `tables` and `version`.
+- **SQL** is a string, or a vector of it and its parameters: `?` and
+  `?N` in order, or a map for `:name`, `@name` and `$name`.
+  - Values: nil, integers, doubles, strings, Bytes, booleans and
+    keywords.
+  - Columns come back as integers, doubles, strings (NUL inside kept),
+    Bytes and nil.
+- **Prepared statements** are cached per connection by their text (64 at
+  most) and reused.
+- **Transactions:** `with-transaction` (`:mode :deferred`, `:immediate`
+  or `:exclusive`) commits, or rolls back on any error, which goes on.
+  One inside another is a savepoint, rolled back alone.
+- **Fibers share a connection** safely: a lock per connection (on
+  `norn.sync`'s semaphore) lets one fiber at a time use it, and a
+  transaction keeps it for its fiber until the transaction ends.
+- **Errors** are `DatabaseError`s, with `ConstraintError` and `BusyError`
+  under them, carrying SQLite's `:code`, `:extended-code`, message and
+  `:sql`. A connection is an error to use once it's closed, or after an
+  image restore.
+- **Calls** run on the carrier, which is quick for most databases.
+  `:blocking true` runs `sqlite3_step` and `sqlite3_exec` on the blocking
+  pool instead.
+- **Speed** (an in-memory database, tier 0): 10,000 inserts in a
+  transaction in 61 ms, and 10,000 rows of five columns read in 51 ms.
+- **The flaky `pattern_test`, found:** `compiler_test` checks the
+  compiler's self-hosting fixpoint by installing the plain compiler as
+  `eval` while it compiles itself twice. `cargo test` runs every suite in
+  one runtime, so for that long the other suites' `eval` skipped the
+  expander. Errors then came from the seed compiler's checks, not
+  `norn.validate`'s. It showed after every rebuild, when an empty module
+  cache made those stages slow: with a fresh cache it failed 4 runs out
+  of 4. `compiler_test` now runs each stage through that stage's own
+  `eval`, installing nothing, and 5 fresh-cache runs out of 5 pass.
+- **Not done:** Studio's Databases panel (it can come now that the
+  library has landed), streaming a large result rather than a vector, and
+  user-defined SQL functions (callbacks would do it).
+- **Tests:** `sqlite_test.norn`, 39 checks at both tiers:
+  - values round-tripping, and parameters of each kind, with their
+    mistakes;
+  - changes and ids, and errors with their classes and codes;
+  - transactions: commit, rollback, savepoints and `:immediate`;
+  - a file with two connections, including busy and read-only;
+  - 8 fibers making transactions on one connection;
+  - a `:blocking` connection, and the statement cache.
+
+  Run ten times at both tiers without a failure.
