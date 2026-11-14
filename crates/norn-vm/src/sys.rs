@@ -346,7 +346,8 @@ pub(crate) fn path_join(parts: &[String]) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// :parent, :name, :ext, :stem or :absolute of a path (nil where it has none).
+/// :parent, :name, :ext, :stem, :absolute or :canonical of a path (nil where
+/// it has none; :canonical is nil if the path doesn't exist).
 pub(crate) fn path_part(m: &mut Mutator, p: &str, part: &str) -> Result<Value> {
     let path = Path::new(p);
     let s = match part {
@@ -355,6 +356,7 @@ pub(crate) fn path_part(m: &mut Mutator, p: &str, part: &str) -> Result<Value> {
         "ext" => path.extension().map(|x| x.to_string_lossy().into_owned()),
         "stem" => path.file_stem().map(|x| x.to_string_lossy().into_owned()),
         "absolute" => Some(std::path::absolute(path).map_err(|e| Error::new(format!("{p}: {e}")))?.to_string_lossy().into_owned()),
+        "canonical" => std::fs::canonicalize(path).ok().map(|x| x.to_string_lossy().into_owned()),
         _ => return Err(Error::new(format!("Unknown path part :{part}"))),
     };
     Ok(s.map_or(Value::NIL, |s| str_new(m, &s)))

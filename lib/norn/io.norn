@@ -43,6 +43,11 @@
 (defn extension "The extension (without the dot), or nil." [p] (%path-part (str p) :ext))
 (defn stem "The file name without its extension, or nil." [p] (%path-part (str p) :stem))
 (defn absolute "The path made absolute against the current directory." [p] (%path-part (str p) :absolute))
+(defn canonical
+  "The path made absolute with every symbolic link, . and .. resolved, as
+  file-system events report it; nil if it doesn't exist."
+  [p]
+  (%path-part (str p) :canonical))
 
 ;;; ---- streams ----
 

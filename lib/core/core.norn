@@ -1617,14 +1617,24 @@
          ~@(when (:indent attrs) [`(%set-indent! '~mname ~(:indent attrs))])
          (var ~mname))))
 
+(defn %doseq-emit [bindings body]
+  (if (empty? bindings)
+    `(do ~@body)
+    (let [[a b & more] bindings]
+      (cond (= a :let) `(let ~b ~(%doseq-emit more body))
+            (= a :when) `(when ~b ~(%doseq-emit more body))
+            :else (let [s (gensym "s")]
+                    `(loop* [~s (seq ~b)]
+                       (when ~s
+                         (let [~a (first ~s)] ~(%doseq-emit more body))
+                         (recur (next ~s)))))))))
+
 (defmacro doseq
-  "(doseq [x coll] body…): x may be a destructuring pattern."
+  "Run body for each binding of the names, for its effects; nil. As for:
+  (doseq [x xs y ys :when (odd? x) :let [z (* x y)]] …) nests, left to
+  right, and bindings destructure."
   [bindings & body]
-  (let [x (first bindings) coll (second bindings)]
-    `(loop* [s# (seq ~coll)]
-       (when s#
-         (let [~x (first s#)] ~@body)
-         (recur (next s#))))))
+  (%doseq-emit (vec bindings) body))
 
 ;;; ---- images (design §7) ------------------------------------------------------------------
 ;;;

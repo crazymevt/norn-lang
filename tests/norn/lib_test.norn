@@ -79,6 +79,9 @@
 (is (= "a/b/c" (io/path "a" "b" "c")))
 (is (= nil (io/extension "README")))
 (is (= true (= (io/absolute "x") (io/path (sys/cwd) "x"))))
+(is (nil? (io/canonical "/no/such/path/here")))
+(is (= (io/canonical (sys/cwd)) (io/canonical (io/path (sys/cwd) "." "lib" "..")))
+    "canonical resolves . and ..")
 
 ;;; ---- norn.io: streams ----
 (io/with-open [h (io/open (f "s.txt") :write)]

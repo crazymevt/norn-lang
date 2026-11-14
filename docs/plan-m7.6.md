@@ -82,15 +82,31 @@ a design against Norn's fibers and conditions.
 
 ## Part 3 — the editor
 
-**Status (2026-11-14): 3.1 done.** The shell is built as planned, with a
-basic Explorer tree (3.6 adds icons for Git status and the rest). The
-tools in the docks are placeholders until their parts. On the way:
-- `norn-ui` gained `dock-group` (one group of a dock's layout, placed
-  anywhere, so left, right and bottom docks share drags),
-  `dock-dragging?` (to show empty docks as drop targets), close buttons
-  and context menus on dock tabs, and `set-title!`;
-- `norn FILE.norn ARGS…` now runs the file with its arguments, as the
-  usage line always said (it refused them).
+**Status (2026-11-14): 3.1 and 3.2 done.**
+- **3.1, the shell:** built as planned, with a basic Explorer tree (3.6
+  adds icons for Git status and the rest). The tools in the docks are
+  placeholders until their parts.
+- **3.2, documents:** built as planned. Each folder's open documents
+  come back with it. Go to definition reads the project for top-level
+  `def` forms until 3.4 asks the running `norn` (`:definition`).
+
+On the way:
+- `norn-ui` gained:
+  - `dock-group` (one group of a dock's layout, placed anywhere, so the
+    left, right and bottom docks share drags, and so do editor groups);
+  - `dock-dragging?` (to show empty docks as drop targets);
+  - close buttons and context menus on dock tabs;
+  - `set-title!`, `window-size`, `editor-goto!` and `editor-open-find!`;
+  - a fix: a window's renders are serialized. A `refresh!` while the
+    render loop was rendering the same window sent the engine two diffs
+    against one old tree, and later ops named nodes that were gone.
+- Norn gained:
+  - `norn FILE.norn ARGS…`, which runs the file with its arguments, as
+    the usage line always said (it refused them);
+  - `doseq` with several bindings, `:let` and `:when`, as `for` has
+    (it silently ignored all but the first binding);
+  - `io/canonical`, a path with its symbolic links resolved, as
+    file-system events report paths (macOS's `$TMPDIR` is under one).
 
 | Part | Work |
 |---|---|
