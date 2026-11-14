@@ -2504,3 +2504,173 @@
   (for [x [1 2 3] :when (odd? x) y [:a :b]] [x y]) => [[1 :a] [1 :b] [3 :a] [3 :b]]"
   [bindings & body]
   (%for-emit (vec bindings) body))
+
+;;; ---- more of Clojure's core (found missing while building the editor, M7.6) ---------------
+
+(defmacro case
+  "Choose by constant: (case e k1 r1 (k2 k3) r2 default). A list of
+  constants matches any of them; with no default and no match, an error."
+  [e & clauses]
+  (let [v (gensym "case")
+        default? (odd? (count clauses))
+        test (fn [k] (if (seq? k) `(contains? '~(set k) ~v) `(= ~v '~k)))]
+    `(let [~v ~e]
+       (cond ~@(mapcat (fn [[k body]] [(test k) body]) (partition 2 clauses))
+             :else ~(if default? (last clauses) `(error "No case clause matches" ~v))))))
+
+(defmacro condp
+  "(condp pred e test1 r1 … default): the first ri whose (pred testi e)
+  holds."
+  [pred e & clauses]
+  (let [p (gensym "pred") v (gensym "v")]
+    `(let [~p ~pred ~v ~e]
+       (cond ~@(mapcat (fn [[t r]] [`(~p ~t ~v) r]) (partition 2 clauses))
+             :else ~(if (odd? (count clauses)) (last clauses) `(error "No condp clause matches" ~v))))))
+
+(defmacro cond->
+  "Thread e through each step (as ->) whose test is true."
+  [e & clauses]
+  (let [g (gensym "c")]
+    `(let [~g ~e ~@(mapcat (fn [[t step]] [g `(if ~t (-> ~g ~step) ~g)]) (partition 2 clauses))] ~g)))
+
+(defmacro cond->>
+  "Thread e through each step (as ->>) whose test is true."
+  [e & clauses]
+  (let [g (gensym "c")]
+    `(let [~g ~e ~@(mapcat (fn [[t step]] [g `(if ~t (->> ~g ~step) ~g)]) (partition 2 clauses))] ~g)))
+
+(defmacro some->
+  "Thread e through the forms (as ->) until one gives nil."
+  [e & forms]
+  (let [g (gensym "s")]
+    `(let [~g ~e ~@(mapcat (fn [f] [g `(if (nil? ~g) nil (-> ~g ~f))]) forms)] ~g)))
+
+(defmacro some->>
+  "Thread e through the forms (as ->>) until one gives nil."
+  [e & forms]
+  (let [g (gensym "s")]
+    `(let [~g ~e ~@(mapcat (fn [f] [g `(if (nil? ~g) nil (->> ~g ~f))]) forms)] ~g)))
+
+(defmacro as->
+  "Bind name to e, then to each form in turn (which use name)."
+  [e name & forms]
+  `(let [~name ~e ~@(mapcat (fn [f] [name f]) forms)] ~name))
+
+(defmacro when-some
+  "When the test isn't nil (false counts), bind it and do the body."
+  [binding & body]
+  `(let [t# ~(second binding)] (when (some? t#) (let [~(first binding) t#] ~@body))))
+
+(defmacro if-some
+  "If the test isn't nil (false counts), bind it and do then, else else."
+  [binding then & else]
+  `(let [t# ~(second binding)] (if (some? t#) (let [~(first binding) t#] ~then) (do ~@else))))
+
+(defmacro when-first
+  "Bind the first item of a non-empty collection and do the body."
+  [binding & body]
+  `(when-let [s# (seq ~(second binding))] (let [~(first binding) (first s#)] ~@body)))
+
+(defn take-last "The last n items of coll, as a seq (nil if none)." [n coll]
+  (let [v (vec coll)] (seq (drop (max 0 (- (count v) n)) v))))
+
+(defn drop-last "coll without its last n items (default 1)."
+  ([coll] (drop-last 1 coll))
+  ([n coll] (let [v (vec coll)] (take (max 0 (- (count v) n)) v))))
+
+(defn split-at "[(take n coll) (drop n coll)]." [n coll] [(take n coll) (drop n coll)])
+
+(defn split-with "[(take-while pred coll) (drop-while pred coll)]." [pred coll]
+  [(take-while pred coll) (drop-while pred coll)])
+
+(defn partition-by
+  "coll split into runs on which (f x) stays the same: a seq of vectors."
+  [f coll]
+  (seq (reduce (fn [out x]
+                 (let [k (f x) last-run (peek out)]
+                   (if (and last-run (= k (f (first last-run))))
+                     (conj (pop out) (conj last-run x))
+                     (conj out [x]))))
+               [] coll)))
+
+(defn flatten "The items of nested sequential collections, as one seq." [x]
+  (seq (reduce (fn [out y] (if (sequential? y) (into out (flatten y)) (conj out y))) [] (if (sequential? x) x [x]))))
+
+(defn keep-indexed "The non-nil results of (f index x)." [f coll]
+  (remove nil? (map-indexed f coll)))
+
+(defn not-every? "Is (pred x) false for some x in coll?" [pred coll] (not (every? pred coll)))
+
+(defn merge-with
+  "Merge maps; where a key is in more than one, combine with (f old new)."
+  [f & maps]
+  (reduce (fn [acc m] (reduce-kv (fn [a k v] (if (contains? a k) (assoc a k (f (get a k) v)) (assoc a k v))) (or acc {}) m))
+          nil (remove nil? maps)))
+
+(defn rseq "A vector's (or sorted collection's) items in reverse, or nil." [v] (seq (reverse v)))
+
+(defn subvec "Items start (inclusive) to end (exclusive) of vector v, as a vector."
+  ([v start] (subvec v start (count v)))
+  ([v start end]
+   (when (or (neg? start) (> end (count v)) (> start end))
+     (error "subvec indexes out of range:" start end))
+   (vec (take (- end start) (drop start v)))))
+
+(defn max-key "The x for which (k x) is greatest." [k x & xs]
+  (reduce (fn [a b] (if (> (k b) (k a)) b a)) x xs))
+
+(defn min-key "The x for which (k x) is least." [k x & xs]
+  (reduce (fn [a b] (if (< (k b) (k a)) b a)) x xs))
+
+(defn some-fn "A predicate: is any of preds true of any argument?" [& preds]
+  (fn [& xs] (some (fn [p] (some p xs)) preds)))
+
+(defn every-pred "A predicate: are all preds true of every argument?" [& preds]
+  (fn [& xs] (every? (fn [p] (every? p xs)) preds)))
+
+(defn dorun "Walk coll (realizing a lazy one) for its effects; nil." [coll] (doseq [_ coll]) nil)
+(defn run! "Call (f x) for each x in coll, for effects; nil." [f coll] (doseq [x coll] (f x)) nil)
+(defn nthrest "coll without its first n items." [coll n] (drop n coll))
+(defn fnext "(first (next x))." [x] (first (next x)))
+(defn nfirst "(next (first x))." [x] (next (first x)))
+
+(defn trampoline
+  "Call f with args, then keep calling what it returns while that is a
+  function (mutual recursion without growing the stack)."
+  [f & args]
+  (loop [r (apply f args)] (if (fn? r) (recur (r)) r)))
+
+(defn ident? "Is x a keyword or a symbol?" [x] (or (keyword? x) (symbol? x)))
+(defn int? "Is x an integer?" [x] (integer? x))
+(defn pos-int? "Is x an integer above 0?" [x] (and (integer? x) (pos? x)))
+(defn nat-int? "Is x an integer of 0 or more?" [x] (and (integer? x) (not (neg? x))))
+(defn neg-int? "Is x an integer below 0?" [x] (and (integer? x) (neg? x)))
+(defn double? "Is x a float?" [x] (float? x))
+(defn any? "True of anything." [_] true)
+(defn NaN? "Is x the float NaN?" [x] (and (float? x) (not (< x 1)) (not (>= x 1))))
+(defn infinite? "Is x a float infinity?" [x] (and (float? x) (or (= x ##Inf) (= x ##-Inf))))
+
+(defn update-keys "m with (f k) for each key k." [m f] (into {} (map (fn [[k v]] [(f k) v])) m))
+(defn update-vals "m with (f v) for each value v." [m f] (into {} (map (fn [[k v]] [k (f v)])) m))
+
+(defn reductions
+  "The successive values of (reduce f init coll), init first, as a seq."
+  ([f coll] (if (seq coll) (reductions f (first coll) (rest coll)) (list (f))))
+  ([f init coll] (seq (reduce (fn [out x] (conj out (f (peek out) x))) [init] coll))))
+
+(defn eduction "The items of coll through transducer xform, as a seq." [xform coll] (sequence xform coll))
+
+(defn prn-str "What prn prints, as a string." [& xs] (with-out-str (apply prn xs)))
+(defn print-str "What print prints, as a string." [& xs] (with-out-str (apply print xs)))
+
+(defn volatile! "A mutable box (an atom here)." [x] (atom x))
+(defn vswap! "Swap a volatile's value with f." [v f & args] (apply swap! v f args))
+(defn vreset! "Set a volatile's value." [v x] (reset! v x))
+
+(defn find "The entry [k v] of map m, or nil when m hasn't key k." [m k] (when (contains? m k) [k (get m k)]))
+(defn key "A map entry's key." [e] (first e))
+(defn val "A map entry's value." [e] (second e))
+
+(defn list* "args, the last a collection, as a list: (list* 1 2 [3 4]) is (1 2 3 4)." [& args]
+  (let [front (butlast args) more (last args)]
+    (reduce (fn [acc x] (cons x acc)) (seq more) (reverse front))))
