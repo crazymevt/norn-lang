@@ -231,11 +231,15 @@
      :fail (reduce + 0 (map :fail ts))
      :error (reduce + 0 (map :error ts))}))
 
+(declare find-tests)
+
 (defn run-files
-  "Run test files, in parallel (one fiber per file) unless :serial. Returns
-  {:files […] :totals {…}}."
+  "Run test files, in parallel (one fiber per file) unless :serial; a
+  directory stands for every *_test.norn under it. Returns {:files […]
+  :totals {…}}."
   [paths & {:keys [only serial]}]
-  (let [run (fn [p] (binding [*serial* (if serial true false)] (run-file p :only only)))
+  (let [paths (vec (mapcat (fn [p] (if (str/ends-with? p ".norn") [p] (find-tests p))) paths))
+        run (fn [p] (binding [*serial* (if serial true false)] (run-file p :only only)))
         files (if serial
                 (mapv run paths)
                 (with-scope [s] (mapv await (mapv (fn [p] (spawn s (run p))) paths))))]
@@ -330,9 +334,7 @@
             (= a "--tap") (recur (next args) (assoc opts :tap true))
             (= a "--junit") (recur (nnext args) (assoc opts :junit (second args)))
             :else (recur (next args) (update opts :paths conj a)))
-      (let [paths (vec (mapcat (fn [p] (if (str/ends-with? p ".norn") [p] (find-tests p)))
-                               (if (seq (:paths opts)) (:paths opts) ["tests"])))
-            result (run-files paths :only (:only opts) :serial (:serial opts))
+      (let [result (run-files (if (seq (:paths opts)) (:paths opts) ["tests"]) :only (:only opts) :serial (:serial opts))
             t (:totals result)]
         (print (if (:tap opts) (%tap result) (%human result)))
         (when (:junit opts) (spit (:junit opts) (%junit result)))

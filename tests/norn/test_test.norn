@@ -93,6 +93,9 @@
 ;;; run-files and the reporters
 (def all (t/run-files [(io/path dir "plain_test.norn") (io/path dir "rich_test.norn")]))
 (is (= {:tests 8 :pass 7 :fail 6 :error 2} (:totals all)))
+(is (= (vec (sort (filter (fn [n] (str/ends-with? n "_test.norn")) (io/list-dir dir))))
+       (mapv (fn [f] (io/file-name (:file f))) (:files (t/run-files [dir] :serial true))))
+    "a directory stands for its test files")
 (let [human (t/%human all)]
   (is (str/includes? human "FAIL in adds"))
   (is (str/includes? human "small › really"))

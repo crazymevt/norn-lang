@@ -82,7 +82,7 @@ a design against Norn's fibers and conditions.
 
 ## Part 3 — the editor
 
-**Status (2026-11-14): 3.1 to 3.4 done.**
+**Status (2026-11-14): 3.1 to 3.5 done.**
 - **3.1, the shell:** built as planned, with a basic Explorer tree (3.6
   adds icons for Git status and the rest). The tools in the docks are
   placeholders until their parts.
@@ -103,6 +103,11 @@ a design against Norn's fibers and conditions.
   evaluating in a frame), and an error at a document's line goes to
   Problems. ⌘⏎ sets up the document's namespace first (its `ns` form)
   if this `norn` hasn't seen it.
+- **3.5, the debugger, inspector and tests:** built as planned. The
+  Debugger comes forward when a fiber stops, at the first frame of a
+  named function. A frame's locals arrive printed (`:backtrace`), so
+  they're shown as text, split into names and values. F12 now asks the
+  running `norn` first (`:definition`), then reads the project.
 
 On the way:
 - `norn-ui` gained:
@@ -124,6 +129,8 @@ On the way:
     render loop was rendering the same window sent the engine two diffs
     against one old tree, and later ops named nodes that were gone.
 - Norn gained:
+  - `norn.test/run-files` taking directories (every `*_test.norn` under
+    one), as `norn test` does, so the editor protocol's `:test` can too;
   - `norn FILE.norn ARGS…`, which runs the file with its arguments, as
     the usage line always said (it refused them);
   - `doseq` with several bindings, `:let` and `:when`, as `for` has
