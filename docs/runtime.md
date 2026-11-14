@@ -656,9 +656,37 @@ heap under GC stress in M6; the fix and this rule came together.
   Norn objects hold their handle in an atom and reload and re-resolve by
   themselves, with no `ResourceLost`, because a loaded library holds no
   session state.
-- **Not yet (M9):** callbacks from C into Norn, struct layouts, typed
-  signatures, variadic functions (on Apple arm64 their arguments go on the
-  stack), and the module-level safety model.
+- **M9 part 9.8 added:**
+  - **Memory:** addresses are integers. `%mem-alloc` and `%mem-free`
+    (calloc and free), `%mem-get` and `%mem-set!` (a C type at an address
+    and offset, unaligned), and C strings and byte copies.
+  - **Struct layouts** are Norn (`defcstruct` in `norn.ffi`), on those
+    primitives: C's rules, nested structs and arrays. A struct is passed
+    by pointer (`[:* layout]`, a map copied to temporary memory) or
+    filled by C (`[:out layout]`, read back as a map).
+  - **Callbacks.** Each one gets a Cranelift trampoline with its own C
+    signature, which stores its arguments as words and calls `dispatch`
+    with the callback's id.
+    - On the carrier making a fast call (the thread-local `CALLING_VM`
+      says which), the callback leaves the native region and runs as a
+      nested run, then enters the region again.
+    - On any other thread (the blocking pool, or C's own), the call is
+      posted through a `Port` to the callback's channel, with a reply
+      token. A fiber serving the channel answers with
+      `%ffi-callback-reply!`, and the C thread waits on a condition
+      variable meanwhile.
+    - An error can't unwind through C, so C gets 0. In the first case the
+      error is kept and signalled when the fast call returns; in the
+      second it is reported.
+    - A trampoline's code isn't reclaimed: executable memory isn't
+      reused.
+  - **Function pointers:** `%ffi-fn` with a nil library takes an address.
+  - **Unsafe modules:** the var flag `VAR_UNSAFE` (32) marks `norn.ffi`'s
+    raw functions and the `%ffi-`/`%mem-` primitives. The expander refuses
+    a reference to one, at phase 0, from a namespace that isn't in
+    `%unsafe-namespaces`: those whose `ns` says `(:unsafe)`, and `user`.
+- **Not yet:** structs by value, variadic functions (on Apple arm64 their
+  arguments go on the stack), unions and bit fields.
 
 ### 5.7 Native extensions and the main thread **[built in M7.5]**
 

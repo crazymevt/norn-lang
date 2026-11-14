@@ -197,6 +197,8 @@ prims! {
     "%set-private!" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "%set-private!")?; a[0].var_set_flag(norn_rt::func::VAR_PRIVATE); Ok(a[0]) };
     "private?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Var) && a[0].var_is_private()));
     "%set-contracted!" 2 Some(2) => |_, a| { expect(a[0], Kind::Var, "%set-contracted!")?; if a[1].truthy() { a[0].var_set_flag(norn_rt::func::VAR_CONTRACTED); } else { a[0].var_clear_flag(norn_rt::func::VAR_CONTRACTED); } Ok(a[0]) };
+    "%set-unsafe!" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "%set-unsafe!")?; a[0].var_set_flag(norn_rt::func::VAR_UNSAFE); Ok(a[0]) };
+    "%unsafe?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Var) && a[0].var_flags() & norn_rt::func::VAR_UNSAFE != 0));
     "%contracted?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Var) && a[0].var_flags() & norn_rt::func::VAR_CONTRACTED != 0));
     "error" 1 VAR => |_, a| Err(Error::new(join(a, false)));
     "disassemble" 1 Some(1) => disassemble;
@@ -389,8 +391,18 @@ prims! {
     "%tls-handshake" 1 Some(1) => |vm, a| tls_handshake(vm, a[0]);
     // the basic FFI (ffi.rs; norn.ffi)
     "%ffi-open" 1 Some(1) => |vm, a| crate::ffi::open(vm, &text(a[0]));
-    "%ffi-fn" 5 Some(5) => |vm, a| crate::ffi::function(vm, a[0], &text(a[1]), a[2], a[3], a[4].truthy());
+    "%ffi-fn" 5 Some(5) => |vm, a| { let name = if a[0].is_nil() { a[1] } else { let t = text(a[1]); str_new(&mut vm.m, &t) }; crate::ffi::function(vm, a[0], name, a[2], a[3], a[4].truthy()) };
     "%ffi-call" 1 VAR => |vm, a| crate::ffi::call(vm, a[0], &a[1..]);
+    "%mem-alloc" 1 Some(1) => |_, a| crate::ffi::mem_alloc(a);
+    "%mem-free" 1 Some(1) => |_, a| crate::ffi::mem_free(a);
+    "%mem-get" 3 Some(3) => |vm, a| crate::ffi::mem_get(&mut vm.m, a);
+    "%mem-set!" 4 Some(4) => |_, a| crate::ffi::mem_set(a);
+    "%mem-string" 1 Some(1) => |vm, a| crate::ffi::mem_string(&mut vm.m, a);
+    "%mem-bytes" 2 Some(2) => |vm, a| crate::ffi::mem_bytes(&mut vm.m, a);
+    "%mem-write-bytes!" 2 Some(2) => |_, a| crate::ffi::mem_write_bytes(a);
+    "%ffi-callback" 4 Some(4) => |vm, a| crate::ffi::make_callback(vm, a);
+    "%ffi-callback-reply!" 3 Some(3) => |_, a| crate::ffi::callback_reply(a);
+    "%ffi-callback-free!" 1 Some(1) => |_, a| crate::ffi::callback_free(a);
     "%ffi-libc-path" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, if cfg!(target_os = "macos") { "/usr/lib/libSystem.B.dylib" } else { "libc.so.6" }));
     "%ffi-libm-path" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, if cfg!(target_os = "macos") { "/usr/lib/libSystem.B.dylib" } else { "libm.so.6" }));
     // processes, time, signals, fiber dumps (os.rs; norn.process, norn.time, norn.signal)

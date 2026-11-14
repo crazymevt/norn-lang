@@ -90,9 +90,10 @@
    (checked quick-case (fn [s] (syntax-parse s [(_ (~describe "an expression to choose by" e) clause ...) nil])))
    ;; (rare enough to match every time)
    "norn.core/ns"
-   (fn [s] (syntax-parse s [(_ name:id (~describe "an ns clause, (:require …), (:require-for-syntax …) or (:refer-core …)"
+   (fn [s] (syntax-parse s [(_ name:id (~describe "an ns clause, (:require …), (:require-for-syntax …), (:refer-core …) or (:unsafe)"
                                                   (~or (:require (~or lib:id [lib:id & opts]) ...)
                                                        (:require-for-syntax (~or lib:id [lib:id & opts]) ...)
-                                                       (:refer-core opt ...)))
+                                                       (:refer-core opt ...)
+                                                       (:unsafe)))
                                ...)
                             nil]))})

@@ -28,6 +28,9 @@ pub const VAR_PRIVATE: u64 = 8;
 /// Has a contract (a signature, or defcontract): calls from other
 /// namespaces go through a wrapper that checks it (M9 part 9.4).
 pub const VAR_CONTRACTED: u64 = 16;
+/// The var is part of the raw FFI (M9 part 9.8): only a module that says
+/// `(:unsafe)` may refer to it.
+pub const VAR_UNSAFE: u64 = 32;
 
 pub fn var_new(m: &mut Mutator, ns: Value, name: Value) -> Value {
     let v = alloc(m, Kind::Var, 4);

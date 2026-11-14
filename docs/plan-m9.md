@@ -633,3 +633,67 @@ describe.**
   12 fibers transferring at once, history, validators and watches, values
   only, `io!`, `after-commit` and fibers started inside. Run ten times at
   both tiers without a failure.
+
+**9.8, the full FFI (2026-11-14): done.**
+
+- **Memory** (`norn.ffi`):
+  - addresses are integers;
+  - `alloc` (bytes, or room for a type) and `free!`, and `with-alloc`;
+  - `mem-get` and `mem-set!` for each C type at an address and offset;
+  - `string-at`, `bytes-at`, `write-bytes!` and `alloc-string`.
+- **Structs:** `(defcstruct point [x :i32 y :i32])` lays the fields out
+  as C does, with nested structs and `[:array t n]`:
+  - `sizeof`, `alignof` and `offset-of` (a key, or a path through nested
+    structs);
+  - `struct-get` and `struct-set!` (as maps), `field` and `set-field!`,
+    and `new-struct`;
+  - a parameter `[:* layout]` takes a map, copied to memory for the call
+    (or an address), and `[:out layout]` is a struct C fills, returned as
+    a map after the result.
+
+  `struct tm`, filled by the C library's `gmtime_r`, reads back right,
+  `:string` field included.
+- **Callbacks:** `(callback [:pointer :pointer] :int f)`,
+  `callback-address`, `free-callback!`, and a `[:callback params ret]`
+  parameter, which takes a callback or a plain function (made a callback
+  once and kept):
+  - during a call from Norn, on its thread, f runs there and then, as a
+    nested run;
+  - from another thread (the blocking pool, or one of C's own), the call
+    goes to a fiber serving the callback, while that thread waits;
+  - an error in f can't unwind through C: C gets 0, and the error is
+    signalled when the call from Norn returns (from another thread, it's
+    reported).
+
+  `qsort` sorts with a Norn comparator both ways, fast and `:blocking`.
+- **`function-at`:** a C function known by its address (a function
+  pointer C returned).
+- **Checked signatures:** `(defcfun strlen libc "strlen" [s :string]
+  :usize)` names the parameters. That gives a fixed arity (calls are 20%
+  faster than through `& args`), and a contract checked on calls from
+  other modules before C sees the arguments. The old form, types alone,
+  still works, unchecked.
+- **Unsafe modules:** a module that uses the raw FFI says `(:unsafe)` in
+  its `ns`.
+  - The expander refuses `norn.ffi`'s raw functions and the
+    `%ffi-`/`%mem-` primitives under them anywhere else.
+  - The REPL's `user` may use them.
+  - A module that doesn't say it may still call one that does, and
+    layouts (`defcstruct`, `sizeof`) are for anyone.
+  - `lib_test.norn` says `(:unsafe)` now.
+- **Not done:** structs passed or returned by value (they need the
+  platform ABI's rules for aggregates), variadic functions (`printf`),
+  unions and bit fields. A callback's code isn't reclaimed when it's
+  freed.
+- **Tests:** `ffi_test.norn`, 43 checks at both tiers:
+  - memory in every C type;
+  - layouts against C's rules, nested structs and arrays read and
+    written, and `struct tm` from `gmtime_r`;
+  - structs by value refused;
+  - callbacks: `qsort` with a function and with a callback, an error
+    signalled after C returns, floats and narrow integers through a
+    callback's own address, and from the blocking pool;
+  - checked signatures across modules;
+  - the `(:unsafe)` rule, for the library and the primitives.
+
+  Run ten times at both tiers without a failure.

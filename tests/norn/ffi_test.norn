@@ -1,0 +1,148 @@
+;;;; The full FFI (M9 part 9.8): memory, struct layouts, callbacks from C,
+;;;; checked signatures, and (:unsafe) modules. (lib_test has the basics.)
+
+(ns ffi-test
+  (:require [norn.test :refer [is deftest testing]] [norn.ffi :as ffi] [norn.io :as io] [norn.sys :as sys]
+            [norn.string :as str])
+  (:unsafe))
+
+(def libc (ffi/library :c))
+
+(defn- caught [f] (try (f) nil (catch Error e e)))
+(defn- message [f] (when-let [c (caught f)] (condition-message c)))
+
+;; ---- memory ----
+
+(deftest memory
+  (ffi/with-alloc [p 64]
+    (testing "each C type"
+      (doseq [[t v] [[:i8 -5] [:u8 250] [:i16 -30000] [:u16 60000] [:i32 -2000000000] [:u32 4000000000]
+                     [:i64 -9000000000] [:u64 9000000000] [:f64 2.5] [:pointer 12345]]]
+        (ffi/mem-set! p t 8 v)
+        (is (= v (ffi/mem-get p t 8)) (str t)))
+      (ffi/mem-set! p :f32 0 1.5)
+      (is (= 1.5 (ffi/mem-get p :f32 0))))
+    (testing "out of range"
+      (is (some? (message (fn [] (ffi/mem-set! p :u8 0 256))))))
+    (testing "bytes and strings"
+      (ffi/write-bytes! p "hello")
+      (ffi/mem-set! p :u8 5 0)
+      (is (= "hello" (ffi/string-at p)))
+      (is (= (bytes "hel") (ffi/bytes-at p 3)))))
+  (let [s (ffi/alloc-string "héllo")]
+    (is (= "héllo" (ffi/string-at s)))
+    (ffi/free! s))
+  (is (nil? (ffi/string-at 0)) "NULL")
+  (is (= "mem-get: a NULL pointer" (message (fn [] (ffi/mem-get 0 :i32))))))
+
+;; ---- structs ----
+
+(ffi/defcstruct mixed [c :char i :int d :double])
+(ffi/defcstruct pair [a :u8 b :u8])
+(ffi/defcstruct point [x :i32 y :i32])
+(ffi/defcstruct shape [tag :u8 at point corners [:array point 2] name [:array :u8 3]])
+
+(deftest layouts
+  (testing "as C lays them out"
+    (is (= [[0 4 8] 16 8] [(mapv (fn [k] (ffi/offset-of mixed k)) [:c :i :d]) (ffi/sizeof mixed) (ffi/alignof mixed)]))
+    (is (= [2 1] [(ffi/sizeof pair) (ffi/alignof pair)]))
+    (is (= [0 4 12 28 32] [(ffi/offset-of shape :tag) (ffi/offset-of shape :at) (ffi/offset-of shape :corners)
+                           (ffi/offset-of shape :name) (ffi/sizeof shape)]))
+    (is (= 8 (ffi/offset-of shape [:at :y])) "a path"))
+  (testing "reading and writing them"
+    (let [v {:tag 7 :at {:x 1 :y -2} :corners [{:x 3 :y 4} {:x 5 :y 6}] :name [97 98 99]}
+          p (ffi/new-struct shape v)]
+      (is (= v (ffi/struct-get p shape)))
+      (is (= -2 (ffi/field p shape [:at :y])))
+      (ffi/set-field! p shape [:at :y] 9)
+      (is (= {:x 1 :y 9} (ffi/field p shape :at)))
+      (is (= {:x 5 :y 6} (ffi/mem-get p point (+ (ffi/offset-of shape :corners) (ffi/sizeof point)))))
+      (ffi/free! p)))
+  (is (some? (message (fn [] (ffi/offset-of point :z)))) "no such field"))
+
+;; struct tm, as the C library defines it (macOS and Linux agree)
+(ffi/defcstruct tm [sec :int min :int hour :int mday :int mon :int year :int wday :int yday :int isdst :int
+                    gmtoff :long zone :string])
+(ffi/defcstruct time-t [t :i64])
+(ffi/defcfun gmtime-r libc "gmtime_r" [t [:* time-t] out [:out tm]] :pointer)
+
+(deftest the-c-librarys-own-structs
+  (let [[r tmv] (gmtime-r {:t 86400000} nil)]
+    (is (integer? r))
+    (is (= {:year 72 :mon 8 :mday 27 :hour 0 :yday 270 :wday 3} (select-keys tmv [:year :mon :mday :hour :yday :wday]))
+        "a day of 1972")
+    (is (contains? #{"UTC" "GMT"} (:zone tmv)) "a string field")))
+
+(deftest structs-by-value-arent-yet
+  (is (str/includes? (message (fn [] (ffi/function libc "abs" [point] :int))) "by pointer"))
+  (is (some? (message (fn [] (ffi/function libc "div" [:int :int] point))))))
+
+;; ---- callbacks ----
+
+(ffi/defcfun qsort libc "qsort" [base :pointer n :usize size :usize cmp [:callback [:pointer :pointer] :int]] :void)
+(ffi/defcfun qsort-blocking libc "qsort" [base :pointer n :usize size :usize cmp :pointer] :void :blocking true)
+
+(defn- ints-in [p n] (mapv (fn [i] (ffi/mem-get p :i32 (* 4 i))) (range n)))
+(defn- ints-at [xs] (let [p (ffi/alloc (* 4 (count xs)))] (doseq [[i x] (map vector (range) xs)] (ffi/mem-set! p :i32 (* 4 i) x)) p))
+(defn- by-value [a b] (compare (ffi/mem-get a :i32) (ffi/mem-get b :i32)))
+
+(deftest callbacks
+  (testing "C calling Norn, during a call from Norn"
+    (let [p (ints-at [5 3 9 1 7])]
+      (qsort p 5 4 by-value)
+      (is (= [1 3 5 7 9] (ints-in p 5)))
+      (qsort p 5 4 (ffi/callback [:pointer :pointer] :int (fn [a b] (by-value b a))))
+      (is (= [9 7 5 3 1] (ints-in p 5)) "a callback made for it")
+      (ffi/free! p)))
+  (testing "an error in the callback is signalled when C returns"
+    (let [p (ints-at [2 1])
+          c (caught (fn [] (qsort p 2 4 (fn [_ _] (/ 1 0)))))]
+      (is (= "ArithmeticError" (name (class-name (class-of c)))))
+      (ffi/free! p)))
+  (testing "floats and narrow integers, through the callback's own address"
+    (let [cb (ffi/callback [:double :float :i8 :u16] :double (fn [x y z w] (+ x y z w)))
+          f (ffi/function-at (ffi/callback-address cb) [:double :float :i8 :u16] :double)]
+      (is (= 61001.75 (ffi/call f 1.25 0.5 -1 61001)))
+      (ffi/free-callback! cb)))
+  (testing "from another thread: served by a fiber, while C waits"
+    (let [p (ints-at (vec (shuffle (range 50))))
+          calls (atom 0)
+          cb (ffi/callback [:pointer :pointer] :int (fn [a b] (swap! calls inc) (by-value a b)))]
+      (qsort-blocking p 50 4 (ffi/callback-address cb))
+      (is (= (vec (range 50)) (ints-in p 50)))
+      (is (pos? @calls))
+      (ffi/free-callback! cb)
+      (ffi/free! p))))
+
+;; ---- checked signatures, and unsafe modules ----
+
+(def dir (io/path (sys/temp-dir) (str "norn-ffi-test-" (sys/pid) "-" (nano-time))))
+(io/mkdirs! (io/path dir "ffi2"))
+(add-lib-path! dir)
+(defn- module! [name text] (io/write-text (io/path dir "ffi2" (str name ".norn")) text))
+
+(module! "lib" (str "(ns ffi2.lib (:require [norn.ffi :as ffi]) (:unsafe))\n"
+                    "(ffi/defcfun c-strlen (ffi/library :c) \"strlen\" [s :string] :usize)\n"
+                    "(ffi/defcfun c-abs (ffi/library :c) \"abs\" [n :int] :int)\n"
+                    "(defn safe-strlen [s] (c-strlen s))\n"))
+(module! "user" (str "(ns ffi2.user (:require [ffi2.lib :as lib]))\n"
+                     "(defn good [] [(lib/c-strlen \"four\") (lib/c-abs -3) (lib/safe-strlen \"ab\")])\n"
+                     "(defn bad [] (lib/c-strlen 42))\n"))
+(module! "sneaky" "(ns ffi2.sneaky (:require [norn.ffi :as ffi]))\n(defn grab [] (ffi/alloc 8))\n")
+(module! "sneakier" "(ns ffi2.sneakier)\n(defn grab [] (%mem-alloc 8))\n")
+(module! "layouts" "(ns ffi2.layouts (:require [norn.ffi :as ffi]))\n(ffi/defcstruct p [x :int y :double])\n(def size (ffi/sizeof p))\n")
+
+(deftest checked-signatures
+  (eval '(require 'ffi2.user))
+  (is (= [4 3 2] (eval '(ffi2.user/good))) "a module that doesn't say (:unsafe) may use one that does")
+  (let [c (caught (fn [] (eval '(ffi2.user/bad))))]
+    (is (= "ContractError" (name (class-name (class-of c)))) "checked before C sees it")
+    (is (= ["its 1st argument" "nil or string?"] [(:position c) (:expected c)]))))
+
+(deftest unsafe-modules
+  (is (str/includes? (message (fn [] (eval '(require 'ffi2.sneaky))))
+                     "norn.ffi/alloc is unsafe (it can crash the process): only a module that says (:unsafe) in its ns may use it"))
+  (is (str/includes? (message (fn [] (eval '(require 'ffi2.sneakier)))) "norn.core/%mem-alloc is unsafe")
+      "nor the primitives under it")
+  (eval '(require 'ffi2.layouts))
+  (is (= 16 (eval 'ffi2.layouts/size)) "layouts touch nothing: anyone may"))

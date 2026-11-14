@@ -703,6 +703,12 @@ As built (M9 parts 9.3 and 9.4):
 - **[open]** Whether to target a second host later (e.g. WASM), or stay with
   the native runtime only.
 
+**Status (M9 part 9.8):** `norn.ffi` has `defcfun` with checked
+signatures, `defcstruct`, memory access and callbacks from C (on the
+calling thread, or posted to a fiber from any other). A module using it
+says `(:unsafe)` in its `ns`. Structs by value and variadic functions are
+not yet done.
+
 ### 9.1 UI: `norn.ui` **[decided, 2026-11-13]**
 
 The UI is drawn by Norn's own engine, JavaFX-style: a retained tree of real

@@ -9,7 +9,8 @@
                        [norn.random :as random] [norn.async :as as] [norn.sync :as sync]
                        [norn.cache :as cache] [norn.log :as log] [norn.fmt :as codefmt] [norn.lint :as lint]
                        [norn.bench :as bench] [norn.doc :as ndoc] [norn.image :as image] [norn.check :as check]
-                       [norn.test :refer [is]]))
+                       [norn.test :refer [is]])
+    (:unsafe))
 
 (defmacro fails [expr]
   `(try ~expr :no-error (~'catch Error e# :error)))

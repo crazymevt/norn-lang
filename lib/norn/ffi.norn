@@ -1,28 +1,234 @@
-;;;; norn.ffi — calling C (the basic FFI; runtime.md §5.6).
+;;;; norn.ffi — calling C (runtime.md §5.6; the full FFI, M9 part 9.8).
 ;;;;
-;;;; (def libc (library :c))
-;;;; (defcfun strlen libc "strlen" [:string] :usize)
-;;;; (strlen "hello")  ; => 5
+;;;;   (ns my.module (:require [norn.ffi :as ffi]) (:unsafe))
+;;;;   (def libc (ffi/library :c))
+;;;;   (ffi/defcfun strlen libc "strlen" [s :string] :usize)
+;;;;   (strlen "hello")  ; => 5
+;;;;
+;;;; A module using the FFI says (:unsafe) in its ns: a wrong signature or
+;;;; address can crash the process, and the expander refuses this library's
+;;;; unsafe functions anywhere else (the REPL's user namespace may).
 ;;;;
 ;;;; Types: :void :i8 :u8 :i16 :u16 :i32/:int :u32/:uint :i64/:long
 ;;;; :u64/:ulong/:usize :f32/:float :f64/:double :pointer (an address, as an
-;;;; integer). Parameters also take :bytes (a pointer to a Bytes value's
-;;;; data), :string (a NUL-terminated copy) and :out (pass a size: C fills a
-;;;; fresh buffer, returned as Bytes alongside the result). A :string return
-;;;; copies the C string (nil for NULL).
+;;;; integer; nil is NULL). Parameters also take
+;;;; - :bytes (a pointer to a Bytes value's data), :string (a NUL-terminated
+;;;;   copy), :out (pass a size: C fills a fresh buffer, returned as Bytes
+;;;;   after the result);
+;;;; - [:* layout]: a pointer to a struct, passed a map (copied to memory
+;;;;   for the call) or an address;
+;;;; - [:out layout]: a struct C fills, returned as a map after the result;
+;;;; - [:callback [param-types] ret]: a C function pointer, passed a
+;;;;   callback, or a Norn function (made a callback once, and kept).
+;;;; A :string return copies the C string (nil for NULL).
 ;;;;
 ;;;; A function marked :blocking true runs on the blocking pool; others run
 ;;;; on the carrier (keep them quick: one that takes long makes the runtime
 ;;;; start a spare carrier). After an image restore, libraries reload and
 ;;;; functions re-resolve by themselves: a library holds no session state.
 ;;;;
-;;;; Unsafe: a wrong signature can crash the process. Not yet (M9):
-;;;; callbacks from C, structs, variadic functions such as printf.
+;;;; Structs: (defcstruct point [x :i32 y :i32]) lays out fields as C does
+;;;; (each at its alignment, the size rounded up to the largest), with
+;;;; nested structs and [:array type n]. Memory: alloc and free!, mem-get
+;;;; and mem-set!, struct-get and struct-set! (as maps), field and
+;;;; set-field!, string-at and bytes-at.
+;;;;
+;;;; Callbacks: (callback [:pointer :pointer] :int f) is a C function
+;;;; pointer that calls f. Called during a (fast) call from Norn, on its
+;;;; thread, f runs there and then. Called from another thread (the blocking
+;;;; pool, or one of C's own), the call goes to a fiber serving the
+;;;; callback, while that thread waits. An error in f can't unwind through
+;;;; C: C gets 0, and the error is signalled when the call from Norn
+;;;; returns (from another thread, it's reported).
+;;;;
+;;;; Not yet: structs passed or returned by value, variadic functions such
+;;;; as printf, unions and bit fields.
 
-(ns norn.ffi)
+(ns norn.ffi
+  (:unsafe))
 
 (defclass Library () ((path) (cell)))
-(defclass ForeignFunction () ((name) (lib) (params) (ret) (blocking) (cell)))
+(defclass ForeignFunction () ((name) (lib) (params) (ret) (blocking) (cell) (prep)))
+(defclass Callback () ((id) (address) (params) (ret) (fn) (chan)))
+
+(defmethod print-object ((f ForeignFunction)) (str "#<foreign " (:name f) ">"))
+(defmethod print-object ((c Callback)) (str "#<callback " (:params c) " " (:ret c) ">"))
+
+;; ---- types and struct layouts ----
+
+(def ^:private prim-sizes
+  {:i8 1 :char 1 :u8 1 :uchar 1 :bool 1 :i16 2 :short 2 :u16 2 :ushort 2
+   :i32 4 :int 4 :u32 4 :uint 4 :f32 4 :float 4
+   :i64 8 :long 8 :isize 8 :ssize 8 :u64 8 :ulong 8 :usize 8 :size 8 :f64 8 :double 8 :pointer 8
+   :string 8})
+
+(defn layout? "Is x a struct layout (from defcstruct)?" [x] (and (map? x) (contains? x ::fields)))
+
+(defn- array-type? [t] (and (vector? t) (= :array (first t))))
+
+(defn sizeof "The size of C type t (a keyword, a struct layout, [:array t n]) in bytes." [t]
+  (cond (layout? t) (:size t)
+        (array-type? t) (* (sizeof (second t)) (nth t 2))
+        :else (or (get prim-sizes t) (error (str "Not a C type: " (pr-str t))))))
+
+(defn alignof "The alignment of C type t." [t]
+  (cond (layout? t) (:align t)
+        (array-type? t) (alignof (second t))
+        :else (sizeof t)))
+
+(defn- round-up [n a] (* a (quot (+ n (dec a)) a)))
+
+(defn struct-layout
+  "A struct's layout from its fields, [name type …] (names as keywords or
+  symbols): each at the next offset its alignment allows, the size rounded
+  up to the struct's alignment (its largest field's), as C lays them out."
+  [sname fields]
+  (when (odd? (count fields)) (error (str "defcstruct " sname ": fields come as name type pairs")))
+  (loop [fs (partition 2 fields) offset 0 align 1 out []]
+    (if (empty? fs)
+      {::fields out :name sname :size (round-up offset align) :align align
+       :index (into {} (map (fn [f] [(:name f) f]) out))}
+      (let [[n t] (first fs)
+            a (alignof t)
+            at (round-up offset a)]
+        (recur (rest fs) (+ at (sizeof t)) (max align a)
+               (conj out {:name (keyword (name n)) :type t :offset at}))))))
+
+(defmacro defcstruct
+  "(defcstruct name [field type …]): name is the struct's layout. A type is
+  a C type keyword, another layout, or [:array type n]."
+  [sname fields]
+  `(def ~sname (struct-layout '~sname [~@(mapcat (fn [[n t]] [(keyword (name n)) t]) (partition 2 fields))])))
+
+(defn- field-of [layout k]
+  (or (get (:index layout) k) (error (str (:name layout) " has no field " k))))
+
+(defn offset-of
+  "The offset of a field in a struct layout: a key, or a path of them
+  through nested structs ([:origin :x])."
+  [layout k]
+  (if (vector? k)
+    (loop [l layout ks (seq k) off 0]
+      (if ks
+        (let [f (field-of l (first ks))] (recur (:type f) (next ks) (+ off (:offset f))))
+        off))
+    (:offset (field-of layout k))))
+
+;; ---- memory ----
+
+(defn alloc
+  "n zeroed bytes from C's allocator (or room for C type n: a layout, an
+  array type, a keyword): their address. free! them."
+  [n]
+  (%mem-alloc (if (integer? n) n (sizeof n))))
+
+(defn free! "Give memory from alloc back." [addr] (%mem-free addr))
+
+(declare struct-get struct-set!)
+
+(defn mem-get
+  "The C value of type t at addr (+ offset): a number, an address for
+  :pointer, the string pointed to for :string, a map for a layout, a
+  vector for [:array t n]."
+  ([addr t] (mem-get addr t 0))
+  ([addr t offset]
+   (cond (layout? t) (struct-get (+ addr offset) t)
+         (array-type? t) (let [[_ et n] t s (sizeof et)]
+                           (mapv (fn [i] (mem-get addr et (+ offset (* i s)))) (range n)))
+         (= t :string) (%mem-string (%mem-get addr :pointer offset))
+         :else (%mem-get addr t offset))))
+
+(defn mem-set!
+  "Write v at addr (+ offset) as C type t (a map for a layout, a
+  sequence for an array; :string takes an address). v."
+  ([addr t v] (mem-set! addr t 0 v))
+  ([addr t offset v]
+   (cond (layout? t) (struct-set! (+ addr offset) t v)
+         (array-type? t) (let [[_ et n] t s (sizeof et)]
+                           (when (> (count v) n) (error (str "More than " n " items for " (pr-str t))))
+                           (doseq [[i x] (map vector (range) v)] (mem-set! addr et (+ offset (* i s)) x)))
+         (= t :string) (%mem-set! addr :pointer offset v)
+         :else (%mem-set! addr t offset v))
+   v))
+
+(defn struct-get "The struct at addr, as a map of its fields." [addr layout]
+  (into {} (map (fn [f] [(:name f) (mem-get addr (:type f) (:offset f))]) (::fields layout))))
+
+(defn struct-set!
+  "Write the fields of map m (those it has) into the struct at addr. addr."
+  [addr layout m]
+  (doseq [[k v] m]
+    (let [f (field-of layout k)] (mem-set! addr (:type f) (:offset f) v)))
+  addr)
+
+(defn field "The field k (or path) of the struct at addr." [addr layout k]
+  (if (vector? k)
+    (let [last-layout (reduce (fn [l k] (:type (field-of l k))) layout (pop k))]
+      (mem-get addr (:type (field-of last-layout (peek k))) (offset-of layout k)))
+    (let [f (field-of layout k)] (mem-get addr (:type f) (:offset f)))))
+
+(defn set-field! "Set field k (or path) of the struct at addr to v. v." [addr layout k v]
+  (if (vector? k)
+    (let [last-layout (reduce (fn [l k] (:type (field-of l k))) layout (pop k))]
+      (mem-set! addr (:type (field-of last-layout (peek k))) (offset-of layout k) v))
+    (let [f (field-of layout k)] (mem-set! addr (:type f) (:offset f) v))))
+
+(defn new-struct "Room for a struct, its fields from map m (the rest zero): its address. free! it." [layout m]
+  (struct-set! (alloc layout) layout m))
+
+(defmacro with-alloc
+  "(with-alloc [name type-or-size init?] body…): name is new zeroed memory
+  (a struct from init, a map, for a layout) while body runs, then freed."
+  [[n t init] & body]
+  `(let [~n (alloc ~t)]
+     (try ~@(when init [`(mem-set! ~n ~t ~init)]) ~@body
+          (finally (free! ~n)))))
+
+(defn string-at "The NUL-terminated string at addr (nil for NULL)." [addr] (%mem-string addr))
+(defn bytes-at "A copy of n bytes at addr, as Bytes." [addr n] (%mem-bytes addr n))
+(defn write-bytes! "Copy bytes (or a string's UTF-8) to addr: the count." [addr b] (%mem-write-bytes! addr b))
+
+(defn alloc-string "A NUL-terminated copy of string s in new memory: its address. free! it." [s]
+  (let [b (bytes (str s)) p (alloc (inc (count b)))]
+    (write-bytes! p b)
+    p))
+
+;; ---- callbacks ----
+
+(defn- report [e]
+  (%write-stderr (str "norn.ffi: a C callback failed: " (condition-message e) "\n")))
+
+(defn callback
+  "A C function pointer (callback-address) that calls Norn function f:
+  (callback [:pointer :pointer] :int f). Parameters and the result are
+  numbers and addresses. free-callback! it when C is done with it."
+  [params ret f]
+  (let [ch (chan 1024)
+        [id address] (%ffi-callback (vec params) ret f ch)
+        cb (Callback :id id :address address :params (vec params) :ret ret :fn f :chan ch)]
+    ;; (serving calls from threads other than a call from Norn's)
+    (spawn-detached
+      (loop []
+        (when-let [[args token] (<! ch)]
+          (%ffi-callback-reply! id token (try (apply f args) (catch Error e (report e) nil)))
+          (recur))))
+    cb))
+
+(defn callback? "Is x a callback?" [x] (instance? Callback x))
+(defn callback-address "Callback cb's address, to pass to C as a function pointer." [cb] (:address cb))
+(defn free-callback! "C mustn't call callback cb after this." [cb] (%ffi-callback-free! (:id cb)) nil)
+
+(def ^:private fn-callbacks "(the callbacks made for functions passed as [:callback …]: [f type] → callback)" (atom {}))
+
+(defn- callback-for [t f]
+  (cond (callback? f) (:address f)
+        (fn? f) (:address (or (get @fn-callbacks [f t])
+                              (let [cb (callback (second t) (nth t 2) f)]
+                                (swap! fn-callbacks assoc [f t] cb)
+                                cb)))
+        :else f))
+
+;; ---- functions ----
 
 (defn library
   "Load a dynamic library: a path or name, or :c / :m for the C and math libraries."
@@ -36,30 +242,133 @@
   (let [h @(:cell lib)]
     (if (%handle-current? h) h (reset! (:cell lib) (%ffi-open (:path lib))))))
 
+(defn- low-type
+  "Parameter type t as the runtime takes it."
+  [t]
+  (cond (layout? t) (error (str "Structs are passed by pointer: [:* " (:name t) "] (not yet by value)"))
+        (vector? t) (case (first t)
+                      (:* :out :callback) :pointer
+                      (error (str "Not a parameter type: " (pr-str t))))
+        :else t))
+
+(defn- prep-for
+  "For parameters ps: nil if every one goes to the runtime as it is, else
+  how to convert the arguments and the result."
+  [ps]
+  (when (some vector? ps) ps))
+
+(defn- open-fn [lib name params ret blocking]
+  (if lib
+    (%ffi-fn (live-lib lib) (str name) (mapv low-type params) ret blocking)
+    (%ffi-fn nil name (mapv low-type params) ret blocking)))
+
 (defn function
   "A C function of lib: (function libc \"strlen\" [:string] :usize). Option:
   :blocking true runs calls on the blocking pool."
   [lib name params ret & {:keys [blocking]}]
+  (when (layout? ret) (error (str "A struct can't be returned by value (yet): return a pointer")))
   (let [b (if blocking true false)
         ps (vec params)]
     (ForeignFunction :name (str name) :lib lib :params ps :ret ret :blocking b
-                     :cell (atom (%ffi-fn (live-lib lib) (str name) ps ret b)))))
+                     :cell (atom (open-fn lib (str name) ps ret b)) :prep (prep-for ps))))
+
+(defn function-at
+  "A C function known by its address (a function pointer C gave), as
+  function. (It doesn't survive an image restore.)"
+  [addr params ret & {:keys [blocking]}]
+  (let [ps (vec params) b (if blocking true false)]
+    (ForeignFunction :name addr :lib nil :params ps :ret ret :blocking b
+                     :cell (atom (open-fn nil addr ps ret b)) :prep (prep-for ps))))
 
 (defn- live-fn [ff]
   (let [h @(:cell ff)]
-    (if (%handle-current? h)
-      h
-      (reset! (:cell ff) (%ffi-fn (live-lib (:lib ff)) (:name ff) (:params ff) (:ret ff) (:blocking ff))))))
+    (cond (%handle-current? h) h
+          (nil? (:lib ff)) (error "A C function known by its address doesn't survive an image restore")
+          :else (reset! (:cell ff) (open-fn (:lib ff) (:name ff) (:params ff) (:ret ff) (:blocking ff))))))
+
+(defn- call-converting
+  "Call ff with arguments converted for its struct and callback
+  parameters, the struct outs read back (with any Bytes outs, in order)."
+  [ff args]
+  (let [ps (:params ff)
+        temps (atom [])
+        outs (atom [])
+        raw (mapv (fn [t a]
+                    (cond (not (vector? t)) a
+                          (= :* (first t)) (if (map? a)
+                                             (let [p (new-struct (second t) a)] (swap! temps conj p) p)
+                                             a)
+                          (= :out (first t)) (let [p (alloc (second t))]
+                                               (swap! temps conj p)
+                                               (swap! outs conj [:struct p (second t)])
+                                               p)
+                          (= :callback (first t)) (callback-for t a)
+                          :else a))
+                  ps args)]
+    (when (not= (count ps) (count args))
+      (error (str "The foreign function takes " (count ps) " arguments, got " (count args))))
+    (try
+      (let [r (apply %ffi-call (live-fn ff) raw)
+            byte-outs? (some (fn [t] (= t :out)) ps)
+            [ret byte-outs] (if byte-outs? [(first r) (rest r)] [r nil])]
+        (if (empty? @outs)
+          r
+          ;; (outs in parameter order: Bytes ones from the runtime, struct ones read here)
+          (loop [ts (seq ps) bs (seq byte-outs) ss (seq @outs) acc [ret]]
+            (cond (nil? ts) acc
+                  (= :out (first ts)) (recur (next ts) (next bs) ss (conj acc (first bs)))
+                  (and (vector? (first ts)) (= :out (first (first ts))))
+                  (let [[_ p l] (first ss)] (recur (next ts) bs (next ss) (conj acc (struct-get p l))))
+                  :else (recur (next ts) bs ss acc)))))
+      (finally (doseq [p @temps] (free! p))))))
 
 (defn call
   "Call a foreign function. With :out parameters, the result is
-  [return-value out-bytes…]."
+  [return-value out…]."
   [ff & args]
-  (apply %ffi-call (live-fn ff) args))
+  (if (:prep ff)
+    (call-converting ff args)
+    (apply %ffi-call (live-fn ff) args)))
+
+(begin-for-syntax
+ ;; (for defcfun, when it expands)
+ (defn contract-for
+   "A predicate for an argument (or result) of C type t."
+   [t]
+   (cond (contains? #{:f32 :float :f64 :double} t) 'number?
+         (= t :string) '(nilable string?)
+         (= t :bytes) 'bytes?
+         (= t :out) 'integer?
+         (= t :pointer) '(nilable integer?)
+         (= t :void) 'any?
+         (and (vector? t) (= :* (first t))) '(any-of map? integer?)
+         (and (vector? t) (= :callback (first t))) '(any-of fn? norn.ffi/callback? integer?)
+         (and (vector? t) (= :out (first t))) 'any?
+         (keyword? t) 'integer?
+         :else 'any?)))
 
 (defmacro defcfun
-  "(defcfun name lib \"c_name\" [param-types] return-type & options): define
-  a Norn function calling a C function (options as for function)."
-  [name lib cname params ret & opts]
-  `(let [ff# (norn.ffi/function ~lib ~cname ~params ~ret ~@opts)]
-     (defn ~name [& args#] (apply norn.ffi/call ff# args#))))
+  "(defcfun name lib \"c_name\" [param type …] return-type & options):
+  define a Norn function calling a C function (options as for function).
+  Its signature is checked on calls from other modules. Parameter types
+  may come alone ([:string :int]), unnamed and unchecked."
+  [fname lib cname params ret & opts]
+  (let [named? (symbol? (first params))
+        names (if named? (mapv first (partition 2 params)) (mapv (fn [i] (symbol (str "arg" i))) (range (count params))))
+        types (if named? (mapv second (partition 2 params)) params)
+        ff (symbol (str fname "%ffi"))
+        out? (some (fn [t] (or (= t :out) (and (vector? t) (= :out (first t))))) types)]
+    `(do (def ~ff (norn.ffi/function ~lib ~cname ~types ~ret ~@opts))
+         (%set-private! (var ~ff))
+         ~(if named?
+            `(defn ~fname ~names (norn.ffi/call ~ff ~@names))
+            `(defn ~fname [& args#] (apply norn.ffi/call ~ff args#)))
+         ~@(when named?
+             [`(defcontract ~fname (fn-of [~@(map contract-for types)] ~(if out? 'vector? (contract-for ret))))])
+         (var ~fname))))
+
+;; (everything here that touches C or its memory is for (:unsafe) modules)
+(doseq [v [#'library #'function #'function-at #'call #'defcfun #'callback #'free-callback!
+           #'alloc #'free! #'mem-get #'mem-set! #'struct-get #'struct-set! #'field #'set-field!
+           #'new-struct #'with-alloc #'string-at #'bytes-at #'write-bytes! #'alloc-string]]
+  (%set-unsafe! v))

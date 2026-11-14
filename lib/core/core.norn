@@ -2039,16 +2039,32 @@
       (%refer to (%resolve-in 'norn.core from)))
     nil))
 
+(def %unsafe-namespaces
+  "The namespaces that may use the raw FFI (M9 part 9.8): those whose ns
+  says (:unsafe), and user, the REPL's."
+  (atom #{'user}))
+
+(defn %declare-unsafe! [] (swap! %unsafe-namespaces conj (symbol (str (current-ns)))) nil)
+
+(%set-unsafe! (var %ffi-open)) (%set-unsafe! (var %ffi-fn)) (%set-unsafe! (var %ffi-call))
+(%set-unsafe! (var %ffi-callback)) (%set-unsafe! (var %ffi-callback-reply!)) (%set-unsafe! (var %ffi-callback-free!))
+(%set-unsafe! (var %mem-alloc)) (%set-unsafe! (var %mem-free)) (%set-unsafe! (var %mem-get)) (%set-unsafe! (var %mem-set!))
+(%set-unsafe! (var %mem-string)) (%set-unsafe! (var %mem-bytes)) (%set-unsafe! (var %mem-write-bytes!))
+
 (defmacro ns
-  "(ns name (:refer-core …)? (:require spec…) (:require-for-syntax spec…)…):
-  switch to (creating) a namespace, then require libraries as in
-  `require`, and for compile time as in `require-for-syntax`.
+  "(ns name (:refer-core …)? (:require spec…) (:require-for-syntax spec…)…
+  (:unsafe)?): switch to (creating) a namespace, then require libraries as
+  in `require`, and for compile time as in `require-for-syntax`.
   (:refer-core :exclude [get] :rename {map map-core}) says which of
-  norn.core's names this namespace takes for its own: see %refer-core!."
+  norn.core's names this namespace takes for its own: see %refer-core!.
+  (:unsafe) lets the module use the raw FFI (norn.ffi), which can crash
+  the process."
   [name & clauses]
   (let [of (fn [k] (mapcat (fn [c] (when (and (seq? c) (= (first c) k)) (rest c))) clauses))
-        core-opts (of :refer-core)]
+        core-opts (of :refer-core)
+        unsafe? (some (fn [c] (and (seq? c) (= (first c) :unsafe))) clauses)]
     `(do (in-ns '~name)
+         ~@(when unsafe? [`(%declare-unsafe!)])
          ~@(when (seq core-opts) [`(%refer-core! '~(apply hash-map core-opts))])
          ~@(map (fn [r] `(require '~r)) (of :require))
          ~@(map (fn [r] `(require-for-syntax '~r)) (of :require-for-syntax))

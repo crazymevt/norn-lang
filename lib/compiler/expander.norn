@@ -223,6 +223,13 @@
                        (list 'norn.core/%set-private! (list 'var w))))))
       w)))
 
+(defn- check-unsafe
+  "An error if var v is part of the raw FFI and this module didn't say
+  (:unsafe) in its ns (M9 part 9.8)."
+  [id v]
+  (when (and (%unsafe? v) (zero? *phase*) (not (contains? @norn.core/%unsafe-namespaces (ns-sym))))
+    (fail id (%var-name v) "is unsafe (it can crash the process): only a module that says (:unsafe) in its ns may use it")))
+
 (defn- global-ref
   "What the compiler should see for global identifier id: the symbol as
   written when its home is the current namespace, else the var's full
@@ -238,6 +245,7 @@
            ;; contract from elsewhere, or anywhere when checking :all)
            (or (when *wrappers*
                  (when-let [v (%resolve-in home sym)]
+                   (check-unsafe id v)
                    ;; (the flag first: most vars have no contract)
                    (when (and (%contracted? v)
                               (or (not= (str (var-ns-of v)) (str home)) (= norn.core/*check-contracts* :all)))
@@ -245,6 +253,7 @@
                sym)
            :else (if-let [v (lookup id sym)]
                    (do (when check? (check-access id sym home v))
+                       (check-unsafe id v)
                        (or (when (and (%contracted? v) (not= (str (var-ns-of v)) (str (ns-sym)))) (wrapper-for v))
                            (symbol (%var-name v))))
                    (if (and *strict* (pos? *phase*))

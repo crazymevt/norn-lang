@@ -209,3 +209,8 @@ fn actor_suite() {
 fn stm_suite() {
     suite("stm_test.norn");
 }
+
+#[test]
+fn ffi_suite() {
+    suite("ffi_test.norn");
+}
