@@ -11,7 +11,10 @@
 ;;;; - :arity — a call to a known function with a number of arguments none
 ;;;;   of its arities takes;
 ;;;; - :shadow — a definition named like a special form, or a local named
-;;;;   like a norn.core macro or special form that the same form also calls
+;;;;   like a norn.core macro or special form that the same form also calls;
+;;;;   in a module, a definition named like a norn.core var that its ns
+;;;;   doesn't take for its own with (:refer-core :exclude […]): every use of
+;;;;   the name in the module means the definition, even above it
 ;;;;   (shadowing core functions such as `name` or `count` is common and
 ;;;;   fine, so it isn't reported);
 ;;;; - :def-in-fn — `def` inside a function body;
@@ -41,6 +44,7 @@
 ;;;; carry the line of the top-level form they're in.
 
 (ns norn.lint
+  (:refer-core :exclude [warn boolean])
   (:require [norn.string :as str] [norn.fmt :as fmt] [norn.syntax :as syn]))
 
 (def ^:private specials #{'quote 'quote-syntax 'if 'do 'def 'var 'fn* 'let* 'letrec* 'loop* 'recur '&})
@@ -207,6 +211,11 @@
     (when (:in-fn env) (warn :def-in-fn "def of " name " inside a function"))
     (when (and (contains? specials name) (not= "norn.core" (str (current-ns))))
       (warn :shadow "definition of " name " shadows norn.core's " name))
+    (when (and *module* (symbol? name) (not (contains? specials name))
+               (not (contains? (:core-own *module*) name))
+               (contains? (or (ns-publics 'norn.core) {}) name))
+      (warn :shadow "definition of " name " shadows norn.core/" name ": every " name " in this module means it"
+            " (say so with (:refer-core :exclude [" name "]), or rename it)"))
     (swap! *file-defs* assoc name (if (and (seq? expanded) (= 'fn* (first expanded))) (fn*-shapes expanded) :unknown))
     (swap! *file-qualified* conj (symbol (str (current-ns)) (str name)))
     (when (seq more) (analyze env init))))
@@ -412,6 +421,8 @@
                                  :let [r (spec-of 0 spec)]
                                  :when r]
                              r))
+       :core-own (set (let [opts (apply hash-map (mapcat (fn [c] (when (and (seq? c) (= :refer-core (first c))) (rest c))) (drop 2 nsf)))]
+                        (concat (:exclude opts) (keys (:rename opts)))))
        :compile-time-defs (set (for [f forms
                                      :when (and (seq? f) (= 'begin-for-syntax (first f)))
                                      d (rest f)

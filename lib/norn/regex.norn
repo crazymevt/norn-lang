@@ -10,6 +10,7 @@
 ;;;; split; norn.string's replace and split accept regexes too.
 
 (ns norn.regex
+  (:refer-core :exclude [find])
   (:require [norn.string]))
 
 (defn- result

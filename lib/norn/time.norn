@@ -5,7 +5,8 @@
 ;;;; Calendar fields and text use RFC 3339; zones are UTC, this machine's
 ;;;; local time, or a fixed offset in seconds.
 
-(ns norn.time)
+(ns norn.time
+  (:refer-core :exclude [format]))
 
 (defclass Instant () ((nanos :initform 0)))
 (defclass Duration () ((nanos :initform 0)))

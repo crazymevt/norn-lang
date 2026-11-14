@@ -15,13 +15,15 @@
 ;;;; response body may be nil, a string, bytes, a sequence of strings or
 ;;;; bytes, or a norn.io stream; the last two are sent chunked.
 ;;;;
-;;;; (get is this library's GET, so map lookups here say norn.core/get.)
+;;;; (get is this library's GET, so map lookups here say core-get: see
+;;;; the ns form.)
 ;;;;
 ;;;; TLS is norn.net's (rustls): https:// URLs for the client, and :tls
 ;;;; with :cert-file and :key-file for a server. HTTP/2 and WebSockets come
 ;;;; when something needs them.
 
 (ns norn.http
+  (:refer-core :rename {get core-get})
   (:require [norn.io :as io] [norn.net :as net] [norn.uri :as uri] [norn.string :as str]))
 
 ;; ---- reading messages (RFC 9112) ----
@@ -80,7 +82,7 @@
                     (when (or (nil? i) (zero? i)) (message-error 400 (str "a bad header line: " line)))
                     (let [k (str/lower-case (str/trim (subs line 0 i)))
                           v (str/trim (subs line (inc i)))]
-                      (recur (assoc m k (if-let [old (norn.core/get m k)] (str old ", " v) v)) (inc n))))))))
+                      (recur (assoc m k (if-let [old (core-get m k)] (str old ", " v) v)) (inc n))))))))
 
 (defn- parse-length [s]
   (if (and s (re-matches #"[0-9]{1,18}" (str/trim s)))
@@ -104,7 +106,7 @@
           (recur acc))))))
 
 (defn- chunked? [headers]
-  (some (fn [t] (= "chunked" (str/lower-case (str/trim t)))) (str/split (norn.core/get headers "transfer-encoding" "") #",")))
+  (some (fn [t] (= "chunked" (str/lower-case (str/trim t)))) (str/split (core-get headers "transfer-encoding" "") #",")))
 
 ;; ---- writing messages ----
 
@@ -117,7 +119,7 @@
    431 "Request Header Fields Too Large" 500 "Internal Server Error" 501 "Not Implemented"
    502 "Bad Gateway" 503 "Service Unavailable" 504 "Gateway Timeout"})
 
-(defn reason "The usual reason phrase for HTTP status code n." [n] (norn.core/get reasons n "Unknown"))
+(defn reason "The usual reason phrase for HTTP status code n." [n] (core-get reasons n "Unknown"))
 
 (defn- streamed? [body] (or (sequential? body) (and (some? body) (not (string? body)) (not (bytes? body)))))
 
@@ -145,11 +147,11 @@
 
 (defn- take-idle! [k]
   (let [got (atom nil)]
-    (swap! pool (fn [p] (let [cs (norn.core/get p k)] (reset! got (first cs)) (if (seq cs) (assoc p k (rest cs)) p))))
+    (swap! pool (fn [p] (let [cs (core-get p k)] (reset! got (first cs)) (if (seq cs) (assoc p k (rest cs)) p))))
     @got))
 
 (defn- give-back! [k c]
-  (swap! pool (fn [p] (let [cs (norn.core/get p k)] (if (< (count cs) max-idle) (assoc p k (cons c cs)) (do (io/close (:sock c)) p))))))
+  (swap! pool (fn [p] (let [cs (core-get p k)] (if (< (count cs) max-idle) (assoc p k (cons c cs)) (do (io/close (:sock c)) p))))))
 
 (defn close-idle!
   "Close the client's idle connections (they're reused for later requests
@@ -197,11 +199,11 @@
         (let [no-body (or (= method :head) (= status 204) (= status 304))
               body (cond no-body (bytes [])
                          (chunked? headers) (read-chunked! r nil)
-                         (norn.core/get headers "content-length") (read-n! r (parse-length (norn.core/get headers "content-length")))
+                         (core-get headers "content-length") (read-n! r (parse-length (core-get headers "content-length")))
                          :else (read-to-end! r))
-              closes (or (= "close" (str/lower-case (norn.core/get headers "connection" "")))
+              closes (or (= "close" (str/lower-case (core-get headers "connection" "")))
                          (= version "HTTP/1.0")
-                         (and (not no-body) (not (chunked? headers)) (nil? (norn.core/get headers "content-length"))))]
+                         (and (not no-body) (not (chunked? headers)) (nil? (core-get headers "content-length"))))]
           {:status status :reason (or reason-text "") :version version :headers headers :body body :closes closes})))))
 
 (defn- exchange!
@@ -272,7 +274,7 @@
                   (fn []
                     (loop [u u0 req req n 0]
                       (let [resp (exchange! u req req)
-                            loc (norn.core/get (:headers resp) "location")]
+                            loc (core-get (:headers resp) "location")]
                         (if (and follow loc (contains? #{301 302 303 307 308} (:status resp)))
                           (do (when (>= n limit) (error (str "More than " limit " redirects from " start)))
                               (let [next-u (uri/parse (uri/resolve (uri/format u) loc))
@@ -299,11 +301,11 @@
                                           (message-error 400 (str "a bad request line: " line)))
             headers (read-headers! r)
             u (uri/parse target)]
-        (when (= "100-continue" (str/lower-case (norn.core/get headers "expect" "")))
+        (when (= "100-continue" (str/lower-case (core-get headers "expect" "")))
           (io/write sock "HTTP/1.1 100 Continue\r\n\r\n"))
         (let [body (cond (chunked? headers) (read-chunked! r max-body)
-                         (norn.core/get headers "content-length")
-                         (let [n (parse-length (norn.core/get headers "content-length"))]
+                         (core-get headers "content-length")
+                         (let [n (parse-length (core-get headers "content-length"))]
                            (when (> n max-body) (message-error 413 (str "a body of " n " bytes")))
                            (read-n! r n))
                          :else nil)]
@@ -332,8 +334,8 @@
     resp))
 
 (defn- keep-alive? [req resp]
-  (let [c (str/lower-case (norn.core/get (:headers req) "connection" ""))
-        rc (str/lower-case (str (norn.core/get (header-names-lower (:headers resp)) "connection" "")))]
+  (let [c (str/lower-case (core-get (:headers req) "connection" ""))
+        rc (str/lower-case (str (core-get (header-names-lower (:headers resp)) "connection" "")))]
     (and (not= c "close") (not= rc "close")
          (or (= "HTTP/1.1" (:version req)) (= c "keep-alive")))))
 

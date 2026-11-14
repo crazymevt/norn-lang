@@ -1,7 +1,8 @@
 ;;;; norn.sys — the machine and the process. Every value is read when asked,
 ;;;; so an image restored on another machine sees that machine.
 
-(ns norn.sys)
+(ns norn.sys
+  (:refer-core :exclude [exit]))
 
 (defn getenv "An environment variable, or nil. (Read-only: set a child process's environment with norn.process.)" [name] (%getenv (str name)))
 (defn env "All environment variables, as a map of strings." [] (%env))

@@ -6,7 +6,8 @@
 ;;;; exact for an exact base and an integer exponent. gcd, lcm and isqrt
 ;;;; work on integers of any size.
 
-(ns norn.math)
+(ns norn.math
+  (:refer-core :exclude [infinite?]))
 
 (declare expt round gcd lcm)
 

@@ -9,8 +9,10 @@
 (is (= norn.expander/eval norn.core/eval))
 
 ;;; Byte-identical output to the seed compiler on the whole core library
-;;; (compiled in its own namespace) and on the compiler itself.
-(is (= [] (do (in-ns 'norn.core)
+;;; (compiled in its own namespace) and on the compiler itself (in a scratch
+;;; one: compiling interns the names it defines, and norn.core shouldn't
+;;; gain the compiler's).
+(is (= [] (do (in-ns 'compiler-test.scratch)
               (let [d (norn.compiler/compare-compilers (%compiler-source) "compiler.norn")]
                 (in-ns 'compiler-test)
                 d))))

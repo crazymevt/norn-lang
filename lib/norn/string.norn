@@ -9,7 +9,8 @@
 ;;;; Where a function takes a pattern, it can be a string or a character
 ;;;; (matched literally) or a regex (see norn.regex).
 
-(ns norn.string)
+(ns norn.string
+  (:refer-core :exclude [reverse]))
 
 (defn upper-case "s in upper case." [s] (%str-case (str s) 0))
 (defn lower-case "s in lower case." [s] (%str-case (str s) 1))

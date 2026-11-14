@@ -9,7 +9,8 @@
 ;;;; keywords, symbols and characters become strings; ratios become floats.
 ;;;; NaN, the infinities, and other values are an error.
 
-(ns norn.json)
+(ns norn.json
+  (:refer-core :exclude [read-string]))
 
 (defn read-string
   "The value of JSON text s. Options: :keywords (default true) makes object

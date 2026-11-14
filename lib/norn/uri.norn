@@ -14,6 +14,7 @@
 ;;;; give the parts' text.
 
 (ns norn.uri
+  (:refer-core :exclude [format resolve])
   (:require [norn.string :as str]))
 
 (defn- index-of [s ch from]

@@ -15,6 +15,7 @@
 ;;;; :expand-steps (expand-steps-for-editor).
 
 (ns norn.expand
+  (:refer-core :exclude [macro-steps])
   (:require [norn.syntax :as syn] [norn.string :as str] [norn.pprint :as pp] [norn.io :as io]))
 
 (defn- as-syntax [form] (if (syn/syntax? form) form (syn/datum->syntax nil form)))

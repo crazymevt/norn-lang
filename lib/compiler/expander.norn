@@ -27,6 +27,7 @@
 ;;;; after it.
 
 (ns norn.expander
+  (:refer-core :exclude [eval])
   (:require [norn.syntax :as syn]))
 
 (defclass ExpandError (norn.compiler/CompileError) ())

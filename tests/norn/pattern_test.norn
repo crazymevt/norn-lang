@@ -126,7 +126,7 @@
     (is (= "defn: expected identifier" (message '(defn 3 [] 1))))
     (is (= "cond: expected a result after the test" (message '(cond (= 1 1) :yes :else))))
     (is (= "case: expected an expression to choose by" (message '(case))))
-    (is (= "ns: expected an ns clause, (:require …) or (:require-for-syntax …)" (message '(ns foo (:requir [x]))))))
+    (is (= "ns: expected an ns clause, (:require …), (:require-for-syntax …) or (:refer-core …)" (message '(ns foo (:requir [x]))))))
   (testing "well-formed ones expand as always"
     (is (= 6 (let [{:keys [a]} {:a 1} [b c] [2 3]] (+ a b c))))
     (is (= [1 2] ((fn ([x] [x]) ([x y] [x y])) 1 2)))

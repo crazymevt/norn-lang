@@ -60,7 +60,7 @@ M9a, before sealing:
 | 9.2 | **Pattern matching on data:** `match` in `norn.core`. Patterns are literals, bindings, `_`, vectors and lists with `& rest`, maps by key, `(:or …)`, and `:when` guards. A failed match says what didn't match. It's in core because `receive`, the supervisors and ordinary code all want it. |
 | 9.3 | **Types: checked signatures and `declare`:** `^Type` on parameters and results (design §8.4). Types are classes, with a few forms (`(? T)` for nil-able, `(U A B)`, `(Vec T)`, `(Map K V)`, `(-> A B)`). `(declare (optimize …))` and `(declare (type …))` are accepted and recorded for M10. |
 | 9.4 | **Contracts, with blame:** predicates and combinators (`(-> int? string?)`, `or/c`, `and/c`, `vec-of`, `map-of`), and `defcontract`. A public function's signature is its contract. It's checked on calls from other modules; the module's own calls go direct. A violation blames the side at fault: the caller (with its place) for bad arguments, the module for a bad result. |
-| 9.5 | **The full MOP** (design §4.3): classes as instances of `standard-class`, and generic functions of `standard-generic-function`. Also `compute-applicable-methods`, `compute-effective-method`, `slot-value-using-class`, metaclasses, `initialize-instance` and `make-instance`'s protocol, `print-object` (the printer calls it for instances), `define-method-combination`, and `defprotocol` as sugar for generic functions. The fast path stays whenever the hooks aren't specialised. |
+| 9.5 | **The full MOP** (design §4.3): classes as instances of `standard-class`, and generic functions of `standard-generic-function`. Also `compute-applicable-methods`, `compute-effective-method`, `slot-value-using-class`, metaclasses, `initialize-instance` and `make-instance`'s protocol, `print-object` (the printer calls it for instances), `define-method-combination`, `defprotocol` as sugar for generic functions, and slot readers as generic functions (today they're plain functions, design §4), so a subclass can specialise one. The fast path stays whenever the hooks aren't specialised. |
 | 9.6 | **Processes and supervision** (design §6.5): `defprocess`, mailboxes with selective `receive` (on 9.2's `match`, with timeouts), `send`, a registry of names, links and monitors with exit signals, and supervisors (one-for-one, one-for-all, rest-for-one, with restart limits). A crashed process stays in the debugger, as design §5.3 says, and its supervisor is told. |
 | 9.7 | **`norn.stm`** (design §3.2): `ref`, `dosync`, `alter`, `commute` and `ensure`, with MVCC as Clojure's. A ref can't hold a mutable owned object (§4.2), and `io!` refuses side effects inside a transaction. |
 | 9.8 | **The full FFI** (design §9): struct layouts (`defcstruct`: fields, alignment, nested structs and arrays), typed signatures, and callbacks from C. Callbacks run on the caller's thread during a call from Norn, as a nested run; a foreign thread's callbacks are posted to a channel. **Unsafe modules:** a module that uses the raw FFI says `(:unsafe)` in its `ns`, and the expander refuses raw FFI use elsewhere. |
@@ -68,6 +68,8 @@ M9a, before sealing:
 | 9.10 | **Pseudo-terminals** in `norn.process`: spawning on a pty, resizing, and reading and writing as streams. |
 | 9.11 | **A binary format for Norn values** (`norn.bin`): every value type, versioned, and safe to read from untrusted input, as `norn.edn` is. Touching every type is the point: it finds gaps in types, the printer and equality. |
 | 9.12 | **The smaller libraries,** each when something needs it: `norn.uuid`, `norn.csv`, `norn.toml`, compression (deflate, gzip, zlib), `norn.zip`, `norn.crypto` (digests, HMAC, secure random, on `ring`, which rustls already links), `norn.schedule` (cron-like), and `norn.data` (structural diff). |
+| 9.13 | **Conditions for the runtime's errors:** a hierarchy of condition classes (`IOError`, with `FileNotFound`, `ConnectionError` and `TimeoutError` under it; `ParseError`; `OwnershipError`; `ArityError`; and so on), and a way for Rust to raise one with its data (the path, the address, the line). Today a Rust error carries only its message, so an `OwnershipError` is recognised by its text (M7), and every timeout, failed connection and parse error in the stdlib, `norn.http`'s included, is a plain `Error`. Handlers choose by class, so the hierarchy is part of what sealing freezes. |
+| 9.14 | **Values that arrive later, and errors with data:** `delay` (computed once, when first forced), `future` (a fiber whose value `deref` waits for), promises (`promise` and `deliver`), and `ex-info` with `ex-data`. M7.6 left them for a design against fibers and conditions. Proposed: a future is a fiber and `@` is `await`, so cancelling and the debugger work as for any fiber; a promise is a one-shot channel; and `ex-info` makes a condition carrying a data map, which a handler reads with `ex-data` (a condition with a `:data` slot, under 9.13's hierarchy). |
 
 Studio's phased panels come as their libraries do, and are where the
 libraries get used for real, as M7.6 used the stdlib:
@@ -89,9 +91,13 @@ M9b, after sealing (unchanged from runtime.md):
 
 **Order.** 9.1 first: it's concrete, it exercises the most, and it unlocks
 Studio's API workbench, while the type and contract decisions below get
-made. Then 9.2 → 9.3 and 9.4 → 9.5 → 9.6 → 9.7 → 9.8 → 9.9. Types come
-early so the libraries after them are written with signatures, and they
-test them. 9.10, 9.11 and 9.12 fit in when Studio or a library needs them.
+made. Then 9.13 → 9.14 → 9.2 → 9.3 and 9.4 → 9.5 → 9.6 → 9.7 → 9.8 →
+9.9. The runtime's condition classes come first: every library after
+them raises them, and `norn.http` changes to. 9.14 builds on them
+(`ex-info`) and on fibers, and 9.6's processes on 9.14's futures. Types
+come early so the libraries after them are written with signatures, and
+they test them. 9.10, 9.11 and 9.12 fit in when Studio or a library needs
+them.
 
 **Done-check (M9a), proposed:**
 
@@ -150,6 +156,17 @@ The draft's proposals, accepted:
     needs them. The server's handler model is Ring's (a request map in, a
     response map out), so middleware is plain functions.
 
+Added the same day, from what earlier milestones left open (the user,
+2026-11-14):
+
+11. **The runtime's errors get condition classes** (9.13), before more
+    libraries are written on plain `Error`s.
+12. **`delay`, `future`, promises and `ex-info` go in core** (9.14), on
+    fibers and 9.13's conditions.
+13. **Slot readers become generic functions,** as part of the MOP (9.5).
+14. **Two-pass module expansion is dropped** (M8 decision 2, amended),
+    unless sealing turns out to need it.
+
 ## Status
 
 
@@ -198,11 +215,22 @@ The draft's proposals, accepted:
   requests with different trust. A connection verified against a private
   CA served a later request that didn't trust it. The pool's key now
   includes the trusted CA.
-- **A gap in the language, noted:** defining `get` in a module captures
-  every `get` in it, since a module's own names win. So `norn.http`'s map
-  lookups say `norn.core/get`. Clojure has `(:refer-clojure :exclude …)`
-  for this, and Norn has nothing like it. Proposed for 9.2's neighbourhood:
-  `(:refer-core :exclude [get])` in `ns`, before sealing.
+- **A gap in the language, fixed (2026-11-14).** Defining `get` in a
+  module captures every `get` in it, even above the definition, since a
+  module's own names win, and nothing warned. Two halves:
+  - **`(:refer-core :exclude [names…] :rename {name new-name})` in `ns`.**
+    An excluded name is the module's own, defined or not. A renamed one is
+    `norn.core`'s under its new name. `norn.http` says
+    `(:refer-core :rename {get core-get})` and looks up maps with
+    `core-get`. Both are ordinary namespace mappings, so images keep them.
+  - **A lint rule** (`:shadow`): a module defining a `norn.core` name that
+    its `ns` doesn't take for its own is told that every use of the name
+    in it means the definition. It found 31 such definitions in the stdlib
+    and 22 in norn-ui and Studio. Every one was meant (`norn.async`'s
+    `map`, `norn.net`'s `resolve`, tests' `settle`, Studio's `close!`),
+    and is now said so with `:exclude`.
+  - **Tests:** `module_test` checks `:rename`, `:exclude`, the mistakes,
+    and the rule.
 - **Speed, a first measure:** about 7,100 requests/s from one client over
   a kept-alive connection, and 29,000/s from eight clients at once, with
   client and server in one process.

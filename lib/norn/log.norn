@@ -12,6 +12,7 @@
 ;;;; test.
 
 (ns norn.log
+  (:refer-core :exclude [trace warn error])
   (:require [norn.string] [norn.time]))
 
 (def ^:private levels {:trace 0 :debug 1 :info 2 :warn 3 :error 4})

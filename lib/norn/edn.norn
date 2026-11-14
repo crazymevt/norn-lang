@@ -5,7 +5,8 @@
 ;;;; symbols, nil and booleans; #bytes and ##Inf too). write-string is pr-str:
 ;;;; what it writes, read-string reads back as an equal value.
 
-(ns norn.edn)
+(ns norn.edn
+  (:refer-core :exclude [read-string]))
 
 (defn read-string
   "The first value in s; nil (or :eof's value) when s holds none."

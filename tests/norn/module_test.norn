@@ -26,6 +26,13 @@
 
 (module! "bad" (str "(ns mt.bad)\n\n(defn ok [] 1)\n(let* [1 2] 3)\n"))
 
+;; A module taking core names for its own (:refer-core).
+(module! "rc" (str "(ns mt.rc\n  (:refer-core :rename {get core-get}))\n"
+                   "(defn lookup [m k] (core-get m k))\n"
+                   "(defn get [url] (str \"GET \" url))\n"))
+(module! "ex" (str "(ns mt.ex\n  (:refer-core :exclude [inc]))\n"
+                   "(defn f [] (inc 1))\n"))
+
 (defn- message [f] (try (f) nil (catch Error e (condition-message e))))
 
 ;; (the modules exist only once this file runs, so the tests reach them
@@ -71,6 +78,18 @@
   (is (= 60 (run '(mt.a/start))) "redefined in place")
   (is (= "mt.a/helper is private to mt.a" (message (fn [] (eval '(mt.a/helper))))) "still private"))
 
+(deftest taking-core-names
+  (run '(require 'mt.rc 'mt.ex))
+  (testing ":rename: core's get under another name, and the module's own get"
+    (is (= 1 (run '(mt.rc/lookup {:a 1} :a))))
+    (is (= "GET /x" (run '(mt.rc/get "/x")))))
+  (testing ":exclude: the name is the module's, defined or not"
+    (is (str/includes? (message (fn [] (run '(mt.ex/f)))) "mt.ex/inc")))
+  (testing "mistakes"
+    (is (= "norn.core has no nope to exclude or rename" (message (fn [] (eval '(ns mt.bad2 (:refer-core :exclude [nope])))))))
+    (is (= "(:refer-core …) takes :exclude [names…] and :rename {name new-name}, not :only"
+           (message (fn [] (eval '(ns mt.bad3 (:refer-core :only [map])))))))))
+
 (deftest errors-in-a-module-say-where
   (let [m (message (fn [] (run '(require 'mt.bad))))]
     (is (str/includes? m "mt/bad.norn:4:8: Bad binding form in let*: 1") m)))
@@ -98,6 +117,12 @@
     (is (= [[2 :private "mt.a/helper is private to mt.a"]]
            (lint "(ns lm-f (:require [mt.a]))\n(defn f [] (mt.a/helper))\n")))
     (is (= [] (lint "(ns lm-g (:require [mt.a]))\n(defn f [] ((var mt.a/helper)))\n")) "var reaches it on purpose"))
+  (testing "a definition that takes a core name silently"
+    (is (= [[2 :shadow "definition of get shadows norn.core/get: every get in this module means it (say so with (:refer-core :exclude [get]), or rename it)"]]
+           (lint "(ns lm-s)\n(defn get [x] x)\n(defn f [m] (get m))\n")))
+    (is (= [] (lint "(ns lm-t (:refer-core :exclude [get]))\n(defn get [x] x)\n(defn f [m] (get m))\n")) "said so")
+    (is (= [] (lint "(ns lm-u (:refer-core :rename {get core-get}))\n(defn get [x] x)\n(defn f [m k] (core-get m k))\n"))
+        "renamed"))
   (testing "phases"
     (is (= [[3 :phase (str "helper is run-time code here, and macros run while compiling: "
                            "define it inside begin-for-syntax, or require its module with :require-for-syntax")]]

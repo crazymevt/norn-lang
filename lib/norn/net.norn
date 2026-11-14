@@ -5,7 +5,8 @@
 ;;;; process can serve many thousands of connections. TLS uses rustls; a
 ;;;; client trusts the OS's root certificates unless given :ca-file.
 
-(ns norn.net (:require [norn.io :as io]))
+(ns norn.net
+  (:refer-core :exclude [resolve]) (:require [norn.io :as io]))
 
 (defn resolve
   "The addresses of host, as \"ip:port\" strings (DNS runs on the blocking pool)."

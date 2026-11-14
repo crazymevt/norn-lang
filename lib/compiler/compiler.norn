@@ -12,7 +12,8 @@
 ;;;; {:self-name :upvals [[sym capture]…] :ar arity}, where an arity is
 ;;;; {:code [] :consts [] :locals [[sym reg]…] :debug […] :next :max :recur […]}.
 
-(ns norn.compiler)
+(ns norn.compiler
+  (:refer-core :exclude [eval]))
 
 (defclass CompileError (RuntimeError) ())
 

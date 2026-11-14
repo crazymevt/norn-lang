@@ -4,7 +4,8 @@
 ;;;; All of them park the waiting fiber (never a carrier thread), being
 ;;;; built on channels and atoms.
 
-(ns norn.sync)
+(ns norn.sync
+  (:refer-core :exclude [release!]))
 
 ;; ---- semaphores ----------------------------------------------------------------------------
 

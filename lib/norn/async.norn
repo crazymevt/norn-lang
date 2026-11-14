@@ -6,7 +6,8 @@
 ;;;; when full). Everything here is built on those: each connector runs in
 ;;;; detached fibers that stop when their source closes.
 
-(ns norn.async)
+(ns norn.async
+  (:refer-core :exclude [reduce into map filter merge]))
 
 (defn onto-chan!
   "Put coll's items on ch, then close ch (unless close? is false).

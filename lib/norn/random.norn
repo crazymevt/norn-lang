@@ -10,6 +10,7 @@
 ;;;; Not for cryptography: use norn.crypto (M8) for keys and tokens.
 
 (ns norn.random
+  (:refer-core :exclude [float int boolean shuffle bytes])
   (:require [norn.math]))
 
 (defclass Generator () ((seed) (counter)))

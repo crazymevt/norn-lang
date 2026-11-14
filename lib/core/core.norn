@@ -1908,13 +1908,35 @@
   [& forms]
   `(%eval-for-syntax '~(vec forms)))
 
+(defn %refer-core!
+  "ns's (:refer-core :exclude [names…] :rename {name new-name}) in the
+  current namespace. An excluded name is the namespace's own, defined
+  here or not, rather than norn.core's; a renamed one is norn.core's under
+  its new name (and excluded under its old one)."
+  [opts]
+  (let [{:keys [exclude rename]} opts
+        here (symbol (str (current-ns)))]
+    (doseq [k (keys opts)]
+      (when-not (contains? #{:exclude :rename} k)
+        (error (str "(:refer-core …) takes :exclude [names…] and :rename {name new-name}, not " k))))
+    (doseq [s (concat exclude (keys rename))]
+      (when-not (%resolve-in 'norn.core s) (error (str "norn.core has no " s " to exclude or rename")))
+      (%intern here s))
+    (doseq [[from to] rename]
+      (%refer to (%resolve-in 'norn.core from)))
+    nil))
+
 (defmacro ns
-  "(ns name (:require spec…) (:require-for-syntax spec…)…): switch to
-  (creating) a namespace, then require libraries as in `require`, and
-  for compile time as in `require-for-syntax`."
+  "(ns name (:refer-core …)? (:require spec…) (:require-for-syntax spec…)…):
+  switch to (creating) a namespace, then require libraries as in
+  `require`, and for compile time as in `require-for-syntax`.
+  (:refer-core :exclude [get] :rename {map map-core}) says which of
+  norn.core's names this namespace takes for its own: see %refer-core!."
   [name & clauses]
-  (let [of (fn [k] (mapcat (fn [c] (when (and (seq? c) (= (first c) k)) (rest c))) clauses))]
+  (let [of (fn [k] (mapcat (fn [c] (when (and (seq? c) (= (first c) k)) (rest c))) clauses))
+        core-opts (of :refer-core)]
     `(do (in-ns '~name)
+         ~@(when (seq core-opts) [`(%refer-core! '~(apply hash-map core-opts))])
          ~@(map (fn [r] `(require '~r)) (of :require))
          ~@(map (fn [r] `(require-for-syntax '~r)) (of :require-for-syntax))
          nil)))

@@ -87,7 +87,10 @@ The draft's proposals, accepted:
    `#lang`.
 2. **A module is expanded as a whole**, so it can refer to names defined
    later in it, and gives sealing a complete unit. The REPL stays form by
-   form.
+   form. (Amended 2026-11-14: "as a whole" is its names declared first,
+   then its forms expanded in order, which gives both. Expanding every
+   form before running any, in two passes, is dropped unless sealing
+   turns out to need it.)
 3. **Each phase instantiates its own copy of a module** (Racket), so
    compiling a module gives the same result whatever else is loaded. The
    REPL top level stays permissive.
@@ -347,7 +350,8 @@ REPL.**
   is what sealing needs too. The two passes would change when run-time
   forms run, which the stdlib's dynamic lookups at expansion time depend
   on. Proposed: drop them from decision 2, unless sealing turns out to
-  need them.
+  need them. **Decided (the user, 2026-11-14): dropped**, unless they
+  turn out to be worth having.
 
 **8.7, the bootstrap (2026-11-14): done, with nothing to rebuild.**
 
