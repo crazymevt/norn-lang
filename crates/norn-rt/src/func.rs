@@ -23,6 +23,8 @@ pub const VAR_DYNAMIC: u64 = 2;
 /// Has ever been bound with `binding`: reads must consult the fiber's
 /// dynamic environment.
 pub const VAR_DYNBOUND: u64 = 4;
+/// Private to its namespace (defn-, ^:private): other code can't name it.
+pub const VAR_PRIVATE: u64 = 8;
 
 pub fn var_new(m: &mut Mutator, ns: Value, name: Value) -> Value {
     let v = alloc(m, Kind::Var, 4);
@@ -64,6 +66,10 @@ impl Value {
 
     pub fn var_is_macro(self) -> bool {
         self.var_flags() & VAR_MACRO != 0
+    }
+
+    pub fn var_is_private(self) -> bool {
+        self.var_flags() & VAR_PRIVATE != 0
     }
 }
 

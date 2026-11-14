@@ -55,6 +55,20 @@
         (swap! scope-nss assoc sc ns)
         sc)))
 
+(def ^:private access-scopes "Namespace name → its access scope." (atom {}))
+(def ^:private access-set "Every access scope (they don't take part in binding)." (atom #{}))
+
+(defn access-scope
+  "The scope that lets code reach namespace ns's private vars without
+  changing where its names resolve: a defmacro macro's result carries its
+  namespace's, so its expansion may call the namespace's private helpers."
+  [ns]
+  (or (get @access-scopes ns)
+      (let [sc (syn/new-scope)]
+        (swap! access-scopes assoc ns sc)
+        (swap! access-set conj sc)
+        sc)))
+
 (defn- home-ns
   "The namespace whose scope identifier id carries (the current one when
   it carries none)."
@@ -71,7 +85,9 @@
 (defn- bind!
   "Record that identifier id binds to b."
   [id b]
-  (swap! *bindings* update (syn/syntax-e id) (fn [bs] (conj (or bs []) [(syn/syntax-scopes id) b]))))
+  ;; (without access scopes, which only grant access to private vars)
+  (let [ss (let [a @access-set] (into #{} (remove (fn [sc] (contains? a sc))) (syn/syntax-scopes id)))]
+    (swap! *bindings* update (syn/syntax-e id) (fn [bs] (conj (or bs []) [ss b])))))
 
 (defn- subset? [a b] (every? (fn [x] (contains? b x)) a))
 
@@ -101,18 +117,33 @@
     (when (and (contains? specials sym) (nil? (resolve-local id)))
       (name sym))))
 
+(defn- var-ns-of [v] (symbol (namespace (symbol (%var-name v)))))
+
+(defn- check-access
+  "An error if global identifier id (sym, at home in namespace home) names
+  another namespace's private var, unless it carries that namespace's
+  access scope."
+  ([id sym home] (when-let [v (%resolve-in home sym)] (check-access id sym home v)))
+  ([id sym home v]
+   (when (private? v)
+     (let [owner (var-ns-of v)]
+       (when-not (or (= owner home) (contains? (syn/syntax-scopes id) (get @access-scopes owner)))
+         (fail id (%var-name v) "is private to" (str owner)))))))
+
 (defn- global-ref
   "What the compiler should see for global identifier id: the symbol as
   written when its home is the current namespace, else the var's full
   name."
-  [id]
-  (let [sym (syn/syntax-e id)
-        home (home-ns id)]
-    (if (= home (ns-sym))
-      sym
-      (if-let [v (%resolve-in home sym)]
-        (symbol (%var-name v))
-        sym))))
+  ([id] (global-ref id true))
+  ([id check?]
+   (let [sym (syn/syntax-e id)
+         home (home-ns id)]
+     (when (and check? (namespace sym)) (check-access id sym home))
+     (if (= home (ns-sym))
+       sym
+       (if-let [v (%resolve-in home sym)]
+         (do (when check? (check-access id sym home v)) (symbol (%var-name v)))
+         sym)))))
 
 (defn- free-id=? [a b]
   (let [la (resolve-local a) lb (resolve-local b)]
@@ -221,17 +252,22 @@
     "do" (apply list 'do (expand-body (rest xs)))
     "def" (let [id (nth xs 1 nil)]
             (when-not (and id (syn/identifier? id)) (fail s "First argument to def must be a symbol"))
-            (apply list 'def (syn/syntax-e id)
-                   (case (count xs)
-                     2 nil
-                     3 [(expand (nth xs 2))]
-                     4 (if (string? (syn/syntax-e (nth xs 2)))
-                         [(syn/syntax-e (nth xs 2)) (expand (nth xs 3))]
-                         (fail s "Too many arguments to def"))
-                     (fail s "Too many arguments to def"))))
+            (let [d (apply list 'def (syn/syntax-e id)
+                           (case (count xs)
+                             2 nil
+                             3 [(expand (nth xs 2))]
+                             4 (if (string? (syn/syntax-e (nth xs 2)))
+                                 [(syn/syntax-e (nth xs 2)) (expand (nth xs 3))]
+                                 (fail s "Too many arguments to def"))
+                             (fail s "Too many arguments to def")))]
+              ;; (def ^:private x …): only this namespace may name it
+              (if (syn/syntax-property id :private)
+                (list 'do d (list 'norn.core/%set-private! (list 'var (syn/syntax-e id))))
+                d)))
     "var" (let [id (nth xs 1 nil)]
             (when-not (and id (syn/identifier? id)) (fail s "var takes a symbol"))
-            (list 'var (global-ref id)))
+            ;; (#'other/private reaches a private var, as in Clojure: on purpose)
+            (list 'var (global-ref id false)))
     "fn*" (expand-fn xs)
     "let*" (expand-let 'let* xs)
     "loop*" (expand-let 'loop* xs)
@@ -279,15 +315,17 @@
   to being the syntax they came from, keeping their scopes and places (for
   the arguments and the two levels inside them, which is where macros take
   what they keep); the rest takes the call's."
-  [m s]
+  [m s access]
   (let [args (rest (syn/syntax-e s))
         scopes (syn/syntax-scopes s)]
-    (if (every? (fn [a] (and (or (syn/%raw? a) (not (compound? (syn/%raw-e a))))
-                             (= scopes (syn/syntax-scopes a))))
-                args)
-      ;; the usual case: plain data with the call's scopes, in and out
-      (syn/%raw-syntax (apply m (map syn/%raw-e args)) scopes (syn/syntax-loc s))
-      (precise-step m s args))))
+    (syn/add-scope
+     (if (every? (fn [a] (and (or (syn/%raw? a) (not (compound? (syn/%raw-e a))))
+                              (= scopes (syn/syntax-scopes a))))
+                 args)
+       ;; the usual case: plain data with the call's scopes, in and out
+       (syn/%raw-syntax (apply m (map syn/%raw-e args)) scopes (syn/syntax-loc s))
+       (precise-step m s args))
+     access)))
 
 (defn- precise-step
   "datum-step for arguments that aren't all plain data with the call's
@@ -332,7 +370,7 @@
         (when-not (syn/syntax? out)
           (fail s "The macro" (pr-str v) "returned" (pr-str out) "where syntax was expected"))
         (syn/flip-scope out intro))
-      (datum-step m s))))
+      (datum-step m s (access-scope (var-ns-of v))))))
 
 (defn- macro-of
   "The macro var a call's head names, or nil."
@@ -418,8 +456,105 @@
                    (syn/add-scope form sc)
                    (syn/%raw-syntax form #{sc} nil)))))
 
+;; ---- modules (M8 part 8.4) ----
+;;
+;; A file whose first form is (ns …) is a module. Before its forms run, the
+;; names its defining forms introduce are declared in its namespace, so a
+;; function may call one defined further down (as in Racket; in Clojure it
+;; would need declare). Its forms are then read and evaluated in order, as
+;; syntax with their places, so macros and their helpers still take effect
+;; in order (phases, 8.5, will separate them). Each module is recorded in
+;; the registry, with where it came from and what it requires.
+
+(def ^:private definers
+  "Defining macros: their second element is the name they define."
+  (atom #{"norn.core/defn" "norn.core/defn-" "norn.core/defmacro" "norn.core/defclass" "norn.core/defgeneric"
+          "norn.syntax/defsyntax" "norn.test/deftest" "norn.ffi/defcfun"}))
+
+(defn register-definer!
+  "Tell the module loader that macro var v defines the name that follows it,
+  so modules may use that name before its definition."
+  [v]
+  (swap! definers conj (%var-name v)))
+
+(def modules "Module name → {:path :requires :defines}." (atom {}))
+
+(defn module-info "What the registry knows of module m (a symbol), or nil." [m] (get @modules m))
+
+(defn- defined-names
+  "The names top-level form d defines, if it's a defining form."
+  [d]
+  (when (and (seq? d) (symbol? (first d)))
+    (let [h (first d)
+          v (when-not (= h 'def) (resolve h))
+          head (cond (= h 'def) "def" v (%var-name v))]
+      (cond (= head "norn.core/declare") (filter (fn [x] (and (symbol? x) (nil? (namespace x)))) (rest d))
+            (and (or (= head "def") (contains? @definers head)) (symbol? (second d)) (nil? (namespace (second d))))
+            [(second d)]
+            :else nil))))
+
+(defn- ns-switch? [d] (and (seq? d) (contains? #{'ns 'in-ns} (first d))))
+
+(defn- requires-of
+  "The modules an ns form requires."
+  [d]
+  (vec (for [clause (rest d) :when (and (seq? clause) (= :require (first clause)))
+             spec (rest clause)]
+         (let [spec (if (and (seq? spec) (= 'quote (first spec))) (second spec) spec)]
+           (if (vector? spec) (first spec) spec)))))
+
+(defn- declare-module!
+  "Declare the names module text defines (read from just after its ns form,
+  up to any later ns or in-ns), and record it."
+  [text src ns-form]
+  (let [r (%reader text src)
+        _ (%read r)
+        names (loop [acc []]
+                (let [d (try (%read r) (catch Error _ ::unreadable))]
+                  (if (or (= d ::unreadable) (%eof? d) (ns-switch? d))
+                    acc
+                    (recur (into acc (defined-names d))))))
+        here (current-ns)]
+    (doseq [n names]
+      ;; (unbound until its definition runs; a name already defined here
+      ;; keeps its value)
+      (when-not (when-let [v (%resolve-in (symbol (str here)) n)] (= (var-ns-of v) (symbol (str here))))
+        (%intern here n)))
+    (swap! modules assoc (symbol (str here)) {:path src :requires (requires-of ns-form) :defines (vec (distinct names))})))
+
+(defn- eval-located
+  "Evaluate syntax s read from src, noting where (for errors and the
+  definitions index)."
+  [s src]
+  (let [line (or (syn/syntax-line s) 0)
+        d (syn/syntax->datum s)]
+    (%set-location! (str src ":" line))
+    (%note-definition! d src line)
+    (eval s)))
+
+(defn eval-reader
+  "Evaluate every form reader r reads, as syntax with places. A source that
+  starts with (ns …) is a module: its definitions are declared first."
+  [r]
+  (let [src (%reader-name r)
+        saved (%location)]
+    (try
+      (let [s (syn/read-syntax r)]
+        (if (= s :eof)
+          nil
+          (let [d (syn/syntax->datum s)
+                v (eval-located s src)]
+            (when (and (seq? d) (= 'ns (first d)))
+              (declare-module! (%reader-text r) src d))
+            (loop [last v]
+              (let [s (syn/read-syntax r)]
+                (if (= s :eof) last (recur (eval-located s src))))))))
+      (finally (%set-location! saved)))))
+
 (defn %install!
-  "Make the expander the way eval (and so load-file, the REPL…) expands."
+  "Make the expander the way eval (and so load-file, require, the REPL…)
+  expands, and modules the way files load."
   []
   (%set-root! (var norn.core/eval) eval)
+  (%set-root! (var norn.core/%eval-reader) eval-reader)
   :installed)

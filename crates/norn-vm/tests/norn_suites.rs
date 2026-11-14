@@ -76,6 +76,11 @@ fn expander_suite() {
 }
 
 #[test]
+fn module_suite() {
+    suite("module_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [

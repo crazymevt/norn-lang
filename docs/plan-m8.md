@@ -203,3 +203,47 @@ unchanged.
 **For 8.4:** private vars aren't enforced yet. When they are, a macro's
 template must still reach its own namespace's private functions, as
 `expander_test` checks, while other code can't.
+
+**8.4, modules (2026-11-14): done.**
+
+- **A file that starts with `(ns …)` is a module.**
+  - Before its forms run, the names its defining forms introduce are
+    declared in its namespace (`def`, `defn`, `defn-`, `defmacro`,
+    `defclass`, `defgeneric`, `declare`, `defsyntax`, `deftest`,
+    `defcfun`). So a function may call one defined further down.
+    `register-definer!` adds a library's own defining macro.
+  - The forms are then read and evaluated in order, as syntax with places.
+    Errors inside a module say where (`mt/bad.norn:4:8: …`).
+  - Two things wait for phases (8.5): expanding every form before running
+    any, and so evaluating macros apart from their helpers.
+  - A file without `ns` is a script, read form by form as before.
+- **Private vars exist, and are enforced.**
+  - `defn-` and `(def ^:private x …)` mark a var private. The reader now
+    keeps metadata as a property of the syntax it reads (`syntax-property`)
+    rather than dropping it.
+  - Naming another namespace's private var is an expansion error:
+    `mt.a/helper is private to mt.a`.
+  - A namespace's own macros may use its private helpers. A hygienic
+    template resolves in its own namespace. A `defmacro`'s result carries
+    its namespace's *access scope*, which grants that access without
+    changing where names resolve, and doesn't take part in binding.
+  - `#'ns/private` still reaches one on purpose, as in Clojure.
+  - `ns-publics` leaves private vars out, so `:refer` can't take them. The
+    new `ns-interns` lists them all.
+- **The registry:** `module-info` gives a module's path, the modules it
+  requires, and what it defines. `(require 'm :reload)` loads a module
+  again, redefining it in place: modules stay open until sealed.
+  `add-lib-path!` adds a folder to the library search, for projects (and
+  for packages, 8.10).
+- **`read-syntax` is now lazy too.** A form read from source is raw. Its
+  parts get their places from the reader's location tree when looked at,
+  so loading through syntax costs little more than reading data.
+- **The linter** knows modules: forward references in a module aren't
+  unresolved.
+- **The test runner** finds a file's namespace by reading forms, not with a
+  regex, so a `(ns …)` in a comment no longer confuses it.
+- **Tests:** `module_test.norn`, 18 checks at both tiers. All suites pass,
+  as do `norn-ui`'s and `norn-studio`'s, with no private access to fix.
+- **Seen in passing:** `start_up_from_an_image_is_fast` (under 50 ms)
+  fails when the whole suite runs in parallel. Alone it takes 40 ms and
+  passes. The test's threshold or its isolation needs a look.

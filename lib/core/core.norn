@@ -30,7 +30,11 @@
   (let* [body (if (string? (first body)) (rest body) body)]
     `(def ~name (fn* ~name ~@body))))
 
-(defmacro defn- [name & body] `(defn ~name ~@body))
+(defmacro defn-
+  "defn, private to this namespace: other namespaces can't name it (a macro
+  of this namespace still may, in its expansion)."
+  [name & body]
+  `(do (defn ~name ~@body) (%set-private! (var ~name))))
 (defmacro fn [& sigs] `(fn* ~@sigs))
 (defmacro let [bindings & body] `(let* ~bindings ~@body))
 (defmacro loop [bindings & body] `(loop* ~bindings ~@body))
@@ -1784,17 +1788,23 @@
 
 (defn require
   "Load libraries: (require 'norn.io '[norn.string :as str :refer [join]]).
-  :refer :all refers every public var."
+  :refer :all refers every public var. :reload as a spec's option, or
+  after the specs, loads the library again even if it's loaded (its
+  definitions are replaced in place)."
   [& specs]
-  (doseq [spec specs]
-    (let [[lib & opts] (if (vector? spec) spec [spec])
-          {:keys [as refer]} (apply hash-map opts)]
-      (%load-lib lib)
-      (when as (%alias as lib))
-      (when refer
-        (let [publics (ns-publics lib)]
-          (doseq [s (if (= refer :all) (keys publics) refer)]
-            (%refer s (or (get publics s) (error "No such var:" (str lib "/" s))))))))
+  (let [reload-all (some (fn [s] (= s :reload)) specs)]
+    (doseq [spec (remove (fn [s] (= s :reload)) specs)]
+      (let [[lib & opts] (if (vector? spec) spec [spec])
+            opts (apply hash-map (remove (fn [o] (= o :reload)) opts))
+            reload (or reload-all (some (fn [o] (= o :reload)) (if (vector? spec) spec [])))
+            {:keys [as refer]} opts]
+        (when reload (swap! %libs dissoc lib))
+        (%load-lib lib)
+        (when as (%alias as lib))
+        (when refer
+          (let [publics (ns-publics lib)]
+            (doseq [s (if (= refer :all) (keys publics) refer)]
+              (%refer s (or (get publics s) (error "No such public var:" (str lib "/" s)))))))))
     nil))
 
 (defmacro ns

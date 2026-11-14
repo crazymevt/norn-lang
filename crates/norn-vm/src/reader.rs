@@ -97,6 +97,8 @@ pub struct LocNode {
     end: Place,
     kids: Vec<LocNode>,
     elems: Option<Vec<Value>>,
+    /// The form's metadata (`^:private x`): a map, or nil.
+    meta: Value,
 }
 
 impl LocNode {
@@ -109,7 +111,7 @@ impl LocNode {
             None => Value::NIL,
         };
         let n = |x: usize| Value::fix(x as i64);
-        vec_from_slice(&mut vm.m, &[n(self.start.line), n(self.start.col), n(self.start.at), n(self.end.at), kids, elems])
+        vec_from_slice(&mut vm.m, &[n(self.start.line), n(self.start.col), n(self.start.at), n(self.end.at), kids, elems, self.meta])
     }
 }
 
@@ -119,6 +121,8 @@ struct Locs {
     frames: Vec<Frame>,
     done: Option<LocNode>,
     cache: (usize, Place),
+    /// Metadata read (`^…`) for the next form at depth `.1`.
+    meta: Option<(Value, usize)>,
 }
 
 const SPECIALS: &[&str] = &["quote", "if", "do", "def", "var", "fn*", "let*", "letrec*", "loop*", "recur", "&"];
@@ -143,7 +147,7 @@ impl<'a> Reader<'a> {
 
     /// This reader, recording where each form comes from (`take_locations`).
     pub fn with_locations(mut self) -> Self {
-        self.locs = Some(Locs { frames: Vec::new(), done: None, cache: (0, Place { line: 1, col: 1, at: 0 }) });
+        self.locs = Some(Locs { frames: Vec::new(), done: None, cache: (0, Place { line: 1, col: 1, at: 0 }), meta: None });
         self
     }
 
@@ -188,8 +192,16 @@ impl<'a> Reader<'a> {
         if self.locs.is_some() {
             let end = self.place(self.pos);
             let l = self.locs.as_mut().unwrap();
+            let depth = l.frames.len() - 1;
             let f = l.frames.pop().unwrap();
-            let node = LocNode { start: f.start, end, kids: f.kids, elems: f.elems };
+            let meta = match l.meta {
+                Some((m, d)) if d == depth => {
+                    l.meta = None;
+                    m
+                }
+                _ => Value::NIL,
+            };
+            let node = LocNode { start: f.start, end, kids: f.kids, elems: f.elems, meta };
             match l.frames.last_mut() {
                 Some(parent) => parent.kids.push(node),
                 None => l.done = Some(node),
@@ -399,9 +411,21 @@ impl<'a> Reader<'a> {
                     // Metadata is read and dropped (and its place with it);
                     // the form after it is read as the next form.
                     self.bump();
-                    self.read_required(vm)?;
+                    let m = self.read_required(vm)?;
                     if let Some(f) = self.frame() {
                         f.kids.pop();
+                    }
+                    if self.locs.is_some() {
+                        // kept for the next form at this depth (the frame
+                        // for the ^ itself is dropped)
+                        let m = meta_map(vm, m);
+                        let l = self.locs.as_mut().unwrap();
+                        let depth = l.frames.len() - 1;
+                        let m = match l.meta {
+                            Some((old, d)) if d == depth => merge_meta(vm, old, m),
+                            _ => m,
+                        };
+                        l.meta = Some((m, depth));
                     }
                     if self.at_end() {
                         return Err(ReadError::Incomplete("EOF after metadata".into()));
@@ -430,7 +454,7 @@ impl<'a> Reader<'a> {
             && let Some(f) = self.frame()
         {
             let start = f.start;
-            f.kids.insert(0, LocNode { start, end, kids: Vec::new(), elems: None });
+            f.kids.insert(0, LocNode { start, end, kids: Vec::new(), elems: None, meta: Value::NIL });
         }
         let h = vm.sym(head);
         Ok(list_from(&mut vm.m, &[h, form]))
@@ -716,6 +740,28 @@ impl<'a> Reader<'a> {
         }
         Ok(vm.sym(tok))
     }
+}
+
+/// Metadata as a map: `^:k` is {:k true}, `^Type` or `^"t"` {:tag …}.
+fn meta_map(vm: &mut Vm, m: Value) -> Value {
+    if m.is(Kind::Map) {
+        m
+    } else if m.is_keyword() {
+        map_assoc(&mut vm.m, map_empty(), m, Value::TRUE)
+    } else {
+        let tag = rt().keyword(&mut vm.m, None, "tag");
+        map_assoc(&mut vm.m, map_empty(), tag, m)
+    }
+}
+
+fn merge_meta(vm: &mut Vm, a: Value, b: Value) -> Value {
+    let mut out = a;
+    if let Some(it) = SeqIter::new(b) {
+        for e in it {
+            out = map_assoc(&mut vm.m, out, e.vec_nth(0), e.vec_nth(1));
+        }
+    }
+    out
 }
 
 fn parse_number(vm: &mut Vm, tok: &str) -> RResult<Value> {

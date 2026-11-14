@@ -192,7 +192,6 @@ impl Cst<'_> {
                 Some(b'#') => {}
                 _ => {
                     let end = self.token_end(self.i + 1);
-                    let tag = &self.s[self.i..end];
                     return self.prefix(vm, end - self.i);
                 }
             },

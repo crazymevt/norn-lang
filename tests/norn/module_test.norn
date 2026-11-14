@@ -1,0 +1,83 @@
+;;;; Modules (M8 part 8.4): a file starting with (ns …) is a module, with
+;;;; forward references, private vars that other code can't name, a
+;;;; registry, and reloading. The modules are written to a temporary folder.
+
+(ns module-test
+  (:require [norn.test :refer [is deftest testing]] [norn.io :as io] [norn.sys :as sys]
+            [norn.string :as str] [norn.lint :as lint]))
+
+(def dir (io/path (sys/temp-dir) (str "norn-module-test-" (sys/pid) "-" (nano-time))))
+(io/mkdirs! (io/path dir "mt"))
+(add-lib-path! dir)
+
+(defn- module! [name text] (io/write-text (io/path dir "mt" (str name ".norn")) text))
+
+(module! "a" (str "(ns mt.a)\n"
+                  "(defn start [] (finish 20))\n"
+                  "(defn finish [x] (+ x (helper)))\n"
+                  "(defn- helper [] 1)\n"
+                  "(def ^:private hidden 5)\n"
+                  "(defn reveal [] hidden)\n"
+                  "(defn- double [x] (* 2 x))\n"
+                  "(defmacro twice [x] `(double ~x))\n"))
+
+(module! "b" (str "(ns mt.b\n  (:require [mt.a :as a]))\n"
+                  "(defn twice-of [n] (a/twice n))\n"))
+
+(module! "bad" (str "(ns mt.bad)\n\n(defn ok [] 1)\n(let* [1 2] 3)\n"))
+
+(defn- message [f] (try (f) nil (catch Error e (condition-message e))))
+
+;; (the modules exist only once this file runs, so the tests reach them
+;; through eval: the linter, reading this file, needn't find them)
+(defn- run [form] (eval form))
+
+(run '(require '[mt.a :as a] 'mt.b))
+
+(deftest forward-references
+  (is (= 21 (run '(mt.a/start))) "start calls finish, finish calls helper: both defined after it"))
+
+(deftest private-vars
+  (testing "other code can't name them"
+    (is (= "mt.a/helper is private to mt.a" (message (fn [] (eval '(mt.a/helper))))))
+    (is (= "mt.a/hidden is private to mt.a" (message (fn [] (eval 'mt.a/hidden))))))
+  (testing "the module itself can, and so can its macros' expansions"
+    (is (= 5 (run '(mt.a/reveal))))
+    (is (= 8 (run '(mt.a/twice 4))))
+    (is (= 14 (run '(mt.b/twice-of 7))) "a/twice used from another module"))
+  (testing "a var reaches one on purpose"
+    (is (= 1 (run '((var mt.a/helper))))))
+  (testing "they aren't public, and can't be referred"
+    (is (= '[finish reveal start twice] (vec (sort (keys (ns-publics 'mt.a))))))
+    (is (contains? (ns-interns 'mt.a) 'helper))
+    (is (= "No such public var: mt.a/helper" (message (fn [] (run '(require '[mt.a :refer [helper]]))))))))
+
+(deftest the-registry
+  (let [info (norn.expander/module-info 'mt.b)]
+    (is (= '[mt.a] (:requires info)))
+    (is (= '[twice-of] (:defines info)))
+    (is (str/ends-with? (:path info) "mt/b.norn"))))
+
+(deftest reloading
+  (module! "a" (str "(ns mt.a)\n"
+                    "(defn start [] (finish 20))\n"
+                    "(defn finish [x] (* x (helper)))\n"
+                    "(defn- helper [] 3)\n"
+                    "(def ^:private hidden 5)\n"
+                    "(defn reveal [] hidden)\n"
+                    "(defn- double [x] (* 2 x))\n"
+                    "(defmacro twice [x] `(double ~x))\n"))
+  (run '(require 'mt.a :reload))
+  (is (= 60 (run '(mt.a/start))) "redefined in place")
+  (is (= "mt.a/helper is private to mt.a" (message (fn [] (eval '(mt.a/helper))))) "still private"))
+
+(deftest errors-in-a-module-say-where
+  (let [m (message (fn [] (run '(require 'mt.bad))))]
+    (is (str/includes? m "mt/bad.norn:4:8: Bad binding form in let*: 1") m)))
+
+(deftest a-script-is-read-form-by-form
+  ;; (no ns form: not a module, so no forward references)
+  (is (some? (message (fn [] (load-string "(defn s-first [] (s-later)) (defn s-later [] 1)"))))))
+
+(deftest the-linter-knows-modules
+  (is (= [] (lint/lint-string "(ns lm)\n(defn f [] (g 1))\n(defn g [x] x)\n" "lm.norn"))))

@@ -258,6 +258,27 @@
 (defn- evaluated-form? [form]
   (and (seq? form) (contains? #{'ns 'in-ns 'require 'defmacro} (first form))))
 
+(def ^:private definer-heads
+  "Defining forms by head name, for the forward-reference prescan."
+  #{"def" "defn" "defn-" "defmacro" "defclass" "defgeneric" "defsyntax" "deftest" "defcfun"})
+
+(defn- names-defined
+  "The names a module's top-level forms define (up to any second ns or
+  in-ns): a module may use them before their definitions (M8 part 8.4)."
+  [s path]
+  (let [r (%reader s path)
+        first-form (try (%read r) (catch Error _ nil))]
+    (if-not (and (seq? first-form) (= 'ns (first first-form)))
+      []
+      (loop [acc []]
+        (let [d (try (%read r) (catch Error _ ::stop))]
+          (cond (or (= d ::stop) (%eof? d) (and (seq? d) (contains? #{'ns 'in-ns} (first d)))) acc
+                (and (seq? d) (symbol? (first d)) (= "declare" (name (first d))))
+                (recur (into acc (filter symbol? (rest d))))
+                (and (seq? d) (symbol? (first d)) (contains? definer-heads (name (first d))) (symbol? (second d)))
+                (recur (conj acc (second d)))
+                :else (recur acc)))))))
+
 (defn lint-string
   "Warnings for source text s (from file path, for the reports): a vector of
   maps with :file :line :kind and :message."
@@ -266,7 +287,8 @@
    (let [lines (try (top-level-lines s) (catch Error _ []))
          here (current-ns)
          r (%reader s path)]
-     (binding [*warnings* (atom []) *file-defs* (atom {}) *file-qualified* (atom #{}) *file-generics* (atom {})]
+     (binding [*warnings* (atom []) *file-defs* (atom (zipmap (names-defined s path) (repeat :unknown)))
+               *file-qualified* (atom #{}) *file-generics* (atom {})]
        (try
          (loop [i 0]
            (let [form (%read r)]

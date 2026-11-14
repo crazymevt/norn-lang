@@ -183,7 +183,8 @@ prims! {
     "in-ns" 1 Some(1) => |vm, a| { if !a[0].is_symbol() { return Err(type_err("in-ns", "a symbol", a[0])); } vm.ns = rt().find_or_create_ns(a[0]); Ok(a[0]) };
     "current-ns" 0 Some(0) => |vm, _| Ok(vm.ns.name);
     "all-ns" 0 Some(0) => |vm, _| { let names: Vec<Value> = rt().all_namespaces().iter().map(|n| n.name).collect(); Ok(list_from(&mut vm.m, &names)) };
-    "ns-publics" 1 Some(1) => |vm, a| { let ns = rt().find_ns(a[0]).ok_or_else(|| Error::new(format!("No namespace: {}", pr_str(a[0], true))))?; let mut m = map_empty(); for (k, v) in ns.mappings() { if v.var_ns() == ns.name { m = map_assoc(&mut vm.m, m, k, v); } } Ok(m) };
+    "ns-publics" 1 Some(1) => |vm, a| { let ns = rt().find_ns(a[0]).ok_or_else(|| Error::new(format!("No namespace: {}", pr_str(a[0], true))))?; let mut m = map_empty(); for (k, v) in ns.mappings() { if v.var_ns() == ns.name && !v.var_is_private() { m = map_assoc(&mut vm.m, m, k, v); } } Ok(m) };
+    "ns-interns" 1 Some(1) => |vm, a| { let ns = rt().find_ns(a[0]).ok_or_else(|| Error::new(format!("No namespace: {}", pr_str(a[0], true))))?; let mut m = map_empty(); for (k, v) in ns.mappings() { if v.var_ns() == ns.name { m = map_assoc(&mut vm.m, m, k, v); } } Ok(m) };
     "resolve" 1 Some(1) => |vm, a| Ok(vm.resolve(a[0]).unwrap_or(Value::NIL));
     "%resolve-in" 2 Some(2) => |vm, a| { expect(a[0], Kind::Symbol, "%resolve-in")?; expect(a[1], Kind::Symbol, "%resolve-in")?; let core = vm.core; Ok(rt().find_ns(a[0]).and_then(|ns| rt().resolve(&mut vm.m, ns, core, a[1])).unwrap_or(Value::NIL)) };
     "%identity-hash" 1 Some(1) => |_, a| Ok(Value::fix(((a[0].0 >> 3) & 0x3fff_ffff_ffff_ffff) as i64));
@@ -192,6 +193,8 @@ prims! {
     "%set-root!" 2 Some(2) => |_, a| { expect(a[0], Kind::Var, "%set-root!")?; a[0].var_set_root(a[1]); Ok(a[1]) };
     "%set-macro!" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "%set-macro!")?; a[0].var_set_flag(VAR_MACRO); Ok(a[0]) };
     "macro?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Var) && a[0].var_is_macro()));
+    "%set-private!" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "%set-private!")?; a[0].var_set_flag(norn_rt::func::VAR_PRIVATE); Ok(a[0]) };
+    "private?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Var) && a[0].var_is_private()));
     "error" 1 VAR => |_, a| Err(Error::new(join(a, false)));
     "disassemble" 1 Some(1) => disassemble;
     // system
@@ -255,6 +258,8 @@ prims! {
     "%set-location!" 1 Some(1) => |vm, a| { if !vm.current.is_nil() { vm.current.set_field(norn_rt::conc::fiber::LOC, a[0]); } Ok(a[0]) };
     "%reader-line" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-line")?; Ok(Value::fix(a[0].word(3) as i64)) };
     "%reader-name" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-name")?; Ok(a[0].field(2)) };
+    "add-lib-path!" 1 Some(1) => |_, a| { crate::eval::add_lib_path(text(a[0])); Ok(Value::NIL) };
+    "%reader-text" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-text")?; Ok(a[0].field(0)) };
     // building and inspecting compiled code (the Norn compiler, lib/compiler)
     "%make-proto" 7 Some(7) => make_proto;
     "%make-template" 3 Some(3) => |vm, a| { let ps = to_vec(vm, a[1])?; let cs = to_vec(vm, a[2])?; let arities = norn_rt::array::array_from(&mut vm.m, &ps); let caps = norn_rt::array::array_from(&mut vm.m, &cs); Ok(norn_rt::func::template_new(&mut vm.m, a[0], arities, caps)) };

@@ -28,27 +28,30 @@
    (scopes :doc "The scopes, a set of integers.")
    (loc :doc "[source line column position span], or nil.")
    (pending :doc "Scope changes not yet passed to the parts: [[op scope]…], or nil.")
-   (raw :doc "True when e is plain data whose parts take this object's scopes and place."))
+   (raw :doc "True when e is plain data whose parts take this object's scopes and place.")
+   (props :doc "Properties: the metadata written on the form (^:private x), or nil.")
+   (tree :doc "For a raw object read from source: the reader's location node, placing its parts."))
   (:doc "A datum with its scopes and the place it came from.")
   (:equality :identity))
 
 (defn- make-syntax
-  ([e scopes loc] (%instance Syntax [e scopes loc nil false]))
-  ([e scopes loc pending] (%instance Syntax [e scopes loc pending false])))
+  ([e scopes loc] (%instance Syntax [e scopes loc nil false nil nil]))
+  ([e scopes loc pending] (%instance Syntax [e scopes loc pending false nil nil])))
 
-(declare compound?)
+(declare compound? placed)
 
 (defn %raw-syntax
   "Plain data d as syntax with scopes and place loc, its parts wrapped only
   when looked at (d holds no syntax objects)."
   [d scopes loc]
-  (%instance Syntax [d scopes loc nil (compound? d)]))
+  (%instance Syntax [d scopes loc nil (compound? d) nil nil]))
 
 (defn syntax? "Is x a syntax object?" [x] (instance? Syntax x))
 
 (declare wrap-parts change-scopes)
 
-;; (slots by position, in the order defclass gives them: e scopes loc pending raw)
+;; (slots by position, in the order defclass gives them: e scopes loc pending
+;; raw props tree)
 (defn %raw-e "Syntax s's datum, its parts as they are (pending scopes not passed on)." [s] (%slot-ref s 0))
 (defn %raw? "Is syntax s raw (plain data inside)?" [s] (%slot-ref s 4))
 
@@ -57,14 +60,17 @@
   [s]
   (let [e (%slot-ref s 0)]
     (if (%slot-ref s 4)
-      (let [scopes (%slot-ref s 1) loc (%slot-ref s 2)]
-        (wrap-parts e (fn [x] (%instance Syntax [x scopes loc nil (compound? x)]))))
+      (let [scopes (%slot-ref s 1) loc (%slot-ref s 2) tree (%slot-ref s 6)]
+        (or (when tree (placed e scopes (nth loc 0) tree))
+            (wrap-parts e (fn [x] (%instance Syntax [x scopes loc nil (compound? x) nil nil])))))
       (let [p (%slot-ref s 3)]
         (if p (wrap-parts e (fn [x] (change-scopes x p))) e)))))
 
 (defn syntax-scopes "The scopes of syntax s." [s] (%slot-ref s 1))
 (defn syntax-loc "Where syntax s came from: [source line column position span], or nil." [s] (%slot-ref s 2))
 (defn %pending "Syntax s's scope changes not yet passed to its parts." [s] (%slot-ref s 3))
+(defn syntax-props "The properties of syntax s: the metadata written on it, or nil." [s] (%slot-ref s 5))
+(defn syntax-property "Property k of syntax s (from ^:k or ^{:k v} on the form)." [s k] (get (%slot-ref s 5) k))
 
 (defn syntax-source "The name of the source s came from (a path), or nil." [s] (nth (syntax-loc s) 0 nil))
 (defn syntax-line "The 1-based line s starts on, or nil." [s] (nth (syntax-loc s) 1 nil))
@@ -136,10 +142,11 @@
   [s ops]
   (cond (not (syntax? s)) s
         ;; a raw object's parts take its scopes when they're looked at
-        (%slot-ref s 4) (%instance Syntax [(%slot-ref s 0) (reduce apply-op (syntax-scopes s) ops) (syntax-loc s) nil true])
+        (%slot-ref s 4) (%instance Syntax [(%slot-ref s 0) (reduce apply-op (syntax-scopes s) ops) (syntax-loc s) nil true
+                                           (%slot-ref s 5) (%slot-ref s 6)])
         :else (let [e (%slot-ref s 0)]
-                (make-syntax e (reduce apply-op (syntax-scopes s) ops) (syntax-loc s)
-                             (when (compound? e) (into (or (%slot-ref s 3) []) ops))))))
+                (%instance Syntax [e (reduce apply-op (syntax-scopes s) ops) (syntax-loc s)
+                                   (when (compound? e) (into (or (%slot-ref s 3) []) ops)) false (%slot-ref s 5) nil]))))
 
 (defn %change-scopes
   "s with scope changes ops ([[:add|:remove|:flip scope]…]) made to it and
@@ -205,29 +212,26 @@
   (let [[line col start end] node]
     [source line col start (- end start)]))
 
-(defn- wrap-at
-  "x as syntax with place loc for it and all its parts."
-  [x loc]
-  (letfn [(wrap [y] (make-syntax (wrap-parts y wrap) #{} loc))]
-    (wrap x)))
+(defn- raw-placed
+  "Data x read at the place of location node, as raw syntax with scopes."
+  [x scopes source node]
+  (%instance Syntax [x scopes (loc-of source node) nil (compound? x) (nth node 6 nil) (when (compound? x) node)]))
 
-(defn- with-places [source x node]
-  (let [loc (loc-of source node)
-        kids (nth node 4)
-        elems (nth node 5)
-        part (fn [y k] (with-places source y k))]
-    (cond (or (seq? x) (vector? x))
-          (if (= (count x) (count kids))
-            (make-syntax (let [ps (map part x kids)] (if (vector? x) (vec ps) (apply list ps))) #{} loc)
-            (make-syntax (wrap-parts x (fn [y] (wrap-at y loc))) #{} loc))
-          (and (or (map? x) (set? x)) elems (= (count elems) (count kids)))
+(defn- placed
+  "The parts of raw data e (read at the place of location node tree), as
+  syntax placed by the tree's kids, or nil when the kids don't line up (a
+  form the reader rewrote: then its parts take its place)."
+  [e scopes source tree]
+  (let [kids (nth tree 4)
+        elems (nth tree 5)
+        part (fn [y k] (raw-placed y scopes source k))]
+    (cond (or (seq? e) (vector? e))
+          (when (= (count e) (count kids))
+            (let [ps (map part e kids)] (if (vector? e) (vec ps) (apply list ps))))
+          (and (or (map? e) (set? e)) elems (= (count elems) (count kids)))
           (let [ps (mapv part elems kids)]
-            (make-syntax (if (map? x)
-                           (into {} (map vec (partition 2 ps)))
-                           (set ps))
-                         #{} loc))
-          (or (map? x) (set? x)) (wrap-at x loc)
-          :else (make-syntax x #{} loc))))
+            (if (map? e) (into {} (map vec (partition 2 ps))) (set ps)))
+          :else nil)))
 
 (defn read-syntax
   "The next form from reader r (made by %reader), as syntax with each
@@ -237,7 +241,9 @@
     (if (%eof? got)
       :eof
       (let [[form node] got]
-        (if node (with-places (%reader-name r) form node) (wrap-at form nil))))))
+        (if node
+          (raw-placed form #{} (%reader-name r) node)
+          (%raw-syntax form #{} nil))))))
 
 (defn read-all-syntax
   "Every form in text, as syntax; source names where it came from (a path)."

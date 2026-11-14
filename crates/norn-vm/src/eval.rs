@@ -59,13 +59,25 @@ pub const LIBS: &[(&str, &str)] = &[
 /// `(%find-lib "a.b-c")`: the source of library `a.b-c` and where it came
 /// from — embedded, or `a/b-c.norn` under a directory on `NORN_PATH`
 /// (colon-separated) or the current directory.
+/// Folders added at run time (`(add-lib-path! dir)`), searched after
+/// NORN_PATH and before the current directory: a project's source folders.
+static LIB_PATH: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+
+pub(crate) fn add_lib_path(dir: String) {
+    let mut p = LIB_PATH.write().unwrap();
+    if !p.contains(&dir) {
+        p.push(dir);
+    }
+}
+
 pub(crate) fn find_lib(name: &str) -> Option<(String, String)> {
     if let Some((_, src)) = LIBS.iter().chain(crate::ext::libs()).find(|(n, _)| *n == name) {
         return Some(((*src).to_owned(), format!("<{name}>")));
     }
     let rel = format!("{}.norn", name.replace('.', "/"));
     let path = std::env::var("NORN_PATH").unwrap_or_default();
-    path.split(':').filter(|d| !d.is_empty()).chain(std::iter::once(".")).find_map(|dir| {
+    let added = LIB_PATH.read().unwrap().clone();
+    path.split(':').filter(|d| !d.is_empty()).chain(added.iter().map(String::as_str)).chain(std::iter::once(".")).find_map(|dir| {
         let p = std::path::Path::new(dir).join(&rel);
         std::fs::read_to_string(&p).ok().map(|src| (src, p.to_string_lossy().into_owned()))
     })

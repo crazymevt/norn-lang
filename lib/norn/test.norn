@@ -198,9 +198,15 @@
      (deref out))))
 
 (defn- file-ns
-  "The namespace a test file declares (its first ns form), or nil."
+  "The namespace a test file declares (its first ns form), or nil. (Read as
+  forms, so an ns in a comment doesn't count.)"
   [text]
-  (when-let [m (re-find #"\(ns\s+([^\s()]+)" text)] (second m)))
+  (let [r (%reader text "<test>")]
+    (loop [i 0]
+      (let [f (try (%read r) (catch Error _ nil))]
+        (cond (or (nil? f) (%eof? f) (> i 20)) nil
+              (and (seq? f) (= 'ns (first f)) (symbol? (second f))) (str (second f))
+              :else (recur (inc i)))))))
 
 (defn run-file
   "Load a test file and run its tests. Checks made while loading (outside
