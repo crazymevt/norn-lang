@@ -82,6 +82,17 @@
 (is (nil? (io/canonical "/no/such/path/here")))
 (is (= (io/canonical (io/parent (sys/cwd))) (io/canonical (io/path (sys/cwd) "." "..")))
     "canonical resolves . and ..")
+(let [links (str dir "-links")]
+  (io/mkdirs! links)
+  (proc/sh "ln" "-s" (f "a.txt") (io/path links "to-file"))
+  (proc/sh "ln" "-s" (f "sub") (io/path links "to-dir"))
+  (proc/sh "ln" "-s" (f "gone") (io/path links "dangling"))
+  (is (= :symlink (:type (io/info (io/path links "to-file")))) "info tells a link from its target")
+  (is (= [true false] [(io/file? (io/path links "to-file")) (io/directory? (io/path links "to-file"))])
+      "file? follows a link (a CLI in ~/.local/bin is often one)")
+  (is (= [false true] [(io/file? (io/path links "to-dir")) (io/directory? (io/path links "to-dir"))]))
+  (is (= [false false] [(io/file? (io/path links "dangling")) (io/directory? (io/path links "dangling"))]))
+  (io/delete! links :recursive true))
 
 ;;; ---- norn.io: streams ----
 (io/with-open [h (io/open (f "s.txt") :write)]

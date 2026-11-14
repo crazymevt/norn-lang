@@ -176,6 +176,26 @@ a design against Norn's fibers and conditions.
     waits for a surface. Also: a popup's size or position arriving
     after it closed brought back half its entry, and every render then
     failed ("rendering window 2 failed").
+
+    The AI Chat in use, with the real CLIs:
+    - `io/file?` didn't follow symbolic links, and `~/.local/bin/claude` is one,
+      so Studio said to install Claude Code. Codex comes inside the ChatGPT
+      app; Studio looks there too.
+    - Streamed replies drew over themselves: a rich-text node wasn't measured
+      again when its `:spans` changed.
+    - The chat gained model and effort choices, from the models each CLI
+      offers. Claude Code restarts with them, resuming; Codex takes them
+      with each turn. It also gained a usage line: the context used, and
+      what's left of the five-hour and weekly limits.
+    - Restarting to resume raced the old process for the conversation, so a
+      restart now waits for the old one to end, and a conversation that
+      can't be resumed starts anew.
+    - Two crashes. Children with the same key were made into one node, put
+      in two places. And the engine's batch check didn't count removals, so
+      the bad batch passed and panicked. Both are fixed.
+    - A transition stalled while events kept coming.
+    - A dock's tabs that didn't fit shrank and wrapped. Now they scroll
+      sideways, and the chosen one comes into view.
   - **Still to do: the working stretch** — Norn's own development in the
     editor (editing `lib/` and `tests/`, the REPL, the debugger,
     formatting and linting), and what it turns up.

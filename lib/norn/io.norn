@@ -24,8 +24,15 @@
   [path]
   (%fs-info (str path)))
 (defn exists? [path] (some? (info path)))
-(defn file? [path] (= :file (:type (info path))))
-(defn directory? [path] (= :dir (:type (info path))))
+(defn- type-of
+  "Path's type, a symbolic link's being its target's (nil if it dangles)."
+  [path]
+  (let [t (:type (info path))]
+    (if (= :symlink t)
+      (when-let [c (%path-part (str path) :canonical)] (:type (info c)))
+      t)))
+(defn file? "Is path a file (or a symbolic link to one)?" [path] (= :file (type-of path)))
+(defn directory? "Is path a directory (or a symbolic link to one)?" [path] (= :dir (type-of path)))
 (defn list-dir "The names in a directory, sorted." [path] (%fs-list (str path)))
 (defn mkdirs! "Create a directory and any missing parents." [path] (%fs-mkdirs (str path)))
 (defn delete!
