@@ -12,12 +12,14 @@ fn norn(threads: &str, expr: &str) -> String {
 
 #[test]
 fn the_blocking_pool_runs_calls_side_by_side() {
-    // 16 calls blocking 300 ms each: 4.8 s one after another.
+    // 16 calls blocking 300 ms each: 4.8 s one after another, 0.3 s side by
+    // side (the pool grows to one thread per waiting call, not just when
+    // none is idle).
     let r = norn(
         "2",
         "(let [t0 (nano-time)
                r (mapv await (mapv (fn [_] (spawn-detached (%blocking-sleep 300))) (range 16)))]
-           [(= r (vec (repeat 16 300))) (< (- (nano-time) t0) 2500000000)])",
+           [(= r (vec (repeat 16 300))) (< (- (nano-time) t0) 1200000000)])",
     );
     assert_eq!(r, "[true true]");
 }

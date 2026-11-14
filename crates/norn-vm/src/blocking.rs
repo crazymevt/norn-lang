@@ -36,7 +36,11 @@ unsafe impl Send for Pending {}
 static QUEUE: Mutex<VecDeque<Pending>> = Mutex::new(VecDeque::new());
 static CV: Condvar = Condvar::new();
 static THREADS: AtomicUsize = AtomicUsize::new(0);
+/// Threads waiting for a job, and threads started that haven't looked at
+/// the queue yet. Both change only with QUEUE locked, so a caller holding
+/// it knows how many threads will take a queued job without a new one.
 static IDLE: AtomicUsize = AtomicUsize::new(0);
+static STARTING: AtomicUsize = AtomicUsize::new(0);
 /// Waiters of jobs in progress (an image saves their fibers dead).
 static IN_FLIGHT: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
@@ -59,9 +63,21 @@ pub(crate) fn run(vm: &mut Vm, job: impl FnOnce() -> Finish + Send + 'static) ->
     IN_FLIGHT.lock().unwrap().push(w);
     let mut q = QUEUE.lock().unwrap();
     q.push_back(Pending { job: Box::new(job), waiter: w, root });
-    if IDLE.load(Ordering::Acquire) == 0 && THREADS.load(Ordering::Acquire) < MAX_THREADS {
+    // (a thread that's been notified counts as idle until it takes a job,
+    // so idle threads are compared with the jobs waiting, not with zero:
+    // otherwise one sleeping thread stands in for every job queued while
+    // it wakes, and they run one after another)
+    let ready = IDLE.load(Ordering::Acquire) + STARTING.load(Ordering::Acquire);
+    if q.len() > ready && THREADS.load(Ordering::Acquire) < MAX_THREADS {
         THREADS.fetch_add(1, Ordering::AcqRel);
-        std::thread::Builder::new().name("norn-blocking".into()).spawn(worker).map_err(|e| Error::new(e.to_string()))?;
+        STARTING.fetch_add(1, Ordering::AcqRel);
+        if let Err(e) = std::thread::Builder::new().name("norn-blocking".into()).spawn(worker) {
+            THREADS.fetch_sub(1, Ordering::AcqRel);
+            STARTING.fetch_sub(1, Ordering::AcqRel);
+            if ready == 0 && THREADS.load(Ordering::Acquire) == 0 {
+                return Err(Error::new(e.to_string()));
+            }
+        }
     }
     CV.notify_one();
     Ok(Value::NIL)
@@ -69,9 +85,13 @@ pub(crate) fn run(vm: &mut Vm, job: impl FnOnce() -> Finish + Send + 'static) ->
 
 fn worker() {
     let mut m = norn_rt::safepoint::while_running(Mutator::new);
+    let mut starting = true;
     loop {
         let job = {
             let mut q = QUEUE.lock().unwrap();
+            if std::mem::take(&mut starting) {
+                STARTING.fetch_sub(1, Ordering::AcqRel);
+            }
             loop {
                 if let Some(p) = q.pop_front() {
                     break Some(p);
