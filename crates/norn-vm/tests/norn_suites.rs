@@ -131,6 +131,11 @@ fn contracts_suite() {
 }
 
 #[test]
+fn mop_suite() {
+    suite("mop_test.norn");
+}
+
+#[test]
 fn printing_and_errors() {
     let ns = "printing-test";
     let cases = [

@@ -450,3 +450,72 @@ describe.**
   - `defcontract`, redefinitions, `:none`;
   - contracts used directly, and `declare`.
 
+**9.5, the full MOP (2026-11-14): done, with the fast paths kept.**
+
+- **Classes have classes.**
+  - A class is an instance of `StandardClass` (the built-in `Class`), or
+    of a metaclass, a subclass of it, named with `(:metaclass M)` in
+    `defclass`.
+  - A generic function is an instance of `StandardGenericFunction`, or of
+    a subclass named with `(:generic-function-class C)` in `defgeneric`.
+  - `class-of` says which, from new fields on classes and generic
+    functions.
+- **The protocol is generic functions with standard methods,** each
+  specialisable:
+  - `make-instance` (makes an instance, then calls `initialize-instance`);
+  - `initialize-instance` (gives back the instance; instances are
+    values, so a method returns it, changed with `with`, after
+    `call-next-method`);
+  - `slot-value-using-class`;
+  - `print-object` (returns the text: printing an instance anywhere, with
+    print, prn, str or pr-str, uses it);
+  - `compute-applicable-methods` and `compute-effective-method`.
+- **The fast paths stay** for whatever specialises none of it:
+  - A class has hook bits, seen by its subclasses through the class
+    precedence list. A method on `print-object` or `initialize-instance`
+    for the class sets one, and so does a metaclass.
+  - `make` goes through `make-instance` only when hooked, and so does
+    `slot-value` through `slot-value-using-class`. `slot-value` checks the
+    bit in Rust and, when it's set, hands the call over with
+    `ErrKind::Call`, as `deref` does.
+  - The print primitives ask `print-object` first, for any hooked
+    instance in what they print, and the printer uses its text. Until some
+    class has a method, they don't even look.
+  - A dispatch miss goes through `compute-applicable-methods` and
+    `compute-effective-method` only for a generic function with a class
+    of its own. Its cache works as before.
+- **`define-method-combination`** (its short form, `:operator op`) adds
+  to the combinations `+`, `list` and the rest are.
+- **Protocols:** `defprotocol` (a generic function per method,
+  dispatching on its first argument), `extend-type`, `extend-protocol`
+  (built-in classes too) and `satisfies?`.
+- **Slot readers are generic functions** (decision 13). A subclass can
+  specialise one, and two classes can have readers of the same name.
+- **Speed.** This was measured at each step:
+  - A first version cost readers and `slot-value` 2–3.5× (a Norn
+    `slot-value`, readers as two calls deep).
+  - Now a method whose body never calls the next method is *direct*: it
+    takes no next-method argument, and alone it is the effective method,
+    one call instead of two. That makes ordinary generic functions 6–11%
+    faster than before this part.
+  - Against before, 1 million calls:
+    - readers 74 to 93 ms (tier 0) and 28 to 44 ms (tier 1);
+    - `slot-value` 59 to 69 and 14 to 17;
+    - `make` 344 to 369 and 289 to 299;
+    - `(:k obj)` unchanged.
+- **A bug it found:** `defclass`, `defgeneric` and `defmethod` looked up
+  what they redefine by its unqualified name in the namespace current when
+  the form *ran*. Inside a function (a test body, say), that wasn't the
+  namespace the form was written in, and a `defmethod` there replaced its
+  generic function, losing its other methods. They use the full name now.
+- **Not done:** the long form of `define-method-combination`, and slots on
+  metaclasses (a metaclass is for specialising the protocol; data about a
+  class goes in its `:meta`).
+- **Tests:** `mop_test.norn`, 34 checks at both tiers: classes' classes,
+  printing (in collections, inherited, and the plain default),
+  `initialize-instance` through `(C …)`, `make` and `make-instance`,
+  readers specialised and shared, a metaclass auditing slot reads and
+  making, a generic-function class watching method choice (with the cache
+  still working), a combination of one's own, protocols on a class and on
+  `Integer`, and which classes keep the fast paths.
+

@@ -588,6 +588,10 @@
       (%class-set! s :subclasses (conj (vec (remove (fn [x] (identical? x c)) (%class-get s :subclasses))) c)))
     (%class-set! c :supers supers)
     (%class-set! c :meta (assoc opts :direct-slots direct-slots))
+    ;; (a metaclass: making the class's instances and reading their slots
+    ;; go through the MOP's generic functions, which may specialise on it)
+    (%class-set! c :metaclass (:metaclass opts))
+    (when (:metaclass opts) (%class-hook! c 6))
     (%finalize-class c)
     (%bump-class-epoch)
     c))
@@ -670,18 +674,23 @@
         specs (mapv %slot-spec slots)
         opts (reduce (fn [m o] (if (seq? o) (assoc m (first o) (if (next o) (second o) true)) m)) {} options)
         supers (if (seq supers) (vec supers) ['norn.core/StandardObject])
+        ;; (readers are generic functions, so a subclass can specialise one,
+        ;; and two classes can each have a reader of the same name)
         readers (keep (fn [s]
                         (let [s (if (symbol? s) (list s) s)
                               r (get (apply hash-map (rest s)) :reader)]
-                          (when r `(defn ~r [o#] (slot-value o# ~(keyword (name (first s))))))))
+                          (when r `(defmethod ~r ((o# ~cname)) (slot-value o# ~(keyword (name (first s))))))))
                       slots)]
-    `(do (def ~cname (%ensure-class (%bound-value '~cname) '~qname ~supers ~specs ~opts))
+    `(do (def ~cname (%ensure-class (%bound-value '~qname) '~qname ~supers ~specs ~opts))
          ~@readers
          (var ~cname))))
 
-(defn make
-  "Make an instance of class c from :initarg value pairs. (c :k v…) does the same."
-  [c & initargs]
+(declare make-instance)
+
+(defn %make-from
+  "An instance of class c from initargs (a seq of :initarg value pairs),
+  as the standard make-instance makes it."
+  [c initargs]
   (when-not (and (class? c) (subclass? c StandardObject))
     (error "Can't make an instance of" (pr-str (if (class? c) (class-name c) c))))
   (when (odd? (count initargs))
@@ -700,6 +709,15 @@
                                  :else nil)))
                        slots))))
 
+(defn make
+  "Make an instance of class c from :initarg value pairs. (c :k v…) does the
+  same. Through make-instance (M9 part 9.5) when the class's metaclass or
+  its initialize-instance methods ask for it."
+  [c & initargs]
+  (if (%class-hooked? c 2)
+    (apply make-instance c initargs)
+    (%make-from c initargs)))
+
 (defn instance->map [o] (zipmap (keys o) (vals o)))
 
 ;;; ---- generic functions ---------------------------------------------------------------
@@ -717,7 +735,7 @@
           (= (first ps) '&) [n true]
           :else (recur (next ps) (inc n)))))
 
-(defn %ensure-generic [existing gname nreq rest? combination dispatch]
+(defn %ensure-generic-1 [existing gname nreq rest? combination dispatch]
   (if (and (generic? existing)
            (or (and (= nreq (%gf-get existing :nreq)) (= rest? (%gf-get existing :rest)))
                (seq (%gf-get existing :methods))))
@@ -730,20 +748,30 @@
         existing)
     (%gf-new gname nreq rest? combination dispatch)))
 
+(defn %ensure-generic [existing gname nreq rest? combination dispatch & more]
+  (let [gf-class (first more)
+        g (%ensure-generic-1 existing gname nreq rest? combination dispatch)]
+    (when-not (identical? gf-class (%gf-get g :class)) (%gf-set! g :class gf-class))
+    g))
+
 (defmacro defgeneric
-  "(defgeneric name (params…) \"doc\"? (:method-combination +)? (:dispatch f)?)
+  "(defgeneric name (params…) \"doc\"? (:method-combination +)? (:dispatch f)?
+  (:generic-function-class C)?)
 
   Without :dispatch, methods dispatch on the classes of all required
   arguments (and eql specializers). With (:dispatch f), on the value of
-  (apply f args), Clojure-multimethod style."
+  (apply f args), Clojure-multimethod style. With
+  (:generic-function-class C), a subclass of StandardGenericFunction, the
+  MOP's compute-applicable-methods and compute-effective-method may be
+  specialised on C (M9 part 9.5)."
   [gname params & options]
   (let [options (if (string? (first options)) (rest options) options)
         opt (fn [k] (some (fn [o] (when (and (seq? o) (= (first o) k)) (second o))) options))
         shape (%lambda-shape params)
         comb (or (opt :method-combination) :standard)
         comb (if (symbol? comb) (keyword (name comb)) comb)]
-    `(def ~gname (%ensure-generic (%bound-value '~gname) '~(symbol (name (current-ns)) (name gname))
-                                  ~(first shape) ~(second shape) ~comb ~(opt :dispatch)))))
+    `(def ~gname (%ensure-generic (%bound-value '~(symbol (name (current-ns)) (name gname))) '~(symbol (name (current-ns)) (name gname))
+                                  ~(first shape) ~(second shape) ~comb ~(opt :dispatch) ~(opt :generic-function-class)))))
 
 (defn %generic-for-method
   "The generic function a defmethod adds to: the existing one (options kept),
@@ -774,8 +802,23 @@
                      (vec (repeat nreq nil)) methods)]
     (when (some some? sets) sets)))
 
-(defn %add-method [gf specs qualifier f]
-  (let [m {:specs specs :qualifier qualifier :fn f}]
+(def ^:private %hook-generics
+  "Generic function name → the class hook bit a method on it sets (M9 part 9.5)."
+  {'norn.core/print-object 1 'norn.core/initialize-instance 2 'norn.core/make-instance 2})
+
+(defn %add-method
+  "Add method f to gf (replacing one with the same specializers and
+  qualifier). direct: f takes the arguments alone, not a next-method
+  function first (its body never calls the next method)."
+  [gf specs qualifier f & more]
+  ;; (a method for a class of one's own: the hook's way for its instances;
+  ;; the standard methods, on Object, StandardObject and StandardClass,
+  ;; leave the fast paths alone)
+  (when-let [bit (get %hook-generics (%gf-get gf :name))]
+    (let [s (first specs)]
+      (when (and (class? s) (not (contains? #{"norn.core/Object" "norn.core/StandardObject" "norn.core/Class"} (str (class-name s)))))
+        (%class-hook! s bit))))
+  (let [m {:specs specs :qualifier qualifier :fn f :direct (if (first more) true false)}]
     (loop []
       (let [old (%gf-get gf :methods)
             new (conj (vec (remove (fn [x] (and (= (:specs x) specs) (= (:qualifier x) qualifier))) old)) m)]
@@ -858,15 +901,20 @@
         own? (and (nil? (namespace gname)) (contains? (or (ns-publics (symbol (name (current-ns)))) {}) gname))
         foreign (when-not own?
                   (let [v (resolve gname)] (when (and v (generic? (var-get v))) v)))
-        method `(fn* ~mname [~nxt ~@lam] (let* [~@bindings] ~@body))]
+        ;; (a body that never calls the next method gets none: called
+        ;; directly, and alone it is the effective method)
+        direct? (empty? bindings)
+        method (if direct?
+                 `(fn* ~mname [~@lam] ~@body)
+                 `(fn* ~mname [~nxt ~@lam] (let* [~@bindings] ~@body)))]
     (if foreign
       `(do (%add-method (%generic-for-method (var-get '~foreign) '~gname ~(first shape) ~(second shape))
-                        ~specs ~qualifier ~method)
+                        ~specs ~qualifier ~method ~direct?)
            '~foreign)
       `(def ~gname
-         (%add-method (%generic-for-method (%bound-value '~gname) '~(symbol (name (current-ns)) (name gname))
+         (%add-method (%generic-for-method (%bound-value '~(symbol (name (current-ns)) (name gname))) '~(symbol (name (current-ns)) (name gname))
                                            ~(first shape) ~(second shape))
-                      ~specs ~qualifier ~method)))))
+                      ~specs ~qualifier ~method ~direct?)))))
 
 ;;; ---- dispatch: the miss path ------------------------------------------------------------
 ;;;
@@ -900,16 +948,22 @@
         0))))
 
 (defn- %chain
-  "A next-method function: calls methods[0] with the chain of the rest, ending in final."
+  "A next-method function: calls methods[0] (method maps) with the chain of
+  the rest, ending in final."
   [methods final]
   (if (seq methods)
-    (let [m (first methods) n (%chain (rest methods) final)]
-      (fn* [& args] (apply m n args)))
+    (let [m (first methods)]
+      (if (:direct m)
+        (:fn m)
+        (let [n (%chain (rest methods) final) f (:fn m)]
+          (fn* [& args] (apply f n args)))))
     final))
 
 (def ^:private %combination-ops
-  {:+ 'norn.core/+ :and 'norn.core/and :or 'norn.core/or :list 'norn.core/list
-   :progn 'do :max 'norn.core/max :min 'norn.core/min :vector 'norn.core/vector})
+  "Method combination name → the operator its primary methods' results are
+  combined with (define-method-combination adds to them)."
+  (atom {:+ 'norn.core/+ :and 'norn.core/and :or 'norn.core/or :list 'norn.core/list
+         :progn 'do :max 'norn.core/max :min 'norn.core/min :vector 'norn.core/vector}))
 
 (defn- %no-applicable [gf]
   (let [gname (%gf-get gf :name)]
@@ -922,7 +976,7 @@
   (let [gname (%gf-get gf :name)
         comb (%gf-get gf :combination)
         sorted (sort (%method-cmp cpls) methods)
-        q (fn [k] (mapv :fn (filter (fn [m] (= (:qualifier m) k)) sorted)))
+        q (fn [k] (vec (filter (fn [m] (= (:qualifier m) k)) sorted)))
         arounds (q :around)
         prims (if (= comb :standard) (q nil) (into (q nil) (q comb)))
         nreq (%gf-get gf :nreq)
@@ -930,7 +984,12 @@
         ps (mapv (fn [_] (gensym "a")) (range nreq))
         r (gensym "rest")
         lam (if rest? (conj ps '& r) ps)
-        call (fn [f nxt] (if rest? `(apply ~f ~nxt ~@ps ~r) `(~f ~nxt ~@ps)))
+        call (fn [m nxt]
+               (let [f (:fn m)]
+                 (cond (and (:direct m) rest?) `(apply ~f ~@ps ~r)
+                       (:direct m) `(~f ~@ps)
+                       rest? `(apply ~f ~nxt ~@ps ~r)
+                       :else `(~f ~nxt ~@ps))))
         main (cond
                (empty? prims) nil
                (= comb :standard)
@@ -942,22 +1001,34 @@
                         (let* [result# ~pcall] ~@(map (fn [f] (call f nil)) afters) result#))
                    pcall))
                :else
-               (let [op (or (get %combination-ops comb) (error "Unknown method combination" comb))]
+               (let [op (or (get @%combination-ops comb) (error "Unknown method combination" comb))]
                  `(~op ~@(map (fn [f] (call f nil)) prims))))
         ename (symbol (str (name gname) "-effective"))]
     (cond
       (nil? main) (%no-applicable gf)
+      ;; (one primary method and nothing around it: the method itself)
+      (and (= comb :standard) (empty? arounds) (= 1 (count prims)) (:direct (first prims))
+           (empty? (q :before)) (empty? (q :after)))
+      (:fn (first prims))
       (seq arounds)
       (let [inner (eval `(fn* [~@lam] ~main))]
         (eval `(fn* ~ename [~@lam] ~(call (first arounds) (%chain (rest arounds) inner)))))
       :else (eval `(fn* ~ename [~@lam] ~main)))))
 
+(declare compute-applicable-methods compute-effective-method)
+
+(defn %applicable-methods [gf args]
+  (filter (fn [m] (every? identity (map %spec-matches? (:specs m) args))) (%gf-get gf :methods)))
+
 (defn %gf-miss [gf & args]
   (let [token (%gf-token gf)
         key (%gf-key gf args)
-        methods (filter (fn [m] (every? identity (map %spec-matches? (:specs m) args)))
-                        (%gf-get gf :methods))
-        em (%build-em gf methods (mapv (fn [a] (%class-get (class-of a) :cpl)) args))]
+        cpls (mapv (fn [a] (%class-get (class-of a) :cpl)) args)
+        ;; (a generic function of a class of its own: the MOP decides, M9
+        ;; part 9.5; else straight here)
+        custom (%gf-get gf :class)
+        methods (if custom (compute-applicable-methods gf args) (%applicable-methods gf args))
+        em (if custom (compute-effective-method gf methods cpls) (%build-em gf methods cpls))]
     (%gf-cache-put! gf token key em)
     (apply em args)))
 
@@ -3398,3 +3469,122 @@
   (if (and (seq xs) (every? seq? xs))
     (do (swap! %declarations conj [(%location) (vec xs)]) nil)
     `(do ~@(map (fn [n] (list 'def n)) xs))))
+
+;;; ---- the meta-object protocol (M9 part 9.5, design §4.3) ----------------------------------
+;;;
+;;; Classes are instances of StandardClass (or of a metaclass, a subclass
+;;; of it, named with (:metaclass M) in defclass), and generic functions of
+;;; StandardGenericFunction (or of a subclass, named with
+;;; (:generic-function-class C) in defgeneric). The protocol is generic
+;;; functions with methods for the standard ones; specialise them to change
+;;; how instances are made, initialised, read and printed, or how methods
+;;; are chosen and combined. Whatever specialises none of them keeps the
+;;; fast paths: a class without a metaclass or an initialize-instance
+;;; method is made directly, its slots read directly, a standard generic
+;;; function dispatched as before.
+
+(def StandardClass "The class of classes (Class), and of metaclasses' instances' superclass." Class)
+(def StandardGenericFunction "The class of generic functions." GenericFunction)
+
+(defgeneric make-instance (c & initargs)
+  "Make an instance of class c: make does this for a class whose metaclass,
+  or initialize-instance methods, say so. The standard method makes it from
+  the initargs, then hands it to initialize-instance.")
+
+(defgeneric initialize-instance (obj initargs)
+  "Instance obj, just made from initargs (a map), as it should start: the
+  standard method gives it back. Instances are values, so a method returns
+  the instance, changed with (with …) as it likes, after (call-next-method).")
+
+(defgeneric slot-value-using-class (c obj slot)
+  "Slot slot of obj, an instance of class c: slot-value does this for a
+  class with a metaclass, which may specialise it.")
+
+(defgeneric print-object (obj)
+  "The text obj prints as. A method for a class makes its instances print
+  so, everywhere print, prn, str and pr-str print them.")
+
+(defgeneric compute-applicable-methods (gf args)
+  "The methods of generic function gf that apply to args.")
+
+(defgeneric compute-effective-method (gf methods cpls)
+  "The function gf calls for these applicable methods (cpls: the arguments'
+  class precedence lists, for ordering them).")
+
+(defn %print-plain
+  "How x prints with no print-object method of its class's: as a record,
+  #ns/Class{:k v…}."
+  [x]
+  (%pr-plain x))
+
+(defmethod make-instance ((c StandardClass) & initargs)
+  (initialize-instance (%make-from c initargs) (apply hash-map initargs)))
+
+(defmethod initialize-instance ((o StandardObject) _initargs) o)
+
+(defmethod slot-value-using-class ((_c StandardClass) obj slot) (%slot-value-basic obj slot))
+
+(defmethod print-object ((o Object)) (%print-plain o))
+
+(defmethod compute-applicable-methods ((gf StandardGenericFunction) args) (%applicable-methods gf args))
+
+(defmethod compute-effective-method ((gf StandardGenericFunction) methods cpls) (%build-em gf methods cpls))
+
+;; ---- method combinations of one's own ----
+
+(defmacro define-method-combination
+  "(define-method-combination name :operator op): a method combination,
+  for (defgeneric … (:method-combination name)), whose primary methods'
+  results are combined with op (a function or macro name), as + and list
+  are. Methods qualified with name are primary too."
+  [cname & {:keys [operator]}]
+  (when-not (symbol? operator) (error "define-method-combination needs :operator, a function or macro name"))
+  (let [v (resolve operator)
+        op (if v (symbol (%var-name v)) operator)] ; (a special form, as do, stays as it is)
+    `(do (swap! %combination-ops assoc ~(keyword (name cname)) '~op)
+         ~(keyword (name cname)))))
+
+;; ---- protocols: sugar for generic functions ----
+
+(defmacro defprotocol
+  "(defprotocol Name \"doc\"? (method [params…] \"doc\"?)…): each method a
+  generic function, dispatching on its first argument; extend-type and
+  extend-protocol give them methods, and satisfies? asks."
+  [pname & specs]
+  (let [specs (if (string? (first specs)) (rest specs) specs)
+        methods (mapv (fn [[m params & doc]]
+                        (when-not (vector? params) (error "defprotocol" pname ":" m "needs a parameter vector"))
+                        [m params (first doc)])
+                      specs)]
+    `(do ~@(map (fn [[m params doc]] `(defgeneric ~m ~(apply list params) ~@(when doc [doc]))) methods)
+         (def ~pname {:protocol '~(symbol (name (current-ns)) (name pname))
+                      :methods ~(mapv (fn [[m]] `(var ~m)) methods)})
+         (var ~pname))))
+
+(defmacro extend-type
+  "(extend-type Class Protocol (method [this args…] body…)…): methods for
+  instances of Class (a protocol's methods, or any generic function's)."
+  [cls & forms]
+  `(do ~@(keep (fn [f] (when (seq? f)
+                         (let [[m [this & more] & body] f]
+                           `(defmethod ~m ((~this ~cls) ~@more) ~@body))))
+               forms)
+       nil))
+
+(defmacro extend-protocol
+  "(extend-protocol Protocol Class (method [this args…] body…)… Class2 …):
+  extend-type for several classes at once."
+  [_protocol & forms]
+  (let [groups (loop [fs (seq forms) out [] cur nil]
+                 (cond (nil? fs) (if cur (conj out cur) out)
+                       (seq? (first fs)) (recur (next fs) out (conj cur (first fs)))
+                       :else (recur (next fs) (if cur (conj out cur) out) [(first fs)])))]
+    `(do ~@(map (fn [[cls & ms]] `(extend-type ~cls nil ~@ms)) groups) nil)))
+
+(defn- %applicable-methods-for [gf x]
+  (filter (fn [m] (let [s (first (:specs m))] (and (not (identical? s Object)) (%spec-matches? s x)))) (%gf-get gf :methods)))
+
+(defn satisfies?
+  "Does x have a method for every one of protocol p's methods?"
+  [p x]
+  (every? (fn [v] (boolean (seq (%applicable-methods-for (var-get v) x)))) (:methods p)))

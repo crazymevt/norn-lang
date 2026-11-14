@@ -178,11 +178,15 @@ policy kept in each class.
 Note: CLOS is Common Lisp's. Clojure's analogues (protocols and
 multimethods) are folded in here as special cases.
 
-**Status (M2):** §4.1, §4.2 (immutable instances) and §4.4 are implemented;
-see [runtime.md §6](runtime.md#6-generic-function-dispatch). Not yet built:
-`define-method-combination`, protocol sugar, mutable owned instances, the
-full MOP (§4.3), `print-object`, and `initialize-instance`. Slot readers are
-plain functions for now, not generic functions.
+**Status (M9 part 9.5):** all of §4 is implemented. §4.1, §4.2 and §4.4
+came in M2 and M7; see [runtime.md §6](runtime.md#6-generic-function-dispatch).
+M9 added:
+- the MOP (§4.3);
+- `print-object` and `initialize-instance`;
+- `define-method-combination` (its short form, with an operator);
+- protocols: `defprotocol`, `extend-type`, `extend-protocol` and
+  `satisfies?`;
+- slot readers as generic functions.
 
 ### 4.1 The basics **[decided]**
 

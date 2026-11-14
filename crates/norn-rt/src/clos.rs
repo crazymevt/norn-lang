@@ -8,7 +8,7 @@
 //! locks or allocation.
 //!
 //! ```text
-//! Class:    [name][supers][cpl][slots][layout][builtin][policy][meta][subclasses]
+//! Class:    [name][supers][cpl][slots][layout][builtin][policy][meta][subclasses][metaclass][hooks]
 //! policy:   nil, or [flags, keys left out of = and hash, settable keys] (a vector)
 //! layout:   Array [k0 … kn-1, d0 … dn-1]: slot keywords, then the values that
 //!           instances made under an older layout get for slots they lack.
@@ -16,7 +16,7 @@
 //! Instance: [class][layout][n][slot0 … slotn-1]      immutable
 //!           [class][layout][n | MUTABLE][slots…][owner]   mutable (design §4.2):
 //!           owner = a fiber, nil (free), or [lock-channel holder-atom] (shared)
-//! Generic:  [name][methods][state][epoch][nreq][rest][dispatch][combination][lock][meta]
+//! Generic:  [name][methods][state][epoch][nreq][rest][dispatch][combination][lock][meta][class]
 //! state:    Array [mask, eqls, cache, class-epoch]   immutable, swapped atomically
 //! cache:    Array [nkeys, cap, count, (k0 … kn-1, em) × cap]   open addressing
 //! ```
@@ -40,8 +40,16 @@ pub mod class {
     pub const POLICY: usize = 6; // nil, or vector [flags, excluded keys, mutable keys]
     pub const META: usize = 7; // map: :doc …
     pub const SUBCLASSES: usize = 8; // vector of direct subclasses
-    pub const WORDS: usize = 9;
-    pub const VALUE_FIELDS: &[usize] = &[NAME, SUPERS, CPL, SLOTS, LAYOUT, POLICY, META, SUBCLASSES];
+    pub const METACLASS: usize = 9; // the class's class (M9 part 9.5), or nil: StandardClass
+    pub const HOOKS: usize = 10; // raw: which MOP hooks its methods or metaclass specialise (HOOK_*)
+    pub const WORDS: usize = 11;
+    pub const VALUE_FIELDS: &[usize] = &[NAME, SUPERS, CPL, SLOTS, LAYOUT, POLICY, META, SUBCLASSES, METACLASS];
+    /// Hooks: print-object has a method for it; make goes through
+    /// make-instance and initialize-instance; slot-value through
+    /// slot-value-using-class.
+    pub const HOOK_PRINT: u64 = 1;
+    pub const HOOK_MAKE: u64 = 2;
+    pub const HOOK_SLOT: u64 = 4;
     pub const NOT_BUILTIN: u64 = u64::MAX;
     /// Policy flags: instances compare by identity (`(:equality :identity)`,
     /// and every mutable class).
@@ -63,8 +71,37 @@ pub fn class_new(m: &mut Mutator, name: Value) -> Value {
     c.set_field(POLICY, Value::NIL);
     c.set_word(BUILTIN, NOT_BUILTIN);
     c.set_field(META, crate::runtime::rt().empty_map);
+    c.set_field(METACLASS, Value::NIL);
+    c.set_word(HOOKS, 0);
     c
 }
+
+/// Is hook bit `bit` set on class c, or any class it inherits from?
+pub fn class_hooked(c: Value, bit: u64) -> bool {
+    if !c.is(Kind::Class) {
+        return false;
+    }
+    let cpl = c.class_field(class::CPL);
+    let mut on = false;
+    if cpl.is(Kind::Vector) {
+        cpl.vec_for_each(|k| {
+            on = k.is(Kind::Class) && k.atomic_word(class::HOOKS).load(Ordering::Acquire) & bit != 0;
+            !on
+        });
+    }
+    on
+}
+
+/// Set hook bit `bit` on class c (for its subclasses too).
+pub fn class_hook(c: Value, bit: u64) {
+    c.atomic_word(class::HOOKS).fetch_or(bit, Ordering::AcqRel);
+    if bit & class::HOOK_PRINT != 0 {
+        ANY_PRINT_HOOK.store(true, Ordering::Release);
+    }
+}
+
+/// Has any class a print-object method? (If not, printing needn't look.)
+pub static ANY_PRINT_HOOK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Classes are redefined in place (their identity is stable), so readers on
 /// other threads see each field through an atomic load.
@@ -218,6 +255,19 @@ fn builtin_id(v: Value) -> Builtin {
 pub fn class_of(v: Value) -> Value {
     if v.is(Kind::Instance) {
         return v.field(0);
+    }
+    // (a class or a generic function may have a class of its own: a
+    // metaclass, a generic-function class)
+    if v.is(Kind::Class) {
+        let m = v.class_field(class::METACLASS);
+        if !m.is_nil() {
+            return m;
+        }
+    } else if v.is(Kind::Generic) {
+        let c = Value(v.atomic_word(generic::CLASS).load(Ordering::Acquire));
+        if !c.is_nil() {
+            return c;
+        }
     }
     builtin(builtin_id(v))
 }
@@ -378,8 +428,9 @@ pub mod generic {
     pub const COMBINATION: usize = 7; // method combination name
     pub const LOCK: usize = 8; // raw spinlock (method updates)
     pub const META: usize = 9; // map
-    pub const WORDS: usize = 10;
-    pub const VALUE_FIELDS: &[usize] = &[NAME, METHODS, STATE, DISPATCH, COMBINATION, META];
+    pub const CLASS: usize = 10; // its class (M9 part 9.5), or nil: StandardGenericFunction
+    pub const WORDS: usize = 11;
+    pub const VALUE_FIELDS: &[usize] = &[NAME, METHODS, STATE, DISPATCH, COMBINATION, META, CLASS];
 
     // state Array indices
     pub const S_MASK: usize = 0;
@@ -402,6 +453,7 @@ pub fn generic_new(m: &mut Mutator, name: Value, nreq: usize, rest: bool, combin
     g.set_field(COMBINATION, combination);
     g.set_word(LOCK, 0);
     g.set_field(META, crate::runtime::rt().empty_map);
+    g.set_field(CLASS, Value::NIL);
     g
 }
 

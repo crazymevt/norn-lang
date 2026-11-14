@@ -80,6 +80,25 @@ fn write_name(out: &mut String, name: Value) {
     }
 }
 
+thread_local! {
+    /// While a print primitive runs: text for instances whose class has a
+    /// print-object method (M9 part 9.5), by address, worked out first in
+    /// Norn (the printer can't call it).
+    static OVERRIDES: std::cell::RefCell<Vec<(u64, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run f with `texts` (instance address, text) printed in those
+/// instances' places.
+pub fn with_overrides<R>(texts: Vec<(u64, String)>, f: impl FnOnce() -> R) -> R {
+    if texts.is_empty() {
+        return f();
+    }
+    let saved = OVERRIDES.with(|o| std::mem::replace(&mut *o.borrow_mut(), texts));
+    let r = f();
+    OVERRIDES.with(|o| *o.borrow_mut() = saved);
+    r
+}
+
 pub fn write_value(out: &mut String, v: Value, readably: bool) {
     if v.is_fixnum() {
         let _ = write!(out, "{}", v.as_fixnum());
@@ -252,6 +271,17 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
             write_value(out, v.field(crate::clos::generic::NAME), readably);
             out.push('>');
         }
+        Kind::Instance
+            if OVERRIDES.with(|o| {
+                let o = o.borrow();
+                match o.iter().find(|(a, _)| *a == v.0) {
+                    Some((_, t)) => {
+                        out.push_str(t);
+                        true
+                    }
+                    None => false,
+                }
+            }) => {}
         Kind::Instance => {
             // #user/circle{:radius 3}, like a Clojure record.
             let class = v.instance_class();

@@ -146,7 +146,7 @@ prims! {
     "concat" 0 VAR => |vm, a| { let mut out = Vec::new(); for &x in a { out.extend(to_vec(vm, x)?); } Ok(if out.is_empty() { rt().empty_list } else { list_from(&mut vm.m, &out) }) };
     "range" 0 Some(3) => range;
     // strings, symbols, keywords
-    "str" 0 VAR => |vm, a| { let mut s = String::new(); for &x in a { if !x.is_nil() { write_value(&mut s, x, false); } } Ok(str_new(&mut vm.m, &s)) };
+    "str" 0 VAR => |vm, a| { let o = print_overrides(vm, a)?; let s = norn_rt::print::with_overrides(o, || { let mut s = String::new(); for &x in a { if !x.is_nil() { write_value(&mut s, x, false); } } s }); Ok(str_new(&mut vm.m, &s)) };
     "subs" 2 Some(3) => subs;
     "name" 1 Some(1) => name;
     "namespace" 1 Some(1) => |vm, a| { let x = a[0]; if !(x.is_symbol() || x.is_keyword()) { return Err(type_err("namespace", "a symbol or keyword", x)); } Ok(match x.sym_ns() { Some(ns) => str_new(&mut vm.m, ns), None => Value::NIL }) };
@@ -155,11 +155,11 @@ prims! {
     "gensym" 0 Some(1) => |vm, a| { let p = if a.is_empty() { "G__".to_owned() } else { text(a[0]) }; Ok(rt().symbol(&mut vm.m, None, &format!("{p}{}", crate::reader::next_id()))) };
     "char" 1 Some(1) => |_, a| { let n = int(a[0], "char")?; char::from_u32(n as u32).map(Value::char).ok_or_else(|| Error::new(format!("Invalid code point: {n}"))) };
     // printing and I/O
-    "pr-str" 0 VAR => |vm, a| { forced(a)?; Ok(str_new(&mut vm.m, &join(a, true))) };
-    "print" 0 VAR => |vm, a| { forced(a)?; out_to(vm, &join(a, false), false) };
-    "println" 0 VAR => |vm, a| { forced(a)?; out_to(vm, &join(a, false), true) };
-    "pr" 0 VAR => |vm, a| { forced(a)?; out_to(vm, &join(a, true), false) };
-    "prn" 0 VAR => |vm, a| { forced(a)?; out_to(vm, &join(a, true), true) };
+    "pr-str" 0 VAR => |vm, a| { forced(a)?; let s = printed(vm, a, true)?; Ok(str_new(&mut vm.m, &s)) };
+    "print" 0 VAR => |vm, a| { forced(a)?; let s = printed(vm, a, false)?; out_to(vm, &s, false) };
+    "println" 0 VAR => |vm, a| { forced(a)?; let s = printed(vm, a, false)?; out_to(vm, &s, true) };
+    "pr" 0 VAR => |vm, a| { forced(a)?; let s = printed(vm, a, true)?; out_to(vm, &s, false) };
+    "prn" 0 VAR => |vm, a| { forced(a)?; let s = printed(vm, a, true)?; out_to(vm, &s, true) };
     // streams (design §3.3) and reduced (early exit from reduce)
     "%stream" 1 Some(1) => |vm, a| Ok(seq::stream_new(&mut vm.m, a[0]));
     "%stream-thunk" 1 Some(1) => |_, a| { expect(a[0], Kind::Stream, "%stream-thunk")?; Ok(if a[0].stream_realized() { Value::NIL } else { a[0].stream_value() }) };
@@ -444,7 +444,14 @@ prims! {
     "%register-builtin!" 2 Some(2) => |_, a| { expect(a[1], Kind::Class, "%register-builtin!")?; let n = text(a[0]); if norn_rt::clos::register_builtin(&n, a[1]) { Ok(a[1]) } else { Err(Error::new(format!("Unknown builtin class: {n}"))) } };
     "%bump-class-epoch" 0 Some(0) => |_, _| { norn_rt::clos::bump_class_epoch(); Ok(Value::NIL) };
     "%instance" 2 Some(2) => instance_new;
-    "slot-value" 2 Some(2) => |vm, a| slot_value(vm, a[0], a[1]);
+    // (MOP hooks, M9 part 9.5: bits of HOOK_*, set on a class, seen by its subclasses)
+    // (x printed as a record, whatever print-object says: its default)
+    "%pr-plain" 1 Some(1) => |vm, a| { forced(a)?; Ok(str_new(&mut vm.m, &pr_str(a[0], true))) };
+    "%class-hook!" 2 Some(2) => |_, a| { expect(a[0], Kind::Class, "%class-hook!")?; norn_rt::clos::class_hook(a[0], int(a[1], "%class-hook!")? as u64); Ok(a[0]) };
+    "%class-hooked?" 2 Some(2) => |_, a| Ok(Value::bool(norn_rt::clos::class_hooked(a[0], int(a[1], "%class-hooked?")? as u64)));
+    "slot-value" 2 Some(2) => |vm, a| slot_value_prim(vm, a[0], a[1]);
+    // (slot-value without the MOP's hook: the standard method's)
+    "%slot-value-basic" 2 Some(2) => |vm, a| slot_value(vm, a[0], a[1]);
     "%slot-ref" 2 Some(2) => |vm, a| slot_ref(vm, a[0], a[1]);
     "with" 1 VAR => |vm, a| { expect(a[0], Kind::Instance, "with")?; if a.len() % 2 != 1 { return Err(Error::new("with expects an instance and slot/value pairs")); } crate::owned::check(vm, a[0], false)?; Ok(norn_rt::clos::instance_with(&mut vm.m, a[0], &a[1..], vm.current)?) };
     // owned mutable objects (owned.rs; design §4.2)
@@ -494,6 +501,81 @@ pub(crate) fn int(v: Value, op: &str) -> Result<i64> {
 /// Display text of a value (strings raw).
 fn text(v: Value) -> String {
     pr_str(v, false)
+}
+
+static PRINT_OBJECT: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+
+/// The text print-object gives for each instance in a (at any depth in
+/// its collections and slots) whose class has a print-object method: the
+/// printer prints it in their place (M9 part 9.5). Nothing to do, and no
+/// walk, until some class has one.
+fn print_overrides(vm: &mut Vm, a: &[Value]) -> Result<Vec<(u64, String)>> {
+    use norn_rt::clos::{ANY_PRINT_HOOK, class::HOOK_PRINT, class_hooked, class_of};
+    if !ANY_PRINT_HOOK.load(std::sync::atomic::Ordering::Acquire) {
+        return Ok(Vec::new());
+    }
+    fn walk(v: Value, depth: usize, found: &mut Vec<Value>) {
+        if depth > 64 || found.len() > 10_000 {
+            return;
+        }
+        if v.is(Kind::Instance) {
+            if class_hooked(class_of(v), HOOK_PRINT) {
+                if !found.iter().any(|f| f.0 == v.0) {
+                    found.push(v);
+                }
+                return;
+            }
+            for x in norn_rt::clos::instance_values(v) {
+                walk(x, depth + 1, found);
+            }
+        } else if v.is(Kind::Vector) {
+            v.vec_for_each(|x| {
+                walk(x, depth + 1, found);
+                true
+            });
+        } else if v.is(Kind::Map) {
+            v.map_for_each(|k, x| {
+                walk(k, depth + 1, found);
+                walk(x, depth + 1, found);
+                true
+            });
+        } else if v.is(Kind::Set) {
+            v.set_for_each(|x| {
+                walk(x, depth + 1, found);
+                true
+            });
+        } else if v.is_cons() {
+            let mut c = v;
+            let mut n = 0;
+            while c.is_cons() && n < 100_000 {
+                walk(c.car(), depth + 1, found);
+                c = c.cdr();
+                n += 1;
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for &x in a {
+        walk(x, 0, &mut found);
+    }
+    if found.is_empty() {
+        return Ok(Vec::new());
+    }
+    let var = vm.core_fn("print-object", &PRINT_OBJECT);
+    let f = if var.is(Kind::Var) { var.var_root() } else { var };
+    let mut out = Vec::with_capacity(found.len());
+    for inst in found {
+        let t = vm.apply(f, &[inst])?;
+        out.push((inst.0, if t.is(Kind::String) { t.as_str().to_owned() } else { pr_str(t, false) }));
+    }
+    Ok(out)
+}
+
+/// The arguments printed (readably or not) as a print primitive does, with
+/// print-object's text for instances that have it.
+fn printed(vm: &mut Vm, a: &[Value], readably: bool) -> Result<String> {
+    let o = print_overrides(vm, a)?;
+    Ok(norn_rt::print::with_overrides(o, || join(a, readably)))
 }
 
 fn join(a: &[Value], readably: bool) -> String {
@@ -1363,6 +1445,7 @@ fn class_field(vm: &mut Vm, k: Value) -> Result<usize> {
         "policy" => POLICY,
         "meta" => META,
         "subclasses" => SUBCLASSES,
+        "metaclass" => METACLASS,
         _ => return Err(type_err("%class-get", "a class field keyword", k)),
     })
 }
@@ -1405,6 +1488,23 @@ fn slot_ref(vm: &mut Vm, inst: Value, i: Value) -> Result<Value> {
     slot_value(vm, inst, norn_rt::clos::layout_keys(current)[i])
 }
 
+static SLOT_VALUE_USING_CLASS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+
+/// `(slot-value inst k)`; for a class whose metaclass hooks it (M9 part
+/// 9.5), slot-value-using-class instead, called in this primitive's place.
+fn slot_value_prim(vm: &mut Vm, inst: Value, k: Value) -> Result<Value> {
+    if inst.is(Kind::Instance) {
+        let c = inst.instance_class();
+        if norn_rt::clos::class_hooked(c, norn_rt::clos::class::HOOK_SLOT) {
+            let var = vm.core_fn("slot-value-using-class", &SLOT_VALUE_USING_CLASS);
+            let f = if var.is(Kind::Var) { var.var_root() } else { var };
+            let args = vec_from_slice(&mut vm.m, &[c, inst, k]);
+            return Err(Error::call(f, args));
+        }
+    }
+    slot_value(vm, inst, k)
+}
+
 fn slot_value(vm: &mut Vm, inst: Value, k: Value) -> Result<Value> {
     expect(inst, Kind::Instance, "slot-value")?;
     crate::owned::check(vm, inst, false)?;
@@ -1423,6 +1523,7 @@ fn gf_field(k: Value) -> Result<usize> {
         "meta" => META,
         "nreq" => NREQ,
         "rest" => REST,
+        "class" => CLASS,
         _ => return Err(type_err("%gf-get", "a generic-function field keyword", k)),
     })
 }
@@ -1442,8 +1543,8 @@ fn gf_set(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     use norn_rt::clos::generic::*;
     expect(a[0], Kind::Generic, "%gf-set!")?;
     let f = gf_field(a[1])?;
-    if !matches!(f, DISPATCH | COMBINATION | META) {
-        return Err(Error::new("%gf-set! can only change :dispatch, :combination or :meta"));
+    if !matches!(f, DISPATCH | COMBINATION | META | CLASS) {
+        return Err(Error::new("%gf-set! can only change :dispatch, :combination, :meta or :class"));
     }
     a[0].atomic_word(f).store(a[2].0, std::sync::atomic::Ordering::Release);
     // Cached effective methods were built under the old options.
