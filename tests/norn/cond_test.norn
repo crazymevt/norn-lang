@@ -2,7 +2,7 @@
 ;;;; Run by crates/norn-vm/tests/norn_suites.rs, or `norn tests/norn/cond_test.norn`.
 
 (ns cond-test
-  (:require [norn.test :refer [is deftest testing]]))
+  (:require [norn.test :refer [is]]))
 
 (defn wait-until [pred]
   (loop [n 0] (cond (pred) true (> n 500) false :else (do (sleep 2) (recur (inc n))))))

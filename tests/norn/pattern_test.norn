@@ -3,7 +3,7 @@
 
 (ns pattern-test
   (:require [norn.test :refer [is deftest testing]] [norn.string :as str]
-            [norn.syntax :as syn :refer [defsyntax syntax-case syntax syntax-rules syntax-parse syntax-parser
+            [norn.syntax :as syn :refer [defsyntax syntax-case syntax syntax-rules syntax-parser
                                          define-syntax-class attr]]))
 
 (defn- message [form] (try (eval form) nil (catch Error e (condition-message e))))

@@ -2,7 +2,7 @@
 ;;;; Run by crates/norn-vm/tests/norn_suites.rs, or `norn tests/norn/clos_test.norn`.
 
 (ns clos-test
-  (:require [norn.test :refer [is deftest testing]]))
+  (:require [norn.test :refer [is]]))
 
 (defn error-of [thunk] (:error (settle (spawn-detached (thunk)))))
 

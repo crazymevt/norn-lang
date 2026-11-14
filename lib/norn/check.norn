@@ -6,7 +6,7 @@
 ;;;; Exits 1 if any step finds a problem; each step still runs.
 
 (ns norn.check
-  (:require [norn.fmt :as fmt] [norn.lint :as lint] [norn.test :as test] [norn.string :as str]))
+  (:require [norn.fmt :as fmt] [norn.lint :as lint] [norn.test :as test]))
 
 (defn example-failures
   "The documentation examples that don't hold: a vector of

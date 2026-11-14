@@ -4,7 +4,7 @@
 ;;;; results checked here, not in this file's report.
 
 (ns test-test
-  (:require [norn.test :as t :refer [is deftest testing are]]
+  (:require [norn.test :as t :refer [is]]
             [norn.io :as io] [norn.sys :as sys] [norn.string :as str]))
 
 (def dir (io/path (sys/temp-dir) (str "norn-test-test-" (sys/pid) "-" (nano-time))))

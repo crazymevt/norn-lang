@@ -2,7 +2,7 @@
 ;;;; (M8 part 8.1).
 
 (ns syntax-test
-  (:require [norn.test :refer [is are deftest testing]] [norn.syntax :as syn] [norn.string :as str]
+  (:require [norn.test :refer [is deftest testing]] [norn.syntax :as syn] [norn.string :as str]
             [norn.io :as io]))
 
 (def src "(defn f [x]\n  {:a (g 'x) \"s\" #{1 2}})\n^:meta (h #_ignored y)\n`(a ~b)\n#(+ % 1)")

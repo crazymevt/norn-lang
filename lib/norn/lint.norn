@@ -18,7 +18,20 @@
 ;;;; - :method-shape — a defmethod whose parameter list doesn't fit its
 ;;;;   generic function;
 ;;;; - :macro — a macro call that fails to expand;
-;;;; - :deprecated — a use of a definition marked {:deprecated "…"}.
+;;;; - :deprecated — a use of a definition marked {:deprecated "…"};
+;;;; - :private — naming another module's private var (only `(var …)`
+;;;;   reaches one on purpose);
+;;;;
+;;;; and in a module (a file starting with `ns`, M8 part 8.8):
+;;;;
+;;;; - :unused-require — a required library whose alias and refers are
+;;;;   never used, or a referred name that isn't (a require with neither,
+;;;;   which may be for its effect, isn't reported);
+;;;; - :missing-require — a full name from a namespace the module doesn't
+;;;;   require (it resolves only because something else loaded it);
+;;;; - :phase — compile-time code (a macro's, or in begin-for-syntax) using
+;;;;   a run-time name: a function of this module's, or one from a library
+;;;;   required only for run time.
 ;;;;
 ;;;; Only `ns`, `in-ns`, `require`, `defmacro`, `defsyntax`,
 ;;;; `define-syntax-class` and `begin-for-syntax` forms are evaluated, so
@@ -38,6 +51,7 @@
 (def ^:dynamic *source-heads* #{}) ; symbols written in call position in it
 (def ^:dynamic *exempt* #{}) ; catch bindings: unused is fine
 (def ^:dynamic *file-defs* nil) ; atom: name → arities ([nfixed variadic?] …) or :unknown
+(def ^:dynamic *module* nil) ; in a module: {:ns :requires :compile-time-defs :namespaces}
 (def ^:dynamic *file-qualified* nil) ; atom: ns/name of every def in the file, in whichever namespace
 (def ^:dynamic *file-generics* nil) ; atom: generic name → [nreq rest?]
 
@@ -102,17 +116,66 @@
 
 (defn- analyze-all [env xs] (doseq [x xs] (analyze env x)))
 
+(defn- var-ns
+  "The module var v belongs to (without a phase shift), as a string."
+  [v]
+  (let [n (%var-name v)] (str (%base-ns (symbol (subs n 0 (str/index-of n "/")))))))
+
+(defn- home-ns [] (str (%base-ns (symbol (str (current-ns))))))
+
+(defn- check-reference
+  "Rules for sym, written in the source and naming var v: another module's
+  private var, and a full name from a namespace the module doesn't require."
+  [env sym v]
+  (when (contains? *source-syms* sym)
+    (let [vn (var-ns v)]
+      ;; (a full name: unqualified, only the language's own reach the module)
+      (when (and (namespace sym) (private? v) (not= vn (home-ns)) (not (:var-ref env)))
+        (warn :private sym " is private to " vn))
+      (when (and *module* (= (namespace sym) vn) (not (:phase env)))
+        ;; (a full name, not an alias: an alias is a require)
+        (when-not (or (= vn (home-ns)) (contains? %shared-nss vn) (contains? (:namespaces *module*) vn)
+                      (some (fn [r] (= vn (str (:lib r)))) (:requires *module*)))
+          (warn :missing-require sym ": " vn " isn't required"))))))
+
+(defn- phase-resolve
+  "What sym means in compile-time code: :ok, :run-time (a run-time name
+  only), or nil (nothing)."
+  [sym]
+  (let [inst (symbol (str (home-ns) "$1"))
+        ct (or (%resolve-in inst sym)
+               (when (namespace sym) (%resolve-in inst (symbol (str (namespace sym) "$1") (name sym)))))
+        rt (resolve sym)]
+    (cond ct :ok
+          (and (nil? (namespace sym)) (contains? (:compile-time-defs *module*) sym)) :ok
+          (and rt (contains? %shared-nss (var-ns rt))) :ok
+          (or rt (and (nil? (namespace sym)) (contains? (deref *file-defs*) sym))) :run-time
+          :else nil)))
+
 (defn- analyze-symbol [env sym]
-  (if-let [used (get-in env [:locals sym])]
-    (reset! used true)
-    (when-not (or (contains? specials sym)
-                  (and (nil? (namespace sym)) (contains? (deref *file-defs*) sym))
-                  (contains? (deref *file-qualified*) sym)
-                  (resolve sym)
-                  (str/ends-with? (name sym) ".")) ; constructor-style names
+  (cond
+    (get-in env [:locals sym]) (reset! (get-in env [:locals sym]) true)
+
+    (and (:phase env) *module* (not (contains? specials sym)))
+    (case (phase-resolve sym)
+      :ok nil
+      :run-time (when (contains? *source-syms* sym)
+                  (warn :phase sym " is run-time code here, and macros run while compiling: "
+                        "define it inside begin-for-syntax, or require its module with :require-for-syntax"))
       (warn :unresolved "unresolved symbol " sym))
-    (when-let [d (when (resolve sym) (definition sym))]
-      (when (:deprecated d) (warn :deprecated sym " is deprecated: " (:deprecated d))))))
+
+    :else (analyze-global env sym)))
+
+(defn- analyze-global [env sym]
+  (when-let [v (resolve sym)] (when (var? v) (check-reference env sym v)))
+  (when-not (or (contains? specials sym)
+                (and (nil? (namespace sym)) (contains? (deref *file-defs*) sym))
+                (contains? (deref *file-qualified*) sym)
+                (resolve sym)
+                (str/ends-with? (name sym) ".")) ; constructor-style names
+    (warn :unresolved "unresolved symbol " sym))
+  (when-let [d (when (resolve sym) (definition sym))]
+    (when (:deprecated d) (warn :deprecated sym " is deprecated: " (:deprecated d)))))
 
 (defn- analyze-fn [env form]
   (let [xs (rest form)
@@ -198,6 +261,10 @@
       (and (symbol? head) (not (get-in env [:locals head])) (contains? specials head))
       (case-head head form env)
 
+      ;; (a macro's transformer, from defmacro or defsyntax: compile-time code)
+      (and (symbol? head) (not (get-in env [:locals head])) (= (resolve head) (resolve 'norn.core/for-syntax)))
+      (analyze-all (assoc env :phase 1) (rest form))
+
       ;; a hygienic macro: the expander expands it (the result's locals
       ;; are its own symbols, its globals full names)
       (and (symbol? head) (not (get-in env [:locals head]))
@@ -213,7 +280,8 @@
 
       (and (symbol? head) (not (get-in env [:locals head]))
            (when-let [v (resolve head)] (macro? v)))
-      (do (when (= (resolve head) (resolve 'norn.core/defmethod)) (check-method form))
+      (do (check-reference env head (resolve head))
+          (when (= (resolve head) (resolve 'norn.core/defmethod)) (check-method form))
           (when (= (resolve head) (resolve 'norn.core/defgeneric)) (note-generic form))
           (let [[ok expansion] (try [true (apply (var-get (resolve head)) (rest form))]
                                     (catch Error e [false (condition-message e)]))]
@@ -228,7 +296,7 @@
 
 (defn- case-head [head form env]
   (cond (or (= head 'quote) (= head 'quote-syntax)) nil
-        (= head 'var) (when (symbol? (second form)) (analyze-symbol {} (second form)))
+        (= head 'var) (when (symbol? (second form)) (analyze-symbol {:var-ref true} (second form)))
         (= head 'fn*) (analyze-fn env form)
         (or (= head 'let*) (= head 'loop*)) (analyze-let env form)
         (= head 'letrec*) (analyze-letrec env form)
@@ -311,6 +379,66 @@
                 (recur (conj acc (second d)))
                 :else (recur acc)))))))
 
+;; ---- modules (M8 part 8.8) ----
+
+(defn- spec-of [phase spec]
+  (let [spec (if (and (seq? spec) (= 'quote (first spec))) (second spec) spec)]
+    (cond (symbol? spec) {:lib spec :phase phase}
+          (vector? spec) (let [opts (apply hash-map (rest spec))]
+                           {:lib (first spec) :phase phase :as (:as opts)
+                            :refer (when (sequential? (:refer opts)) (vec (:refer opts)))})
+          :else nil)))
+
+(defn- module-of
+  "What the rules need to know of a module: its ns form's requires, the
+  names it defines for compile time, and the namespaces the file itself
+  makes (a second ns form)."
+  [s path]
+  (let [forms (try (let [r (%reader s path)]
+                     (loop [acc []] (let [d (%read r)] (if (%eof? d) acc (recur (conj acc d))))))
+                   (catch Error _ []))
+        nsf (first forms)]
+    (when (and (seq? nsf) (= 'ns (first nsf)) (symbol? (second nsf)))
+      {:ns (second nsf)
+       :requires (vec (for [c (drop 2 nsf)
+                            :when (and (seq? c) (contains? #{:require :require-for-syntax} (first c)))
+                            spec (rest c)
+                            :let [r (spec-of (if (= :require (first c)) 0 1) spec)]
+                            :when r]
+                        r))
+       :more-requires (vec (for [f forms
+                                 :when (and (seq? f) (= 'require (first f)))
+                                 spec (rest f)
+                                 :let [r (spec-of 0 spec)]
+                                 :when r]
+                             r))
+       :compile-time-defs (set (for [f forms
+                                     :when (and (seq? f) (= 'begin-for-syntax (first f)))
+                                     d (rest f)
+                                     :when (and (seq? d) (symbol? (first d)) (contains? definer-heads (name (first d)))
+                                                (symbol? (second d)))]
+                                 (second d)))
+       :namespaces (set (for [f forms
+                              :when (and (seq? f) (contains? #{'ns 'in-ns} (first f)))
+                              :let [n (second f) n (if (and (seq? n) (= 'quote (first n))) (second n) n)]
+                              :when (symbol? n)]
+                          (str n)))
+       :used (set (mapcat symbols-in (rest forms)))})))
+
+(defn- check-requires
+  "The :unused-require warnings for module m."
+  [m]
+  (let [used (:used m)
+        qualified (set (keep namespace used))]
+    (doseq [{:keys [lib as refer]} (:requires m)
+            :when (or as refer)]
+      (let [alias-used (or (and as (contains? qualified (str as))) (contains? qualified (str lib)))
+            refers-used (filter (fn [r] (contains? used r)) refer)]
+        (if (and (not alias-used) (empty? refers-used))
+          (warn :unused-require lib " is required but never used (for its effect alone, require it without :as)")
+          (doseq [r refer :when (not (contains? used r))]
+            (warn :unused-require lib "/" r " is referred but never used")))))))
+
 (defn lint-string
   "Warnings for source text s (from file path, for the reports): a vector of
   maps with :file :line :kind and :message."
@@ -320,7 +448,8 @@
          here (current-ns)
          r (%reader s path)]
      (binding [*warnings* (atom []) *file-defs* (atom (zipmap (names-defined s path) (repeat :unknown)))
-               *file-qualified* (atom #{}) *file-generics* (atom {})]
+               *file-qualified* (atom #{}) *file-generics* (atom {})
+               *module* (let [m (module-of s path)] (when m (update m :requires into (:more-requires m))))]
        (try
          (loop [i 0]
            (let [form (%read r)]
@@ -330,15 +459,24 @@
                  (cond
                    ;; compile-time definitions: analyzed as the code they are
                    (and (seq? form) (= 'begin-for-syntax (first form)))
-                   (do (doseq [f (rest form)] (analyze {} f))
+                   (do (doseq [f (rest form)] (analyze {:phase 1} f))
                        ;; (and evaluated: macros later in the file may call them)
                        (try (eval form) (catch Error e (warn :macro "evaluating begin-for-syntax: " (condition-message e)))))
                    (evaluated-form? form)
-                   (when-not (and (= 'defmacro (first form))
-                                  (when-let [v (resolve (second form))] (macro? v)))
-                     (try (eval form) (catch Error e (warn :macro "evaluating " (first form) ": " (condition-message e)))))
+                   (let [macro-def? (and *module* (contains? #{'defmacro 'defsyntax} (first form)))]
+                     (when-not (and (= 'defmacro (first form))
+                                    (when-let [v (resolve (second form))] (macro? v)))
+                       (try (eval form)
+                            (catch Error e
+                              ;; (in a module the analysis below says why, with the name)
+                              (when-not macro-def?
+                                (warn :macro "evaluating " (first form) ": " (condition-message e))))))
+                     ;; (a macro's code is analyzed too: compile-time code)
+                     (when macro-def? (analyze {} form)))
                    :else (analyze {} form)))
                (recur (inc i)))))
+         (when *module*
+           (binding [*where* {:file path :line (first lines)}] (check-requires *module*)))
          (catch Error e (swap! *warnings* conj {:file path :line nil :kind :read :message (condition-message e)}))
          (finally (in-ns (symbol (str here)))))
        (vec (distinct (deref *warnings*)))))))

@@ -79,5 +79,33 @@
   ;; (no ns form: not a module, so no forward references)
   (is (some? (message (fn [] (load-string "(defn s-first [] (s-later)) (defn s-later [] 1)"))))))
 
+(defn- lint [text] (mapv (juxt :line :kind :message) (lint/lint-string text "lm.norn")))
+
 (deftest the-linter-knows-modules
-  (is (= [] (lint/lint-string "(ns lm)\n(defn f [] (g 1))\n(defn g [x] x)\n" "lm.norn"))))
+  (is (= [] (lint "(ns lm)\n(defn f [] (g 1))\n(defn g [x] x)\n")) "forward references")
+  (testing "unused requires (M8 part 8.8)"
+    (is (= [[1 :unused-require "norn.string is required but never used (for its effect alone, require it without :as)"]]
+           (lint "(ns lm-a (:require [norn.string :as str] [norn.set :as set]))\n(defn f [] (set/union #{1} #{2}))\n")))
+    (is (= [[1 :unused-require "norn.string/join is referred but never used"]]
+           (lint "(ns lm-b (:require [norn.string :refer [upper-case join]]))\n(defn f [] (upper-case \"a\"))\n")))
+    (is (= [] (lint "(ns lm-c (:require [norn.string :as str] norn.set))\n(defmacro up [x] `(str/upper-case ~x))\n"))
+        "used only in a template; a require without :as is for its effect"))
+  (testing "missing requires"
+    (is (= [[2 :missing-require "norn.string/upper-case: norn.string isn't required"]]
+           (lint "(ns lm-d)\n(defn f [] (norn.string/upper-case \"a\"))\n")))
+    (is (= [] (lint "(ns lm-e (:require [norn.string]))\n(defn f [] (norn.string/upper-case \"a\"))\n"))))
+  (testing "another module's private var"
+    (is (= [[2 :private "mt.a/helper is private to mt.a"]]
+           (lint "(ns lm-f (:require [mt.a]))\n(defn f [] (mt.a/helper))\n")))
+    (is (= [] (lint "(ns lm-g (:require [mt.a]))\n(defn f [] ((var mt.a/helper)))\n")) "var reaches it on purpose"))
+  (testing "phases"
+    (is (= [[3 :phase (str "helper is run-time code here, and macros run while compiling: "
+                           "define it inside begin-for-syntax, or require its module with :require-for-syntax")]]
+           (lint "(ns lm-h)\n(defn helper [x] (list 'quote x))\n(defmacro quoted [x] (helper x))\n")))
+    (is (= [] (lint "(ns lm-i)\n(begin-for-syntax\n  (defn helper [x] (list 'quote x)))\n(defmacro quoted [x] (helper x))\n")))
+    (is (= [] (lint "(ns lm-j (:require-for-syntax [norn.string :as s]))\n(defmacro up [x] (s/upper-case x))\n")))
+    (is (= [[2 :phase (str "s/upper-case is run-time code here, and macros run while compiling: "
+                           "define it inside begin-for-syntax, or require its module with :require-for-syntax")]]
+           (lint "(ns lm-k (:require [norn.string :as s]))\n(defmacro up [x] (s/upper-case x))\n(defn f [] (s/upper-case \"a\"))\n")))
+    (is (= [] (lint "(ns lm-l)\n(defn- dbl [x] (* 2 x))\n(defmacro twice [x] `(dbl ~x))\n"))
+        "a template only names run-time code")))

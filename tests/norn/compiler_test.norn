@@ -3,7 +3,7 @@
 ;;;; as ordinary code in the compiling fiber.
 
 (ns compiler-test
-  (:require [norn.test :refer [is deftest testing]]))
+  (:require [norn.test :refer [is]]))
 
 ;; The expander (M8) runs in front of the compiler.
 (is (= norn.expander/eval norn.core/eval))

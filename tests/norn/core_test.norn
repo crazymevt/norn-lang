@@ -2,7 +2,7 @@
 ;;;; or directly: `norn test tests/norn/core_test.norn`.
 
 (ns core-test
-  (:require [norn.test :refer [is deftest testing]]))
+  (:require [norn.test :refer [is]]))
 
 ;;; reader & literals
 (is (= 3/1 3))

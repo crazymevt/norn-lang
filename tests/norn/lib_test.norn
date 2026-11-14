@@ -9,7 +9,7 @@
                        [norn.random :as random] [norn.async :as as] [norn.sync :as sync]
                        [norn.cache :as cache] [norn.log :as log] [norn.fmt :as codefmt] [norn.lint :as lint]
                        [norn.bench :as bench] [norn.doc :as ndoc] [norn.image :as image] [norn.check :as check]
-                       [norn.test :refer [is deftest testing]]))
+                       [norn.test :refer [is]]))
 
 (defmacro fails [expr]
   `(try ~expr :no-error (~'catch Error e# :error)))
@@ -671,7 +671,7 @@
 (is (not (str/includes? (ndoc/ns-summary "norn.rope") "branch?")))
 (is (= [] (check/example-failures)))
 (is (= [[:deprecated "lib-test/documented is deprecated: use inc"]]
-       (mapv (juxt :kind :message) (lint/lint-string "(ns lint-dep)\n(lib-test/documented 1)\n"))))
+       (mapv (juxt :kind :message) (lint/lint-string "(lib-test/documented 1)\n"))))
 (defclass inspected () ((a :initform 1) (b)))
 (is (= {:type "lib-test/inspected" :value "#lib-test/inspected{:a 1, :b 2}" :items [[:a "1"] [:b "2"]]}
        (inspect (inspected :b 2))))

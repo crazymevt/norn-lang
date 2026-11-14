@@ -415,3 +415,41 @@ REPL.**
   (keyed by var, the map's order followed identity hashes).
 - **Tests:** `pattern_test.norn`, 40 checks at both tiers, and a sixth
   test in `cache_test`.
+
+**8.8, lint rules that need modules (2026-11-14): done.**
+
+- **Four rules in `norn.lint`.** The last three apply in modules:
+  - `:private`: a full name for another module's private var (`(var …)`
+    reaches one on purpose, and isn't reported);
+  - `:unused-require`: a require whose alias and refers are never used,
+    or a referred name that isn't. A require with neither may be for its
+    effect, so it isn't reported, and the message says to require
+    without `:as` for that;
+  - `:missing-require`: a full name from a namespace the module doesn't
+    require, which resolves only because something else loaded it (the
+    language's own namespaces need no require);
+  - `:phase`: compile-time code using a run-time name, such as a
+    `defmacro` calling a function of its own module or one from a library
+    required only for run time. The message says what to do: use
+    `begin-for-syntax`, or `:require-for-syntax`.
+- **How it knows a phase.** `defmacro` and `defsyntax` wrap their
+  transformers in `for-syntax`, so the linter analyzes those as
+  compile-time code, along with `begin-for-syntax`. A name there is looked
+  up in the module's compile-time instance (`name$1`, made when the
+  linter evaluates the `ns` form and `begin-for-syntax`); the language's
+  namespaces count at every phase. A template's names are quoted, so
+  `` `(helper ~x) `` is fine.
+- **Uses are counted from the source as written,** templates included:
+  syntax-quote resolves aliases when it's read, so an alias used only in
+  a template counts.
+- **Findings fixed:**
+  - in norn-lang: unused refers in eight test files (`deftest`,
+    `testing`, `are`, `syntax-parse`), and `norn.string` in `norn.check`;
+  - in norn-ui: one unused refer;
+  - in Studio: 13 requires kept only for their effect, now written
+    without their unused alias, and two unused refers.
+
+  There were no `:phase`, `:private` or `:missing-require` findings in
+  any of the three.
+- **Tests:** `module_test`'s linter test now has 12 checks covering each
+  rule and the cases each must not report.

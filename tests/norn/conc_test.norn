@@ -2,7 +2,7 @@
 ;;;; Run by crates/norn-vm/tests/norn_suites.rs, or `norn tests/norn/conc_test.norn`.
 
 (ns conc-test
-  (:require [norn.test :refer [is deftest testing]]))
+  (:require [norn.test :refer [is]]))
 
 ;;; fibers
 (is (= 42 (await (spawn-detached (+ 40 2)))))
