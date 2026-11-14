@@ -187,6 +187,19 @@ pub(crate) struct Restore {
 pub(crate) fn load(path: &Path) -> std::result::Result<Restore, String> {
     let mut m = Mutator::new();
     let loaded = norn_rt::image::load(&mut m, path, build_id())?;
+    // Its code may have been built elsewhere: check it before any runs
+    // (M8 part 8.11).
+    let mut bad = None;
+    norn_rt::image::for_each_root(&mut |v| {
+        if bad.is_none()
+            && let Err(e) = crate::verify::image_object(v)
+        {
+            bad = Some(e);
+        }
+    });
+    if let Some(e) = bad {
+        return Err(format!("{} is not a valid Norn image: its code: {e}", path.display()));
+    }
     let mut r = RootReader { v: &loaded.roots, i: 0 };
     if r.any()? != Value::fix(ROOTS_VERSION) {
         return Err(r.bad());

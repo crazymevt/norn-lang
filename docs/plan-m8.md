@@ -561,3 +561,56 @@ later).**
 - **Not done:** a registry, and version ranges. A dependency names one
   version, and conflicts are settled by an override (runtime.md has the
   registry later).
+
+**8.11, the bytecode verifier (2026-11-14): done.**
+
+- **Why.** The interpreter and the tier-1 compiler trust code completely.
+  They use register, constant, upvalue and jump operands without checks,
+  read a template's captures from the creating frame, and resume a parked
+  fiber wherever its frames say. `crates/norn-vm/src/verify.rs` checks
+  code from elsewhere before any of it can run.
+- **What a proto must satisfy, for the template that owns it:**
+  - its fields are what they should be;
+  - it has at most 255 registers, and its parameters fit them;
+  - every opcode is known;
+  - every operand is in range:
+    - registers below the count;
+    - constants inside the array, a var for `GETVAR`/`DEFVAR` and a
+      template for `CLOSURE`;
+    - upvalues below the template's count;
+    - jump targets inside the code;
+    - a call's arguments inside the registers;
+  - a new closure's captures name registers and upvalues of the creating
+    frame;
+  - nothing falls off the end of the code.
+
+  Templates' captures must match their upvalue count, and closures must
+  have room for their template's upvalues.
+- **Where it runs:**
+  - **Images, as they load:** every template, closure, proto and parked
+    fiber. A proto may not carry a tier-1 entry (native code is per
+    process). A fiber's frames must fit their segments, run one of their
+    function's arities, resume inside its code (after an instruction, when
+    a value is delivered there), and end. A failure refuses the image:
+    "… is not a valid Norn image: its code: …".
+  - **`%make-template`,** which the Norn compiler assembles every function
+    with, and which any Norn code can call: a template is checked when
+    it's made, which is when its protos become runnable. So the compiler's
+    output is checked as well as crafted code. The Rust seed compiler,
+    which compiles core at boot, is trusted.
+  - **Not the module cache:** it holds expanded source, which this
+    process's compiler compiles again, so no bytecode crosses there.
+- **`SETUP`'s closure is only known at run time,** so the interpreter
+  checks it there: a missing upvalue is an ordinary error, with a
+  use-value restart. Tier 1 now hands `SETUP` (letrec only) to the
+  interpreter rather than writing the upvalue unchecked.
+- **Cost:** none measurable. Expanding and compiling `norn.lint`,
+  `norn.markdown`, `norn.test` and `norn.deps` takes about 177 ms with or
+  without it, and loading an image 0.03 s.
+- **Tests:**
+  - `verify_test.norn`, 14 checks at both tiers: good code runs; each
+    fault is refused when the template is made, with what and where; and
+    `SETUP` is checked when it runs;
+  - an image test: a saved proto damaged two ways (a native entry, too few
+    registers) with the checksum made right again, refused with the
+    reason.

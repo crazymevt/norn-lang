@@ -1207,8 +1207,14 @@ impl Vm {
                         continue;
                     }
                     SETUP => {
-                        (*regs.add(ra)).closure_set_upval(b(ins), *regs.add(c(ins)));
-                        continue;
+                        // (the closure is only known here: the verifier
+                        // can't check its upvalue, so this does)
+                        let f = *regs.add(ra);
+                        if f.is(Kind::Closure) && b(ins) < f.closure_nups() {
+                            f.closure_set_upval(b(ins), *regs.add(c(ins)));
+                            continue;
+                        }
+                        Err(Error::new(format!("SETUP of upvalue {} of {}", b(ins), pr_str(f, true))))
                     }
                     JMP => {
                         st.pc = (st.pc as isize + sbx(ins)) as usize;
@@ -1247,7 +1253,7 @@ impl Vm {
                         // A failed TAILCALL is followed by `RETURN ra` (see the
                         // compiler), so it is handled like a failed CALL.
                         let dest = match op(ins) {
-                            CALL | GETVAR | TAILCALL => Some(Some(ra)),
+                            CALL | GETVAR | TAILCALL | SETUP => Some(Some(ra)),
                             _ => None,
                         };
                         self.handle_error(st, e, dest)?

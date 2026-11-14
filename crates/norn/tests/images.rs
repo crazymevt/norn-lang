@@ -323,3 +323,47 @@ fn sorted_collections_and_queues_survive_an_image() {
         "[{1 :a, 2 :b, 3 :c} #queue [1 2 3] #{1 4 5} true #queue [2]]"
     );
 }
+
+/// An image's checksum over its words after the header (as the loader
+/// computes it).
+fn reseal(words: &mut [u64]) {
+    const HEADER_WORDS: usize = 11;
+    const H_SUM: usize = 10;
+    let mut h: u64 = 0x243f_6a88_85a3_08d3;
+    for &w in &words[HEADER_WORDS..] {
+        h = (h ^ w).wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(29);
+    }
+    words[H_SUM] = h ^ (words.len() - HEADER_WORDS) as u64;
+}
+
+#[test]
+fn code_in_an_image_is_verified_before_it_runs() {
+    // (M8 part 8.11) a proto of a seven-parameter function, damaged two ways
+    // a crafted image could be, the checksum made right again
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
+    let d = scratch("verify");
+    let good = d.join("good.nimg");
+    eval(None, &format!("(do (defn seven [a b c d e f g] [a g]) (:objects (save-image \"{}\")))", good.display()));
+    assert_eq!(eval(Some(&good), "(seven 1 2 3 4 5 6 7)"), "[1 7]");
+    let bytes = std::fs::read(&good).unwrap();
+    let words: Vec<u64> = bytes.chunks(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+    // A proto in the image: [kind][size][name nfixed variadic nregs consts code locals native]
+    let kind = norn_rt::object::Kind::Proto as u64;
+    let at = (0..words.len() - 10)
+        .find(|&i| words[i] == kind && words[i + 3] == 7 && words[i + 4] == 0 && (7..32).contains(&words[i + 5]))
+        .expect("seven's proto");
+    let damaged = |what: &str, word: usize, value: u64| {
+        let mut w = words.clone();
+        w[at + 2 + word] = value;
+        reseal(&mut w);
+        let p = d.join(format!("{what}.nimg"));
+        std::fs::write(&p, w.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+        let o = norn().arg("--image").arg(&p).args(["-e", "1"]).output().unwrap();
+        assert!(!o.status.success(), "{what}: loaded");
+        text(&o)
+    };
+    let native = damaged("native", 7, 0x1234_5678);
+    assert!(native.contains("is not a valid Norn image: its code:") && native.contains("a tier-1 entry from another process"), "{native}");
+    let regs = damaged("regs", 3, 2);
+    assert!(regs.contains("7 parameters in 2 registers"), "{regs}");
+}

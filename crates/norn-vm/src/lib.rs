@@ -25,6 +25,7 @@ pub mod sched;
 pub mod server;
 pub mod sorted;
 pub mod sys;
+pub mod verify;
 pub mod vm;
 
 pub use reader::{ReadError, Reader};

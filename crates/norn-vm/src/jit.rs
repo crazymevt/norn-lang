@@ -184,7 +184,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
 
     for (i, &w) in ins.iter().enumerate() {
         b.switch_to_block(blocks[i]);
-        let (o, ra, rb, rc) = (op(w), a(w) as i32, b_(w) as i32, c(w) as i32);
+        let (o, ra, rb) = (op(w), a(w) as i32, b_(w) as i32);
         let bail = |b: &mut FunctionBuilder| {
             let v = b.ins().iconst(types::I64, i as i64);
             b.ins().jump(exit, &[BlockArg::Value(v)]);
@@ -251,12 +251,9 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 b.ins().store(mf, v, regs, ra * W);
                 goto(&mut b, next(i));
             }
-            SETUP => {
-                let clo = b.ins().load(types::I64, mf, regs, ra * W);
-                let v = b.ins().load(types::I64, mf, regs, rc * W);
-                b.ins().store(mf, v, clo, (2 + 2 + rb) * W - 1);
-                goto(&mut b, next(i));
-            }
+            // (the interpreter runs it: its closure is only known at run
+            // time, and it checks the upvalue is there; letrec only)
+            SETUP => bail(&mut b),
             JMP => goto(&mut b, target(sbx(w))),
             JMPF => {
                 let v = b.ins().load(types::I64, mf, regs, ra * W);
