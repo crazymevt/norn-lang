@@ -19,8 +19,13 @@
 ;;;;   for the call) or an address;
 ;;;; - [:out layout]: a struct C fills, returned as a map after the result;
 ;;;; - [:callback [param-types] ret]: a C function pointer, passed a
-;;;;   callback, or a Norn function (made a callback once, and kept).
-;;;; A :string return copies the C string (nil for NULL).
+;;;;   callback, or a Norn function (made a callback once, and kept);
+;;;; - a layout: the struct by value, passed a map (or an address, copied);
+;;;; - :... last: a variadic function, the rest of the arguments numbers
+;;;;   (as 64-bit integers or doubles, C's promotions), strings, Bytes and
+;;;;   nil. Pass 1.0, not 1, where C reads a double.
+;;;; A :string return copies the C string (nil for NULL); a layout returns
+;;;; the struct by value, as a map.
 ;;;;
 ;;;; A function marked :blocking true runs on the blocking pool; others run
 ;;;; on the carrier (keep them quick: one that takes long makes the runtime
@@ -29,9 +34,10 @@
 ;;;;
 ;;;; Structs: (defcstruct point [x :i32 y :i32]) lays out fields as C does
 ;;;; (each at its alignment, the size rounded up to the largest), with
-;;;; nested structs and [:array type n]. Memory: alloc and free!, mem-get
-;;;; and mem-set!, struct-get and struct-set! (as maps), field and
-;;;; set-field!, string-at and bytes-at.
+;;;; nested structs, [:array type n] and bit fields [:bits type width];
+;;;; defcunion lays out a union. Memory: alloc and free!, mem-get and
+;;;; mem-set!, struct-get and struct-set! (as maps), field and set-field!,
+;;;; string-at and bytes-at.
 ;;;;
 ;;;; Callbacks: (callback [:pointer :pointer] :int f) is a C function
 ;;;; pointer that calls f. Called during a (fast) call from Norn, on its
@@ -39,10 +45,12 @@
 ;;;; pool, or one of C's own), the call goes to a fiber serving the
 ;;;; callback, while that thread waits. An error in f can't unwind through
 ;;;; C: C gets 0, and the error is signalled when the call from Norn
-;;;; returns (from another thread, it's reported).
+;;;; returns (from another thread, it's reported). Callbacks take and
+;;;; return structs by value too. A freed callback's code is reused by the
+;;;; next of its signature.
 ;;;;
-;;;; Not yet: structs passed or returned by value, variadic functions such
-;;;; as printf, unions and bit fields.
+;;;; Structs by value and variadic functions are for arm64 (macOS and
+;;;; Linux) so far; elsewhere they're an error.
 
 (ns norn.ffi
   (:unsafe))
@@ -64,48 +72,93 @@
 
 (defn layout? "Is x a struct layout (from defcstruct)?" [x] (and (map? x) (contains? x ::fields)))
 
+;; ([:bits type width]: a bit field, width bits of an integer type's unit)
 (defn- array-type? [t] (and (vector? t) (= :array (first t))))
+(defn- bits-type? [t] (and (vector? t) (= :bits (first t))))
 
-(defn sizeof "The size of C type t (a keyword, a struct layout, [:array t n]) in bytes." [t]
+(def ^:private unsigned-of
+  {:i8 :u8 :char :u8 :i16 :u16 :short :u16 :i32 :u32 :int :u32 :i64 :u64 :long :u64 :isize :u64 :ssize :u64})
+
+(defn- signed? [t] (contains? unsigned-of t))
+
+(defn sizeof "The size of C type t (a keyword, a struct or union layout, [:array t n]) in bytes." [t]
   (cond (layout? t) (:size t)
         (array-type? t) (* (sizeof (second t)) (nth t 2))
+        (bits-type? t) (error "A bit field has no size of its own")
         :else (or (get prim-sizes t) (error (str "Not a C type: " (pr-str t))))))
 
 (defn alignof "The alignment of C type t." [t]
   (cond (layout? t) (:align t)
         (array-type? t) (alignof (second t))
+        (bits-type? t) (sizeof (second t))
         :else (sizeof t)))
 
 (defn- round-up [n a] (* a (quot (+ n (dec a)) a)))
 
+(defn- field-pairs [what lname fields]
+  (when (odd? (count fields)) (error (str what " " lname ": fields come as name type pairs")))
+  (map (fn [[n t]] [(keyword (name n)) t]) (partition 2 fields)))
+
+(defn- finish-layout [lname out size align union?]
+  {::fields out :name lname :size (round-up size align) :align align :union union?
+   :index (into {} (map (fn [f] [(:name f) f]) (remove (fn [f] (nil? (:name f))) out)))})
+
 (defn struct-layout
   "A struct's layout from its fields, [name type …] (names as keywords or
   symbols): each at the next offset its alignment allows, the size rounded
-  up to the struct's alignment (its largest field's), as C lays them out."
+  up to the struct's alignment (its largest field's), as C lays them out.
+  A bit field, [:bits type width], goes in the unit of its type it starts
+  in, if it fits there, else the next one (width 0: on to the next unit);
+  bits go from the lowest up."
   [sname fields]
-  (when (odd? (count fields)) (error (str "defcstruct " sname ": fields come as name type pairs")))
-  (loop [fs (partition 2 fields) offset 0 align 1 out []]
+  (loop [fs (field-pairs "defcstruct" sname fields) bit 0 align 1 out []]
     (if (empty? fs)
-      {::fields out :name sname :size (round-up offset align) :align align
-       :index (into {} (map (fn [f] [(:name f) f]) out))}
-      (let [[n t] (first fs)
-            a (alignof t)
-            at (round-up offset a)]
-        (recur (rest fs) (+ at (sizeof t)) (max align a)
-               (conj out {:name (keyword (name n)) :type t :offset at}))))))
+      (finish-layout sname out (quot (+ bit 7) 8) align false)
+      (let [[n t] (first fs)]
+        (if (bits-type? t)
+          (let [[_ ut w] t
+                unit (* 8 (sizeof ut))
+                _ (when-not (and (integer? w) (<= 0 w unit)) (error (str "A bit field of " ut " has 0 to " unit " bits, not " w)))
+                bit (if (or (zero? w) (not= (quot bit unit) (quot (+ bit w -1) unit))) (round-up bit unit) bit)]
+            (recur (rest fs) (+ bit w) (max align (sizeof ut))
+                   (if (zero? w)
+                     out
+                     (conj out {:name n :type t :offset (* (quot bit unit) (sizeof ut)) :shift (mod bit unit) :width w}))))
+          (let [a (alignof t)
+                at (round-up (quot (+ bit 7) 8) a)]
+            (recur (rest fs) (* 8 (+ at (sizeof t))) (max align a)
+                   (conj out {:name n :type t :offset at}))))))))
+
+(defn union-layout
+  "A union's layout: every field at offset 0, the size the largest
+  field's, rounded up to the largest alignment."
+  [uname fields]
+  (let [fs (field-pairs "defcunion" uname fields)]
+    (when (some (fn [[_ t]] (bits-type? t)) fs) (error (str "defcunion " uname ": no bit fields in a union")))
+    (finish-layout uname (mapv (fn [[n t]] {:name n :type t :offset 0}) fs)
+                   (reduce max 0 (map (fn [[_ t]] (sizeof t)) fs))
+                   (reduce max 1 (map (fn [[_ t]] (alignof t)) fs))
+                   true)))
 
 (defmacro defcstruct
   "(defcstruct name [field type …]): name is the struct's layout. A type is
-  a C type keyword, another layout, or [:array type n]."
+  a C type keyword, another layout, [:array type n], or a bit field
+  [:bits integer-type width]."
   [sname fields]
   `(def ~sname (struct-layout '~sname [~@(mapcat (fn [[n t]] [(keyword (name n)) t]) (partition 2 fields))])))
+
+(defmacro defcunion
+  "(defcunion name [field type …]): name is the union's layout (its fields
+  share the memory; struct-get reads each)."
+  [uname fields]
+  `(def ~uname (union-layout '~uname [~@(mapcat (fn [[n t]] [(keyword (name n)) t]) (partition 2 fields))])))
 
 (defn- field-of [layout k]
   (or (get (:index layout) k) (error (str (:name layout) " has no field " k))))
 
 (defn offset-of
   "The offset of a field in a struct layout: a key, or a path of them
-  through nested structs ([:origin :x])."
+  through nested structs ([:origin :x]). (A bit field's: its unit's.)"
   [layout k]
   (if (vector? k)
     (loop [l layout ks (seq k) off 0]
@@ -113,6 +166,20 @@
         (let [f (field-of l (first ks))] (recur (:type f) (next ks) (+ off (:offset f))))
         off))
     (:offset (field-of layout k))))
+
+(defn %leaves
+  "The scalar pieces of C type t, [[offset type]…] (for passing structs by
+  value: the runtime classifies them)."
+  ([t] (%leaves t 0))
+  ([t at]
+   (cond (layout? t) (vec (distinct (mapcat (fn [f]
+                                              (if (bits-type? (:type f))
+                                                (let [ut (second (:type f))] [[(+ at (:offset f)) (get unsigned-of ut ut)]])
+                                                (%leaves (:type f) (+ at (:offset f)))))
+                                            (::fields t))))
+         (array-type? t) (let [[_ et n] t s (sizeof et)] (vec (mapcat (fn [i] (%leaves et (+ at (* i s)))) (range n))))
+         (= t :string) [[at :pointer]]
+         :else [[at t]])))
 
 ;; ---- memory ----
 
@@ -151,27 +218,52 @@
          :else (%mem-set! addr t offset v))
    v))
 
-(defn struct-get "The struct at addr, as a map of its fields." [addr layout]
-  (into {} (map (fn [f] [(:name f) (mem-get addr (:type f) (:offset f))]) (::fields layout))))
+(defn- read-field [addr base f]
+  (if (bits-type? (:type f))
+    (let [[_ ut w] (:type f)
+          unit (%mem-get addr (get unsigned-of ut ut) (+ base (:offset f)))
+          v (bit-and (bit-shift-right unit (:shift f)) (dec (bit-shift-left 1 w)))]
+      (if (and (signed? ut) (pos? (bit-and v (bit-shift-left 1 (dec w))))) (- v (bit-shift-left 1 w)) v))
+    (mem-get addr (:type f) (+ base (:offset f)))))
+
+(defn- write-field! [addr base f v]
+  (if (bits-type? (:type f))
+    (let [[_ ut w] (:type f)
+          uut (get unsigned-of ut ut)
+          at (+ base (:offset f))
+          [lo hi] (if (signed? ut) [(- (bit-shift-left 1 (dec w))) (dec (bit-shift-left 1 (dec w)))] [0 (dec (bit-shift-left 1 w))])
+          _ (when-not (and (integer? v) (<= lo v hi)) (error (str (pr-str v) " doesn't fit the " w "-bit field " (:name f))))
+          mask (bit-shift-left (dec (bit-shift-left 1 w)) (:shift f))
+          unit (%mem-get addr uut at)
+          ;; (the unit's bits, from 0, as its unsigned type holds them)
+          all (dec (bit-shift-left 1 (* 8 (sizeof ut))))]
+      (%mem-set! addr uut at (bit-or (bit-and unit (bit-and all (bit-not mask)))
+                                     (bit-and mask (bit-shift-left (bit-and v (dec (bit-shift-left 1 w))) (:shift f)))))
+      v)
+    (mem-set! addr (:type f) (+ base (:offset f)) v)))
+
+(defn struct-get "The struct (or union) at addr, as a map of its fields." [addr layout]
+  (into {} (map (fn [f] [(:name f) (read-field addr 0 f)]) (::fields layout))))
 
 (defn struct-set!
   "Write the fields of map m (those it has) into the struct at addr. addr."
   [addr layout m]
-  (doseq [[k v] m]
-    (let [f (field-of layout k)] (mem-set! addr (:type f) (:offset f) v)))
+  (doseq [[k v] m] (write-field! addr 0 (field-of layout k) v))
   addr)
 
-(defn field "The field k (or path) of the struct at addr." [addr layout k]
+(defn- field-at
+  "Field k (or the last of path k) of layout, and its struct's offset."
+  [layout k]
   (if (vector? k)
-    (let [last-layout (reduce (fn [l k] (:type (field-of l k))) layout (pop k))]
-      (mem-get addr (:type (field-of last-layout (peek k))) (offset-of layout k)))
-    (let [f (field-of layout k)] (mem-get addr (:type f) (:offset f)))))
+    (let [inner (reduce (fn [l k] (:type (field-of l k))) layout (pop k))]
+      [(field-of inner (peek k)) (if (= 1 (count k)) 0 (offset-of layout (pop k)))])
+    [(field-of layout k) 0]))
+
+(defn field "The field k (or path) of the struct at addr." [addr layout k]
+  (let [[f base] (field-at layout k)] (read-field addr base f)))
 
 (defn set-field! "Set field k (or path) of the struct at addr to v. v." [addr layout k v]
-  (if (vector? k)
-    (let [last-layout (reduce (fn [l k] (:type (field-of l k))) layout (pop k))]
-      (mem-set! addr (:type (field-of last-layout (peek k))) (offset-of layout k) v))
-    (let [f (field-of layout k)] (mem-set! addr (:type f) (:offset f) v))))
+  (let [[f base] (field-at layout k)] (write-field! addr base f v)))
 
 (defn new-struct "Room for a struct, its fields from map m (the rest zero): its address. free! it." [layout m]
   (struct-set! (alloc layout) layout m))
@@ -198,13 +290,29 @@
 (defn- report [e]
   (%write-stderr (str "norn.ffi: a C callback failed: " (condition-message e) "\n")))
 
+(declare by-value)
+
+(defn- struct-converting
+  "f, for a callback with structs by value: their addresses (and, first,
+  the result's) become maps (and the map f returns is written there)."
+  [params ret f]
+  (if (not (or (layout? ret) (some layout? params)))
+    f
+    (fn [& raw]
+      (let [[at raw] (if (layout? ret) [(first raw) (rest raw)] [nil raw])
+            v (apply f (map (fn [t a] (if (layout? t) (struct-get a t) a)) params raw))]
+        (if (layout? ret) (do (struct-set! at ret v) nil) v)))))
+
 (defn callback
   "A C function pointer (callback-address) that calls Norn function f:
   (callback [:pointer :pointer] :int f). Parameters and the result are
-  numbers and addresses. free-callback! it when C is done with it."
+  numbers and addresses, or structs by value (layouts), as maps.
+  free-callback! it when C is done with it."
   [params ret f]
   (let [ch (chan 1024)
-        [id address] (%ffi-callback (vec params) ret f ch)
+        g (struct-converting (vec params) ret f)
+        [id address] (%ffi-callback (mapv by-value params) (by-value ret) g ch)
+        f g
         cb (Callback :id id :address address :params (vec params) :ret ret :fn f :chan ch)]
     ;; (serving calls from threads other than a call from Norn's)
     (spawn-detached
@@ -242,35 +350,42 @@
   (let [h @(:cell lib)]
     (if (%handle-current? h) h (reset! (:cell lib) (%ffi-open (:path lib))))))
 
+(defn- by-value
+  "Type t as the runtime takes it, a struct by value as [:struct size
+  leaves]."
+  [t]
+  (if (layout? t) [:struct (sizeof t) (%leaves t)] t))
+
 (defn- low-type
   "Parameter type t as the runtime takes it."
   [t]
-  (cond (layout? t) (error (str "Structs are passed by pointer: [:* " (:name t) "] (not yet by value)"))
+  (cond (layout? t) (by-value t)
         (vector? t) (case (first t)
                       (:* :out :callback) :pointer
                       (error (str "Not a parameter type: " (pr-str t))))
         :else t))
 
 (defn- prep-for
-  "For parameters ps: nil if every one goes to the runtime as it is, else
-  how to convert the arguments and the result."
-  [ps]
-  (when (some vector? ps) ps))
+  "For parameters ps and result ret: nil if every argument goes to the
+  runtime as it is, else true (call-converting converts them)."
+  [ps ret]
+  (when (or (layout? ret) (some (fn [t] (or (vector? t) (layout? t))) ps)) true))
 
 (defn- open-fn [lib name params ret blocking]
   (if lib
-    (%ffi-fn (live-lib lib) (str name) (mapv low-type params) ret blocking)
-    (%ffi-fn nil name (mapv low-type params) ret blocking)))
+    (%ffi-fn (live-lib lib) (str name) (mapv low-type params) (by-value ret) blocking)
+    (%ffi-fn nil name (mapv low-type params) (by-value ret) blocking)))
 
 (defn function
-  "A C function of lib: (function libc \"strlen\" [:string] :usize). Option:
-  :blocking true runs calls on the blocking pool."
+  "A C function of lib: (function libc \"strlen\" [:string] :usize). A
+  struct layout as a parameter or result type passes it by value (as a
+  map); :... last makes it variadic. Option: :blocking true runs calls on
+  the blocking pool."
   [lib name params ret & {:keys [blocking]}]
-  (when (layout? ret) (error (str "A struct can't be returned by value (yet): return a pointer")))
   (let [b (if blocking true false)
         ps (vec params)]
     (ForeignFunction :name (str name) :lib lib :params ps :ret ret :blocking b
-                     :cell (atom (open-fn lib (str name) ps ret b)) :prep (prep-for ps))))
+                     :cell (atom (open-fn lib (str name) ps ret b)) :prep (prep-for ps ret))))
 
 (defn function-at
   "A C function known by its address (a function pointer C gave), as
@@ -278,7 +393,7 @@
   [addr params ret & {:keys [blocking]}]
   (let [ps (vec params) b (if blocking true false)]
     (ForeignFunction :name addr :lib nil :params ps :ret ret :blocking b
-                     :cell (atom (open-fn nil addr ps ret b)) :prep (prep-for ps))))
+                     :cell (atom (open-fn nil addr ps ret b)) :prep (prep-for ps ret))))
 
 (defn- live-fn [ff]
   (let [h @(:cell ff)]
@@ -290,11 +405,20 @@
   "Call ff with arguments converted for its struct and callback
   parameters, the struct outs read back (with any Bytes outs, in order)."
   [ff args]
-  (let [ps (:params ff)
+  (let [all (:params ff)
+        ps (vec (take-while (fn [t] (not= t :...)) all))
+        variadic? (not= (count ps) (count all))
         temps (atom [])
         outs (atom [])
+        temp (fn [n] (let [p (alloc (max 16 n))] (swap! temps conj p) p))
+        _ (when (if variadic? (< (count args) (count ps)) (not= (count ps) (count args)))
+            (error (str "The foreign function takes " (count ps) (when variadic? " or more") " arguments, got " (count args))))
         raw (mapv (fn [t a]
-                    (cond (not (vector? t)) a
+                    (cond (layout? t) (let [p (temp (sizeof t))]
+                                        ;; (a copy: C may change its own)
+                                        (if (map? a) (struct-set! p t a) (write-bytes! p (bytes-at a (sizeof t))))
+                                        p)
+                          (not (vector? t)) a
                           (= :* (first t)) (if (map? a)
                                              (let [p (new-struct (second t) a)] (swap! temps conj p) p)
                                              a)
@@ -304,11 +428,14 @@
                                                p)
                           (= :callback (first t)) (callback-for t a)
                           :else a))
-                  ps args)]
-    (when (not= (count ps) (count args))
-      (error (str "The foreign function takes " (count ps) " arguments, got " (count args))))
+                  ps args)
+        raw (into raw (drop (count ps) args))
+        ret-at (when (layout? (:ret ff)) (temp (sizeof (:ret ff))))]
     (try
-      (let [r (apply %ffi-call (live-fn ff) raw)
+      (let [r (apply %ffi-call (live-fn ff) (if ret-at (cons ret-at raw) raw))
+            r (cond (not ret-at) r
+                    (vector? r) (assoc r 0 (struct-get ret-at (:ret ff)))
+                    :else (struct-get ret-at (:ret ff)))
             byte-outs? (some (fn [t] (= t :out)) ps)
             [ret byte-outs] (if byte-outs? [(first r) (rest r)] [r nil])]
         (if (empty? @outs)
@@ -344,26 +471,29 @@
          (and (vector? t) (= :* (first t))) '(any-of map? integer?)
          (and (vector? t) (= :callback (first t))) '(any-of fn? norn.ffi/callback? integer?)
          (and (vector? t) (= :out (first t))) 'any?
+         (and (symbol? t) (not (keyword? t))) '(any-of map? integer?)
          (keyword? t) 'integer?
          :else 'any?)))
 
 (defmacro defcfun
   "(defcfun name lib \"c_name\" [param type …] return-type & options):
   define a Norn function calling a C function (options as for function).
-  Its signature is checked on calls from other modules. Parameter types
-  may come alone ([:string :int]), unnamed and unchecked."
+  Its signature is checked on calls from other modules. A variadic one
+  ends [… & more]. Parameter types may come alone ([:string :int]),
+  unnamed and unchecked (:... for variadic)."
   [fname lib cname params ret & opts]
   (let [named? (symbol? (first params))
-        names (if named? (mapv first (partition 2 params)) (mapv (fn [i] (symbol (str "arg" i))) (range (count params))))
-        types (if named? (mapv second (partition 2 params)) params)
+        [fixed rest-name] (let [[a b] (split-with (fn [x] (not= x '&)) params)] [a (second b)])
+        names (if named? (mapv first (partition 2 fixed)) (mapv (fn [i] (symbol (str "arg" i))) (range (count params))))
+        types (if named? (cond-> (mapv second (partition 2 fixed)) rest-name (conj :...)) params)
         ff (symbol (str fname "%ffi"))
         out? (some (fn [t] (or (= t :out) (and (vector? t) (= :out (first t))))) types)]
     `(do (def ~ff (norn.ffi/function ~lib ~cname ~types ~ret ~@opts))
          (%set-private! (var ~ff))
-         ~(if named?
-            `(defn ~fname ~names (norn.ffi/call ~ff ~@names))
-            `(defn ~fname [& args#] (apply norn.ffi/call ~ff args#)))
-         ~@(when named?
+         ~(cond rest-name `(defn ~fname [~@names ~'& ~rest-name] (apply norn.ffi/call ~ff ~@names ~rest-name))
+                named? `(defn ~fname ~names (norn.ffi/call ~ff ~@names))
+                :else `(defn ~fname [& args#] (apply norn.ffi/call ~ff args#)))
+         ~@(when (and named? (not rest-name))
              [`(defcontract ~fname (fn-of [~@(map contract-for types)] ~(if out? 'vector? (contract-for ret))))])
          (var ~fname))))
 

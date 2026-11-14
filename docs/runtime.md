@@ -685,8 +685,42 @@ heap under GC stress in M6; the fix and this rule came together.
     raw functions and the `%ffi-`/`%mem-` primitives. The expander refuses
     a reference to one, at phase 0, from a namespace that isn't in
     `%unsafe-namespaces`: those whose `ns` says `(:unsafe)`, and `user`.
-- **Not yet:** structs by value, variadic functions (on Apple arm64 their
-  arguments go on the stack), unions and bit fields.
+- **M9 part 9.8b added:**
+  - **Structs by value,** for arm64 (AAPCS64, and Apple's, which agree
+    here). `norn.ffi` passes a struct as `[:struct size leaves]`: its
+    scalar pieces with their offsets. The runtime classifies it (`Agg`):
+    - a homogeneous floating-point aggregate (one to four floats or
+      doubles of one type) goes in float registers;
+    - anything else up to 16 bytes goes in one or two integer registers,
+      as words of its memory;
+    - anything larger is passed as a pointer to a copy, and a result that
+      size comes back through x8 (Cranelift's `StructReturn`).
+
+    `lower` turns a signature into Cranelift parameters by those rules. A
+    struct that doesn't fit the registers left goes on the stack whole:
+    filler parameters take the rest of the registers. The stub loads a
+    struct's pieces from its copy, and stores a struct result where the
+    caller says.
+  - **Callbacks** take and return structs by value the same way: the
+    trampoline stores the pieces in its stack frame and passes their
+    address on; for a struct result, `f` gets first the address to write
+    it to.
+  - **Variadic functions** (`:...`, last). The extra arguments' types are
+    each call's own (64-bit integers, doubles and pointers, C's default
+    promotions), and so is the stub, cached by them. On Apple arm64 every
+    variadic argument goes on the stack: fillers use up all the
+    registers before them. On other arm64 systems they go as normal
+    arguments.
+  - **Unions** (`defcunion`) and **bit fields** (`[:bits type width]`,
+    in units of their type, from the lowest bit, as both ABIs lay them
+    out) are Norn.
+  - A freed callback's trampoline is reused by the next callback of its
+    signature.
+  - `tests/norn/ffi_fixture.c`, built by `ffi_test.norn` with `cc`,
+    checks every case against C.
+- **Not yet:** structs by value and variadic functions on x86-64 (System
+  V's rules classify each eight bytes, and a variadic call sets `%al`,
+  which Cranelift can't), and on Windows.
 
 ### 5.7 Native extensions and the main thread **[built in M7.5]**
 

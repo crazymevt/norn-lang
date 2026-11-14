@@ -1,5 +1,5 @@
-//! The basic FFI (runtime.md §5.6): load a library and call C functions with
-//! integer, float, pointer and byte-buffer arguments.
+//! The FFI (runtime.md §5.6): load a library and call C functions, read and
+//! write C memory, and let C call Norn back.
 //!
 //! **Call stubs.** For each signature, Cranelift compiles a stub
 //! `extern "C" fn(target, args: *const u64, ret: *mut u64)`. It loads each
@@ -13,20 +13,29 @@
 //! - `:string` passes a NUL-terminated copy.
 //! - `:out` takes a size and passes a fresh zeroed buffer, which comes back
 //!   as `Bytes`.
+//! - A struct by value (`[:struct size leaves]`, from `norn.ffi`'s layouts)
+//!   takes the address of a copy of it, and the stub passes it as the
+//!   platform says (see `Agg`). A function returning a struct takes, first,
+//!   the address to put it at.
+//! - After `:...`, a variadic function takes any numbers, strings, Bytes and
+//!   nil, as C's default promotions make them: 64-bit integers, doubles and
+//!   pointers. Their types are each call's own, so is the stub.
 //!
 //! **Fast or blocking.** A fast call runs on the carrier in a native region,
 //! so the GC can run meanwhile and the monitor starts a spare carrier if it
 //! takes too long. A `:blocking` function runs on the blocking pool. Either
 //! way the Norn values it points into are rooted until it returns.
 //!
-//! **M9 part 9.8** adds memory access (addresses as integers) and callbacks
-//! from C (below); struct layouts are Norn (`norn.ffi`), on the memory
-//! primitives. Not yet: structs passed by value, variadic functions.
+//! **Memory** is addressed by integers, and struct layouts are Norn
+//! (`norn.ffi`). **Callbacks** are below.
+//!
+//! Structs by value and variadic functions are done for arm64 (Apple's and
+//! AAPCS64); on other machines they're an error for now.
 
 use crate::reactor::{self, Io};
 use crate::vm::{Error, Result, Vm};
 use cranelift_codegen::control::ControlPlane;
-use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, MemFlagsData, Signature, UserFuncName, types};
+use cranelift_codegen::ir::{AbiParam, ArgumentPurpose, Function, InstBuilder, MemFlagsData, Signature, UserFuncName, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use norn_rt::map::{map_assoc, map_empty};
 use norn_rt::runtime::rt;
@@ -86,6 +95,178 @@ impl CType {
             CType::F64 => AbiParam::new(types::F64),
         })
     }
+
+    fn is_float(self) -> bool {
+        matches!(self, CType::F32 | CType::F64)
+    }
+}
+
+/// How a struct goes by value, by arm64's rules (AAPCS64; Apple's agree):
+/// one to four floats or doubles of one type (a homogeneous floating-point
+/// aggregate) in float registers; anything else of up to 16 bytes in one or
+/// two integer registers, as words of its memory; larger, as a pointer to a
+/// copy (and a larger result through the pointer in x8).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum Agg {
+    Hfa(CType, u8),
+    Words(u8),
+    Indirect,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct SAbi {
+    size: u32,
+    agg: Agg,
+}
+
+/// A parameter's or result's type as the stubs see it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum Ty {
+    C(CType),
+    S(SAbi),
+}
+
+const APPLE_ARM64: bool = cfg!(all(target_arch = "aarch64", target_vendor = "apple"));
+
+fn float_type(t: CType) -> cranelift_codegen::ir::Type {
+    if t == CType::F32 { types::F32 } else { types::F64 }
+}
+
+fn classify(size: u32, leaves: &[(u32, CType)]) -> Result<Agg> {
+    if !cfg!(target_arch = "aarch64") {
+        return Err(Error::new("Structs by value aren't supported on this machine yet (only arm64): pass a pointer"));
+    }
+    let n = leaves.len() as u32;
+    if (1..=4).contains(&n) {
+        let t = leaves[0].1;
+        let es = if t == CType::F32 { 4 } else { 8 };
+        if t.is_float() && leaves.iter().enumerate().all(|(i, l)| l.1 == t && l.0 == i as u32 * es) && size == n * es {
+            return Ok(Agg::Hfa(t, n as u8));
+        }
+    }
+    Ok(if size <= 16 { Agg::Words(size.div_ceil(8).max(1) as u8) } else { Agg::Indirect })
+}
+
+/// `[:struct size [[offset type]…]]` (a struct by value), or None.
+fn parse_struct(v: Value) -> Result<Option<SAbi>> {
+    if !v.is(Kind::Vector) || v.vec_count() != 3 || !v.vec_nth(0).is_keyword() || v.vec_nth(0).sym_name() != "struct" {
+        return Ok(None);
+    }
+    let size = int_arg(v.vec_nth(1), CType::U32)? as u32;
+    let mut leaves = Vec::new();
+    for l in norn_rt::seq::SeqIter::new(v.vec_nth(2)).map(|it| it.collect::<Vec<_>>()).unwrap_or_default() {
+        if !l.is(Kind::Vector) || l.vec_count() != 2 {
+            return Err(Error::new("A struct's leaves are [offset type] pairs"));
+        }
+        let t = type_arg(l.vec_nth(1), "struct")?;
+        leaves.push((int_arg(l.vec_nth(0), CType::U32)? as u32, t));
+    }
+    Ok(Some(SAbi { size, agg: classify(size, &leaves)? }))
+}
+
+/// One parameter of the C signature: an argument word, a piece of a struct
+/// (its argument, offset and type), a struct's address, or a filler that
+/// uses up a register so what follows goes on the stack.
+#[derive(Clone, Copy, Debug)]
+enum Piece {
+    Word(usize, CType),
+    Part(usize, u32, cranelift_codegen::ir::Type),
+    Ptr(usize),
+    Filler(cranelift_codegen::ir::Type),
+}
+
+/// The C signature's parameters for params, by the register rules: an
+/// argument that doesn't fit the registers left goes on the stack whole,
+/// and so does everything after it of its kind (fillers take the rest of
+/// the registers). On Apple arm64, every variadic argument goes on the
+/// stack too.
+fn lower(params: &[Ty], variadic_from: Option<usize>) -> Vec<Piece> {
+    let (mut ngrn, mut nsrn) = (0u32, 0u32);
+    let mut out = Vec::new();
+    let fill_ints = |out: &mut Vec<Piece>, ngrn: &mut u32| {
+        while *ngrn < 8 {
+            out.push(Piece::Filler(types::I64));
+            *ngrn += 1;
+        }
+    };
+    let fill_floats = |out: &mut Vec<Piece>, nsrn: &mut u32| {
+        while *nsrn < 8 {
+            out.push(Piece::Filler(types::F64));
+            *nsrn += 1;
+        }
+    };
+    for (i, &t) in params.iter().enumerate() {
+        if APPLE_ARM64 && variadic_from == Some(i) {
+            fill_ints(&mut out, &mut ngrn);
+            fill_floats(&mut out, &mut nsrn);
+        }
+        match t {
+            Ty::C(c) if c.is_float() => {
+                nsrn = (nsrn + 1).min(8);
+                out.push(Piece::Word(i, c));
+            }
+            Ty::C(c) => {
+                ngrn = (ngrn + 1).min(8);
+                out.push(Piece::Word(i, c));
+            }
+            Ty::S(SAbi { agg: Agg::Hfa(c, n), size }) => {
+                let n = n as u32;
+                if nsrn + n <= 8 {
+                    nsrn += n;
+                    let es = if c == CType::F32 { 4 } else { 8 };
+                    out.extend((0..n).map(|k| Piece::Part(i, k * es, float_type(c))));
+                } else {
+                    fill_floats(&mut out, &mut nsrn);
+                    if APPLE_ARM64 || c == CType::F64 {
+                        let es = if c == CType::F32 { 4 } else { 8 };
+                        out.extend((0..n).map(|k| Piece::Part(i, k * es, float_type(c))));
+                    } else {
+                        // (AAPCS64 elsewhere: its memory image, in 8-byte slots)
+                        out.extend((0..size.div_ceil(8)).map(|k| Piece::Part(i, k * 8, types::I64)));
+                    }
+                }
+            }
+            Ty::S(SAbi { agg: Agg::Words(w), .. }) => {
+                let w = w as u32;
+                if ngrn + w <= 8 {
+                    ngrn += w;
+                } else {
+                    fill_ints(&mut out, &mut ngrn);
+                }
+                out.extend((0..w).map(|k| Piece::Part(i, k * 8, types::I64)));
+            }
+            Ty::S(SAbi { agg: Agg::Indirect, .. }) => {
+                ngrn = (ngrn + 1).min(8);
+                out.push(Piece::Ptr(i));
+            }
+        }
+    }
+    out
+}
+
+fn piece_abi(p: Piece) -> AbiParam {
+    match p {
+        Piece::Word(_, c) => c.abi().expect("a parameter isn't void"),
+        Piece::Part(_, _, t) | Piece::Filler(t) => AbiParam::new(t),
+        Piece::Ptr(_) => AbiParam::new(types::I64),
+    }
+}
+
+/// The C signature: parameters (a struct-result pointer first, when it
+/// goes by reference) and results.
+fn c_signature(cc: cranelift_codegen::isa::CallConv, pieces: &[Piece], ret: Ty) -> Signature {
+    let mut sig = Signature::new(cc);
+    if let Ty::S(SAbi { agg: Agg::Indirect, .. }) = ret {
+        sig.params.push(AbiParam::special(types::I64, ArgumentPurpose::StructReturn));
+    }
+    sig.params.extend(pieces.iter().map(|&p| piece_abi(p)));
+    match ret {
+        Ty::C(c) => sig.returns.extend(c.abi()),
+        Ty::S(SAbi { agg: Agg::Hfa(c, n), .. }) => sig.returns.extend((0..n).map(|_| AbiParam::new(float_type(c)))),
+        Ty::S(SAbi { agg: Agg::Words(w), .. }) => sig.returns.extend((0..w).map(|_| AbiParam::new(types::I64))),
+        Ty::S(SAbi { agg: Agg::Indirect, .. }) => {}
+    }
+    sig
 }
 
 /// How a Norn argument becomes a C one.
@@ -97,13 +278,21 @@ pub(crate) enum Param {
     Bytes,
     Str,
     Out,
+    /// The address of a struct's copy, passed by value.
+    Struct,
 }
 
 pub(crate) struct Foreign {
     addr: usize,
+    /// The stub (none for a variadic function: each call's types have one).
     stub: usize,
     params: Vec<Param>,
-    ret: (CType, bool), // (type, is :string)
+    tys: Vec<Ty>,
+    ret: Ty,
+    /// The result is a string (copied from the char* C returns).
+    ret_string: bool,
+    /// The fixed parameters' count, for a variadic function.
+    variadic: Option<usize>,
     blocking: bool,
     /// Keeps the library loaded while the function exists (none for a
     /// function known only by its address).
@@ -112,22 +301,28 @@ pub(crate) struct Foreign {
 
 type Stub = unsafe extern "C" fn(u64, *const u64, *mut u64);
 
-/// (parameter types, return type) → stub address.
-type StubCache = HashMap<(Vec<CType>, CType), usize>;
+/// (parameter types, result type, variadic from) → stub address.
+type StubCache = HashMap<(Vec<Ty>, Ty, Option<usize>), usize>;
 
 static STUBS: Mutex<Option<StubCache>> = Mutex::new(None);
 
+fn compile(func: Function, what: &str) -> Result<usize> {
+    let isa = crate::jit::isa().ok_or_else(|| Error::new("No native code generator for this machine"))?;
+    let mut ctx = cranelift_codegen::Context::for_function(func);
+    let code = ctx.compile(&**isa, &mut ControlPlane::default()).map_err(|e| Error::new(format!("Can't compile {what}: {e:?}")))?;
+    crate::jit::install_code(code.code_buffer()).ok_or_else(|| Error::new("Out of executable memory"))
+}
+
 /// The call stub for a signature (compiled once).
-fn stub_for(params: &[CType], ret: CType) -> Result<usize> {
-    let key = (params.to_vec(), ret);
+fn stub_for(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Result<usize> {
+    let key = (params.to_vec(), ret, variadic_from);
     if let Some(&s) = STUBS.lock().unwrap().get_or_insert_with(HashMap::new).get(&key) {
         return Ok(s);
     }
     let isa = crate::jit::isa().ok_or_else(|| Error::new("No native code generator for this machine"))?;
     let cc = isa.default_call_conv();
-    let mut target = Signature::new(cc);
-    target.params.extend(params.iter().filter_map(|t| t.abi()));
-    target.returns.extend(ret.abi());
+    let pieces = lower(params, variadic_from);
+    let target = c_signature(cc, &pieces, ret);
     let mut sig = Signature::new(cc);
     sig.params.extend([AbiParam::new(types::I64), AbiParam::new(types::I64), AbiParam::new(types::I64)]);
     let mut func = Function::with_name_signature(UserFuncName::user(0, 1), sig);
@@ -144,44 +339,72 @@ fn stub_for(params: &[CType], ret: CType) -> Result<usize> {
         };
         let flags = MemFlagsData::trusted();
         let mut vals = Vec::new();
-        for (i, t) in params.iter().enumerate() {
-            let off = (i * 8) as i32;
-            let v = match t {
-                CType::F32 => b.ins().load(types::F32, flags, args, off),
-                CType::F64 => b.ins().load(types::F64, flags, args, off),
-                CType::I8 | CType::U8 => {
-                    let w = b.ins().load(types::I64, flags, args, off);
-                    b.ins().ireduce(types::I8, w)
+        if let Ty::S(SAbi { agg: Agg::Indirect, .. }) = ret {
+            vals.push(retp);
+        }
+        for &p in &pieces {
+            let v = match p {
+                Piece::Word(i, t) => {
+                    let off = (i * 8) as i32;
+                    match t {
+                        CType::F32 => b.ins().load(types::F32, flags, args, off),
+                        CType::F64 => b.ins().load(types::F64, flags, args, off),
+                        CType::I8 | CType::U8 => {
+                            let w = b.ins().load(types::I64, flags, args, off);
+                            b.ins().ireduce(types::I8, w)
+                        }
+                        CType::I16 | CType::U16 => {
+                            let w = b.ins().load(types::I64, flags, args, off);
+                            b.ins().ireduce(types::I16, w)
+                        }
+                        CType::I32 | CType::U32 => {
+                            let w = b.ins().load(types::I64, flags, args, off);
+                            b.ins().ireduce(types::I32, w)
+                        }
+                        _ => b.ins().load(types::I64, flags, args, off),
+                    }
                 }
-                CType::I16 | CType::U16 => {
-                    let w = b.ins().load(types::I64, flags, args, off);
-                    b.ins().ireduce(types::I16, w)
+                Piece::Part(i, off, t) => {
+                    let base = b.ins().load(types::I64, flags, args, (i * 8) as i32);
+                    b.ins().load(t, flags, base, off as i32)
                 }
-                CType::I32 | CType::U32 => {
-                    let w = b.ins().load(types::I64, flags, args, off);
-                    b.ins().ireduce(types::I32, w)
-                }
-                _ => b.ins().load(types::I64, flags, args, off),
+                Piece::Ptr(i) => b.ins().load(types::I64, flags, args, (i * 8) as i32),
+                Piece::Filler(t) if t == types::F64 => b.ins().f64const(0.0),
+                Piece::Filler(_) => b.ins().iconst(types::I64, 0),
             };
             vals.push(v);
         }
         let sref = b.import_signature(target);
         let call = b.ins().call_indirect(sref, fnptr, &vals);
-        if ret != CType::Void {
-            let r = b.inst_results(call)[0];
-            let stored = match ret {
-                CType::F32 | CType::F64 | CType::I64 | CType::U64 | CType::Ptr => r,
-                CType::I8 | CType::I16 | CType::I32 => b.ins().sextend(types::I64, r),
-                _ => b.ins().uextend(types::I64, r),
-            };
-            b.ins().store(flags, stored, retp, 0);
+        let results: Vec<_> = b.inst_results(call).to_vec();
+        match ret {
+            Ty::C(CType::Void) => {}
+            Ty::C(c) => {
+                let r = results[0];
+                let stored = match c {
+                    CType::F32 | CType::F64 | CType::I64 | CType::U64 | CType::Ptr => r,
+                    CType::I8 | CType::I16 | CType::I32 => b.ins().sextend(types::I64, r),
+                    _ => b.ins().uextend(types::I64, r),
+                };
+                b.ins().store(flags, stored, retp, 0);
+            }
+            Ty::S(SAbi { agg: Agg::Hfa(c, _), .. }) => {
+                let es = if c == CType::F32 { 4 } else { 8 };
+                for (k, &r) in results.iter().enumerate() {
+                    b.ins().store(flags, r, retp, (k * es) as i32);
+                }
+            }
+            Ty::S(SAbi { agg: Agg::Words(_), .. }) => {
+                for (k, &r) in results.iter().enumerate() {
+                    b.ins().store(flags, r, retp, (k * 8) as i32);
+                }
+            }
+            Ty::S(SAbi { agg: Agg::Indirect, .. }) => {}
         }
         b.ins().return_(&[]);
         b.finalize(isa.frontend_config());
     }
-    let mut ctx = cranelift_codegen::Context::for_function(func);
-    let code = ctx.compile(&**isa, &mut ControlPlane::default()).map_err(|e| Error::new(format!("Can't compile an FFI stub: {e:?}")))?;
-    let at = crate::jit::install_code(code.code_buffer()).ok_or_else(|| Error::new("Out of executable memory"))?;
+    let at = compile(func, "an FFI stub")?;
     STUBS.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, at);
     Ok(at)
 }
@@ -217,23 +440,45 @@ pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret:
         }
     };
     let mut ps = Vec::new();
-    let mut cts = Vec::new();
+    let mut tys = Vec::new();
+    let mut variadic = None;
     for p in norn_rt::seq::SeqIter::new(params).map(|it| it.collect::<Vec<_>>()).unwrap_or_default() {
+        if variadic.is_some() {
+            return Err(Error::new(":... comes last, after the fixed parameters"));
+        }
+        if let Some(s) = parse_struct(p)? {
+            ps.push(Param::Struct);
+            tys.push(Ty::S(s));
+            continue;
+        }
         let k = keyword_name(p)?;
+        if k == "..." {
+            if !cfg!(target_arch = "aarch64") {
+                return Err(Error::new("Variadic functions aren't supported on this machine yet (only arm64)"));
+            }
+            variadic = Some(ps.len());
+            continue;
+        }
         let ct = CType::parse(&k).filter(|&t| t != CType::Void).ok_or_else(|| Error::new(format!("Unknown parameter type :{k}")))?;
         ps.push(match k.as_str() {
             "pointer" => Param::Pointer,
             "bytes" => Param::Bytes,
             "string" => Param::Str,
             "out" => Param::Out,
-            _ if matches!(ct, CType::F32 | CType::F64) => Param::Float(ct),
+            _ if ct.is_float() => Param::Float(ct),
             _ => Param::Int(ct),
         });
-        cts.push(ct);
+        tys.push(Ty::C(ct));
     }
-    let rk = keyword_name(ret)?;
-    let rt_ = CType::parse(&rk).filter(|_| !matches!(rk.as_str(), "bytes" | "out")).ok_or_else(|| Error::new(format!("Unknown return type :{rk}")))?;
-    let stub = stub_for(&cts, rt_)?;
+    let (ret_ty, ret_string) = match parse_struct(ret)? {
+        Some(s) => (Ty::S(s), false),
+        None => {
+            let rk = keyword_name(ret)?;
+            let t = CType::parse(&rk).filter(|_| !matches!(rk.as_str(), "bytes" | "out")).ok_or_else(|| Error::new(format!("Unknown return type :{rk}")))?;
+            (Ty::C(t), rk == "string")
+        }
+    };
+    let stub = if variadic.is_some() { 0 } else { stub_for(&tys, ret_ty, None)? };
     let addr = match &lib_arc {
         None => address(name, "function-at")?,
         Some(l) => {
@@ -243,7 +488,7 @@ pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret:
             unsafe { l.get::<*const ()>(cname.as_bytes_with_nul()) }.map(|s| *s as usize).map_err(|e| Error::new(format!("No symbol {name}: {e}")))?
         }
     };
-    let f = Foreign { addr, stub, params: ps, ret: (rt_, rk == "string"), blocking, _lib: lib_arc };
+    let f = Foreign { addr, stub, params: ps, tys, ret: ret_ty, ret_string, variadic, blocking, _lib: lib_arc };
     let entries = [("library", lib), ("name", name), ("params", params), ("ret", ret), ("blocking", Value::bool(blocking))];
     let mut info = map_empty();
     for (k, v) in entries {
@@ -282,17 +527,47 @@ struct Prepared {
     keep: Vec<Value>,
     _strings: Vec<std::ffi::CString>,
     outs: Vec<Vec<u8>>,
+    /// The stub (a variadic call's, for its arguments' types).
+    stub: usize,
 }
 
 // SAFETY: the Values in `keep` are rooted for the call; the rest is owned data.
 unsafe impl Send for Prepared {}
 
 fn prepare(f: &Foreign, args: &[Value]) -> Result<Prepared> {
-    if args.len() != f.params.len() {
-        return Err(Error::new(format!("The foreign function takes {} arguments, got {}", f.params.len(), args.len())));
+    let fixed = f.params.len();
+    let ok = match f.variadic {
+        Some(_) => args.len() >= fixed,
+        None => args.len() == fixed,
+    };
+    if !ok {
+        let more = if f.variadic.is_some() { " or more" } else { "" };
+        return Err(Error::new(format!("The foreign function takes {fixed}{more} arguments, got {}", args.len())));
     }
-    let mut p = Prepared { raw: Vec::with_capacity(args.len()), keep: Vec::new(), _strings: Vec::new(), outs: Vec::new() };
-    for (&a, &param) in args.iter().zip(&f.params) {
+    let mut p = Prepared { raw: Vec::with_capacity(args.len()), keep: Vec::new(), _strings: Vec::new(), outs: Vec::new(), stub: f.stub };
+    let mut tys = f.tys.clone();
+    for (i, &a) in args.iter().enumerate() {
+        // (a variadic argument: C's default promotions)
+        let param = match f.params.get(i) {
+            Some(&param) => param,
+            None => {
+                let (param, t) = if a.is_fixnum() || a.is(Kind::BigInt) {
+                    (Param::Int(if a.is(Kind::BigInt) { CType::U64 } else { CType::I64 }), CType::I64)
+                } else if a.is(Kind::Float) {
+                    (Param::Float(CType::F64), CType::F64)
+                } else if a.is(Kind::String) {
+                    (Param::Str, CType::Ptr)
+                } else if a.is(Kind::Bytes) {
+                    (Param::Bytes, CType::Ptr)
+                } else if a.is_nil() {
+                    (Param::Pointer, CType::Ptr)
+                } else {
+                    return Err(Error::new(format!("A variadic argument is a number, string, bytes or nil, not {}", a.type_name())));
+                };
+                tys.push(Ty::C(t));
+                param
+            }
+        };
         let w = match param {
             Param::Int(t) => int_arg(a, t)?,
             Param::Float(t) => {
@@ -300,6 +575,7 @@ fn prepare(f: &Foreign, args: &[Value]) -> Result<Prepared> {
                 if t == CType::F32 { (x as f32).to_bits() as u64 } else { x.to_bits() }
             }
             Param::Pointer => if a.is_nil() { 0 } else { int_arg(a, CType::U64)? },
+            Param::Struct => address(a, "a struct argument")? as u64,
             Param::Bytes => {
                 if !a.is(Kind::Bytes) {
                     return Err(Error::new(format!("Expected bytes, got {}", a.type_name())));
@@ -324,6 +600,9 @@ fn prepare(f: &Foreign, args: &[Value]) -> Result<Prepared> {
             }
         };
         p.raw.push(w);
+    }
+    if f.variadic.is_some() {
+        p.stub = stub_for(&tys, f.ret, f.variadic)?;
     }
     Ok(p)
 }
@@ -357,24 +636,40 @@ fn result(m: &mut Mutator, ret: (CType, bool), r: u64, outs: Vec<Vec<u8>>) -> st
 }
 
 /// `(%ffi-call f args…)`: the result; with `:out` parameters,
-/// `[result out-bytes…]`.
+/// `[result out-bytes…]`. A function returning a struct takes first the
+/// address to put it at (and gives nil).
 pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
     let e = reactor::entry_of(h, "foreign")?;
-    let (stub, addr, ret, blocking, mut prep) = {
+    let (addr, ret, blocking, ret_at, mut prep) = {
         let io = e.io.lock().unwrap();
         let Some(Io::Foreign(f)) = io.as_ref() else { return Err(Error::new("The foreign function is closed")) };
-        (f.stub, f.addr, f.ret, f.blocking, prepare(f, args)?)
+        let (ret_at, args) = match f.ret {
+            Ty::S(_) => {
+                let Some(&first) = args.first() else { return Err(Error::new("A function returning a struct takes the address for it first")) };
+                (Some(address(first, "a struct result")?), &args[1..])
+            }
+            Ty::C(_) => (None, args),
+        };
+        let ret = match f.ret {
+            Ty::C(c) => (c, f.ret_string),
+            Ty::S(_) => (CType::Void, false),
+        };
+        (f.addr, ret, f.blocking, ret_at, prepare(f, args)?)
     };
-    // SAFETY: stub was compiled for this signature.
-    let stub: Stub = unsafe { std::mem::transmute(stub) };
+    // SAFETY: the stub was compiled for this signature.
+    let stub: Stub = unsafe { std::mem::transmute(prep.stub) };
     if !blocking {
         let mut r: u64 = 0;
+        let rp: *mut u64 = match ret_at {
+            Some(a) => a as *mut u64,
+            None => &mut r,
+        };
         let keep = std::mem::take(&mut prep.keep);
         // (a callback C makes meanwhile, on this thread, runs on this Vm)
         let prev = CALLING_VM.with(|c| c.replace(vm as *mut Vm));
         // SAFETY: the arguments match the stub's signature; what they point
-        // at (prep's buffers, rooted Bytes) outlives the call.
-        vm.native_region(&keep, || unsafe { stub(addr as u64, prep.raw.as_ptr(), &mut r) });
+        // at (prep's buffers, rooted Bytes, the struct memory) outlives the call.
+        vm.native_region(&keep, || unsafe { stub(addr as u64, prep.raw.as_ptr(), rp) });
         CALLING_VM.with(|c| c.set(prev));
         if let Some(e) = CALLBACK_ERROR.with(|c| c.borrow_mut().take()) {
             return Err(e);
@@ -386,8 +681,12 @@ pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
     crate::blocking::run(vm, move || {
         let _hold = e2; // the function (and its library) stays loaded
         let mut r: u64 = 0;
+        let rp: *mut u64 = match ret_at {
+            Some(a) => a as *mut u64,
+            None => &mut r,
+        };
         // SAFETY: as above; the Bytes are rooted until the result is built.
-        unsafe { stub(addr as u64, prep.raw.as_ptr(), &mut r) };
+        unsafe { stub(addr as u64, prep.raw.as_ptr(), rp) };
         let outs = std::mem::take(&mut prep.outs);
         Box::new(move |m: &mut Mutator| {
             drop(prep);
@@ -569,12 +868,18 @@ fn from_c(m: &mut Mutator, t: CType, r: u64) -> std::result::Result<Value, Strin
 //   fiber serving the channel (norn.ffi starts one) calls f and answers with
 //   `%ffi-callback-reply!`, while the C thread waits.
 //
+// A struct argument by value reaches f as the address of its copy (on the
+// trampoline's stack). For a struct result, f gets first the address to
+// write it at (norn.ffi's callback converts both ways).
+//
 // An error in f can't unwind through C: the callback returns 0, and in the
 // first case the error is signalled when the FFI call returns.
 
 struct Callback {
-    params: Vec<CType>,
-    ret: CType,
+    /// Its trampoline's address, for reuse once it's freed.
+    code: usize,
+    params: Vec<Ty>,
+    ret: Ty,
     f: Value,
     port: crate::ext::Port,
     root: u64,
@@ -586,6 +891,11 @@ unsafe impl Send for Callback {}
 unsafe impl Sync for Callback {}
 
 static CALLBACKS: Mutex<Option<HashMap<u64, Arc<Callback>>>> = Mutex::new(None);
+
+/// Trampolines of freed callbacks, by signature: (id, address), reused
+/// for the next callback of that signature (executable memory isn't freed).
+type FreeTrampolines = HashMap<(Vec<Ty>, Ty), Vec<(u64, usize)>>;
+static FREE_TRAMPOLINES: Mutex<Option<FreeTrampolines>> = Mutex::new(None);
 static NEXT_CALLBACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 type Reply = Arc<(Mutex<Option<u64>>, std::sync::Condvar)>;
@@ -609,13 +919,35 @@ extern "C" fn dispatch(id: u64, args: *const u64, ret: *mut u64) {
     unsafe { *ret = r.unwrap_or(0) };
 }
 
+/// The words f is called with, as their C types: first the result's
+/// address for a struct result, then a struct argument's address.
+fn word_types(cb: &Callback) -> Vec<CType> {
+    let mut ts = Vec::new();
+    if let Ty::S(_) = cb.ret {
+        ts.push(CType::Ptr);
+    }
+    ts.extend(cb.params.iter().map(|t| match t {
+        Ty::C(c) => *c,
+        Ty::S(_) => CType::Ptr,
+    }));
+    ts
+}
+
+fn ret_word(cb: &Callback, v: Value) -> Result<u64> {
+    match cb.ret {
+        Ty::C(c) => to_c(v, c),
+        Ty::S(_) => Ok(0),
+    }
+}
+
 fn run_callback(id: u64, args: *const u64) -> u64 {
     let Some(cb) = callback(id) else {
         eprintln!("norn: a C callback was called after it was freed");
         return 0;
     };
-    // SAFETY: the trampoline stores one word per parameter.
-    let raw: Vec<u64> = (0..cb.params.len()).map(|i| unsafe { *args.add(i) }).collect();
+    let wts = word_types(&cb);
+    // SAFETY: the trampoline stores one word per parameter (and the result's address).
+    let raw: Vec<u64> = (0..wts.len()).map(|i| unsafe { *args.add(i) }).collect();
     let vm = CALLING_VM.with(|c| c.get());
     if !vm.is_null() {
         // SAFETY: set by `call` for the duration of a fast call on this
@@ -624,11 +956,11 @@ fn run_callback(id: u64, args: *const u64) -> u64 {
         crate::sched::leave_native(vm.carrier);
         let r = (|| -> Result<u64> {
             let mut argv = Vec::with_capacity(raw.len());
-            for (&w, &t) in raw.iter().zip(&cb.params) {
+            for (&w, &t) in raw.iter().zip(&wts) {
                 argv.push(from_c(&mut vm.m, t, w).map_err(Error::new)?);
             }
             let v = vm.apply(cb.f, &argv)?;
-            to_c(v, cb.ret)
+            ret_word(&cb, v)
         })();
         crate::sched::enter_native(vm.carrier);
         return match r {
@@ -648,9 +980,8 @@ fn run_callback(id: u64, args: *const u64) -> u64 {
     let token = NEXT_CALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let reply: Reply = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
     REPLIES.lock().unwrap().get_or_insert_with(HashMap::new).insert(token, reply.clone());
-    let params = cb.params.clone();
     let posted = cb.port.post(|m| {
-        let vs: Vec<Value> = raw.iter().zip(&params).map(|(&w, &t)| from_c(m, t, w).unwrap_or(Value::NIL)).collect();
+        let vs: Vec<Value> = raw.iter().zip(&wts).map(|(&w, &t)| from_c(m, t, w).unwrap_or(Value::NIL)).collect();
         let args = vec_from_slice(m, &vs);
         vec_from_slice(m, &[args, Value::fix(token as i64)])
     });
@@ -668,15 +999,37 @@ fn run_callback(id: u64, args: *const u64) -> u64 {
 }
 
 /// The trampoline for callback `id`: a C function of this signature.
-fn trampoline(id: u64, params: &[CType], ret: CType) -> Result<usize> {
+fn trampoline(id: u64, params: &[Ty], ret: Ty) -> Result<usize> {
     use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
     let isa = crate::jit::isa().ok_or_else(|| Error::new("No native code generator for this machine"))?;
     let cc = isa.default_call_conv();
-    let mut sig = Signature::new(cc);
-    sig.params.extend(params.iter().filter_map(|t| t.abi()));
-    sig.returns.extend(ret.abi());
+    let pieces = lower(params, None);
+    let sig = c_signature(cc, &pieces, ret);
     let mut target = Signature::new(cc);
     target.params.extend([AbiParam::new(types::I64), AbiParam::new(types::I64), AbiParam::new(types::I64)]);
+    let shift = matches!(ret, Ty::S(_)) as usize; // (the result's address comes first)
+    let nwords = params.len() + shift;
+    // The stack: the words (and one for a scalar result), then room for
+    // each struct argument and the struct result, 16 bytes at least each.
+    let round16 = |n: u32| n.div_ceil(16).max(1) * 16;
+    let mut at = ((nwords + 1) * 8) as u32;
+    let mut areas = vec![None; params.len()];
+    for (i, t) in params.iter().enumerate() {
+        if let Ty::S(s) = t
+            && s.agg != Agg::Indirect
+        {
+            areas[i] = Some(at);
+            at += round16(s.size);
+        }
+    }
+    let ret_area = match ret {
+        Ty::S(s) if s.agg != Agg::Indirect => {
+            let a = at;
+            at += round16(s.size);
+            Some(a)
+        }
+        _ => None,
+    };
     let mut func = Function::with_name_signature(UserFuncName::user(0, 2), sig);
     let mut fbc = FunctionBuilderContext::new();
     {
@@ -685,72 +1038,124 @@ fn trampoline(id: u64, params: &[CType], ret: CType) -> Result<usize> {
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         b.seal_block(entry);
-        let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (params.len() as u32 + 1) * 8, 3));
-        let ps: Vec<_> = b.block_params(entry).to_vec();
-        for (i, (&t, &v)) in params.iter().zip(&ps).enumerate() {
-            let off = (i * 8) as i32;
-            let w = match t {
-                CType::F32 | CType::F64 => v,
-                CType::I8 | CType::I16 | CType::I32 => b.ins().sextend(types::I64, v),
-                CType::U8 | CType::U16 | CType::U32 => b.ins().uextend(types::I64, v),
-                _ => v,
-            };
-            if t == CType::F32 {
-                // (the low 32 bits of the word)
-                let z = b.ins().iconst(types::I64, 0);
-                b.ins().stack_store(types::I64, z, slot, off);
+        let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, at, 4));
+        let mut ps: Vec<_> = b.block_params(entry).to_vec();
+        let sret = if let Ty::S(SAbi { agg: Agg::Indirect, .. }) = ret { Some(ps.remove(0)) } else { None };
+        for (&p, &v) in pieces.iter().zip(&ps) {
+            match p {
+                Piece::Word(i, t) => {
+                    let off = ((shift + i) * 8) as i32;
+                    let w = match t {
+                        CType::F32 | CType::F64 => v,
+                        CType::I8 | CType::I16 | CType::I32 => b.ins().sextend(types::I64, v),
+                        CType::U8 | CType::U16 | CType::U32 => b.ins().uextend(types::I64, v),
+                        _ => v,
+                    };
+                    if t == CType::F32 {
+                        // (the low 32 bits of the word)
+                        let z = b.ins().iconst(types::I64, 0);
+                        b.ins().stack_store(types::I64, z, slot, off);
+                    }
+                    b.ins().stack_store(types::I64, w, slot, off);
+                }
+                Piece::Part(i, off, _) => {
+                    let area = areas[i].expect("a struct in pieces has an area");
+                    b.ins().stack_store(types::I64, v, slot, (area + off) as i32);
+                }
+                Piece::Ptr(i) => {
+                    b.ins().stack_store(types::I64, v, slot, ((shift + i) * 8) as i32);
+                }
+                Piece::Filler(_) => {}
             }
-            b.ins().stack_store(types::I64, w, slot, off);
         }
-        let ret_off = (params.len() * 8) as i32;
+        for (i, a) in areas.iter().enumerate() {
+            if let Some(a) = a {
+                let addr = b.ins().stack_addr(types::I64, slot, *a as i32);
+                b.ins().stack_store(types::I64, addr, slot, ((shift + i) * 8) as i32);
+            }
+        }
+        if shift == 1 {
+            let r = match (sret, ret_area) {
+                (Some(p), _) => p,
+                (None, Some(a)) => b.ins().stack_addr(types::I64, slot, a as i32),
+                _ => unreachable!("a struct result has a place"),
+            };
+            b.ins().stack_store(types::I64, r, slot, 0);
+        }
+        let ret_off = (nwords * 8) as i32;
         let args_p = b.ins().stack_addr(types::I64, slot, 0);
         let ret_p = b.ins().stack_addr(types::I64, slot, ret_off);
         let idv = b.ins().iconst(types::I64, id as i64);
         let f = b.ins().iconst(types::I64, dispatch as *const () as usize as i64);
         let sref = b.import_signature(target);
         b.ins().call_indirect(sref, f, &[idv, args_p, ret_p]);
-        let out = match ret {
-            CType::Void => None,
-            CType::F32 => Some(b.ins().stack_load(types::I64, types::F32, slot, ret_off)),
-            CType::F64 => Some(b.ins().stack_load(types::I64, types::F64, slot, ret_off)),
-            CType::I8 | CType::U8 => {
+        let mut out = Vec::new();
+        match ret {
+            Ty::C(CType::Void) => {}
+            Ty::C(CType::F32) => out.push(b.ins().stack_load(types::I64, types::F32, slot, ret_off)),
+            Ty::C(CType::F64) => out.push(b.ins().stack_load(types::I64, types::F64, slot, ret_off)),
+            Ty::C(c) => {
                 let w = b.ins().stack_load(types::I64, types::I64, slot, ret_off);
-                Some(b.ins().ireduce(types::I8, w))
+                out.push(match c {
+                    CType::I8 | CType::U8 => b.ins().ireduce(types::I8, w),
+                    CType::I16 | CType::U16 => b.ins().ireduce(types::I16, w),
+                    CType::I32 | CType::U32 => b.ins().ireduce(types::I32, w),
+                    _ => w,
+                });
             }
-            CType::I16 | CType::U16 => {
-                let w = b.ins().stack_load(types::I64, types::I64, slot, ret_off);
-                Some(b.ins().ireduce(types::I16, w))
+            Ty::S(SAbi { agg: Agg::Hfa(c, n), .. }) => {
+                let es = if c == CType::F32 { 4 } else { 8 };
+                let a = ret_area.unwrap();
+                for k in 0..n as u32 {
+                    out.push(b.ins().stack_load(types::I64, float_type(c), slot, (a + k * es) as i32));
+                }
             }
-            CType::I32 | CType::U32 => {
-                let w = b.ins().stack_load(types::I64, types::I64, slot, ret_off);
-                Some(b.ins().ireduce(types::I32, w))
+            Ty::S(SAbi { agg: Agg::Words(w), .. }) => {
+                let a = ret_area.unwrap();
+                for k in 0..w as u32 {
+                    out.push(b.ins().stack_load(types::I64, types::I64, slot, (a + k * 8) as i32));
+                }
             }
-            _ => Some(b.ins().stack_load(types::I64, types::I64, slot, ret_off)),
-        };
-        match out {
-            Some(v) => b.ins().return_(&[v]),
-            None => b.ins().return_(&[]),
-        };
+            Ty::S(SAbi { agg: Agg::Indirect, .. }) => {}
+        }
+        b.ins().return_(&out);
         b.finalize(isa.frontend_config());
     }
-    let mut ctx = cranelift_codegen::Context::for_function(func);
-    let code = ctx.compile(&**isa, &mut ControlPlane::default()).map_err(|e| Error::new(format!("Can't compile a callback: {e:?}")))?;
-    crate::jit::install_code(code.code_buffer()).ok_or_else(|| Error::new("Out of executable memory"))
+    compile(func, "a callback")
+}
+
+fn parse_ty(v: Value, op: &str) -> Result<Ty> {
+    if let Some(s) = parse_struct(v)? {
+        return Ok(Ty::S(s));
+    }
+    if v.is_keyword() && v.sym_name() == "void" {
+        return Ok(Ty::C(CType::Void));
+    }
+    Ok(Ty::C(type_arg(v, op)?))
 }
 
 /// `(%ffi-callback [param-types] ret-type f chan)`: [id address].
 pub(crate) fn make_callback(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let mut params = Vec::new();
     for p in norn_rt::seq::SeqIter::new(a[0]).map(|it| it.collect::<Vec<_>>()).unwrap_or_default() {
-        params.push(type_arg(p, "callback")?);
+        match parse_ty(p, "callback")? {
+            Ty::C(CType::Void) => return Err(Error::new("callback: a parameter can't be :void")),
+            t => params.push(t),
+        }
     }
-    let rk = keyword_name(a[1])?;
-    let ret = if rk == "void" { CType::Void } else { type_arg(a[1], "callback")? };
-    let id = NEXT_CALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let at = trampoline(id, &params, ret)?;
+    let ret = parse_ty(a[1], "callback")?;
+    let sig = (params.clone(), ret);
+    let reused = FREE_TRAMPOLINES.lock().unwrap().as_mut().and_then(|m| m.get_mut(&sig).and_then(|v| v.pop()));
+    let (id, at) = match reused {
+        Some(t) => t,
+        None => {
+            let id = NEXT_CALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (id, trampoline(id, &params, ret)?)
+        }
+    };
     let port = crate::ext::Port::new(a[3])?;
     let root = crate::sched::root(a[2]);
-    let cb = Callback { params, ret, f: a[2], port, root };
+    let cb = Callback { code: at, params, ret, f: a[2], port, root };
     CALLBACKS.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, Arc::new(cb));
     Ok(vec_from_slice(&mut vm.m, &[Value::fix(id as i64), Value::fix(at as i64)]))
 }
@@ -761,7 +1166,7 @@ pub(crate) fn callback_reply(a: &[Value]) -> Result<Value> {
     let id = int_arg(a[0], CType::U64)?;
     let token = int_arg(a[1], CType::U64)?;
     let w = match callback(id) {
-        Some(cb) if !a[2].is_nil() || cb.ret == CType::Ptr => to_c(a[2], cb.ret).unwrap_or(0),
+        Some(cb) if !a[2].is_nil() || cb.ret == Ty::C(CType::Ptr) => ret_word(&cb, a[2]).unwrap_or(0),
         _ => 0,
     };
     if let Some(reply) = REPLIES.lock().unwrap().as_mut().and_then(|m| m.remove(&token)) {
@@ -772,13 +1177,16 @@ pub(crate) fn callback_reply(a: &[Value]) -> Result<Value> {
     Ok(Value::NIL)
 }
 
-/// `(%ffi-callback-free! id)`: C must not call it after this. (Its code
-/// stays: executable memory isn't reused.)
+/// `(%ffi-callback-free! id)`: C must not call it after this. Its
+/// trampoline is kept for the next callback of the same signature (which
+/// then answers a call to the old address).
 pub(crate) fn callback_free(a: &[Value]) -> Result<Value> {
     let id = int_arg(a[0], CType::U64)?;
     if let Some(cb) = CALLBACKS.lock().unwrap().as_mut().and_then(|m| m.remove(&id)) {
         crate::sched::unroot(cb.root);
         cb.port.close();
+        let sig = (cb.params.clone(), cb.ret);
+        FREE_TRAMPOLINES.lock().unwrap().get_or_insert_with(HashMap::new).entry(sig).or_default().push((id, cb.code));
     }
     Ok(Value::NIL)
 }

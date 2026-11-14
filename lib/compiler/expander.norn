@@ -531,7 +531,7 @@
 ;; time a macro expands (so through the module cache), not at boot.
 
 (def ^:private validators (atom nil))
-(def ^:private loading-validators (atom false))
+(def ^:private loading-validators "The fiber loading them, or nil." (atom nil))
 
 (def ^:dynamic *on-step*
   "While the macro stepper watches an expansion (M8 part 8.9): called with
@@ -540,11 +540,16 @@
   nil)
 
 (defn- validator-for [v]
-  (when (and (nil? @validators) (not @loading-validators) (%find-lib "norn.validate"))
-    (reset! loading-validators true)
-    (try (binding [*on-step* nil] (require 'norn.validate))
-         (reset! validators (var-get (%resolve-in 'norn.validate 'validators)))
-         (finally (reset! loading-validators false))))
+  (when (and (nil? @validators) (%find-lib "norn.validate"))
+    (cond (compare-and-set! loading-validators nil (current-fiber))
+          (try (binding [*on-step* nil] (require 'norn.validate))
+               (reset! validators (var-get (%resolve-in 'norn.validate 'validators)))
+               (finally (reset! loading-validators nil)))
+          ;; (norn.validate's own macros, as it loads: unchecked)
+          (identical? @loading-validators (current-fiber)) nil
+          ;; (another fiber is loading them: wait for it, rather than
+          ;; expand unchecked meanwhile)
+          :else (loop [] (when (and (nil? @validators) @loading-validators) (yield) (recur)))))
   (when-let [vs @validators] (get vs (%var-name v))))
 
 (defn- apply-macro

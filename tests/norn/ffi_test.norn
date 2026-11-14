@@ -3,7 +3,7 @@
 
 (ns ffi-test
   (:require [norn.test :refer [is deftest testing]] [norn.ffi :as ffi] [norn.io :as io] [norn.sys :as sys]
-            [norn.string :as str])
+            [norn.string :as str] [norn.process :as proc])
   (:unsafe))
 
 (def libc (ffi/library :c))
@@ -37,15 +37,15 @@
 
 ;; ---- structs ----
 
-(ffi/defcstruct mixed [c :char i :int d :double])
-(ffi/defcstruct pair [a :u8 b :u8])
+(ffi/defcstruct cid [c :char i :int d :double])
+(ffi/defcstruct two-bytes [a :u8 b :u8])
 (ffi/defcstruct point [x :i32 y :i32])
 (ffi/defcstruct shape [tag :u8 at point corners [:array point 2] name [:array :u8 3]])
 
 (deftest layouts
   (testing "as C lays them out"
-    (is (= [[0 4 8] 16 8] [(mapv (fn [k] (ffi/offset-of mixed k)) [:c :i :d]) (ffi/sizeof mixed) (ffi/alignof mixed)]))
-    (is (= [2 1] [(ffi/sizeof pair) (ffi/alignof pair)]))
+    (is (= [[0 4 8] 16 8] [(mapv (fn [k] (ffi/offset-of cid k)) [:c :i :d]) (ffi/sizeof cid) (ffi/alignof cid)]))
+    (is (= [2 1] [(ffi/sizeof two-bytes) (ffi/alignof two-bytes)]))
     (is (= [0 4 12 28 32] [(ffi/offset-of shape :tag) (ffi/offset-of shape :at) (ffi/offset-of shape :corners)
                            (ffi/offset-of shape :name) (ffi/sizeof shape)]))
     (is (= 8 (ffi/offset-of shape [:at :y])) "a path"))
@@ -73,9 +73,12 @@
         "a day of 1972")
     (is (contains? #{"UTC" "GMT"} (:zone tmv)) "a string field")))
 
-(deftest structs-by-value-arent-yet
-  (is (str/includes? (message (fn [] (ffi/function libc "abs" [point] :int))) "by pointer"))
-  (is (some? (message (fn [] (ffi/function libc "div" [:int :int] point))))))
+(ffi/defcfun snprintf libc "snprintf" [buf :out n :usize fmt :string & xs] :int)
+
+(deftest variadic-from-the-c-library
+  (let [[n buf] (snprintf 64 64 "%d %s %.2f %ld %c" -42 "hi" 3.14159 9000000000 65)]
+    (is (= "-42 hi 3.14 9000000000 A" (subs (bytes->string buf true) 0 n))))
+  (is (str/includes? (message (fn [] (ffi/function libc "printf" [:... :string] :int))) ":... comes last")))
 
 ;; ---- callbacks ----
 
@@ -146,3 +149,132 @@
       "nor the primitives under it")
   (eval '(require 'ffi2.layouts))
   (is (= 16 (eval 'ffi2.layouts/size)) "layouts touch nothing: anyone may"))
+
+;; ---- against C's own: tests/norn/ffi_fixture.c, built here with cc ----
+
+(def here (let [loc (%location)] (io/parent (subs loc 0 (str/last-index-of loc ":")))))
+(def fixture-path (io/path dir (str "libffi_fixture" (if (= (sys/os) :macos) ".dylib" ".so"))))
+(let [r (proc/sh "cc" "-shared" "-fPIC" "-o" fixture-path (io/path here "ffi_fixture.c"))]
+  (when-not (zero? (:exit r)) (error (str "Couldn't build the C fixture: " (:err r)))))
+(def fix (ffi/library fixture-path))
+
+(ffi/defcstruct pair [a :int b :int])
+(ffi/defcstruct odd12 [a :int b :char c :int])
+(ffi/defcstruct v2 [x :float y :float])
+(ffi/defcstruct v4 [x :double y :double z :double w :double])
+(ffi/defcstruct big [a :long b :long c :long])
+(ffi/defcstruct padded [c :char d :double s :short])
+(ffi/defcstruct flags [a [:bits :u32 3] b [:bits :u32 5] c [:bits :i32 4] d [:bits :u32 22] e [:bits :u8 2] f [:bits :u64 40]])
+(ffi/defcunion any [i :int f :float c [:array :char 6] d :double])
+(ffi/defcstruct tagged [tag :char u any])
+
+(ffi/defcfun c-layout fix "layout" [i :int] :long)
+
+(deftest layouts-agree-with-c
+  (is (= (mapv c-layout (range 11))
+         [(ffi/sizeof odd12) (ffi/offset-of odd12 :c) (ffi/sizeof padded) (ffi/offset-of padded :d) (ffi/offset-of padded :s)
+          (ffi/sizeof flags) (ffi/alignof flags) (ffi/sizeof any) (ffi/alignof any) (ffi/sizeof tagged) (ffi/offset-of tagged :u)])))
+
+(ffi/defcfun flags-set fix "flags_set" [f :pointer a :uint b :uint c :int d :uint e :uint g :u64] :void)
+(ffi/defcfun flags-get fix "flags_get" [f :pointer which :int] :i64)
+(ffi/defcfun any-float fix "any_float" [u :pointer] :float)
+(ffi/defcfun any-set-int fix "any_set_int" [u :pointer i :int] :void)
+
+(deftest bit-fields
+  (ffi/with-alloc [p flags]
+    (flags-set p 5 17 -3 3000000 2 1099511627775)
+    (is (= {:a 5 :b 17 :c -3 :d 3000000 :e 2 :f 1099511627775} (ffi/struct-get p flags)) "C wrote them, Norn reads them")
+    (ffi/struct-set! p flags {:a 2 :b 31 :c 7 :d 1 :e 1 :f 12345})
+    (is (= [2 31 7 1 1 12345] (mapv (fn [i] (flags-get p i)) (range 6))) "and the other way")
+    (ffi/set-field! p flags :c -8)
+    (is (= [-8 31] [(flags-get p 2) (flags-get p 1)]) "a signed field, its neighbours untouched")
+    (is (some? (message (fn [] (ffi/set-field! p flags :a 8)))) "3 bits hold 0 to 7")))
+
+(deftest unions
+  (ffi/with-alloc [p any]
+    (ffi/set-field! p any :f 2.5)
+    (is (= 2.5 (any-float p)))
+    (any-set-int p 65)
+    (is (= 65 (:i (ffi/struct-get p any))))
+    (is (= 65 (first (ffi/field p any :c))) "the same memory, as chars"))
+  (ffi/with-alloc [p tagged {:tag 3 :u {:i 7}}]
+    (is (= [3 7] [(ffi/field p tagged :tag) (ffi/field p tagged [:u :i])]))))
+
+(ffi/defcfun pair-make fix "pair_make" [a :int b :int] pair)
+(ffi/defcfun pair-sum fix "pair_sum" [p pair] :int)
+(ffi/defcfun odd-make fix "odd_make" [a :int b :char c :int] odd12)
+(ffi/defcfun odd-sum fix "odd_sum" [o odd12] :long)
+(ffi/defcfun v2-add fix "v2_add" [a v2 b v2] v2)
+(ffi/defcfun v4-scale fix "v4_scale" [v v4 k :double] v4)
+(ffi/defcfun v4-sum fix "v4_sum" [v v4] :double)
+(ffi/defcfun big-make fix "big_make" [a :long] big)
+(ffi/defcfun big-sum fix "big_sum" [b big] :long)
+(ffi/defcfun padded-make fix "padded_make" [c :char d :double s :short] padded)
+(ffi/defcfun padded-sum fix "padded_sum" [p padded] :double)
+(ffi/defcfun tagged-check fix "tagged_check" [t tagged] :long)
+(ffi/defcfun flags-sum fix "flags_sum" [f flags] :long)
+(ffi/defcfun many-ints fix "many_ints"
+  [a1 :long a2 :long a3 :long a4 :long a5 :long a6 :long a7 :long o odd12 after :long] :long)
+(ffi/defcfun many-floats fix "many_floats"
+  [d1 :double d2 :double d3 :double d4 :double d5 :double d6 :double d7 :double v v2 after :double] :double)
+
+(deftest structs-by-value
+  (testing "in one integer register, and two"
+    (is (= [{:a 3 :b 4} 11] [(pair-make 3 4) (pair-sum {:a 5 :b 6})]))
+    (is (= [{:a 1 :b 2 :c 3} 321] [(odd-make 1 2 3) (odd-sum {:a 1 :b 2 :c 3})])))
+  (testing "floats and doubles in float registers"
+    (is (= {:x 1.75 :y 3.0} (v2-add {:x 1.5 :y 2.0} {:x 0.25 :y 1.0})))
+    (is (= {:x 0.5 :y 1.0 :z 1.5 :w 2.0} (v4-scale {:x 1.0 :y 2.0 :z 3.0 :w 4.0} 0.5)))
+    (is (= 10.5 (v4-sum {:x 1.0 :y 2.0 :z 3.0 :w 4.5}))))
+  (testing "larger: by reference, and the result through x8"
+    (is (= [{:a 7 :b 14 :c 21} 6] [(big-make 7) (big-sum {:a 1 :b 2 :c 3})]))
+    (is (= [{:c 1 :d 2.5 :s 3} 6.5] [(padded-make 1 2.5 3) (padded-sum {:c 1 :d 2.5 :s 3})])))
+  (testing "with a union in it, and bit fields"
+    (is (= 3007 (tagged-check {:tag 3 :u {:i 7}})))
+    (is (= 41 (flags-sum {:a 1 :b 2 :c -3 :d 4 :e 3 :f 34}))))
+  (testing "when the registers run out, on the stack, whole"
+    (is (= 9321028 (many-ints 1 2 3 4 5 6 7 {:a 1 :b 2 :c 3} 9)))
+    (is (= 80103.0 (many-floats 1 2 3 4 5 6 7 {:x 0.5 :y 0.25} 8))))
+  (testing "an address will do for a map: it's copied"
+    (ffi/with-alloc [p pair {:a 20 :b 22}]
+      (is (= 42 (pair-sum p))))))
+
+(ffi/defcfun sum-longs fix "sum_longs" [n :int & xs] :long)
+(ffi/defcfun sum-doubles fix "sum_doubles" [n :int & xs] :double)
+(ffi/defcfun mixed fix "mixed" [kinds :string & xs] :double)
+
+(deftest variadic-functions
+  (is (= 25 (sum-longs 3 10 20 -5)))
+  (is (= 0 (sum-longs 0)))
+  (is (= 3.75 (sum-doubles 2 1.5 2.25)))
+  (is (= 101.5 (mixed "ilds" -3 100 0.5 "four")) "int, long, double and string, each call's own")
+  (is (some? (message (fn [] (sum-longs 1 :k)))) "a keyword isn't a C value"))
+
+(ffi/defcfun apply-pair fix "apply_pair" [f [:callback [pair :int] pair] p pair k :int] pair)
+(ffi/defcfun apply-v4 fix "apply_v4" [f [:callback [v4 :double] v4] v v4] v4)
+(ffi/defcfun apply-big fix "apply_big" [f [:callback [big] big] b big] big)
+(ffi/defcfun apply-many fix "apply_many"
+  [f [:callback [:long :long :long :long :long :long :long odd12 :long] :long]] :long)
+(ffi/defcfun apply-many-floats fix "apply_many_floats"
+  [f [:callback [:double :double :double :double :double :double :double v2 :double] :double]] :double)
+(ffi/defcfun call-from-thread fix "call_from_thread" [f [:callback [:int] :int] x :int] :int :blocking true)
+(ffi/defcfun call-from-thread-fast fix "call_from_thread" [f [:callback [:int] :int] x :int] :int)
+
+(deftest callbacks-with-structs
+  (is (= {:a 20 :b 13} (apply-pair (fn [p k] {:a (* k (:a p)) :b (+ k (:b p))}) {:a 2 :b 3} 10)))
+  (is (= {:x 2.0 :y 4.0 :z 6.0 :w 8.0} (apply-v4 (fn [v k] (update-vals v (fn [x] (* k x)))) {:x 1.0 :y 2.0 :z 3.0 :w 4.0})))
+  (is (= {:a 2 :b 3 :c 4} (apply-big (fn [b] (update-vals b inc)) {:a 1 :b 2 :c 3})) "by reference both ways")
+  (is (= 8321028 (apply-many (fn [a b c d e f g o h] (+ a b c d e f g (* 1000 (+ (:a o) (* 10 (:b o)) (* 100 (:c o)))) (* 1000000 h))))))
+  (is (= 80103.0 (apply-many-floats (fn [a b c d e f g v h] (+ a b c d e f g (* 100 (+ (:x v) (:y v))) (* 10000 h)))))))
+
+(deftest a-thread-of-cs-own
+  (is (= 42 (call-from-thread (fn [x] (* x 3)) 14)) "the call on the blocking pool")
+  (is (= 45 (call-from-thread-fast (fn [x] (* x 3)) 15)) "a fast call, waiting in C: the callback still runs"))
+
+(deftest freed-callbacks-are-reused
+  (let [a (ffi/callback [:int :int] :long +)]
+    (ffi/free-callback! a)
+    (let [b (ffi/callback [:int :int] :long -)]
+      (is (= (ffi/callback-address a) (ffi/callback-address b)) "the same code")
+      (is (= 2 (ffi/call (ffi/function-at (ffi/callback-address b) [:int :int] :long) 5 3)) "answering for the new one")
+      (ffi/free-callback! b))))

@@ -681,10 +681,8 @@ describe.**
   - A module that doesn't say it may still call one that does, and
     layouts (`defcstruct`, `sizeof`) are for anyone.
   - `lib_test.norn` says `(:unsafe)` now.
-- **Not done:** structs passed or returned by value (they need the
-  platform ABI's rules for aggregates), variadic functions (`printf`),
-  unions and bit fields. A callback's code isn't reclaimed when it's
-  freed.
+- **Not done in 9.8, then done in 9.8b:** structs by value, variadic
+  functions, unions and bit fields, and reusing a freed callback's code.
 - **Tests:** `ffi_test.norn`, 43 checks at both tiers:
   - memory in every C type;
   - layouts against C's rules, nested structs and arrays read and
@@ -697,3 +695,47 @@ describe.**
   - the `(:unsafe)` rule, for the library and the primitives.
 
   Run ten times at both tiers without a failure.
+
+**9.8b, the rest of the FFI (2026-11-14): done, on arm64.**
+
+- **Structs by value,** in calls and in callbacks, both ways: a layout as
+  a parameter or result type, passed and returned as a map (an address
+  for a parameter is copied). arm64's rules (AAPCS64, and Apple's):
+  - one to four floats or doubles of one type go in float registers;
+  - anything else up to 16 bytes in one or two integer registers;
+  - anything larger by reference, and a result through x8;
+  - a struct that doesn't fit the registers left goes on the stack, whole.
+- **Variadic functions:** `:...` last in the types, or `& more` in
+  `defcfun`'s parameters. The extra arguments are numbers (64-bit
+  integers, doubles), strings, Bytes and nil, with a stub for each call's
+  types (cached). On Apple arm64 they all go on the stack, as Apple's ABI
+  says. `snprintf` works.
+- **Unions:** `defcunion`.
+- **Bit fields:** `[:bits type width]` in a struct, placed as C does (in a
+  unit of the type, from the lowest bit; one that doesn't fit starts the
+  next unit; width 0 ends the unit). Signed ones read sign-extended, and
+  writes are range-checked and leave the neighbours alone.
+- **A freed callback's trampoline** is reused by the next callback with
+  its signature, so executable memory doesn't grow with callbacks made
+  and freed.
+- **Against C itself:** `tests/norn/ffi_fixture.c`, which `ffi_test.norn`
+  builds with `cc` into a shared library. It covers:
+  - layouts as C computes them (padding, bit fields, unions);
+  - each kind of struct by value, as arguments and results, and with
+    the registers used up;
+  - variadic `long`s, `double`s and a mix;
+  - callbacks taking and returning each kind;
+  - a callback from a thread of C's own, during a blocking call and
+    during a fast one.
+
+  Every case was right at the first run against C.
+- **Not done:** x86-64 (System V's classification of each eight bytes,
+  and `%al` for a variadic call, which Cranelift can't set) and Windows:
+  they come with M12's ports, and are an error until then.
+- **A race it showed up** (from 8.3): the expander loads `norn.validate`
+  the first time a macro expands. Another fiber expanding meanwhile skipped
+  the checks, so a suite running beside another (`cargo test` runs them in
+  one runtime) sometimes got the seed compiler's messages. Now it waits
+  for the load. 40 runs of the suites in a row passed after the fix.
+- **Tests:** `ffi_test.norn`, now 78 checks at both tiers. Run ten times
+  at both tiers without a failure.
