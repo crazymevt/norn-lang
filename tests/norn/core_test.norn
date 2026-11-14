@@ -246,6 +246,12 @@
 (is (= 1 (first s1)))
 (is (= 1 (first s1)))
 (is (= [true 1] [(realized? s1) @forced]))
+;; A lazy stream realized inside a run from Rust (here, a macro run by
+;; macroexpand-1): realized there, with the primitive called again, not
+;; handed to the fiber's interpreter, which would run the whole macro again,
+;; a new stream each time, for ever (M9 part 9.2).
+(defmacro pairs-with-indexes [& xs] (vec (map vector xs (range))))
+(is (= [[:a 0] [:b 1]] (macroexpand-1 '(pairs-with-indexes :a :b))))
 (is (= [0 1 2 3 4] (vec (take 5 (range)))))
 (is (= 100 (nth (iterate inc 0) 100)))
 (is (= [10 11 12] (vec (take 3 (iterate inc 10)))))

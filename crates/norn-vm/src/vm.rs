@@ -764,25 +764,38 @@ impl Vm {
         if args.len() < f.prim_min() || args.len() > f.prim_max() {
             return Err(arity_error(f, args.len()));
         }
-        match (crate::ext::prim(f.prim_index()).f)(self, args) {
-            // (a run from Rust can't hand the call to the interpreter: make
-            // it here, nested; it can't park)
-            Err(Error { kind: ErrKind::Call(g, a), .. }) if self.nested > 0 => {
-                let mut argv = Vec::new();
-                a.vec_for_each(|x| {
-                    argv.push(x);
-                    true
-                });
-                self.apply(g, &argv)
-            }
-            Err(e) if e.kind == ErrKind::Runtime => match args.iter().find_map(|&a| norn_rt::seq::first_unrealized(a)) {
-                Some(s) => {
-                    let one_step = matches!(crate::ext::prim(f.prim_index()).name, "first" | "rest" | "next" | "seq" | "nth" | "empty?");
-                    Err(Error::force(s, !one_step))
+        loop {
+            return match (crate::ext::prim(f.prim_index()).f)(self, args) {
+                // (a run from Rust can't hand the call to the interpreter: make
+                // it here, nested; it can't park)
+                Err(Error { kind: ErrKind::Call(g, a), .. }) if self.nested > 0 => {
+                    let mut argv = Vec::new();
+                    a.vec_for_each(|x| {
+                        argv.push(x);
+                        true
+                    });
+                    self.apply(g, &argv)
                 }
-                None => Err(e),
-            },
-            r => r,
+                Err(e) if e.kind == ErrKind::Runtime => match args.iter().find_map(|&a| norn_rt::seq::first_unrealized(a)) {
+                    Some(s) => {
+                        let one_step = matches!(crate::ext::prim(f.prim_index()).name, "first" | "rest" | "next" | "seq" | "nth" | "empty?");
+                        if self.nested > 0 {
+                            // A run from Rust realizes the stream here and
+                            // calls the primitive again. (Handed up, the
+                            // fiber's interpreter would run its own
+                            // instruction again, and so this whole run, with
+                            // a new stream each time: a loop that never ends.)
+                            let var = self.core_fn("%force-stream", &FORCE_VAR);
+                            let force = if var.is(Kind::Var) { var.var_root() } else { var };
+                            self.apply(force, &[s, Value::bool(!one_step)])?;
+                            continue;
+                        }
+                        Err(Error::force(s, !one_step))
+                    }
+                    None => Err(e),
+                },
+                r => r,
+            };
         }
     }
 

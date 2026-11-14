@@ -1,0 +1,73 @@
+;;;; match (M9 part 9.2): pattern matching on data, in core.
+
+(ns match-test
+  (:require [norn.test :refer [is deftest testing]] [norn.string :as str]))
+
+(defn- message [f] (try (f) nil (catch Error e (condition-message e))))
+
+(deftest patterns
+  (testing "anything, names and literals"
+    (is (= :any (match 42 _ :any)))
+    (is (= 43 (match 42 n (inc n))))
+    (is (= [:one :str :kw :char :nil :false]
+           (mapv (fn [x] (match x 1 :one "s" :str :k :kw \c :char nil :nil false :false))
+                 [1 "s" :k \c nil false]))))
+  (testing "quoted data"
+    (is (= :sym (match 'a 'a :sym _ :no)))
+    (is (= :list (match '(1 2) '(1 2) :list _ :no))))
+  (testing "sequences"
+    (is (= [1 2] (match [1 2] [a b] [a b])))
+    (is (= [1 2] (match '(1 2) [a b] [a b])) "a list matches a vector pattern")
+    (is (= :no (match [1 2 3] [a b] [a b] _ :no)) "the length must agree")
+    (is (= [1 '(2 3)] (match [1 2 3] [a & more] [a more])))
+    (is (= [1 nil] (match [1] [a & more] [a more])) "nothing left: nil")
+    (is (= :no (match "ab" [_a _b] :seq _ :no)) "a string isn't sequential"))
+  (testing "maps"
+    (is (= [7 :b] (match {:a 7 :b 8} {:a x} [x :b])))
+    (is (= :no (match {:b 8} {:a x} x _ :no)) "a key must be there")
+    (is (= :nil-is-there (match {:a nil} {:a nil} :nil-is-there _ :no))))
+  (testing "nested"
+    (is (= 5 (match {:op :add :args [2 3]} {:op :add :args [a b]} (+ a b))))
+    (is (= [:x 1] (match [[:x 1] [:y 2]] [[k v] & _] [k v]))))
+  (testing ":or, :as and :?"
+    (is (= [:small :small :big] (mapv (fn [x] (match x (:or 1 2) :small _ :big)) [1 2 3])))
+    (is (= [:a [1 2]] (match [:a [1 2]] [k (:or [x y] [x y _])] [k [x y]])))
+    (is (= [[1 2] 1] (match [1 2] (:as [a _] whole) [whole a])))
+    (is (= [:num 3] (match 3 (:? number? n) [:num n] _ :other)))
+    (is (= :pos (match 5 (:? pos?) :pos _ :other))))
+  (testing "a name twice: equal values"
+    (is (= [:same :different] (mapv (fn [x] (match x [_a _a] :same _ :different)) [[3 3] [3 4]]))))
+  (testing ":else"
+    (is (= :else (match 9 1 :one :else :else)))))
+
+(deftest guards
+  (let [kind (fn [x] (match x
+                       [k v] :when (keyword? k) [:pair k v]
+                       [k v] :when (string? k) [:named k v]
+                       _ :other))]
+    (is (= [:pair :a 1] (kind [:a 1])))
+    (is (= [:named "a" 1] (kind ["a" 1])))
+    (is (= :other (kind [1 1])) "both guards false: on to the next clause")))
+
+(deftest bodies-are-in-tail-position
+  ;; (receive's processes loop this way)
+  (is (= 2 (loop [n 0 msgs [[:inc] [:inc] [:get]]]
+             (match (first msgs)
+               [:inc] (recur (inc n) (rest msgs))
+               [:get] n)))))
+
+(deftest no-clause-matches
+  (let [c (try (match {:x 1} [a] a) nil (catch MatchError e e))]
+    (is (= "No clause of match matched {:x 1}" (condition-message c)))
+    (is (= {:x 1} (:value c)))
+    (is (instance? Error c))))
+
+(deftest mistakes-are-found-when-expanding
+  (is (str/includes? (message (fn [] (eval '(match 1 (:or a b) a)))) "Each pattern in (:or …) must bind the same names"))
+  (is (str/includes? (message (fn [] (eval '(match 1 [a])))) "a clause needs a body after its pattern"))
+  (is (str/includes? (message (fn [] (eval '(match 1 #{1} :set)))) "Not a pattern")))
+
+(deftest the-code-grows-with-the-clauses
+  ;; (each body is expanded once: no copy per clause that follows it)
+  (let [size (fn [n] (count (str (macroexpand (apply list 'match 'x (mapcat (fn [i] [[i 'y] :when '(pos? y) i]) (range n)))))))]
+    (is (< (size 40) (* 2.5 (size 20))))))

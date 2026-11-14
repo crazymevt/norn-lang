@@ -3047,3 +3047,133 @@
 
 (defn ex-message "Condition c's message." [c] (when (instance? Condition c) (condition-message c)))
 (defn ex-cause "The condition that caused c (an ex-info's cause), or nil." [c] (when (instance? ExInfo c) (:cause c)))
+
+;;; ---- pattern matching on data (M9 part 9.2) ----------------------------------------------
+;;;
+;;; (match x
+;;;   [:get from]           (send from n)
+;;;   [:put k v] :when (keyword? k) (assoc m k v)
+;;;   {:op :add :args [a b]} (+ a b)
+;;;   _                     :unknown)
+;;;
+;;; A clause is a pattern, perhaps :when and a guard (with the pattern's
+;;; names bound), then the body. The first clause that matches gives the
+;;; value; its body is in tail position, so recur works there. When none
+;;; matches, a MatchError says what the value was. Patterns:
+;;;
+;;;   _                 anything
+;;;   name              anything, bound to name (twice in one pattern: equal values)
+;;;   nil, true, 1, "s", \c, :k   that value
+;;;   'sym, '(a b)      that data
+;;;   [p … & rest]      a sequential value (vector, list or seq) of those
+;;;                     parts, rest bound to what's left (nil if nothing)
+;;;   {:k p …}          a map with those keys, their values matching
+;;;   (:or p …)         any of them (each binding the same names)
+;;;   (:as p name)      p, with the whole value bound to name too
+;;;   (:? pred p)       a value pred is true of, matching p (or anything)
+;;;   :else             anything (for a last clause)
+
+(defclass MatchError (Error) ((value :initform nil)))
+
+(defn- %pattern-vars
+  "The names pattern p binds, in order."
+  [p]
+  (cond (= p '_) []
+        (and (symbol? p) (nil? (namespace p)) (not= p '&)) [p]
+        (and (seq? p) (= 'quote (first p))) []
+        (and (seq? p) (contains? #{:or} (first p))) (%pattern-vars (second p))
+        (and (seq? p) (= :as (first p))) (conj (%pattern-vars (second p)) (nth p 2))
+        (and (seq? p) (= :? (first p))) (if (> (count p) 2) (%pattern-vars (nth p 2)) [])
+        (vector? p) (vec (mapcat %pattern-vars (remove (fn [x] (= x '&)) p)))
+        (map? p) (vec (mapcat %pattern-vars (vals p)))
+        :else []))
+
+(defn- %emit-match
+  "Code testing pattern p against the value in symbol v: the code (kf)
+  gives (with p's names bound) if it matches, else nil. kf is called only
+  once p's own names are known, so a name repeated to its right is a
+  comparison and not a second binding. seen: an atom of the names bound
+  so far in this pattern."
+  [p v kf seen]
+  (cond
+    (= p '_) (kf)
+    (and (symbol? p) (nil? (namespace p)) (not= p '&))
+    (if (contains? @seen p)
+      `(when (= ~v ~p) ~(kf))
+      (do (swap! seen conj p) `(let* [~p ~v] ~(kf))))
+    (nil? p) `(when (nil? ~v) ~(kf))
+    (or (boolean? p) (number? p) (string? p) (char? p) (keyword? p)) `(when (= ~v ~p) ~(kf))
+    (and (seq? p) (= 'quote (first p))) `(when (= ~v ~p) ~(kf))
+    (and (seq? p) (= :or (first p)))
+    (let [alts (rest p)
+          vars (%pattern-vars (first alts))
+          r (gensym "alt")]
+      (doseq [a (rest alts)]
+        (when-not (= (set vars) (set (%pattern-vars a)))
+          (error "Each pattern in (:or …) must bind the same names:" (pr-str p))))
+      (let [before @seen
+            tries (mapv (fn [a] (reset! seen before) (%emit-match a v (fn [] (vec vars)) seen)) alts)]
+        (reset! seen (into before vars))
+        `(let* [~r (or ~@tries)]
+           (when ~r (let* [~@(mapcat (fn [x i] [x `(nth ~r ~i)]) vars (range (count vars)))] ~(kf))))))
+    (and (seq? p) (= :as (first p)))
+    (let [[_ q nm] p]
+      (swap! seen conj nm)
+      `(let* [~nm ~v] ~(%emit-match q v kf seen)))
+    (and (seq? p) (= :? (first p)))
+    (let [[_ pred q] p]
+      `(when (~pred ~v) ~(if (> (count p) 2) (%emit-match q v kf seen) (kf))))
+    (vector? p)
+    (let [amp (%index-of p '&)
+          fixed (if amp (subvec p 0 amp) p)
+          rest-p (when amp (get p (inc amp)))
+          n (count fixed)
+          parts (mapv (fn [_] (gensym "part")) fixed)
+          rest-s (gensym "rest")
+          pairs (map vector (if rest-p (conj fixed rest-p) fixed) (if rest-p (conj parts rest-s) parts))
+          ;; (left to right: each part's names are known before the parts
+          ;; to its right are emitted)
+          chain (fn chain [ps] (if (empty? ps) (kf) (let [[q s] (first ps)] (%emit-match q s (fn [] (chain (rest ps))) seen))))]
+      `(when (and (sequential? ~v) ~(if rest-p `(>= (count ~v) ~n) `(= (count ~v) ~n)))
+         (let* [~@(mapcat (fn [s i] [s `(nth ~v ~i)]) parts (range (count parts)))
+                ~@(when rest-p [rest-s `(seq (drop ~n ~v))])]
+           ~(chain pairs))))
+    (map? p)
+    (let [entries (vec p)
+          ss (mapv (fn [_] (gensym "val")) entries)
+          chain (fn chain [ps] (if (empty? ps) (kf) (let [[[_ q] s] (first ps)] (%emit-match q s (fn [] (chain (rest ps))) seen))))]
+      `(when (and (map? ~v) ~@(map (fn [[key _]] `(contains? ~v ~key)) entries))
+         (let* [~@(mapcat (fn [[key _] s] [s `(get ~v ~key)]) entries ss)]
+           ~(chain (map vector entries ss)))))
+    :else (error "Not a pattern:" (pr-str p))))
+
+(defmacro match
+  "(match x pattern [:when guard] body …): the body of the first clause
+  whose pattern x matches (and whose guard is true, its names bound);
+  a MatchError if none does. See the patterns above."
+  {:indent 1}
+  [x & clauses]
+  (let [v (gensym "v")
+        clauses (loop [cs (seq clauses) out []]
+                  (if (nil? cs)
+                    out
+                    (let [[p & more] cs
+                          [guard more] (if (= :when (first more)) [(second more) (nnext more)] [true more])]
+                      (when (empty? more) (error "match: a clause needs a body after its pattern:" (pr-str p)))
+                      (recur (next more) (conj out [(if (= p :else) '_ p) guard (first more)])))))
+        fail `(error MatchError :message (str "No clause of match matched " (pr-str ~v)) :value ~v)]
+    `(let* [~v ~x]
+       ~(reduce (fn [nxt [p guard body]]
+                  (let [vars (%pattern-vars p)
+                        b (gensym "bound")
+                        ok (gensym "ok")
+                        bind (vec (mapcat (fn [s i] [s `(nth ~b ~i)]) vars (range (count vars))))
+                        ;; (the guard sees only the names it mentions: binding
+                        ;; the rest there too would leave them unused)
+                        mentioned (set (filter symbol? (tree-seq coll? seq guard)))
+                        guard-bind (vec (mapcat (fn [s i] (when (contains? mentioned s) [s `(nth ~b ~i)])) vars (range (count vars))))]
+                    `(let* [~b ~(%emit-match p v (fn [] (vec vars)) (atom #{}))
+                            ~ok ~(if (true? guard) `(if ~b true false) `(if ~b (let* ~guard-bind ~guard) false))]
+                       (if ~ok (let* ~bind ~body) ~nxt))))
+                fail
+                (reverse clauses)))))

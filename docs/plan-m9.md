@@ -349,3 +349,36 @@ done.**
   - a class of one's own deref'd;
   - `ex-info` with data and a cause, and `ex-data` of a runtime error.
 
+**9.2, `match` (2026-11-14): done.**
+
+- **`match` in `norn.core`:** `(match x pattern [:when guard] body …)`.
+  The first clause that matches gives the value. A guard sees the
+  pattern's names. When nothing matches, it's a `MatchError` with the
+  value (`:value`). The patterns:
+  - `_`, and names, which bind (a name twice in one pattern means equal
+    values);
+  - `nil`, booleans, numbers, strings, characters and keywords, and
+    quoted data;
+  - `[p … & rest]`, matching any sequential value (a vector, a list, a
+    seq), with `rest` nil when nothing's left;
+  - `{:k p …}`, matching a map with those keys;
+  - `(:or p …)`, where each pattern binds the same names (checked when
+    expanding);
+  - `(:as p name)`, `(:? pred p)`, and `:else`.
+- **Compiled inline, with bodies in tail position,** so `recur` works in
+  them, as `receive` (9.6) will need. Each clause's pattern becomes a test
+  that yields its bindings, and its body is expanded once, so the code
+  grows with the number of clauses rather than multiplying. Patterns are
+  emitted left to right, so a repeated name compares against the first
+  binding.
+- **A runtime bug it found:** a lazy stream that had to be realized inside
+  a run from Rust (`macroexpand-1`, here) was handed up to the fiber's
+  interpreter. That interpreter forced the stream and ran its own
+  instruction again, which re-ran the whole nested call with a new stream
+  each time, for ever. A nested run now forces the stream itself and calls
+  the primitive again. `core_test` checks it with a macro that maps over
+  `(range)`.
+- **Tests:** `match_test.norn`, 34 checks at both tiers: every kind of
+  pattern, nesting, guards falling through, `recur` in a body, the
+  `MatchError`, mistakes found when expanding, and how the code grows.
+
