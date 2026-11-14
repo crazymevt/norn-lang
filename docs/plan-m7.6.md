@@ -82,7 +82,7 @@ a design against Norn's fibers and conditions.
 
 ## Part 3 — the editor
 
-**Status (2026-11-14): 3.1 to 3.5 done.**
+**Status (2026-11-14): 3.1 to 3.6 done.**
 - **3.1, the shell:** built as planned, with a basic Explorer tree (3.6
   adds icons for Git status and the rest). The tools in the docks are
   placeholders until their parts.
@@ -108,6 +108,13 @@ a design against Norn's fibers and conditions.
   named function. A frame's locals arrive printed (`:backtrace`), so
   they're shown as text, split into names and values. F12 now asks the
   running `norn` first (`:definition`), then reads the project.
+- **3.6, the Explorer, Git, Project and Outline:** built as planned, by
+  running `git` (always with `--no-optional-locks`: `git status` would
+  otherwise rewrite the index, and a commit made in a terminal meanwhile
+  would find `index.lock` taken). A diff is a tab of its own, side by
+  side, read from `git diff` with all the context. Commits and checkouts
+  made outside show, as the folder watch passes `.git/index` and
+  `.git/HEAD` through.
 
 On the way:
 - `norn-ui` gained:
@@ -125,6 +132,13 @@ On the way:
     rejected them;
   - `:gutter false` on the editor surface (the REPL's input has no line
     numbers);
+  - tree rows with a badge (a Git status letter) and an icon colour of
+    their own; `editor-set-text!` taking a function applied in the same
+    change;
+  - a fix: `focus!` and an editor's updates wait for a render in
+    progress (a reentrant lock), as they name nodes of the last rendered
+    tree; arriving just after a render removed one, the engine rejected
+    them;
   - a fix: a window's renders are serialized. A `refresh!` while the
     render loop was rendering the same window sent the engine two diffs
     against one old tree, and later ops named nodes that were gone.
@@ -133,6 +147,7 @@ On the way:
     one), as `norn test` does, so the editor protocol's `:test` can too;
   - `norn FILE.norn ARGS…`, which runs the file with its arguments, as
     the usage line always said (it refused them);
+  - `tree-seq`;
   - `doseq` with several bindings, `:let` and `:when`, as `for` has
     (it silently ignored all but the first binding);
   - `io/canonical`, a path with its symbolic links resolved, as

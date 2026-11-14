@@ -2517,6 +2517,14 @@
 
 ;;; ---- more of Clojure's core (found missing while building the editor, M7.6) ---------------
 
+(defn tree-seq
+  "The nodes of a tree, depth first and lazily: root, then, when
+  (branch? node), the nodes under each of (children node)."
+  [branch? children root]
+  (let [walk (fn walk [node]
+               (lazy-seq (cons node (when (branch? node) (mapcat walk (children node))))))]
+    (walk root)))
+
 (defmacro case
   "Choose by constant: (case e k1 r1 (k2 k3) r2 default). A list of
   constants matches any of them; with no default and no match, an error."

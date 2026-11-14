@@ -155,6 +155,8 @@
     "doseq nests bindings and skips with :when, as for")
 (is (= [2 4] (let [r (atom [])] (doseq [x [1 2] :let [y (* 2 x)]] (swap! r conj y)) @r)))
 (is (nil? (doseq [x [1]] x)))
+(is (= [[1 [2 [3]] 4] 1 [2 [3]] 2 [3] 3 4] (vec (tree-seq vector? seq [1 [2 [3]] 4]))) "tree-seq: depth first")
+(is (= [:a :b :c] (mapv :id (tree-seq :kids :kids {:id :a :kids [{:id :b} {:id :c}]}))))
 (defmacro swap-pair [[a b]] (list 'list b a))
 (is (= '(2 1) (swap-pair [1 2])))
 (is (= [1 [2 3]] ((fn [a & [b c]] [a [b c]]) 1 2 3)))
