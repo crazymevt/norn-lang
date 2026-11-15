@@ -263,7 +263,10 @@ On the way:
 Phased, as design §9.1 says: the API/HTTP workbench (after M9's HTTP
 client), the Databases view (after M9's drivers), the terminal panel
 (after pseudo-terminals in `norn.process`), and team chat (after M7.6; it
-needs no new library). Team chat is Xeon Studio's team of agents, with
+needs no new library). The first three were built on 2026-11-15: the
+Databases view (SQLite), the API workbench (`.http` collections,
+environments, a Builder) and the terminal panel (an xterm emulator in Norn,
+drawn by the editor element). Team chat is Xeon Studio's team of agents, with
 plans, tasks in Git worktrees, reviews and merges.
 
 ## Decisions (the user, 2026-11-13)

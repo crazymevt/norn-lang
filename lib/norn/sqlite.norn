@@ -238,7 +238,8 @@
         :else (error (str "SQL is a string, or a vector of it and its parameters: " (pr-str q)))))
 
 (defn- run-statement!
-  "Run q on c: (on-row stmt names) for each row; the rows changed."
+  "Run q on c: (on-row stmt names) for each row, until it returns ::stop;
+  the rows changed (::stopped if on-row stopped it)."
   [c q on-row]
   (with-connection-lock c
     (fn []
@@ -252,7 +253,7 @@
                 names (mapv (fn [i] (keyword (c-column-name stmt i))) (range n))]
             (loop []
               (let [rc (step stmt)]
-                (cond (= rc ROW) (do (on-row stmt names) (recur))
+                (cond (= rc ROW) (if (= ::stop (on-row stmt names)) ::stopped (recur))
                       (= rc DONE) (c-changes h)
                       :else (fail! h rc sql)))))
           (finally (c-reset stmt) (c-clear-bindings stmt)))))))
@@ -273,6 +274,45 @@
                                        (loop [i 0 r (transient {})] (if (< i n) (recur (inc i) (assoc! r (nth names i) (column stmt i))) (persistent! r))))]
                              (vswap! rows conj! row))))
      (persistent! @rows))))
+
+(defn- row-vector [stmt n]
+  (loop [i 0 r (transient [])] (if (< i n) (recur (inc i) (conj! r (column stmt i))) (persistent! r))))
+
+(defn- column-names [c q]
+  ;; (a statement's columns, known before any row: from preparing it)
+  (with-connection-lock c
+    (fn []
+      (let [[sql] (split-sql q)
+            stmt (prepare! c sql)]
+        (try (mapv (fn [i] (c-column-name stmt i)) (range (c-column-count stmt)))
+             (finally (c-reset stmt)))))))
+
+(defn query-table
+  "q's result as a table, for showing: {:columns [name …] :rows [[value …]
+  …] :more? bool}, columns named as the statement names them (even with
+  no rows). :limit stops after that many rows, :more? saying whether
+  another followed. A statement that gives no rows (an UPDATE, say) runs
+  and gives {:columns [] :rows [] :changed n}."
+  [c q & {:keys [limit]}]
+  (let [rows (volatile! (transient []))
+        more (volatile! false)
+        names (column-names c q)
+        r (run-statement! c q (fn [stmt names]
+                                (if (and limit (>= (count @rows) limit))
+                                  (do (vreset! more true) ::stop)
+                                  (vswap! rows conj! (row-vector stmt (count names))))))]
+    (if (and (empty? names) (not= r ::stopped))
+      {:columns [] :rows [] :more? false :changed r}
+      {:columns names :rows (persistent! @rows) :more? @more})))
+
+(defn each-row
+  "Call (f row) for each row q gives, row a vector in column order, as the
+  rows come (none are held): for exporting a large table. The number of
+  rows."
+  [c q f]
+  (let [n (volatile! 0)]
+    (run-statement! c q (fn [stmt names] (vswap! n inc) (f (row-vector stmt (count names))) nil))
+    @n))
 
 (defn query-one "The first row q gives (a map), or nil." ([c q] (first (query c q))) ([c q opts] (first (query c q opts))))
 
@@ -326,3 +366,20 @@
 
 (defn tables "The names of c's tables." [c]
   (mapv :name (query c "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")))
+
+(defn schema
+  "c's tables and views, sorted by name: [{:name :type (:table or :view)} …]."
+  [c]
+  (mapv (fn [r] (update r :type keyword))
+        (query c "SELECT name, type FROM sqlite_schema WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name COLLATE NOCASE")))
+
+(defn columns
+  "The columns of table (or view) t: [{:name :type :not-null? :primary-key?} …]."
+  [c t]
+  (mapv (fn [r] {:name (:name r) :type (:type r) :not-null? (= 1 (:notnull r)) :primary-key? (pos? (:pk r))})
+        (query c ["SELECT name, type, \"notnull\", pk FROM pragma_table_info(?)" t])))
+
+(defn quote-name
+  "Name as an SQL identifier, in double quotes: \"my table\"."
+  [name]
+  (str "\"" (str/replace (str name) "\"" "\"\"") "\""))
