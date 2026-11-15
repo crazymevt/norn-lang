@@ -120,15 +120,6 @@ impl Enc {
         self.text(v.sym_name());
     }
 
-    fn items(&mut self, tag: u8, xs: &[Value]) -> Result<()> {
-        self.out.push(tag);
-        varint(&mut self.out, xs.len() as u64);
-        for &x in xs {
-            self.write(x)?;
-        }
-        Ok(())
-    }
-
     fn write(&mut self, v: Value) -> Result<()> {
         if self.depth >= MAX_WRITE_DEPTH {
             return Err(Error::new(format!("norn.bin: the value nests more than {MAX_WRITE_DEPTH} deep")));
@@ -139,7 +130,89 @@ impl Enc {
         r
     }
 
+    /// v, then what it holds. `head` writes v's tag and count (or all of v,
+    /// if it holds nothing) and hands back the values it holds, in order. It
+    /// is kept out of line because this frame is paid once per level of
+    /// nesting, and an unoptimized build gives every branch's locals their
+    /// own slots: with them inline, 10000 levels needed over 80 MB of stack.
     fn write_one(&mut self, v: Value) -> Result<()> {
+        for x in self.head(v)? {
+            self.write(x)?;
+        }
+        Ok(())
+    }
+
+    fn counted(&mut self, tag: u8, n: usize) {
+        self.out.push(tag);
+        varint(&mut self.out, n as u64);
+    }
+
+    #[inline(never)]
+    fn head(&mut self, v: Value) -> Result<Vec<Value>> {
+        let mut xs = Vec::new();
+        if v.is(Kind::Vector) {
+            v.vec_for_each(|x| {
+                xs.push(x);
+                true
+            });
+            self.counted(VECTOR, xs.len());
+        } else if v.is(Kind::Map) {
+            v.map_for_each(|k, x| {
+                xs.push(k);
+                xs.push(x);
+                true
+            });
+            self.counted(MAP, xs.len() / 2);
+        } else if v.is(Kind::Set) {
+            v.set_for_each(|x| {
+                xs.push(x);
+                true
+            });
+            self.counted(SET, xs.len());
+        } else if v.is(Kind::Sorted) {
+            let entries = colls::sorted_entries(v);
+            if v.sorted_is_set() {
+                xs.extend(entries.into_iter().map(|e| e.0));
+                self.counted(SORTED_SET, xs.len());
+            } else {
+                self.counted(SORTED_MAP, entries.len());
+                for (k, x) in entries {
+                    xs.push(k);
+                    xs.push(x);
+                }
+            }
+        } else if v.is(Kind::Queue) {
+            xs = colls::queue_items(v);
+            self.counted(QUEUE, xs.len());
+        } else if v.is(Kind::Instance) {
+            if v.instance_mutable() {
+                return Err(Error::new("norn.bin can't write a mutable object: only values"));
+            }
+            let class = v.instance_class();
+            self.out.push(INSTANCE);
+            self.name(class.class_field(clos::class::NAME), false);
+            let keys = clos::layout_keys(v.instance_layout()).to_vec();
+            varint(&mut self.out, keys.len() as u64);
+            for (i, k) in keys.into_iter().enumerate() {
+                xs.push(k);
+                xs.push(v.instance_raw(i));
+            }
+        } else if v.is_cons() || v.is(Kind::EmptyList) || v.is(Kind::Stream) || v.is(Kind::VecSeq) || v.is(Kind::Range) {
+            if let Some(s) = seq::first_unrealized(v) {
+                return Err(Error::force(s, true));
+            }
+            match seq::SeqIter::new(seq::stream_items(v)) {
+                Some(it) => xs.extend(it),
+                None => return Err(not_written(v)),
+            }
+            self.counted(LIST, xs.len());
+        } else {
+            self.write_leaf(v)?;
+        }
+        Ok(xs)
+    }
+
+    fn write_leaf(&mut self, v: Value) -> Result<()> {
         if v.is_nil() {
             self.out.push(NIL);
         } else if v == Value::TRUE {
@@ -176,71 +249,6 @@ impl Enc {
         } else if v.is(Kind::Regex) {
             self.out.push(REGEX);
             self.text(v.field(0).as_str());
-        } else if v.is(Kind::Vector) {
-            let mut xs = Vec::with_capacity(v.vec_count());
-            v.vec_for_each(|x| {
-                xs.push(x);
-                true
-            });
-            self.items(VECTOR, &xs)?;
-        } else if v.is(Kind::Map) {
-            self.out.push(MAP);
-            varint(&mut self.out, v.map_count() as u64);
-            let mut pairs = Vec::with_capacity(v.map_count());
-            v.map_for_each(|k, x| {
-                pairs.push((k, x));
-                true
-            });
-            for (k, x) in pairs {
-                self.write(k)?;
-                self.write(x)?;
-            }
-        } else if v.is(Kind::Set) {
-            let mut xs = Vec::with_capacity(v.set_count());
-            v.set_for_each(|x| {
-                xs.push(x);
-                true
-            });
-            self.items(SET, &xs)?;
-        } else if v.is(Kind::Sorted) {
-            let entries = colls::sorted_entries(v);
-            if v.sorted_is_set() {
-                let xs: Vec<Value> = entries.into_iter().map(|e| e.0).collect();
-                self.items(SORTED_SET, &xs)?;
-            } else {
-                self.out.push(SORTED_MAP);
-                varint(&mut self.out, entries.len() as u64);
-                for (k, x) in entries {
-                    self.write(k)?;
-                    self.write(x)?;
-                }
-            }
-        } else if v.is(Kind::Queue) {
-            let xs = colls::queue_items(v);
-            self.items(QUEUE, &xs)?;
-        } else if v.is(Kind::Instance) {
-            if v.instance_mutable() {
-                return Err(Error::new("norn.bin can't write a mutable object: only values"));
-            }
-            let class = v.instance_class();
-            self.out.push(INSTANCE);
-            self.name(class.class_field(clos::class::NAME), false);
-            let keys = clos::layout_keys(v.instance_layout()).to_vec();
-            varint(&mut self.out, keys.len() as u64);
-            for (i, k) in keys.into_iter().enumerate() {
-                self.write(k)?;
-                self.write(v.instance_raw(i))?;
-            }
-        } else if v.is_cons() || v.is(Kind::EmptyList) || v.is(Kind::Stream) || v.is(Kind::VecSeq) || v.is(Kind::Range) {
-            if let Some(s) = seq::first_unrealized(v) {
-                return Err(Error::force(s, true));
-            }
-            let mut xs = Vec::new();
-            match seq::SeqIter::new(seq::stream_items(v)) {
-                Some(it) => xs.extend(it),
-                None => return Err(not_written(v)),
-            }
-            self.items(LIST, &xs)?;
         } else {
             return Err(not_written(v));
         }

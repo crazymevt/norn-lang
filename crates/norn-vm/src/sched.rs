@@ -1035,12 +1035,17 @@ fn carrier_loop(vm: &mut Vm) {
     }
 }
 
+/// A carrier's stack. The reader and `bin/encode` recurse up to 10000 levels
+/// before refusing; a debug build spends about 3 KB of stack a level there,
+/// so 16 MB overflowed at about 5000. Only the pages touched are committed.
+const CARRIER_STACK: usize = 64 << 20;
+
 /// Start the carrier thread for `slot`. Carrier 0 boots (or restores an
 /// image) first and reports through `boot`.
 fn start_carrier(slot: usize, restore: Option<crate::image::Restore>, boot: Option<mpsc::Sender<Result<(), String>>>) {
     std::thread::Builder::new()
         .name(format!("norn-carrier-{slot}"))
-        .stack_size(16 << 20)
+        .stack_size(CARRIER_STACK)
         .spawn(move || {
             CARRIER.with(|c| c.set(slot));
             safepoint::register();
