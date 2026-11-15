@@ -76,13 +76,32 @@
 
 (defn- clamp [r i] (max 0 (min i (length r))))
 
+(defn- edit-leaf
+  "r with characters start to end replaced by s, when they're in one leaf:
+  only that leaf and the branches above it are rebuilt. nil when the range
+  spans leaves."
+  [r start end s]
+  (if (branch? r)
+    (let [ll (length (left r))]
+      (cond (and (< start ll) (<= end ll))
+            (when-let [l (edit-leaf (left r) start end s)] (balance (node l (right r))))
+            (>= start ll)
+            (when-let [rr (edit-leaf (right r) (- start ll) (- end ll) s)] (balance (node (left r) rr)))
+            :else nil))
+    (let [t (str (subs r 0 start) s (subs r end))]
+      (if (<= (count t) (* 2 chunk-size)) t (from-string t)))))
+
 (defn insert "s inserted at character i." [r i s]
-  (let [[a b] (split r (clamp r i))] (join (join a (rope s)) b)))
+  (let [i (clamp r i) s (str s)]
+    ;; (typing and small pastes change one leaf; a big one is split in)
+    (or (when (<= (count s) chunk-size) (edit-leaf r i i s))
+        (let [[a b] (split r i)] (join (join a (rope s)) b)))))
 
 (defn delete "Without the characters from start (inclusive) to end (exclusive)." [r start end]
   (let [start (clamp r start) end (clamp r end)]
     (if (>= start end) r
-        (let [[a _] (split r start) [_ c] (split r end)] (join a c)))))
+        (or (edit-leaf r start end "")
+            (let [[a _] (split r start) [_ c] (split r end)] (join a c))))))
 
 (defn replace "The characters from start to end replaced by s." [r start end s]
   (insert (delete r start end) start s))
@@ -90,9 +109,19 @@
 (defn text "The rope's text, as a string." [r]
   (if (branch? r) (str (text (left r)) (text (right r))) r))
 
+(defn- collect!
+  "Add the pieces of r's text from start to end to out (a volatile vector)."
+  [r start end out]
+  (if (branch? r)
+    (let [ll (length (left r))]
+      (when (< start ll) (collect! (left r) start (min end ll) out))
+      (when (> end ll) (collect! (right r) (max 0 (- start ll)) (- end ll) out)))
+    (vswap! out conj (subs r start end))))
+
 (defn slice "The text from start (inclusive) to end (exclusive)." [r start end]
   (let [start (clamp r start) end (clamp r end)]
-    (if (>= start end) "" (text (first (split (second (split r start)) (- end start)))))))
+    ;; (the leaves in range, read where they are: nothing is rebuilt)
+    (if (>= start end) "" (let [out (volatile! [])] (collect! r start end out) (apply str @out)))))
 
 (defn char-at "The character at index i." [r i]
   (if (branch? r)
@@ -123,5 +152,20 @@
       (if (< i ll) (line-of (left r) i) (+ (newlines (left r)) (line-of (right r) (- i ll)))))
     (%count-newlines r i)))
 
+(defn- take-line!
+  "Add r's text from start up to its next newline to out: true once the
+  newline is found in r."
+  [r start out]
+  (if (branch? r)
+    (let [ll (length (left r))]
+      (if (< start ll)
+        (or (take-line! (left r) start out) (take-line! (right r) 0 out))
+        (take-line! (right r) (- start ll) out)))
+    (if-let [i (%str-index r "\n" start false)]
+      (do (vswap! out conj (subs r start i)) true)
+      (do (vswap! out conj (subs r start)) false))))
+
 (defn line "Line n's text, without its newline." [r n]
-  (when-let [s (line-start r n)] (slice r s (line-end r n))))
+  ;; (its start found once, then read up to the newline)
+  (when-let [s (line-start r n)]
+    (let [out (volatile! [])] (take-line! r s out) (apply str @out))))

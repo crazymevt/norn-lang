@@ -101,3 +101,31 @@
     (io/with-temp-file [f]
       (io/with-open [out (io/open f :write)] (is (= 10000 (io/copy-stream! s out))))
       (is (= 10000 (count (io/read-text f)))))))
+
+(deftest line-readers
+  (io/with-temp-file [f]
+    (let [long-line (apply str (repeat 200000 "x"))]
+      (io/write-text f (str "one\r\ntwo\n" long-line "\nlast"))
+      (io/with-open [h (io/open f :read)]
+        (let [r (io/line-reader h)]
+          (is (io/line-reader? r))
+          (is (= "#<line-reader>" (pr-str r)) "opaque")
+          (is (= ["one" "two"] [(io/read-line r) (io/read-line r)]) "CRLF or LF")
+          (is (= long-line (io/read-line r)) "a line across many reads")
+          (is (= "last" (io/read-line r)) "the last line, without a newline")
+          (is (nil? (io/read-line r)))))))
+  (testing "a line reader is a stream: what it holds comes first"
+    (io/with-temp-file [f]
+      (io/write-text f "head\nrest of the data")
+      (io/with-open [h (io/open f :read)]
+        (let [r (io/line-reader h)]
+          (is (= "head" (io/read-line r)))
+          (is (= "rest of the data" (bytes->string (io/read-all r))))))))
+  (testing "many lines in linear time"
+    (io/with-temp-file [f]
+      (io/write-text f (apply str (repeat 50000 "a line of text\n")))
+      (let [t0 (nano-time)
+            n (io/with-open [h (io/open f :read)]
+                (let [r (io/line-reader h)] (loop [n 0] (if (io/read-line r) (recur (inc n)) n))))]
+        (is (= 50000 n))
+        (is (< (quot (- (nano-time) t0) 1000000) 5000) "(quadratic copying took minutes)")))))

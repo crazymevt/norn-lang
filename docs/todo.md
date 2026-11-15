@@ -26,6 +26,15 @@ Review stack safety first. Settle the core API changes before sealing `norn.core
 - [x] **Detect circular module loads across fibers.** Each load records the fiber running it, and a fiber about to wait for another's load follows the chain of waits; reaching itself is a circular require, reported as an error instead of waiting forever. Tested with both loads started concurrently (`module_test.norn`). [Module loader](../lib/core/core.norn)
 - [x] **Make mixed numeric ordering consistent.** A float compares with an integer or ratio by its exact value, so `compare`, `sort`, `<` and `==` are transitive across categories, and sorted collections can't find `2^53 + 1` through the float `2^53`. `(== 1/3 0.3333333333333333)` is now false. Tested in `core_test.norn`. [Numeric comparisons](../crates/norn-vm/src/numeric.rs)
 
+### From the performance survey
+
+The [survey](perf-survey.md) (2026-11-15) found two items that change what callers can see, and two cheap fixes worth doing soon. The rest wait for M10 and M11.
+
+- [x] **Make the line and text readers opaque.** `line-reader` and `text-reader` return `LineReader` and `TextReader` objects. A line reader is a stream too: `read` gives what it holds past the last line, then the stream's. [Survey A1](perf-survey.md#a-settle-before-sealing)
+- [x] **Decide whether release builds check signatures.** They do: checking at module boundaries is part of a signature's meaning, and `*check-contracts* :none` stays as an explicit opt-out. Recorded in [design §8.4](design.md#84-types-decided). [Survey A2](perf-survey.md#a-settle-before-sealing)
+- [x] **Make checked signatures cheap.** A checked call from another module costs 0.79 µs at tier 0 and 0.58 µs at tier 1, down from 4.1 µs and 3.5 µs. The wrapper has fixed arities that check in place, reads its contract from a var it finds once, builds messages only on failure, and tests classes and predicates directly. Inlining the checks is M10's. [Survey B1](perf-survey.md#b-fixable-later-by-impact)
+- [x] **Fix quadratic buffering and the rope's slices.** The line reader, the HTTP connection reader and the streamed body keep an offset into their buffer and copy what's unread only when they read more: reading 20,000 lines takes 22 ms, down from 1.6 s. The rope's `slice` reads the leaves in range, `line` reads forward from its start, and an edit within one leaf rebuilds only its path: 20,000 line lookups take 309 ms (was 2.4 s), and 1,000 inserts 26 ms (was 100 ms). A property test checks rope edits against strings. [Survey B2](perf-survey.md#b-fixable-later-by-impact)
+
 ### Other review items
 
 - [x] **Propagate early termination through `cat`.** `cat` keeps the `reduced` signal through its inner reduction, so `(comp cat (take 1))` stops after the first group, and `mapcat` stops on an infinite input. Tested in `core_test.norn`. [Transducer implementation](../lib/core/core.norn)

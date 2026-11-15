@@ -3341,7 +3341,11 @@
 
 ;; check: (fn [v fail] …) gives v (or v wrapped, for a function contract),
 ;; or calls (fail). parts: a function contract's {:args :rest :result}.
-(defclass Contract () ((name :initarg :name) (check :initarg :check) (parts :initform nil)))
+(defclass Contract ()
+  ((name :initarg :name) (check :initarg :check) (parts :initform nil)
+                         ;; for a contract that only tests (a class, a predicate): the test, which
+                         ;; a checked call uses directly
+                         (test :initform nil)))
 
 (def ^:dynamic *check-contracts*
   "Which calls check contracts, when code is expanded: :boundaries
@@ -3368,8 +3372,9 @@
   [x]
   (cond (contract? x) x
         (or (nil? x) (= x :any)) (make Contract :name "anything" :check (fn [v _] v))
-        (class? x) (make Contract :name (name (class-name x)) :check (fn [v fail] (if (instance? x v) v (fail))))
-        (fn? x) (make Contract :name (%after (%fn-label x) "/") :check (fn [v fail] (if (x v) v (fail))))
+        (class? x) (let [t (fn [v] (instance? x v))]
+                     (make Contract :name (name (class-name x)) :check (fn [v fail] (if (t v) v (fail))) :test t))
+        (fn? x) (make Contract :name (%after (%fn-label x) "/") :check (fn [v fail] (if (x v) v (fail))) :test x)
         :else (error TypeError :message (str "Not a contract: " (pr-str x)) :expected "a contract, class or predicate" :value x)))
 
 (defn contract-name "What contract c says, as text." [c] (:name (->contract c)))
@@ -3421,20 +3426,40 @@
   (str n (cond (and (>= (rem n 100) 11) (<= (rem n 100) 13)) "th"
                (= 1 (rem n 10)) "st" (= 2 (rem n 10)) "nd" (= 3 (rem n 10)) "rd" :else "th")))
 
+(defn- %contract-fail
+  "A ContractError: v isn't what contract c says, at position (made into
+  text only now, when it failed) of function who, blaming blame."
+  [c v who position blame]
+  (let [position (if (integer? position) (str "its " (%ordinal (inc position)) " argument") position)]
+    (error ContractError
+           :message (str who ": " position " should be " (:name c) ", got " (pr-str v) ", blaming " blame)
+           :function who :position position :expected (:name c) :value v :blame blame)))
+
 (defn %check-call
   "Call f with args, checking them against parts' :args (and the rest
-  against :rest) and its result against :result. who: the function's
-  name; caller and provider: who's blamed for a bad argument, and a bad
-  result."
+  against :rest) and its result against :result (all contracts already).
+  who: the function's name; caller and provider: who's blamed for a bad
+  argument, and a bad result. (Messages are made only on a failure: a
+  check that holds costs its test.)"
   [f args parts who caller provider]
-  (let [{arg-cs :args rest-c :rest result-c :result} parts
+  (let [arg-cs (:args parts)
+        rest-c (:rest parts)
+        result-c (:result parts)
         n (count arg-cs)
-        checked (vec (map-indexed (fn [i a]
-                                    (let [c (if (< i n) (nth arg-cs i) rest-c)]
-                                      (if c (%contract-check c a {:function who :position (str "its " (%ordinal (inc i)) " argument") :blame caller}) a)))
-                                  args))
-        r (apply f checked)]
-    (if result-c (%contract-check result-c r {:function who :position "its result" :blame provider}) r)))
+        checked (loop [as (seq args) i 0 out (transient [])]
+                  (if as
+                    (let [a (first as)
+                          c (if (< i n) (nth arg-cs i) rest-c)]
+                      (recur (next as) (inc i)
+                             (conj! out (if c ((:check c) a (fn [] (%contract-fail c a who i caller))) a))))
+                    (persistent! out)))
+        r (case (count checked)
+            0 (f)
+            1 (f (nth checked 0))
+            2 (f (nth checked 0) (nth checked 1))
+            3 (f (nth checked 0) (nth checked 1) (nth checked 2))
+            (apply f checked))]
+    (if result-c ((:check result-c) r (fn [] (%contract-fail result-c r who "its result" provider))) r)))
 
 (defn fn-of
   "A contract: a function whose arguments are what arg-cs say (a vector)
@@ -3470,11 +3495,38 @@
   redefinition takes effect."
   [v caller]
   (let [n (%var-name v)
-        module (subs n 0 (%str-index n "/" nil false))]
-    (fn [& args]
-      (if-let [parts (%arity-parts (%contract-of v) (count args))]
-        (%check-call (var-get v) args parts n caller module)
-        (apply (var-get v) args)))))
+        module (subs n 0 (%str-index n "/" nil false))
+        ;; (the contract's var, named once here, not on every call)
+        contract-sym (symbol (str n "%contract"))
+        ;; (its var, when it has one already: cheaper to read than the name)
+        contract-var (resolve contract-sym)
+        parts-for (fn [k]
+                    (when (%contracted? v)
+                      (%arity-parts (if contract-var (var-get contract-var) (%bound-value contract-sym)) k)))
+        ;; argument i checked against parts' contract for it
+        arg (fn [p a i]
+              (let [cs (:args p)
+                    c (if (< i (count cs)) (nth cs i) (:rest p))]
+                (cond (nil? c) a
+                      (:test c) (if ((:test c) a) a (%contract-fail c a n i caller))
+                      :else ((:check c) a (fn [] (%contract-fail c a n i caller))))))
+        result (fn [p r]
+                 (let [c (:result p)]
+                   (cond (nil? c) r
+                         (:test c) (if ((:test c) r) r (%contract-fail c r n "its result" module))
+                         :else ((:check c) r (fn [] (%contract-fail c r n "its result" module))))))]
+    ;; (the usual arities check their arguments in place: no argument list,
+    ;; vector or apply)
+    (fn
+      ([] (if-let [p (parts-for 0)] (result p ((var-get v))) ((var-get v))))
+      ([a] (if-let [p (parts-for 1)] (result p ((var-get v) (arg p a 0))) ((var-get v) a)))
+      ([a b] (if-let [p (parts-for 2)] (result p ((var-get v) (arg p a 0) (arg p b 1))) ((var-get v) a b)))
+      ([a b c] (if-let [p (parts-for 3)] (result p ((var-get v) (arg p a 0) (arg p b 1) (arg p c 2))) ((var-get v) a b c)))
+      ([a b c & more]
+       (let [args (list* a b c more)]
+         (if-let [p (parts-for (count args))]
+           (%check-call (var-get v) args p n caller module)
+           (apply (var-get v) args)))))))
 
 (defn %drop-contract! "Function var v has no contract now." [v] (%set-contracted! v false) nil)
 

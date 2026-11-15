@@ -43,42 +43,57 @@
   [status msg]
   (error ParseError :message (str "HTTP " status ": " msg) :source "HTTP message"))
 
-(defn- conn-reader [sock] {:sock sock :buf (atom (bytes []))})
+;; A connection's reader: what's been read and not used, buf from at.
+;; (Taking from it moves at; the unread part moves to the front only when
+;; more is read, so a big buffer isn't copied for every line or piece.)
+(defn- conn-reader [sock] {:sock sock :state (atom {:buf (bytes []) :at 0})})
+
+(defn- unread-count [r] (let [{:keys [buf at]} @(:state r)] (- (count buf) at)))
+
+(defn- take-bytes!
+  "The next k unread bytes of r (there are that many)."
+  [r k]
+  (let [{:keys [buf at]} @(:state r)]
+    (reset! (:state r) {:buf buf :at (+ at k)})
+    (subbytes buf at (+ at k))))
 
 (defn- fill!
   "Read more of r's connection into its buffer: false at the end."
   [r]
-  (if-let [b (io/read (:sock r) 65536)]
-    (do (swap! (:buf r) bytes-concat b) true)
+  (if-let [more (io/read (:sock r) 65536)]
+    (let [{:keys [buf at]} @(:state r)]
+      (reset! (:state r) {:buf (bytes-concat (subbytes buf at) more) :at 0})
+      true)
     false))
+
+(def ^:private newline-byte (bytes [10]))
 
 (defn- read-line!
   "r's next line, without its CRLF; nil at the end of the input if
   nothing was read."
   [r]
   (loop []
-    (let [b @(:buf r)
-          i (%bytes-index-of b 10)]
+    (let [{:keys [buf at]} @(:state r)
+          i (%bytes-find buf newline-byte at)]
       (cond (>= i 0)
-            (do (reset! (:buf r) (subbytes b (inc i)))
-                (let [line (bytes->string (subbytes b 0 i))]
-                  (if (str/ends-with? line "\r") (subs line 0 (dec (count line))) line)))
-            (> (count b) max-line) (message-error 431 "a line too long")
+            (let [line (bytes->string (take-bytes! r (- (inc i) at)))
+                  line (subs line 0 (dec (count line)))]
+              (if (str/ends-with? line "\r") (subs line 0 (dec (count line))) line))
+            (> (- (count buf) at) max-line) (message-error 431 "a line too long")
             (fill! r) (recur)
-            (zero? (count b)) nil
+            (zero? (unread-count r)) nil
             :else (message-error 400 "the connection ended in the middle of a line")))))
 
 (defn- read-n!
   "Exactly n bytes from r."
   [r n]
   (loop []
-    (let [b @(:buf r)]
-      (cond (>= (count b) n) (do (reset! (:buf r) (subbytes b n)) (subbytes b 0 n))
-            (fill! r) (recur)
-            :else (message-error 400 (str "the body ended after " (count b) " of " n " bytes"))))))
+    (cond (>= (unread-count r) n) (take-bytes! r n)
+          (fill! r) (recur)
+          :else (message-error 400 (str "the body ended after " (unread-count r) " of " n " bytes")))))
 
 (defn- read-to-end! [r]
-  (loop [] (if (fill! r) (recur) (let [b @(:buf r)] (reset! (:buf r) (bytes [])) b))))
+  (loop [] (if (fill! r) (recur) (take-bytes! r (unread-count r)))))
 
 (defn- read-headers!
   "Header lines up to the blank one: a map, names in lower case."
@@ -136,10 +151,8 @@
   "Up to n bytes from r's buffer, reading more first if it's empty; nil at
   the end of the connection."
   [r n]
-  (when (or (pos? (count @(:buf r))) (fill! r))
-    (let [b @(:buf r) k (min n (count b))]
-      (reset! (:buf r) (subbytes b k))
-      (subbytes b 0 k))))
+  (when (or (pos? (unread-count r)) (fill! r))
+    (take-bytes! r (min n (unread-count r)))))
 
 (defn- finish! [body reusable]
   (when (= :open @(:state body))

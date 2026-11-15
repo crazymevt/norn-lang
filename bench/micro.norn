@@ -1,0 +1,129 @@
+;;;; What core conventions cost per call: the interface-level costs to
+;;;; settle before sealing (calling conventions, dispatch, slots, owned
+;;;; mutation, the collection protocol, dynamic vars, checked signatures),
+;;;; and core data operations for comparison. Each case runs an operation
+;;;; 1,000 times in a loop; the loop alone is the first row.
+;;;;
+;;;;   norn bench/micro.norn               (tier 0)
+;;;;   NORN_TIER=1 norn bench/micro.norn   (tier 1)
+;;;;   norn bench/micro.norn calls         (only cases whose name has "calls")
+
+(ns bench-micro
+  (:require [norn.bench :as bench] [norn.buffer :as buf] [norn.io :as io] [norn.string :as str] [norn.sys :as sys]))
+
+(def n 1000)
+
+;; ---- what's called ----
+
+(defn f1 [x] x)
+(defn f2 [x y] y)
+(defn f-rest [x & more] x)
+(defn f-kw [x & {:keys [a b]}] (if a x b))
+(defn f-kw-or [x & {:keys [a b] :or {a 1 b 2}}] (+ a b))
+(defn f-map [x {:keys [a b]}] (if a x b))
+(defn f-arity ([x] x) ([x y] y) ([x y z] z))
+(defn f-destructure [[a b] {:keys [c]}] (if a b c))
+
+(defgeneric g1 (x))
+(defmethod g1 ((x Object)) x)
+(defclass Point () ((x :initform 0) (y :initform 0)))
+(defclass Point3 (Point) ((z :initform 0)))
+(defmethod g1 ((p Point)) (:x p))
+(defgeneric g-around (x))
+(defmethod g-around ((p Point)) (:x p))
+(defmethod g-around :before ((p Point)) nil)
+(defmethod g-around :after ((p Point)) nil)
+(defclass Counter () ((n :initform 0 :mutable true)) (:mutable))
+
+(def ^:dynamic *dyn* 1)
+(def plain-var 1)
+
+;; a module whose signature is checked when called from here
+(def tmp (io/path (sys/temp-dir) (str "norn-bench-" (sys/pid))))
+(io/mkdirs! (io/path tmp "benchlib"))
+(io/write-text (io/path tmp "benchlib" "sig.norn")
+               "(ns benchlib.sig)\n(defn add ^Integer [^Integer a ^Integer b] (+ a b))\n(defn add-plain [a b] (+ a b))\n")
+(add-lib-path! tmp)
+(eval '(require 'benchlib.sig)) ; (at run time: lint doesn't know the folder)
+;; (compiled here, after the module loads, so the calls go through the
+;; checking wrapper another module's calls get)
+(def call-checked (eval '(fn [] (benchlib.sig/add 1 2))))
+(def call-plain (eval '(fn [] (benchlib.sig/add-plain 1 2))))
+
+;; ---- the cases ----
+
+(defmacro times [i & body] `(loop [~i 0] (when (< ~i n) ~@body (recur (inc ~i)))))
+
+(def point (Point :x 1 :y 2))
+(def point3 (Point3 :x 1))
+(def m2 {:x 1 :y 2})
+(def m20 (into {} (map (fn [i] [(keyword (str "k" i)) i]) (range 20))))
+(def v1000 (vec (range 1000)))
+(def bufr (buf/pack :i32 (range 1000)))
+(def text (apply str (repeat 1000 "é")))
+
+(def cases
+  [["loop alone" (fn [] (times i nil))]
+   ;; calling conventions
+   ["calls: one argument" (fn [] (times i (f1 1)))]
+   ["calls: two arguments" (fn [] (times i (f2 1 2)))]
+   ["calls: multi-arity, second arity" (fn [] (times i (f-arity 1 2)))]
+   ["calls: rest args, none given" (fn [] (times i (f-rest 1)))]
+   ["calls: rest args, two given" (fn [] (times i (f-rest 1 2 3)))]
+   ["calls: keyword options, none given" (fn [] (times i (f-kw 1)))]
+   ["calls: keyword options, two given" (fn [] (times i (f-kw 1 :a true :b 2)))]
+   ["calls: keyword options with :or, two given" (fn [] (times i (f-kw-or 1 :a 1 :b 2)))]
+   ["calls: an options map" (fn [] (times i (f-map 1 {:a true :b 2})))]
+   ["calls: destructuring a vector and a map" (fn [] (times i (f-destructure [1 2] {:c 3})))]
+   ["calls: apply with a list" (fn [] (times i (apply f2 1 [2])))]
+   ["calls: a closure" (fn [] (let [k 5 g (fn [x] (+ x k))] (times i (g 1))))]
+   ["calls: making a closure" (fn [] (times i (fn [x] (+ x i))))]
+   ["calls: another module, plain" (fn [] (times i (call-plain)))]
+   ["calls: another module, checked ^Integer signature" (fn [] (times i (call-checked)))]
+   ;; objects
+   ["objects: generic function, one method" (fn [] (times i (g1 point)))]
+   ["objects: generic function, inherited method" (fn [] (times i (g1 point3)))]
+   ["objects: generic function, :before and :after" (fn [] (times i (g-around point)))]
+   ["objects: slot read (:x p)" (fn [] (times i (:x point)))]
+   ["objects: map read (:x m)" (fn [] (times i (:x m2)))]
+   ["objects: making an instance" (fn [] (times i (Point :x 1 :y 2)))]
+   ["objects: making a map" (fn [] (times i (hash-map :x 1 :y i)))]
+   ["objects: owned mutable update-slot!" (fn [] (let [c (Counter)] (times i (update-slot! c :n inc))))]
+   ["objects: instance equality" (fn [] (let [q (Point :x 1 :y 2)] (times i (= point q))))]
+   ;; vars
+   ["vars: a plain var" (fn [] (times i plain-var))]
+   ["vars: a dynamic var" (fn [] (times i *dyn*))]
+   ["vars: binding a dynamic var" (fn [] (times i (binding [*dyn* 2] *dyn*)))]
+   ;; collections
+   ["collections: count of a vector" (fn [] (times i (count v1000)))]
+   ["collections: count of a library collection (Buffer)" (fn [] (times i (count bufr)))]
+   ["collections: nth of a vector" (fn [] (times i (nth v1000 500)))]
+   ["collections: nth of a library collection (Buffer)" (fn [] (times i (nth bufr 500)))]
+   ["collections: nth of a string (non-ASCII)" (fn [] (times i (nth text 500)))]
+   ["collections: assoc on a small map" (fn [] (times i (assoc m2 :z i)))]
+   ["collections: assoc on a 20-key map" (fn [] (times i (assoc m20 :k3 i)))]
+   ["collections: get from a 20-key map" (fn [] (times i (get m20 :k13)))]
+   ["collections: conj onto a vector" (fn [] (loop [i 0 v []] (when (< i n) (recur (inc i) (conj v i)))))]
+   ["collections: conj! onto a transient" (fn [] (loop [i 0 v (transient [])] (if (< i n) (recur (inc i) (conj! v i)) (persistent! v))))]
+   ["collections: map inc over a 1,000 vector (per item)" (fn [] (mapv inc v1000))]
+   ["collections: reduce + over a 1,000 vector (per item)" (fn [] (reduce + 0 v1000))]
+   ["collections: into [] with a transducer (per item)" (fn [] (into [] (comp (map inc) (filter even?)) v1000))]
+   ["collections: str of two strings" (fn [] (times i (str "ab" "cd")))]
+   ["collections: = on 1,000-vectors (per item)" (fn [] (= v1000 (vec (range 1000))))]
+   ;; state and control
+   ["state: swap! on an atom" (fn [] (let [a (atom 0)] (times i (swap! a inc))))]
+   ["state: vswap! on a volatile" (fn [] (let [a (volatile! 0)] (times i (vswap! a inc))))]
+   ["control: try with no error" (fn [] (times i (try i (catch Error _ nil))))]
+   ["control: an error signalled and caught" (fn [] (times i (try (error "x") (catch Error _ nil))))]
+   ["arithmetic: fixnum + and <" (fn [] (loop [i 0 s 0] (if (< i n) (recur (inc i) (+ s i)) s)))]
+   ["arithmetic: float *" (fn [] (loop [i 0 s 1.0] (if (< i n) (recur (inc i) (* s 1.0000001)) s)))]])
+
+(defn -main [& [only]]
+  (println (str "tier " (or (sys/getenv "NORN_TIER") "0") ", ns per operation (1,000 per run)"))
+  (doseq [[label f] cases
+          :when (or (nil? only) (str/includes? label only))]
+    (let [r (bench/run f :warmup-ms 100 :ms 300)]
+      (println (format "%8.1f  %s" (/ (:mean-ns r) n) label))))
+  (io/delete! tmp :recursive true))
+
+(apply -main (sys/program-args))

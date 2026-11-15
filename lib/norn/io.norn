@@ -161,29 +161,53 @@
 
 ;;; ---- lines ----
 
+;; A line reader keeps the bytes it has read past the last line: buf, the
+;; unread part from at, and scan, how far from at a newline was looked for.
+(defclass LineReader () ((stream :required true) (state :required true)))
+
+(defmethod print-object ((_ LineReader)) "#<line-reader>")
+
 (defn line-reader
-  "A reader of lines from stream h (for read-line)."
+  "A reader of lines from stream h, for read-line. It's a stream too:
+  read gives the bytes it holds past the last line first, then h's."
   [h]
-  {:handle h :buf (atom (bytes []))})
+  (LineReader :stream h :state (atom {:buf (bytes []) :at 0 :scan 0})))
+
+(defn line-reader? "Is x a line reader?" [x] (instance? LineReader x))
 
 (defn- strip-cr [s]
   (if (and (pos? (count s)) (= \return (nth s (dec (count s))))) (subs s 0 (dec (count s))) s))
+
+(def ^:private newline-byte (bytes [10]))
 
 (defn read-line
   "The next line (without its line ending), or nil at the end. With no
   argument, reads standard input; otherwise a line reader."
   ([] (%stdin-line))
   ([r]
-   (loop []
-     (let [b @(:buf r)
-           i (%bytes-index-of b 10)]
-       (if (>= i 0)
-         (do (reset! (:buf r) (subbytes b (inc i)))
-             (strip-cr (bytes->string (subbytes b 0 i))))
-         (let [more (read (:handle r) 65536)]
-           (cond more (do (reset! (:buf r) (bytes-concat b more)) (recur))
-                 (pos? (count b)) (do (reset! (:buf r) (bytes [])) (strip-cr (bytes->string b)))
-                 :else nil)))))))
+   (let [st (:state r)]
+     (loop []
+       (let [{:keys [buf at scan]} @st
+             i (%bytes-find buf newline-byte (+ at scan))]
+         (if (>= i 0)
+           (do (reset! st {:buf buf :at (inc i) :scan 0})
+               (strip-cr (bytes->string (subbytes buf at i))))
+           (let [more (read (:stream r) 65536)
+                 unread (- (count buf) at)]
+             ;; (what's unread moves to the front once per read, not per line)
+             (cond more (do (reset! st {:buf (bytes-concat (subbytes buf at) more) :at 0 :scan unread}) (recur))
+                   (pos? unread) (do (reset! st {:buf (bytes []) :at 0 :scan 0}) (strip-cr (bytes->string (subbytes buf at))))
+                   :else nil))))))))
+
+(defmethod stream-read ((r LineReader) n)
+  (let [{:keys [buf at]} @(:state r)]
+    (if (< at (count buf))
+      (let [end (min (count buf) (+ at n))]
+        (reset! (:state r) {:buf buf :at end :scan 0})
+        (subbytes buf at end))
+      (read (:stream r) n))))
+
+(defmethod stream-close ((r LineReader)) (close (:stream r)))
 
 ;;; ---- exact reads, copying and decoding ----
 
@@ -212,11 +236,17 @@
         (do (write out part) (recur (+ total (count part))))
         total))))
 
+(defclass TextReader () ((stream :required true) (decoder :required true)))
+
+(defmethod print-object ((_ TextReader)) "#<text-reader>")
+
 (defn text-reader
   "A reader of decoded text from stream h, for read-chunk. :encoding is
   :utf-8 (the default), :utf-16le or :utf-16be."
   [h & {:keys [encoding] :or {encoding :utf-8}}]
-  {:handle h :decoder (atom (bytes/decoder encoding))})
+  (TextReader :stream h :decoder (atom (bytes/decoder encoding))))
+
+(defn text-reader? "Is x a text reader?" [x] (instance? TextReader x))
 
 (defn read-chunk
   "The next piece of text from a text reader, or nil at the end. A
@@ -224,7 +254,7 @@
   that ends partway through one signals ParseError."
   [r]
   (loop []
-    (if-let [data (read (:handle r) 65536)]
+    (if-let [data (read (:stream r) 65536)]
       (let [[state text] (bytes/decode-chunk @(:decoder r) data)]
         (reset! (:decoder r) state)
         (if (= "" text) (recur) text))

@@ -693,6 +693,16 @@ As built (M9 parts 9.3 and 9.4):
 - **A `ContractError` blames** the calling module for a bad argument, and
   the function's module for a bad result.
 - **`(declare (optimize …) (type …))` is recorded for M10.**
+- **Release builds check signatures too [decided, 2026-11-15].** Checking
+  at module boundaries is part of what a signature means: the blame is the
+  point, as in Racket. So it doesn't change between a development run and
+  a release build, and sealing (M8) keeps it. `*check-contracts*` is
+  `:boundaries` by default, and `:none` stays available as an explicit
+  opt-out for a build that wants it. The cost belongs to the
+  implementation. After the [performance survey](perf-survey.md), a
+  checked call from another module costs about 0.6–0.8 µs, against about
+  4 µs before. M10 can do better by inlining the checks where the call is
+  made, and by dropping checks it can prove hold.
 
 ---
 

@@ -5,7 +5,7 @@
   (:require [norn.test :refer [deftest is]] [norn.property :as p]
             [norn.json :as json] [norn.edn :as edn] [norn.bin :as bin] [norn.cbor :as cbor]
             [norn.ndjson :as ndjson] [norn.yaml :as yaml] [norn.decimal :as d]
-            [norn.buffer :as buf] [norn.bytes :as b]))
+            [norn.buffer :as buf] [norn.bytes :as b] [norn.rope :as rope] [norn.string :as str]))
 
 (deftest checking-and-shrinking
   (is (= {:pass? true :runs 100} (select-keys (p/check (p/for-all [v (p/vectors (p/integers))] (= v (reverse (reverse v)))))
@@ -73,3 +73,33 @@
 
 (p/defproperty hex-and-base64-round-trip [bs (p/byte-strings)]
   (and (= bs (b/unhex (b/hex bs))) (= bs (b/unbase64 (b/base64 bs)))))
+
+;;; ---- ropes edit as strings do ----
+
+(defn- ceil-log2 [x] (loop [n 0 v 1] (if (>= v x) n (recur (inc n) (* 2 v)))))
+
+(def ^:private rope-edit
+  (p/tuple (p/elements [:insert :delete :replace]) (p/naturals) (p/naturals)
+           (p/one-of (p/strings) (p/constant "line\n") (p/fmap (fn [n] (apply str (repeat n "long text\n"))) (p/integers :min 0 :max 120)))))
+
+(defn- apply-edit [[r s] [op a b text]]
+  (let [n (count s)
+        i (if (zero? n) 0 (mod a (inc n)))
+        j (min n (+ i (mod b 40)))]
+    (case op
+      :insert [(rope/insert r i text) (str (subs s 0 i) text (subs s i))]
+      :delete [(rope/delete r i j) (str (subs s 0 i) (subs s j))]
+      [(rope/replace r i j text) (str (subs s 0 i) text (subs s j))])))
+
+(p/defproperty ropes-edit-as-strings-do {:runs 200}
+  [start (p/fmap (fn [n] (apply str (repeat n "The quick brown fox\n"))) (p/integers :min 0 :max 300))
+   edits (p/vectors rope-edit :max 25)]
+  (let [[r s] (reduce apply-edit [(rope/rope start) start] edits)
+        lines (str/split s #"\n" -1)]
+    (and (= s (rope/text r))
+         (= (count s) (rope/length r))
+         (= (count (filter (fn [c] (= c \newline)) s)) (rope/newlines r))
+         (every? (fn [k] (= (nth lines k) (rope/line r k))) (range (count lines)))
+         (= (subs s (quot (count s) 3) (quot (* 2 (count s)) 3)) (rope/slice r (quot (count s) 3) (quot (* 2 (count s)) 3)))
+         ;; balanced: about the depth of a balanced tree of its leaves
+         (<= (#'norn.rope/height r) (+ 3 (* 2 (ceil-log2 (max 1 (quot (count s) 256)))))))))

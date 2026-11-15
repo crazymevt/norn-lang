@@ -1,0 +1,80 @@
+;;;; Whole jobs, timed: data formats, source tools, text, storage, the
+;;;; network and concurrency. The baseline M10's optimiser is measured
+;;;; against, and the survey before sealing (docs/perf-survey.md).
+;;;;
+;;;;   norn bench/workloads.norn               (tier 0)
+;;;;   NORN_TIER=1 norn bench/workloads.norn   (tier 1)
+;;;;   norn bench/workloads.norn json          (only workloads named so)
+
+(ns bench-workloads
+  (:require [norn.bench :as bench] [norn.json :as json] [norn.edn :as edn] [norn.bin :as bin]
+            [norn.rope :as rope] [norn.string :as str] [norn.io :as io] [norn.sys :as sys]
+            [norn.sqlite :as sql] [norn.http :as http] [norn.fmt :as fmt] [norn.lint :as lint]
+            [norn.terminal :as term]))
+
+(def records
+  ;; about 1 MB of JSON: records with strings, numbers, nesting
+  (vec (for [i (range 4000)]
+         {"id" i "name" (str "item " i) "price" (* 0.25 i) "tags" ["a" "b" (str "t" (mod i 7))]
+          "dims" {"w" (mod i 13) "h" (mod i 17) "note" "lorem ipsum dolor sit amet, consectetur"}})))
+(def records-json (json/write-string records))
+(def records-edn (pr-str records))
+(def records-bin (bin/encode records))
+(def core-src (io/read-text "lib/core/core.norn"))
+(def http-src (io/read-text "lib/norn/http.norn"))
+(def big-text (str/join "\n" (repeat 20000 "The quick brown fox jumps over the lazy dog 0123456789 éèê")))
+(def big-rope (rope/rope big-text))
+(def keys-bytes (bytes (apply str (repeat 10000 (str "ab" (char 27) "[A" (char 27) "[1;5C")))))
+(def tmp (io/path (sys/temp-dir) (str "norn-workloads-" (sys/pid))))
+(io/mkdirs! tmp)
+(def lines-file (io/path tmp "lines.txt"))
+(io/write-text lines-file big-text)
+
+(def server (http/serve (fn [_] {:status 200 :body "ok"})))
+(def url (str "http://127.0.0.1:" (:port server) "/"))
+
+(def workloads
+  [["json: write 1 MB" (fn [] (json/write-string records))]
+   ["json: read 1 MB" (fn [] (json/read-string records-json))]
+   ["edn: pr-str 1 MB" (fn [] (pr-str records))]
+   ["edn: read 1 MB" (fn [] (edn/read-string records-edn))]
+   ["bin: encode" (fn [] (bin/encode records))]
+   ["bin: decode" (fn [] (bin/decode records-bin))]
+   ["source: read core.norn's forms (158 KB)" (fn [] (read-string (str "[" core-src "]")))]
+   ["source: format http.norn (34 KB)" (fn [] (fmt/format-string http-src))]
+   ["source: lint http.norn (34 KB)" (fn [] (lint/lint-string http-src "http.norn"))]
+   ["source: compile and load http.norn" (fn [] (load-string (str/replace http-src "(ns norn.http" "(ns bench-http-copy")) (in-ns 'bench-workloads))]
+   ["text: 1,000 inserts into a 1.2 MB rope" (fn [] (reduce (fn [r i] (rope/insert r (* i 997) "x")) big-rope (range 1000)))]
+   ["text: 20,000 line lookups in a rope" (fn [] (dotimes [i 20000] (rope/line big-rope i)))]
+   ["text: regex, every match in 1.2 MB" (fn [] (count (re-seq #"fox|dog" big-text)))]
+   ["text: split 1.2 MB into lines" (fn [] (count (str/split-lines big-text)))]
+   ["text: build 100,000 pieces with str" (fn [] (apply str (map (fn [i] (str i ",")) (range 100000))))]
+   ["text: format 10,000 lines" (fn [] (dotimes [i 10000] (format "%05d %s %.2f" i "x" (* i 0.5))))]
+   ["text: read 20,000 lines from a file" (fn [] (io/with-open [h (io/open lines-file :read)]
+                                                   (let [r (io/line-reader h)] (loop [n 0] (if (io/read-line r) (recur (inc n)) n)))))]
+   ["data: sort 100,000 integers" (fn [] (sort (map (fn [i] (mod (* i 7919) 100003)) (range 100000))))]
+   ["data: sort-by a key, 20,000 maps" (fn [] (sort-by (fn [m] (get m "price")) (reverse records)))]
+   ["data: group-by and frequencies, 100,000" (fn [] [(count (group-by (fn [i] (mod i 97)) (range 100000))) (count (frequencies (map (fn [i] (mod i 101)) (range 100000))))])]
+   ["data: into a map, 100,000 entries" (fn [] (into {} (map (fn [i] [i (* 2 i)]) (range 100000))))]
+   ["sqlite: insert 10,000 rows in a transaction" (fn [] (sql/with-connection [c ":memory:"]
+                                                           (sql/exec! c "CREATE TABLE t (id INTEGER, name TEXT)")
+                                                           (sql/with-transaction [c]
+                                                             (dotimes [i 10000] (sql/execute! c ["INSERT INTO t VALUES (?, ?)" i (str "n" i)])))
+                                                           (count (sql/query c "SELECT * FROM t"))))]
+   ["http: 200 local requests, kept alive" (fn [] (dotimes [_ 200] (http/get url)))]
+   ["fibers: spawn and await 10,000" (fn [] (with-scope [s] (mapv await (mapv (fn [i] (spawn s (* i i))) (range 10000)))))]
+   ["fibers: 10,000 messages through a channel" (fn [] (let [c (chan 64)]
+                                                         (spawn-detached (dotimes [i 10000] (put! c i)) (close! c))
+                                                         (loop [n 0] (if (take! c) (recur (inc n)) n))))]
+   ["terminal: decode 70 KB of keys" (fn [] (count (:keys (term/decode-keys keys-bytes))))]])
+
+(defn -main [& [only]]
+  (println (str "tier " (or (sys/getenv "NORN_TIER") "0") ", ms per run (best of the runs in about 2 s)"))
+  (doseq [[label f] workloads
+          :when (or (nil? only) (str/includes? label only))]
+    (let [r (bench/run f :warmup-ms 300 :ms 1500)]
+      (println (format "%9.2f  %s" (/ (:min-ns r) 1e6) label))))
+  (http/stop! server)
+  (io/delete! tmp :recursive true))
+
+(apply -main (sys/program-args))
