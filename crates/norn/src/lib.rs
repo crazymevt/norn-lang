@@ -38,6 +38,8 @@ const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --ser
        norn check [PATH…]
        norn expand [--steps] FILE.norn | -e EXPR
        norn deps [--update]
+       norn package [--cli] [--app] [--out DIR]
+                  (in a project: a release archive of it, with this norn)
        norn doc NAMESPACE | NAME | NS/NAME …
        norn image info IMG.nimg | norn image diff A.nimg B.nimg";
 
@@ -49,6 +51,7 @@ static CURRENT: AtomicU64 = AtomicU64::new(0);
 /// finishes: the command line's outcome, or `f`'s return value as the exit
 /// status. If no runtime starts (`--help`, a bad image), `f` never runs.
 pub fn run_with_main_thread(f: impl FnOnce(&'static norn_vm::Norn) -> i32) -> ! {
+    prepare_app();
     std::thread::Builder::new()
         .name("norn-cli".into())
         // (as much stack as a process's first thread usually gets)
@@ -72,8 +75,105 @@ pub fn run_with_main_thread(f: impl FnOnce(&'static norn_vm::Norn) -> i32) -> ! 
     }
 }
 
+// ---- packaged apps ----
+
+/// A packaged app (`norn package`): this executable, copied under the
+/// app's name, finds its image beside it, in the macOS bundle's
+/// `Contents/Resources/NAME.nimg` or a command-line archive's
+/// `lib/NAME/NAME.nimg`, and runs it: every argument goes to the image's
+/// entry function, none is read as a `norn` flag.
+struct App {
+    name: String,
+    image: std::path::PathBuf,
+    /// The folder holding the image and the app's resources.
+    resources: std::path::PathBuf,
+    /// Where native helpers (norn-ui-host) are looked for.
+    helper_dirs: Vec<std::path::PathBuf>,
+}
+
+static APP: std::sync::OnceLock<Option<App>> = std::sync::OnceLock::new();
+
+fn find_app() -> Option<App> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let name = exe.file_name()?.to_str()?.to_owned();
+    if name == "norn" {
+        return None;
+    }
+    let dir = exe.parent()?.to_path_buf();
+    let image = [dir.join("../Resources").join(format!("{name}.nimg")), dir.join("../lib").join(&name).join(format!("{name}.nimg"))]
+        .into_iter()
+        .find(|p| p.is_file())?
+        .canonicalize()
+        .ok()?;
+    let resources = image.parent()?.to_path_buf();
+    Some(App { name, image, helper_dirs: vec![dir, resources.clone()], resources })
+}
+
+/// Find out whether this is a packaged app, before the process starts any
+/// other thread: if so, tell its code where its resources are
+/// (`NORN_APP_RESOURCES`, `norn.sys/app-resources`) and point `NORN_UI_HOST`
+/// at the bundled renderer (unless it's set).
+fn prepare_app() {
+    let app = APP.get_or_init(find_app);
+    if let Some(a) = app {
+        let host = a.helper_dirs.iter().map(|d| d.join("norn-ui-host")).find(|p| p.is_file());
+        // SAFETY: no other thread exists yet (run_with_main_thread calls
+        // this first), so nothing reads the environment meanwhile.
+        unsafe {
+            std::env::set_var("NORN_APP_RESOURCES", &a.resources);
+            if let Some(h) = host
+                && std::env::var_os("NORN_UI_HOST").is_none()
+            {
+                std::env::set_var("NORN_UI_HOST", h);
+            }
+        }
+    }
+}
+
+/// Run a packaged app: its image's entry with every argument (macOS's
+/// `-psn_…` process serial number aside), in the caller's directory.
+fn run_app(app: &App) -> ! {
+    let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("-psn_")).collect();
+    norn_vm::sys::set_program_args(args.clone());
+    let norn = start_with(Some(&app.image)).unwrap_or_else(|e| {
+        eprintln!("{}: {e}", app.name);
+        exit(1)
+    });
+    let _ = ctrlc::set_handler(move || {
+        let t = CURRENT.load(Ordering::Acquire);
+        if t != 0 {
+            norn.interrupt(t);
+        }
+    });
+    if eval_raw(norn, "(if norn.core/%image-entry true false)", "user") != "true" {
+        eprintln!("{}: its image has no entry function", app.name);
+        exit(1)
+    }
+    run_entry(norn, &args)
+}
+
+/// Call the image's entry function with args, and exit with its status.
+fn run_entry(norn: &'static norn_vm::Norn, args: &[String]) -> ! {
+    let call = format!("(norn.core/%run-entry {})", args.iter().map(|a| norn_string(a)).collect::<Vec<_>>().join(" "));
+    let t = norn.submit(RootTask::Eval(call), "user");
+    CURRENT.store(t, Ordering::Release);
+    let done = norn.wait(t);
+    let _ = io::stdout().flush();
+    exit(match done.result {
+        // An integer result is the exit status.
+        Ok(v) => v.parse::<i64>().map(|n| n.clamp(0, 255) as i32).unwrap_or(0),
+        Err(e) => {
+            eprintln!("Error: {e}");
+            1
+        }
+    });
+}
+
 /// The `norn` command line.
 pub fn run() {
+    if let Some(app) = APP.get_or_init(find_app) {
+        run_app(app);
+    }
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("build") {
         exit(build(&args[1..]));
@@ -112,19 +212,7 @@ pub fn run() {
         && args.first().map(String::as_str) != Some("-e")
         && eval_raw(norn, "(if norn.core/%image-entry true false)", "user") == "true"
     {
-        let call = format!("(norn.core/%run-entry {})", args.iter().map(|a| norn_string(a)).collect::<Vec<_>>().join(" "));
-        let t = norn.submit(RootTask::Eval(call), "user");
-        CURRENT.store(t, Ordering::Release);
-        let done = norn.wait(t);
-        let _ = io::stdout().flush();
-        exit(match done.result {
-            // An integer result is the exit status.
-            Ok(v) => v.parse::<i64>().map(|n| n.clamp(0, 255) as i32).unwrap_or(0),
-            Err(e) => {
-                eprintln!("Error: {e}");
-                1
-            }
-        });
+        run_entry(norn, &args);
     }
 
     // The project this run belongs to (M8 part 8.10): its paths and its
@@ -144,7 +232,7 @@ pub fn run() {
         }
     }
 
-    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand" | "deps")) = args.first().map(String::as_str) {
+    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand" | "deps" | "package")) = args.first().map(String::as_str) {
         // `norn test …`, `norn fmt …`: the library's main returns the exit status.
         let call = format!(
             "(do (require 'norn.{tool}) (norn.{tool}/main {}))",

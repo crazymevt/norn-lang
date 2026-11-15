@@ -12,6 +12,11 @@
   for a built image, those after the image; for `norn -e` and the REPL, none."
   []
   (%program-args))
+(defn app-resources
+  "A packaged app's resources folder (where norn package put its image
+  and the files :package :resources named), or nil when this isn't one."
+  []
+  (%getenv "NORN_APP_RESOURCES"))
 (defn exit "End the process with status code (default 0)." ([] (norn.core/exit 0)) ([code] (norn.core/exit code)))
 
 (defn info

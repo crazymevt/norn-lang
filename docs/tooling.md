@@ -17,6 +17,7 @@ also substitute `./target/release/norn` after [building it](getting-started.md#b
 | `norn lint [PATH…]` | Report source diagnostics, including unresolved names and unused imports. |
 | `norn test [PATH…]` | Discover and run tests. Options include `--only REGEX`, `--serial`, `--tap`, and `--junit FILE`. |
 | `norn check [PATH…]` | Run formatting checks, lint, tests, and examples registered in the metadata of loaded definitions. |
+| `norn package [--cli] [--app] [--out DIR]` | Package the project for release: a command-line archive and, on macOS, an app. See [Packaging](#packaging). |
 
 ## Write and run a test
 
@@ -130,3 +131,57 @@ norn --image app.nimg arg1 arg2
 An entry function receives one string argument per command-line argument after
 the image path. An integer return value supplies the process exit status,
 clamped to 0–255. Other successful return values give exit status 0.
+
+## Packaging
+
+`norn package` turns a project into something you can give to someone who
+doesn't have Norn. It builds the project's image, with `:main` as the entry
+function, using the same `norn` you run it with. Then it puts the image, a
+copy of that `norn` under the app's name, the app's resources, and any
+native helpers its packages declare into the `dist/` folder.
+
+- A command-line archive, `NAME-VERSION-OS-ARCH.tar.gz`, holds `bin/NAME`
+  and `lib/NAME/`, which contains the image, the resources, and the helpers.
+- A macOS app, `Display Name.app`, comes zipped for sharing. Its
+  `Info.plist` and icon come from `norn.edn`.
+
+The app's program is a copy of `norn` itself. When `norn` runs under another
+name and finds an image of that name beside it, it runs that image. Every
+argument goes to `:main`, including a leading `-e`, and the program runs in
+the caller's folder. It finds the image through a symbolic link too, so
+`bin/NAME` can be linked into a folder on `PATH`. Inside the app,
+`norn.sys/app-resources` returns the folder that holds the image and the
+resources. For apps that use Norn UI, `NORN_UI_HOST` points at the bundled
+renderer.
+
+`norn.edn` describes the package:
+
+```clojure
+{:name mandelbrot
+ :version "0.1.0"
+ :main mandelbrot.viewer/main
+ :package {:id "dev.norn.mandelbrot"      ; the app's identifier (macOS)
+           :display-name "Mandelbrot"     ; its name in Finder and the Dock
+           :icon "icon.png"               ; a PNG (made into .icns), or .icns
+           :resources ["assets"]          ; files and folders to include
+           :targets [:app :cli]}}         ; what to make (default [:cli])
+```
+
+`--cli` and `--app` choose what to make instead of `:targets`, and `--out`
+sets the output folder. A package that needs a native program declares it
+under `:helpers`, with candidate paths in its folder. `{os}` and `{arch}`
+in a path are filled in, and the first file that exists is bundled. Norn UI
+declares its renderer this way:
+
+```clojure
+:helpers {"norn-ui-host" ["target/release/norn-ui-host" "bin/{os}-{arch}/norn-ui-host"]}
+```
+
+The app is signed ad hoc, which needs no Apple Developer account. It runs
+on the Mac that built it. Another Mac blocks a downloaded copy the first
+time it opens. To open it there, try to open the app, then go to System
+Settings > Privacy & Security and choose **Open Anyway**. Alternatively,
+run `xattr -dr com.apple.quarantine "Mandelbrot.app"` before opening it.
+Public releases need a Developer ID signature and notarization so that
+macOS opens them without asking.
+
