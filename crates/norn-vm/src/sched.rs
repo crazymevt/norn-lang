@@ -128,6 +128,10 @@ pub struct Sched {
     external_len: AtomicUsize,
     currents: Vec<AtomicU64>,
     roots: Mutex<HashMap<u64, Value>>,
+    /// Cancels that came before their root fiber was registered (one
+    /// carrier took the Root job while another took the Cancel): applied
+    /// when it is.
+    early_cancels: Mutex<HashMap<u64, i64>>,
     notifies: Mutex<HashMap<u64, (mpsc::Sender<RootDone>, bool)>>,
     next_id: AtomicU64,
     paused: AtomicBool,
@@ -166,6 +170,7 @@ impl Sched {
             external_len: AtomicUsize::new(0),
             currents: (0..slots).map(|_| AtomicU64::new(Value::NIL.0)).collect(),
             roots: Mutex::new(HashMap::new()),
+            early_cancels: Mutex::new(HashMap::new()),
             notifies: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             paused: AtomicBool::new(false),
@@ -899,11 +904,28 @@ pub fn process_external(vm: &mut Vm) {
                 s.roots.lock().unwrap().insert(ticket, f);
                 s.spawned.fetch_add(1, Ordering::Relaxed);
                 schedule(f);
+                if let Some(code) = s.early_cancels.lock().unwrap().remove(&ticket) {
+                    cancel(f, code);
+                }
             }
             Job::Cancel { ticket, code } => {
-                let f = s.roots.lock().unwrap().get(&ticket).copied();
-                if let Some(f) = f {
-                    cancel(f, code);
+                // (under the roots lock, so a Root job registering this
+                // ticket now sees the early cancel, or is seen here)
+                let roots = s.roots.lock().unwrap();
+                match roots.get(&ticket).copied() {
+                    Some(f) => {
+                        drop(roots);
+                        cancel(f, code);
+                    }
+                    None => {
+                        let mut early = s.early_cancels.lock().unwrap();
+                        // (a cancel for a ticket already finished is never
+                        // claimed: keep that from growing without end)
+                        if early.len() > 1024 {
+                            early.clear();
+                        }
+                        early.insert(ticket, code);
+                    }
                 }
             }
         }
