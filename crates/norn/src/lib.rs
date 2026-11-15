@@ -57,9 +57,13 @@ pub fn run_with_main_thread(f: impl FnOnce(&'static norn_vm::Norn) -> i32) -> ! 
         // (as much stack as a process's first thread usually gets)
         .stack_size(8 << 20)
         .spawn(|| {
-            run();
+            // A panic here (printing to a closed pipe, say, when the
+            // process that started this one is gone) ends the process:
+            // otherwise the first thread, serving main-thread calls, would
+            // keep it alive with nothing left to do.
+            let ok = std::panic::catch_unwind(run).is_ok();
             let _ = io::stdout().flush();
-            exit(0)
+            exit(if ok { 0 } else { 101 })
         })
         .expect("failed to start the command-line thread");
     match norn_vm::wait_started() {
@@ -615,17 +619,20 @@ impl LineEditor {
 fn read_form(prompt: &str, indent: usize) -> Option<String> {
     let stdin = io::stdin();
     let mut buf = String::new();
+    // (stdout may be a pipe nobody reads any more: writes that fail are
+    // ignored, and the end of stdin ends the REPL)
+    let mut out = io::stdout();
     loop {
         if buf.is_empty() {
-            print!("{prompt}");
+            let _ = write!(out, "{prompt}");
         } else {
-            print!("{}.. ", " ".repeat(indent));
+            let _ = write!(out, "{}.. ", " ".repeat(indent));
         }
-        let _ = io::stdout().flush();
+        let _ = out.flush();
         let mut line = String::new();
         match stdin.lock().read_line(&mut line) {
             Ok(0) | Err(_) => {
-                println!();
+                let _ = writeln!(out);
                 return None;
             }
             Ok(_) => buf.push_str(&line),
