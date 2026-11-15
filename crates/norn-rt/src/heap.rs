@@ -247,7 +247,7 @@ pub(crate) fn size_words(kind: Kind, w: impl Fn(usize) -> usize) -> usize {
         Kind::Cons => 3,
         // (a string's length word carries its all-ASCII flag in the top bit)
         Kind::String => 3 + (w(0) & !(1usize << 63)).div_ceil(8),
-        Kind::Bytes => 3 + w(0).div_ceil(8),
+        Kind::Bytes | Kind::ByteArray => 3 + w(0).div_ceil(8),
         Kind::Float | Kind::Set | Kind::Claim | Kind::Atom => 3,
         Kind::Symbol | Kind::Keyword => 5,
         Kind::Array => 3 + w(0),
@@ -350,7 +350,7 @@ pub(crate) fn scan(p: *mut u64, visit: &mut dyn FnMut(NornSlot)) {
                 visit(slot_at(p.add(2)));
             }
         }
-        Kind::String | Kind::Bytes | Kind::Float | Kind::Range | Kind::Code | Kind::EmptyList | Kind::Claim | Kind::BigInt => {}
+        Kind::String | Kind::Bytes | Kind::ByteArray | Kind::Float | Kind::Range | Kind::Code | Kind::EmptyList | Kind::Claim | Kind::BigInt => {}
         Kind::Ratio => fields(&[0, 1], visit),
         Kind::Stream => fields(&[1], visit),
         Kind::Reduced | Kind::Regex => fields(&[0], visit),

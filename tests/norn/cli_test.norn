@@ -1,0 +1,104 @@
+;;;; Command-line parsing (norn.cli): options, arguments, subcommands,
+;;;; errors and the generated help.
+
+(ns cli-test
+  (:require [norn.test :refer [deftest is testing]] [norn.cli :as cli] [norn.string :as str] [norn.sys :as sys]))
+
+(def ran (atom nil))
+
+(def spec
+  {:name "notes" :summary "Keep short notes." :version "1.2"
+   :options [{:name :verbose :short \v :count true :doc "More output"}
+             {:name :dir :value "DIR" :default "notes" :env "NORN_CLI_TEST_UNSET" :doc "Where notes live"}
+             {:name :color :negatable true :default true :doc "Colored output"}]
+   :commands [{:name "add" :summary "Add a note"
+               :options [{:name :tag :short \t :multiple true :doc "A tag"}
+                         {:name :priority :short \p :type :int :choices [1 2 3] :default 2}
+                         {:name :dry-run :short \n}]
+               :args [{:name :text :variadic true :doc "The note's words"}]
+               :run (fn [r] (reset! ran r) 0)}
+              {:name "copy" :args [{:name :src :optional true :default "."} {:name :dest}]
+               :run (fn [r] (reset! ran r) 3)}
+              {:name "exec" :options-first true :args [{:name :cmd} {:name :rest :variadic true :optional true}]
+               :run (fn [r] (reset! ran r) :not-a-status)}
+              {:name "remote" :summary "Manage remotes"
+               :commands [{:name "add" :args [{:name :url :type (fn [s] (if (str/includes? s ":") s (error "not a URL")))}]
+                           :run (fn [r] (reset! ran r) 0)}]}]})
+
+(defn- parsed [& args] (dissoc (cli/parse spec args) :spec))
+
+(defn- usage-error
+  "[message command] for the UsageError args signal, or nil."
+  [& args]
+  (try (apply parsed args) nil (catch cli/UsageError e [(condition-message e) (:command e)])))
+
+(deftest options
+  (is (= {:command ["add"] :args {:text ["hello" "world"]}
+          :options {:verbose 2 :tag ["a" "b"] :dir "notes" :priority 3 :color true :dry-run false}}
+         (parsed "add" "-vv" "hello" "-t" "a" "--tag=b" "world" "-p3")))
+  (testing "bundled flags, and a value after them"
+    (is (= {:verbose 1 :dry-run true :tag ["x"]} (select-keys (:options (parsed "add" "-vnt" "x" "y")) [:verbose :dry-run :tag]))))
+  (testing "a parent's options anywhere after it"
+    (is (= [1 false "d"] ((juxt :verbose :color :dir) (:options (parsed "add" "x" "-v" "--no-color" "--dir" "d"))))))
+  (testing "-- ends the options; a negative number is an argument"
+    (is (= ["-v" "-5"] (:text (:args (parsed "add" "--" "-v" "-5")))))
+    (is (= ["-5"] (:text (:args (parsed "add" "-5"))))))
+  (testing ":options-first stops at the first argument"
+    (is (= {:cmd "ls" :rest ["-la" "--color"]} (:args (parsed "exec" "ls" "-la" "--color"))))))
+
+(deftest arguments
+  (is (= {:dest "only" :src "."} (:args (parsed "copy" "only"))) "an optional one gets what's left over")
+  (is (= {:src "a" :dest "b"} (:args (parsed "copy" "a" "b"))))
+  (is (= {:url "git:x"} (:args (parsed "remote" "add" "git:x"))) "nested commands, a function :type"))
+
+(deftest usage-errors
+  (is (= ["unexpected argument \"c\"" ["copy"]] (usage-error "copy" "a" "b" "c")))
+  (is (= ["missing DEST" ["copy"]] (usage-error "copy")))
+  (is (= ["missing TEXT" ["add"]] (usage-error "add")))
+  (is (= ["unknown option \"--tga\" (did you mean \"--tag\"?)" ["add"]] (usage-error "add" "--tga" "x" "y")))
+  (is (= ["unknown command \"ad\" (did you mean \"add\"?)" []] (usage-error "ad")))
+  (is (= ["unknown option \"-z\"" ["add"]] (usage-error "add" "-z")))
+  (is (= ["missing command (one of add, copy, exec, remote)" []] (usage-error)))
+  (is (= ["missing command (one of add)" ["remote"]] (usage-error "remote")))
+  (is (= ["-p: \"7\" isn't one of 1, 2, 3" ["add"]] (usage-error "add" "-p" "7" "x")))
+  (is (= ["-p: expected an integer, got \"x\"" ["add"]] (usage-error "add" "-p" "x" "x")))
+  (is (= ["--verbose takes no value" ["add"]] (usage-error "add" "--verbose=3" "x")))
+  (is (= ["-t needs a value (TAG)" ["add"]] (usage-error "add" "-t")))
+  (is (= ["URL: not a URL" ["remote" "add"]] (usage-error "remote" "add" "nope")))
+  (is (= ["--no-dir" ["add"]] (update (usage-error "add" "--no-dir" "x") 0 #(re-find #"--no-dir" %)))
+      "only a :negatable flag has --no-"))
+
+(deftest defaults-and-requirements
+  (let [s {:name "p" :options [{:name :level :type :int :required true}
+                               {:name :mode :env "NORN_CLI_TEST_UNSET" :value "M" :default "fast"}]
+           :args [{:name :file :optional true}]}]
+    (is (= {:options {:level 3 :mode "fast"} :args {}} (select-keys (cli/parse s ["--level" "3"]) [:options :args])))
+    (is (thrown? cli/UsageError (cli/parse s [])) ":required"))
+  (testing "a spec mistake is a plain error, not a usage error"
+    (is (thrown? Error (cli/parse {:options [{:name "x"}]} [])))
+    (is (thrown? Error (cli/parse {:options [{:name :a :short \x} {:name :b :short \x}]} [])))
+    (is (thrown? Error (cli/parse {:args [{:name :a :variadic true} {:name :b}]} [])))))
+
+(deftest help-and-version
+  (is (= {:help true :command ["add"]} (parsed "add" "--help" "--bogus")))
+  (is (= {:help true :command []} (parsed "-h")))
+  (is (= {:version true :command []} (parsed "--version")))
+  (let [top (cli/usage spec) add (cli/usage spec ["add"])]
+    (is (str/starts-with? top "Usage: notes [options] <command> [args]\n\nKeep short notes.\n"))
+    (is (str/includes? top "  add     Add a note\n"))
+    (is (str/includes? top "      --dir DIR  Where notes live (default notes; env NORN_CLI_TEST_UNSET)\n"))
+    (is (str/includes? top "      --color    Colored output (--no-color to turn off; default true)\n"))
+    (is (str/starts-with? add "Usage: notes add [options] TEXT...\n"))
+    (is (str/includes? add "  -p, --priority PRIORITY  (one of 1, 2, 3; default 2)\n"))
+    (is (re-find #"Global options:\n  -v, --verbose +More output \(repeatable\)" add))
+    (is (not (re-find #"Options:\n(.+\n)*.*--version" add)) "--version is the root's")))
+
+(deftest running
+  (is (= 3 (cli/run spec ["copy" "a" "b"])) ":run's integer is the status")
+  (is (= {:src "a" :dest "b"} (:args @ran)))
+  (is (= 0 (cli/run spec ["exec" "ls"])) "anything else is 0")
+  (is (= 2 (cli/run spec ["bogus"])) "a usage error")
+  (is (= 0 (cli/run spec ["remote" "add" "a:b"])))
+  (is (str/starts-with? (with-out-str (is (= 0 (cli/run spec ["add" "-h"])))) "Usage: notes add"))
+  (is (= "notes 1.2\n" (with-out-str (cli/run spec ["--version"]))))
+  (is (vector? (sys/program-args))))

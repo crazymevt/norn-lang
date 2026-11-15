@@ -7,7 +7,10 @@
 ;;;; header given more than once has its values joined with ", ".
 ;;;;
 ;;;; The client keeps connections open (per scheme, host and port) and
-;;;; reuses them, follows redirects, and times out the whole exchange.
+;;;; reuses them, follows redirects, and times out the whole exchange. A
+;;;; response body can be read as it arrives (:as :stream, with-response):
+;;;; read to its end, its connection is reused; closed early, it closes.
+;;;; multipart and multipart-params write and read multipart/form-data.
 ;;;;
 ;;;; A server runs each connection in a fiber of its own, so a slow client
 ;;;; holds up no one else. The handler is a function from a request map to
@@ -28,7 +31,7 @@
 
 (ns norn.http
   (:refer-core :rename {get core-get})
-  (:require [norn.io :as io] [norn.net :as net] [norn.uri :as uri] [norn.string :as str]))
+  (:require [norn.bytes :as b] [norn.io :as io] [norn.net :as net] [norn.uri :as uri] [norn.string :as str]))
 
 ;; ---- reading messages (RFC 9112) ----
 
@@ -100,11 +103,7 @@
   "A chunked body (RFC 9112 §7.1), its trailers read and dropped."
   [r limit]
   (loop [acc (bytes [])]
-    (let [line (or (read-line! r) (message-error 400 "the body ended in a chunk size"))
-          size-text (str/trim (first (str/split line #";")))
-          size (if (re-matches #"[0-9A-Fa-f]{1,15}" size-text)
-                 (reduce (fn [n c] (+ (* 16 n) (str/index-of "0123456789abcdef" (str/lower-case (str c))))) 0 size-text)
-                 (message-error 400 (str "a bad chunk size: " line)))]
+    (let [size (chunk-size (or (read-line! r) (message-error 400 "the body ended in a chunk size")))]
       (if (zero? size)
         (do (loop [] (let [t (read-line! r)] (when (and t (not= t "")) (recur)))) acc)
         (let [acc (bytes-concat acc (read-n! r size))]
@@ -114,6 +113,79 @@
 
 (defn- chunked? [headers]
   (some (fn [t] (= "chunked" (str/lower-case (str/trim t)))) (str/split (core-get headers "transfer-encoding" "") #",")))
+
+(defn- chunk-size [line]
+  (let [size-text (str/trim (first (str/split line #";")))]
+    (if (re-matches #"[0-9A-Fa-f]{1,15}" size-text)
+      (reduce (fn [n c] (+ (* 16 n) (str/index-of "0123456789abcdef" (str/lower-case (str c))))) 0 size-text)
+      (message-error 400 (str "a bad chunk size: " line)))))
+
+;; ---- streamed bodies ----
+
+;; A response body read as it arrives (:as :stream): a norn.io stream.
+;; :left is what's left of the body (:length) or of the current chunk
+;; (:chunked; nil between chunks); :state is :open, :done or :closed;
+;; (on-end reusable?) gives the connection back to the pool, or closes it.
+(defclass ResponseBody ()
+  ((reader :required true) (kind :required true) (left :required true) (state :required true)
+                           (on-end :required true)))
+
+(defmethod print-object ((b ResponseBody)) (str "#<response-body " (name @(:state b)) ">"))
+
+(defn- take-some!
+  "Up to n bytes from r's buffer, reading more first if it's empty; nil at
+  the end of the connection."
+  [r n]
+  (when (or (pos? (count @(:buf r))) (fill! r))
+    (let [b @(:buf r) k (min n (count b))]
+      (reset! (:buf r) (subbytes b k))
+      (subbytes b 0 k))))
+
+(defn- finish! [body reusable]
+  (when (= :open @(:state body))
+    (reset! (:state body) :done)
+    ((:on-end body) reusable))
+  nil)
+
+(defn- fail-body! [body msg]
+  (reset! (:state body) :done)
+  ((:on-end body) false)
+  (message-error 400 msg))
+
+(defmethod norn.io/stream-read ((body ResponseBody) n)
+  (let [r (:reader body) left (:left body)]
+    (case @(:state body)
+      :done nil
+      :closed (error IOError :message "The response body is closed" :reason :closed)
+      (case (:kind body)
+        :length (if (zero? @left)
+                  (finish! body true)
+                  (if-let [piece (take-some! r (min n @left))]
+                    (do (swap! left - (count piece))
+                        (when (zero? @left) (finish! body true))
+                        piece)
+                    (fail-body! body (str "the body ended with " @left " bytes to go"))))
+        :chunked (loop []
+                   (if (nil? @left)
+                     (let [size (chunk-size (or (read-line! r) (fail-body! body "the body ended in a chunk size")))]
+                       (if (zero? size)
+                         (do (loop [] (let [t (read-line! r)] (when (and t (not= t "")) (recur))))
+                             (finish! body true))
+                         (do (reset! left size) (recur))))
+                     (if-let [piece (take-some! r (min n @left))]
+                       (do (swap! left - (count piece))
+                           (when (zero? @left) (read-line! r) (reset! left nil))
+                           piece)
+                       (fail-body! body "the body ended in a chunk"))))
+        :close (or (take-some! r n) (finish! body false))))))
+
+(defmethod norn.io/stream-close ((body ResponseBody))
+  (when (= :open @(:state body))
+    (if (and (= :length (:kind body)) (zero? @(:left body)))
+      (finish! body true)
+      ;; (what's left unread would have to be read to reuse the connection)
+      (do (reset! (:state body) :closed) ((:on-end body) false))))
+  nil)
 
 ;; ---- writing messages ----
 
@@ -146,6 +218,119 @@
 
 (defn- header-names-lower [headers]
   (into {} (map (fn [[k v]] [(str/lower-case (name k)) v])) headers))
+
+;; ---- multipart forms (RFC 7578) ----
+
+(defn- quote-param
+  "Text for a quoted header parameter, as browsers write it: \" CR and LF
+  percent-encoded."
+  [s]
+  (-> (str s) (str/replace "\"" "%22") (str/replace "\r" "%0D") (str/replace "\n" "%0A")))
+
+(defn- stream-chunks
+  "The bytes of stream s, as a lazy sequence of pieces; closed at the end
+  when close? (a file this opened)."
+  [s close?]
+  (lazy-seq (if-let [piece (io/read s 65536)]
+              (cons piece (stream-chunks s close?))
+              (do (when close? (io/close s)) nil))))
+
+(defn multipart
+  "parts as a multipart/form-data body: {:content-type \"multipart/form-data;
+  boundary=…\" :body …}, the body bytes, or a lazy sequence (sent chunked)
+  when a part is streamed. (request's :multipart does this.) Each part is
+  a map:
+    :name          the field's name (a string or keyword)
+    :value         its text or bytes, or a stream (read as it's sent)
+    :file          a path: the file's contents, :filename its name unless given
+    :filename      a file name, making it a file upload
+    :content-type  the part's type (a file's default:
+                   application/octet-stream)
+    :headers       more headers for the part
+  :boundary picks the boundary (default: a random one)."
+  [parts & {:keys [boundary]}]
+  (let [boundary (or boundary (str "norn-" (b/hex (%secure-random 16))))
+        head (fn [p]
+               (let [filename (or (:filename p) (when (:file p) (io/file-name (:file p))))
+                     type (or (:content-type p) (when filename "application/octet-stream"))]
+                 (when-not (or (string? (:name p)) (keyword? (:name p)))
+                   (error "norn.http/multipart: a part needs a :name, not" (pr-str p)))
+                 (str "--" boundary "\r\n"
+                      "Content-Disposition: form-data; name=\"" (quote-param (name (:name p))) "\""
+                      (when filename (str "; filename=\"" (quote-param filename) "\""))
+                      "\r\n"
+                      (when type (str "Content-Type: " type "\r\n"))
+                      (apply str (for [[k v] (:headers p)] (str (name k) ": " v "\r\n")))
+                      "\r\n")))
+        content (fn [p] (cond (:file p) (stream-chunks (io/open (:file p) :read) true)
+                              (or (string? (:value p)) (bytes? (:value p))) [(bytes (:value p))]
+                              (nil? (:value p)) [(bytes [])]
+                              :else (stream-chunks (:value p) false)))
+        pieces (concat (mapcat (fn [p] (concat [(bytes (head p))] (content p) [(bytes "\r\n")])) parts)
+                       [(bytes (str "--" boundary "--\r\n"))])
+        whole? (every? (fn [p] (and (not (:file p)) (or (nil? (:value p)) (string? (:value p)) (bytes? (:value p))))) parts)]
+    {:content-type (str "multipart/form-data; boundary=" boundary)
+     :body (if whole? (apply bytes-concat pieces) pieces)}))
+
+(defn- header-params
+  "The parameters of a header value like form-data; name=\"a\";
+  filename*=UTF-8''%C3%A9: {\"name\" \"a\" \"filename*\" …}, names in lower case."
+  [v]
+  (into {}
+        (map (fn [[_ k q plain]]
+               [(str/lower-case k)
+                (if q
+                  (-> q (str/replace #"\\(.)" "$1") (str/replace "%22" "\"") (str/replace "%0D" "\r") (str/replace "%0A" "\n"))
+                  (str/trim plain))]))
+        (re-seq #";\s*([^=\s;]+)\s*=\s*(?:\"((?:[^\"\\]|\\.)*)\"|([^;]*))" (str v))))
+
+(defn- ext-value
+  "An RFC 8187 value (UTF-8''%C3%A9.txt) decoded."
+  [v]
+  (when-let [[_ text] (re-matches #"(?i)utf-8'[^']*'(.*)" v)]
+    (uri/decode text)))
+
+(defn multipart-params
+  "The parts of message m's multipart body (a request a server got, say),
+  in order: [{:name :filename :content-type :headers :body} …], :body the
+  part's bytes; a part that isn't a file also has :value, its text. A
+  body that isn't multipart, or is malformed, is a ParseError."
+  [m]
+  (let [ct (core-get (:headers m) "content-type" "")
+        boundary (core-get (header-params ct) "boundary")
+        body (let [b (:body m)] (cond (nil? b) (bytes []) (string? b) (bytes b) :else b))
+        bad (fn [msg] (error ParseError :message (str "A multipart body: " msg) :source "multipart"))]
+    (when-not (str/starts-with? (str/lower-case ct) "multipart/") (bad (str "the content type is " (pr-str ct))))
+    (when (str/blank? boundary) (bad "no boundary in the content type"))
+    (let [delim (bytes (str "--" boundary))
+          next-delim (bytes (str "\r\n--" boundary))
+          first-at (%bytes-find body delim 0)]
+      (when (neg? first-at) (bad "no boundary in the body"))
+      (loop [at (+ first-at (count delim)) parts []]
+        (cond
+          (= "--" (bytes->string (subbytes body (min at (count body)) (min (+ at 2) (count body))) true)) parts
+          :else
+          (let [line-end (%bytes-find body (bytes "\r\n") at)
+                _ (when (neg? line-end) (bad "it ends after a boundary"))
+                head-end (%bytes-find body (bytes "\r\n\r\n") line-end)
+                headers (if (= head-end line-end)
+                          {}
+                          (do (when (neg? head-end) (bad "a part's headers don't end"))
+                              (into {} (for [line (str/split (bytes->string (subbytes body (+ line-end 2) head-end) true) #"\r\n")
+                                             :let [i (str/index-of line ":")]
+                                             :when i]
+                                         [(str/lower-case (str/trim (subs line 0 i))) (str/trim (subs line (inc i)))]))))
+                start (+ head-end 4)
+                end (%bytes-find body next-delim start)
+                _ (when (neg? end) (bad "a part doesn't end with a boundary"))
+                disposition (header-params (core-get headers "content-disposition" ""))
+                filename (or (some-> (core-get disposition "filename*") ext-value) (core-get disposition "filename"))
+                content (subbytes body start end)]
+            (recur (+ end (count next-delim))
+                   (conj parts (cond-> {:name (core-get disposition "name") :headers headers :body content
+                                        :content-type (core-get headers "content-type" "text/plain")}
+                                       filename (assoc :filename filename)
+                                       (not filename) (assoc :value (bytes->string content true)))))))))))
 
 ;; ---- the client ----
 
@@ -193,7 +378,10 @@
           (some? body) (write-chunked! (:sock c) body))
     method))
 
-(defn- read-response! [c method]
+(defn- read-response!
+  "The response on connection c: its body read whole, or, when (stream?
+  status headers) says so, left to read: :stream {:kind :left}."
+  [c method stream?]
   (let [r (:reader c)
         status-line (read-line! r)]
     (when (nil? status-line) (error ConnectionError :message "The server closed the connection without answering" :reason :closed))
@@ -202,33 +390,47 @@
           status (parse-length code)
           headers (read-headers! r)]
       (if (and (< status 200) (not= status 101))
-        (recur c method) ; (an interim response, 100 Continue: the real one follows)
+        (recur c method stream?) ; (an interim response, 100 Continue: the real one follows)
         (let [no-body (or (= method :head) (= status 204) (= status 304))
-              body (cond no-body (bytes [])
+              streaming (stream? status headers)
+              body (cond streaming (cond no-body {:kind :length :left 0}
+                                         (chunked? headers) {:kind :chunked :left nil}
+                                         (core-get headers "content-length")
+                                         {:kind :length :left (parse-length (core-get headers "content-length"))}
+                                         :else {:kind :close :left nil})
+                         no-body (bytes [])
                          (chunked? headers) (read-chunked! r nil)
                          (core-get headers "content-length") (read-n! r (parse-length (core-get headers "content-length")))
                          :else (read-to-end! r))
               closes (or (= "close" (str/lower-case (core-get headers "connection" "")))
                          (= version "HTTP/1.0")
                          (and (not no-body) (not (chunked? headers)) (nil? (core-get headers "content-length"))))]
-          {:status status :reason (or reason-text "") :version version :headers headers :body body :closes closes})))))
+          (cond-> {:status status :reason (or reason-text "") :version version :headers headers :closes closes}
+                  streaming (assoc :stream body)
+                  (not streaming) (assoc :body body)))))))
 
 (defn- exchange!
   "One request and its response, on a pooled connection if there is one
   (again on a new one if a pooled one turns out closed, for a request
   that can be repeated)."
-  [u req opts]
+  [u req opts stream?]
   ;; (a connection is shared only by requests that trust the same CAs: one
   ;; verified against a private CA mustn't serve a request that doesn't)
   (let [k [(:scheme u) (:host u) (uri/port-of u) (:ca-file opts)]
         attempt (fn [c pooled?]
-                  (let [r (try (let [m (send-request! c u req)] {:ok (read-response! c m)})
+                  (let [r (try (let [m (send-request! c u req)] {:ok (read-response! c m stream?)})
                                (catch Error e (try (io/close (:sock c)) (catch Error _ nil)) {:error e}))]
-                    (cond (:ok r) (let [resp (:ok r)]
-                                    (if (or (:closes resp) (false? (:keep-alive opts)))
-                                      (io/close (:sock c))
-                                      (give-back! k c))
-                                    resp)
+                    (cond (:ok r) (let [resp (:ok r)
+                                        done (fn [reusable]
+                                               (if (and reusable (not (:closes resp)) (not (false? (:keep-alive opts))))
+                                                 (give-back! k c)
+                                                 (try (io/close (:sock c)) (catch Error _ nil))))]
+                                    (if-let [{:keys [kind left]} (:stream resp)]
+                                      (-> resp
+                                          (dissoc :stream)
+                                          (assoc :body (ResponseBody :reader (:reader c) :kind kind :left (atom left)
+                                                                     :state (atom :open) :on-end done)))
+                                      (do (done true) resp)))
                           (and pooled? (contains? idempotent (or (:method req) :get))) ::retry
                           :else (throw (:error r)))))
         idle (take-idle! k)
@@ -250,7 +452,7 @@
 
 (defn- as-body [resp as]
   (case as
-    :bytes resp
+    (:bytes :stream) resp
     (update resp :body (fn [b] (bytes->string b true)))))
 
 (defn request
@@ -262,8 +464,15 @@
     :url           \"http://…\" or \"https://…\"
     :query-params  a map added to the URL's query
     :headers       a map of name to value
-    :body          a string, bytes, or a sequence or stream (sent chunked)
-    :as            :text (default; UTF-8) or :bytes, for the response body
+    :body          a string, bytes, or a sequence or stream (sent chunked;
+                   a streamed response body is one)
+    :multipart     parts to send as multipart/form-data (see multipart)
+    :as            :text (default; UTF-8), :bytes, or :stream: the body
+                   as a norn.io stream to read as it arrives. Read it to
+                   its end and the connection is reused; close it
+                   (io/close) before then and the connection closes
+                   (with-response does). The :timeout covers the
+                   exchange up to the headers.
     :timeout       ms for the whole exchange, redirects included
     :follow-redirects  true (default) or false; :max-redirects 5
     :keep-alive    false to close the connection after this request
@@ -275,12 +484,20 @@
              (let [extra (uri/query-string qp)] (assoc u0 :query (if (:query u0) (str (:query u0) "&" extra) extra)))
              u0)
         follow (not (false? (:follow-redirects req)))
-        limit (or (:max-redirects req) 5)]
+        limit (or (:max-redirects req) 5)
+        req (if-let [parts (:multipart req)]
+              (let [{:keys [content-type body]} (multipart parts)]
+                (-> req (dissoc :multipart) (assoc :body body)
+                    (assoc :headers (merge {"content-type" content-type} (header-names-lower (:headers req))))))
+              req)
+        stream? (fn [status headers]
+                  (and (= :stream (:as req))
+                       (not (and follow (core-get headers "location") (contains? #{301 302 303 307 308} status)))))]
     (when-not (contains? #{"http" "https"} (:scheme u0)) (error (str "Not an http or https URL: " start)))
     (with-timeout (:timeout req) (str "The request to " start)
                   (fn []
                     (loop [u u0 req req n 0]
-                      (let [resp (exchange! u req req)
+                      (let [resp (exchange! u req req stream?)
                             loc (core-get (:headers resp) "location")]
                         (if (and follow loc (contains? #{301 302 303 307 308} (:status resp)))
                           (do (when (>= n limit) (error (str "More than " limit " redirects from " start)))
@@ -296,6 +513,15 @@
 (defn post "A POST of body to url." [url body & {:as opts}] (request (assoc opts :method :post :url url :body body)))
 (defn put "A PUT of body to url." [url body & {:as opts}] (request (assoc opts :method :put :url url :body body)))
 (defn delete "A DELETE request to url." [url & {:as opts}] (request (assoc opts :method :delete :url url)))
+
+(defmacro with-response
+  "(with-response [resp req] body…): resp is (request req) with its body a
+  stream (:as :stream), closed when body ends, however it ends. Read it to
+  the end and the connection is reused."
+  [[sym req] & body]
+  `(let [~sym (request (assoc ~req :as :stream))]
+     (try (do ~@body)
+          (finally (norn.io/close (:body ~sym))))))
 
 ;; ---- the server ----
 

@@ -3601,6 +3601,60 @@
 
 (defmethod print-object ((o Object)) (%print-plain o))
 
+;; Collections a library defines: seq, count and nth call these for
+;; instances (built-in collections never reach them, so they keep their
+;; fast paths). A class needs only collection-seq; reduce, into, map,
+;; first, vec and the rest work through it.
+
+(defgeneric collection-seq (coll)
+  "The items of instance coll as a seq (or anything seq accepts, or nil
+  when it's empty). A method for a class makes seq, and every sequence
+  function, take its instances.")
+
+(defgeneric collection-count (coll)
+  "How many items instance coll has. The default counts collection-seq's;
+  a method for a class that knows its count makes count constant time.")
+
+(defgeneric collection-nth (coll index)
+  "Item index of instance coll, or an IndexError when it has none there.
+  The default walks collection-seq; a method for an indexed class makes
+  nth constant time.")
+
+(defmethod collection-seq ((o Object))
+  (error TypeError :message (str "Don't know how to create a seq from " (name (class-name (class-of o))))))
+
+(defmethod collection-count ((o Object)) (count (collection-seq o)))
+
+(defmethod collection-nth ((o Object) index) (nth (collection-seq o) index))
+
+(defn- %collection-items [coll]
+  (let [items (collection-seq coll)]
+    (when (%instance? items)
+      (error TypeError :message "collection-seq must give a seq or a built-in collection, not another instance"))
+    items))
+
+(defn %collection-op
+  "What seq, first, rest, next, count, nth, vec and set do for instance
+  coll: the primitives hand the call here, so its methods run as ordinary
+  calls in the fiber (they can signal, be caught, and park)."
+  [op coll & args]
+  (case op
+    :seq (seq (%collection-items coll))
+    :first (first (%collection-items coll))
+    :rest (rest (%collection-items coll))
+    :next (next (%collection-items coll))
+    :vec (vec (%collection-items coll))
+    :set (set (%collection-items coll))
+    :count (collection-count coll)
+    :nth (let [index (first args)]
+           (if (next args)
+             ;; (with a default, checked against the count: a method signals
+             ;; IndexError only when there's no default)
+             (if (and (integer? index) (<= 0 index) (< index (collection-count coll)))
+               (collection-nth coll index)
+               (second args))
+             (collection-nth coll index)))))
+
 (defmethod compute-applicable-methods ((gf StandardGenericFunction) args) (%applicable-methods gf args))
 
 (defmethod compute-effective-method ((gf StandardGenericFunction) methods cpls) (%build-em gf methods cpls))

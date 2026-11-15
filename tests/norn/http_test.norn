@@ -57,6 +57,8 @@
     "/echo" {:status 200 :headers {"Content-Type" "application/octet-stream"} :body (:body req)}
     "/info" {:status 200 :body (pr-str [(:method req) (get (:headers req) "x-thing") (count (:body req))])}
     "/chunks" {:status 200 :body ["one " "two " "three"]}
+    "/lines" {:status 200 :body (map #(str "line " % "\n") (range 2000))}
+    "/form" {:status 200 :body (pr-str (mapv #(dissoc % :headers) (http/multipart-params req)))}
     "/file" {:status 200 :body (io/open (io/path (sys/temp-dir) (str "norn-http-test-" (sys/pid) ".txt")) :read)}
     "/moved" {:status 302 :headers {"location" "hello?name=redirected"}}
     "/see-other" {:status 303 :headers {"location" "/info"}}
@@ -159,6 +161,96 @@
     (is (= "hello tls" (:body (http/get u :ca-file (io/path certs "ca.pem")))))
     (is (some? (message (fn [] (http/get u :keep-alive false)))) "an untrusted certificate is refused")
     (http/stop! secure)))
+
+(deftest streamed-responses
+  (http/close-idle!)
+  (reset! connections #{})
+  (testing "a chunked body, read as it arrives"
+    (http/with-response [r {:url (url "/lines")}]
+      (is (= 200 (:status r)))
+      (let [lines (io/line-reader (:body r))]
+        (is (= "line 0" (io/read-line lines)))
+        (is (= 1999 (count (take-while some? (repeatedly #(io/read-line lines))))))
+        (is (nil? (io/read (:body r) 10)) "and then the end"))))
+  (testing "a body with a length, and one sent on as another request's body"
+    (http/with-response [r {:url (url "/echo") :method :post :body (apply str (repeat 50000 "ab"))}]
+      (is (= 100000 (count (:body (http/post (url "/echo") (:body r) :as :bytes))))))
+    (http/with-response [r {:url (url "/hello")}]
+      (is (= "hello world" (bytes->string (io/read-all (:body r)))))))
+  (is (= 2 (count @connections))
+      "a body read to its end gives its connection back (the second: the request it went on to, while it was open)")
+  (testing "closing a body early closes its connection"
+    (http/close-idle!)
+    (reset! connections #{})
+    (http/with-response [r {:url (url "/lines")}]
+      (is (= "line 0\n" (bytes->string (io/read (:body r) 7)))))
+    (http/get (url "/hello"))
+    (is (= 2 (count @connections)) "the next request needs a new one")
+    (let [r (http/request {:url (url "/hello") :as :stream})]
+      (io/close (:body r))
+      (io/close (:body r))
+      (is (= :closed (:reason (ex-data (try (io/read (:body r) 1) nil (catch Error e e))))) "reading it after")))
+  (testing "a body sent until the connection closes"
+    (let [s (net/listen "127.0.0.1" 0)
+          port (net/port (net/local-address s))]
+      (spawn-detached (let [c (net/accept s)]
+                        (io/read c 4096)
+                        (io/write c "HTTP/1.1 200 OK\r\n\r\nno length, ")
+                        (io/write c "then the end")
+                        (io/close c)))
+      (http/with-response [r {:url (str "http://127.0.0.1:" port "/")}]
+        (is (= "no length, then the end" (bytes->string (io/read-all (:body r))))))
+      (io/close s)))
+  (testing "a body cut off partway is an error"
+    (let [s (net/listen "127.0.0.1" 0)
+          port (net/port (net/local-address s))]
+      (spawn-detached (let [c (net/accept s)]
+                        (io/read c 4096)
+                        (io/write c "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort")
+                        (io/close c)))
+      (http/with-response [r {:url (str "http://127.0.0.1:" port "/")}]
+        (is (re-find #"95 bytes to go" (message #(io/read-all (:body r))))))
+      (io/close s)))
+  (is (nil? (http/with-response [r {:url (url "/hello") :method :head}] (io/read (:body r) 10))) "HEAD: an empty stream")
+  (testing "a redirect is followed before streaming"
+    (http/with-response [r {:url (url "/moved")}]
+      (is (= "hello redirected" (bytes->string (io/read-all (:body r))))))))
+
+(deftest multipart-forms
+  (io/with-temp-file [f :suffix ".txt"]
+    (io/write-text f "a file's contents\n")
+    (let [parts (read-string (:body (http/post (url "/form") nil
+                                               :multipart [{:name "title" :value "Say \"hi\"\r\nnow"}
+                                                           {:name :upload :file f}
+                                                           {:name "raw" :value (bytes [0 13 10 45 45 255]) :filename "b.bin"
+                                                            :content-type "application/x-thing"}
+                                                           {:name "naïve" :value "ü"}
+                                                           {:name "empty" :value ""}])))]
+      (is (= ["title" "upload" "raw" "naïve" "empty"] (map :name parts)))
+      (is (= "Say \"hi\"\r\nnow" (:value (nth parts 0))) "values keep quotes and line breaks")
+      (is (= [(io/file-name f) "application/octet-stream" "a file's contents\n"]
+             ((juxt :filename :content-type #(bytes->string (:body %))) (nth parts 1)))
+          "a file, streamed")
+      (is (= [0 13 10 45 45 255] (vec (:body (nth parts 2)))) "bytes that look like a boundary's start")
+      (is (= ["ü" "text/plain"] ((juxt :value :content-type) (nth parts 3))))
+      (is (= "" (:value (nth parts 4))))))
+  (testing "a whole body has a length; the boundary can be chosen"
+    (let [{:keys [content-type body]} (http/multipart [{:name "a" :value "1"}] :boundary "XyZ")]
+      (is (= "multipart/form-data; boundary=XyZ" content-type))
+      (is (= "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--XyZ--\r\n" (bytes->string body)))))
+  (testing "parsing what other clients send"
+    (let [m {:headers {"content-type" "multipart/form-data; boundary=\"b b\""}
+             :body (str "a preamble\r\n--b b\r\n"
+                        "Content-Disposition: form-data; name=\"f\"; filename=\"x.txt\"; filename*=UTF-8''%C3%A9t%C3%A9.txt\r\n"
+                        "\r\nabc\r\n--b b\r\nContent-Disposition: form-data; name=\"q%22\"\r\n\r\nv\r\n--b b--\r\nan epilogue")}]
+      (is (= [{:name "f" :filename "été.txt" :content-type "text/plain" :text "abc"} {:name "q\"" :value "v"}]
+             (map (fn [p] (if (:filename p)
+                            (assoc (select-keys p [:name :filename :content-type]) :text (bytes->string (:body p)))
+                            (select-keys p [:name :value])))
+                  (http/multipart-params m))))))
+  (is (re-find #"the content type" (message #(http/multipart-params {:headers {"content-type" "text/plain"} :body "x"}))))
+  (is (re-find #"doesn't end" (message #(http/multipart-params {:headers {"content-type" "multipart/form-data; boundary=b"}
+                                                                :body "--b\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nno end"})))))
 
 (deftest stopping
   (let [s (http/serve handler)

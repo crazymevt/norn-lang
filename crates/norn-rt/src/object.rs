@@ -70,6 +70,8 @@ kinds! {
     Queue => "Queue",
     Transient => "Transient",
     Regex => "Regex",
+    // (new kinds go last: images record kinds by their place in this list)
+    ByteArray => "ByteArray",
 }
 
 /// Static per-kind descriptor. From M2 layouts become heap objects that also

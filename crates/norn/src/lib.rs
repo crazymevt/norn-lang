@@ -89,6 +89,14 @@ pub fn run() {
         }
         _ => None,
     };
+    // (norn.sys/program-args): an image's entry gets everything after the
+    // image; a script or tool, everything after its name; -e and the REPL,
+    // nothing.
+    norn_vm::sys::set_program_args(match args.first() {
+        Some(f) if image.is_some() && f != "-e" => args.clone(),
+        Some(f) if !f.starts_with('-') => args[1..].to_vec(),
+        _ => Vec::new(),
+    });
     let norn = start_with(image.as_deref()).unwrap_or_else(|e| {
         eprintln!("{e}");
         exit(1)

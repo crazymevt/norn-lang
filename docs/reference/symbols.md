@@ -36,7 +36,7 @@ beginning with `%` are runtime internals.
 - [`catch`](conditions.md#handling-and-cleanup) · `catch-tag` · [`chan`](concurrency.md#channels) · `Channel` · `char` · `char?`
 - `Character` · `Class` · `class-direct-subclasses` · `class-direct-superclasses` · `class-name` · [`class-of`](objects.md#construction-and-access)
 - [`class-precedence-list`](objects.md#construction-and-access) · `class-slots` · `class?` · [`close!`](concurrency.md#channels) · [`closed?`](concurrency.md#channels) · `coll?`
-- `Collection` · `comment` · [`comp`](collections.md#reduction-and-transducers) · `compare` · [`compare-and-set!`](concurrency.md#atoms-and-dynamic-vars) · `complement`
+- `Collection` · [`collection-count`](objects.md#collections-a-class-defines) · [`collection-nth`](objects.md#collections-a-class-defines) · [`collection-seq`](objects.md#collections-a-class-defines) · `comment` · [`comp`](collections.md#reduction-and-transducers) · `compare` · [`compare-and-set!`](concurrency.md#atoms-and-dynamic-vars) · `complement`
 - [`completing`](collections.md#reduction-and-transducers) · [`compute-applicable-methods`](objects.md#protocols-and-object-customization) · [`compute-effective-method`](objects.md#protocols-and-object-customization) · [`compute-restarts`](conditions.md#restarts-and-recovery) · `concat` · [`cond`](syntax.md#branching-and-sequencing)
 - `cond->` · `cond->>` · [`Condition`](conditions.md#signaling-conditions) · [`condition-message`](conditions.md#signaling-conditions) · [`condition-text`](conditions.md#signaling-conditions) · `condp`
 - [`conj`](collections.md#persistent-collections) · [`conj!`](collections.md#transients) · `ConnectionError` · `cons` · `constantly` · [`contains?`](collections.md#lookup-and-update)

@@ -1,0 +1,452 @@
+;;;; norn.terminal — the terminal this program runs in: detection, size,
+;;;; raw input decoded into keys, ANSI styling and screen control.
+;;;;
+;;;; Keys are maps: {:key \a}, {:key :up :ctrl true}, {:key :f5},
+;;;; {:key :paste :text "…"}, {:key :mouse :button :left :action :press
+;;;; :row 3 :col 10}; modifiers are :ctrl, :alt and :shift. Decoding is
+;;;; plain Norn over the bytes (decode-keys), so it's testable without a
+;;;; terminal. Child programs on their own terminals are norn.process's
+;;;; start-pty; resizes arrive as norn.signal's :winch.
+
+(ns norn.terminal
+  (:require [norn.bytes :as bytes] [norn.math :as math] [norn.string :as str] [norn.sys :as sys]))
+
+(def ^:private esc (str (char 27)))
+(def ^:private csi (str esc "["))
+
+;;; ---- detection ----
+
+(defn- fd [stream]
+  (case stream
+    :in 0
+    :out 1
+    :err 2
+    (error "norn.terminal: a stream is :in, :out or :err, not" (pr-str stream))))
+
+(defn tty?
+  "Is stream (:in, :out (default) or :err) a terminal?"
+  ([] (tty? :out))
+  ([stream] (%tty? (fd stream))))
+
+(defn size
+  "{:rows :cols} of the terminal: stream's (default :out), else any of the
+  three standard streams', else $LINES and $COLUMNS; nil if nothing says."
+  ([] (size :out))
+  ([stream]
+   (if-let [[r c] (some %tty-size (distinct [(fd stream) 1 0 2]))]
+     {:rows r :cols c}
+     (let [r (some-> (sys/getenv "LINES") parse-long) c (some-> (sys/getenv "COLUMNS") parse-long)]
+       (when (and r c (pos? r) (pos? c)) {:rows r :cols c})))))
+
+(defn color-support
+  "How many colors output can show: :none, :basic (16), :256 or :truecolor.
+  NO_COLOR (set and not empty) means :none, FORCE_COLOR 1, 2 or 3 the
+  others; otherwise none unless stream (default :out) is a terminal other
+  than TERM=dumb, then COLORTERM and TERM decide."
+  ([] (color-support :out))
+  ([stream]
+   (let [env #(let [v (sys/getenv %)] (when (seq v) v))
+         force (env "FORCE_COLOR")]
+     (cond (env "NO_COLOR") :none
+           force (case force "0" :none "1" :basic "2" :256 "3" :truecolor :basic)
+           (not (tty? stream)) :none
+           (= "dumb" (env "TERM")) :none
+           (#{"truecolor" "24bit"} (env "COLORTERM")) :truecolor
+           (some-> (env "TERM") (str/includes? "256")) :256
+           :else :basic))))
+
+(def ^:dynamic *color*
+  "What style emits: nil (default) asks color-support each time; :none,
+  :basic, :256 or :truecolor overrides it (binding *color* to :none gives
+  plain text, to :truecolor styled text for a file)."
+  nil)
+
+;;; ---- styling ----
+
+(def ^:private attributes
+  {:bold 1 :dim 2 :italic 3 :underline 4 :blink 5 :reverse 7 :hidden 8 :strike 9})
+
+(def ^:private basic-colors
+  [:black :red :green :yellow :blue :magenta :cyan :white])
+
+(def ^:private basic-rgb
+  ;; the xterm defaults, for choosing the nearest of the 16
+  [[0 0 0] [205 0 0] [0 205 0] [205 205 0] [0 0 238] [205 0 205] [0 205 205] [229 229 229]
+   [127 127 127] [255 0 0] [0 255 0] [255 255 0] [92 92 255] [255 0 255] [0 255 255] [255 255 255]])
+
+(defn- basic-index
+  "0–15 for a color keyword (:red, :bright-red), or nil."
+  [k]
+  (when (keyword? k)
+    (let [n (name k) bright (str/starts-with? n "bright-")
+          k (keyword (if bright (subs n 7) n))
+          i (first (keep-indexed (fn [i c] (when (= c k) i)) basic-colors))]
+      (when i (if bright (+ 8 i) i)))))
+
+(defn- rgb-of-256 [n]
+  (cond (< n 16) (nth basic-rgb n)
+        (< n 232) (let [n (- n 16) level #(if (zero? %) 0 (+ 55 (* 40 %)))]
+                    [(level (quot n 36)) (level (mod (quot n 6) 6)) (level (mod n 6))])
+        :else (let [g (+ 8 (* 10 (- n 232)))] [g g g])))
+
+(defn- rgb->256 [[r g b]]
+  (let [c #(math/round (/ (* % 5) 255.0))]
+    (+ 16 (* 36 (c r)) (* 6 (c g)) (c b))))
+
+(defn- nearest-basic [[r g b]]
+  (apply min-key (fn [i] (let [[r2 g2 b2] (nth basic-rgb i)]
+                           (+ (* (- r r2) (- r r2)) (* (- g g2) (- g g2)) (* (- b b2) (- b b2)))))
+         (range 16)))
+
+(defn- parse-color
+  "A color as {:basic i}, {:index n} or {:rgb [r g b]}."
+  [c]
+  (cond (= c :default) {:default true}
+        (basic-index c) {:basic (basic-index c)}
+        (and (integer? c) (<= 0 c 255)) {:index c}
+        (and (vector? c) (= 3 (count c)) (every? #(and (integer? %) (<= 0 % 255)) c)) {:rgb c}
+        (and (string? c) (re-matches #"#[0-9a-fA-F]{6}" c))
+        {:rgb (vec (bytes/unhex (subs c 1)))}
+        :else (error "norn.terminal: not a color (a keyword like :red or :bright-blue, 0–255, [r g b] or \"#rrggbb\"):"
+                     (pr-str c))))
+
+(defn- color-codes
+  "The SGR parameters for color c as foreground (base 30) or background
+  (base 40), within what support allows."
+  [c base support]
+  (let [{:keys [default basic index rgb]} (parse-color c)
+        basic-code (fn [i] (str (if (< i 8) (+ base i) (+ base 60 (- i 8)))))]
+    (cond default (str (+ base 9))
+          basic (basic-code basic)
+          (= support :basic) (basic-code (nearest-basic (or rgb (rgb-of-256 index))))
+          index (str (+ base 8) ";5;" index)
+          (= support :256) (str (+ base 8) ";5;" (rgb->256 rgb))
+          :else (str (+ base 8) ";2;" (str/join ";" rgb)))))
+
+(defn- sgr
+  "The SGR escape for specs: attribute and color keywords (a color keyword
+  is the foreground) and maps of {:fg :bg :bold true …}."
+  [specs support]
+  (let [codes (mapcat (fn [s]
+                        (cond (attributes s) [(str (attributes s))]
+                              (map? s) (concat (when-let [c (:fg s)] [(color-codes c 30 support)])
+                                               (when-let [c (:bg s)] [(color-codes c 40 support)])
+                                               (keep (fn [[k v]] (when (and v (attributes k)) (str (attributes k)))) s))
+                              :else [(color-codes s 30 support)]))
+                      specs)]
+    (when (seq codes) (str csi (str/join ";" codes) "m"))))
+
+(defn style
+  "Text with ANSI styles: (style \"Error\" :bold :red), (style s {:fg [255
+  128 0] :bg :blue :underline true}). Attributes: :bold :dim :italic
+  :underline :blink :reverse :hidden :strike. Colors: :black :red :green
+  :yellow :blue :magenta :cyan :white (and :bright-…), :default, 0–255,
+  [r g b] or \"#rrggbb\", brought down to what the terminal shows. Plain
+  text when color is off (see *color*). Styles nest."
+  [text & specs]
+  (let [support (or *color* (color-support))
+        text (str text)
+        open (sgr specs (if (= support :none) :basic support))] ; (checked even when unused)
+    (if (and open (not= support :none))
+      (str open (str/replace text (str csi "0m") (str csi "0m" open)) csi "0m")
+      text)))
+
+(def ^:private ansi-re #"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+
+(defn strip
+  "s without ANSI escape sequences."
+  [s]
+  (str/replace (str s) ansi-re ""))
+
+(defn width
+  "The columns s takes on a terminal, its escape sequences aside."
+  [s]
+  (str/width (strip s)))
+
+;;; ---- screen control ----
+;;; Each is text to print.
+
+(defn cursor-to "Move the cursor to row and col (from 1)." [row col] (str csi row ";" col "H"))
+(defn cursor-up "Move the cursor up n rows (default 1)." ([] (cursor-up 1)) ([n] (str csi n "A")))
+(defn cursor-down "Move the cursor down n rows." ([] (cursor-down 1)) ([n] (str csi n "B")))
+(defn cursor-forward "Move the cursor right n columns." ([] (cursor-forward 1)) ([n] (str csi n "C")))
+(defn cursor-back "Move the cursor left n columns." ([] (cursor-back 1)) ([n] (str csi n "D")))
+
+(defn clear
+  "Clear part of the screen: :screen (default), :line, :to-end (of the
+  screen), :to-start, :line-to-end."
+  ([] (clear :screen))
+  ([what]
+   (case what
+     :screen (str csi "2J")
+     :line (str csi "2K")
+     :to-end (str csi "0J")
+     :to-start (str csi "1J")
+     :line-to-end (str csi "0K")
+     (error "norn.terminal/clear: :screen, :line, :to-end, :to-start or :line-to-end, not" (pr-str what)))))
+
+(def hide-cursor "Hide the cursor." (str csi "?25l"))
+(def show-cursor "Show the cursor." (str csi "?25h"))
+(def alternate-screen "Switch to the alternate screen (as full-screen programs do)." (str csi "?1049h"))
+(def main-screen "Switch back from the alternate screen." (str csi "?1049l"))
+(def paste-on "Report pastes as one {:key :paste} each (bracketed paste)." (str csi "?2004h"))
+(def paste-off "Stop reporting pastes." (str csi "?2004l"))
+(def mouse-on "Report mouse presses, drags and the wheel as keys." (str csi "?1000h" csi "?1002h" csi "?1006h"))
+(def mouse-off "Stop reporting the mouse." (str csi "?1006l" csi "?1002l" csi "?1000l"))
+
+(defn keyboard-on
+  "Turn on the kitty keyboard protocol (flags default 1: disambiguate),
+  where a terminal has it (kitty, WezTerm, foot, Ghostty, iTerm2 3.5…;
+  others ignore it). Escape then arrives at once, as do Alt and Ctrl
+  combinations a plain terminal can't tell apart: {:key \\i :ctrl true}
+  rather than :tab. Flags 2 (event types), 4 (alternate keys), 8 (every key
+  as an escape code) and 16 (text) add more."
+  ([] (keyboard-on 1))
+  ([flags] (str csi ">" flags "u")))
+
+(def keyboard-off "Put back the keyboard protocol keyboard-on replaced." (str csi "<u"))
+(def keyboard-query
+  "Ask whether the terminal has the kitty keyboard protocol: one that does
+  answers with the key {:key :keyboard-flags :flags n}."
+  (str csi "?u"))
+(defn title "Set the window's title." [s] (str esc "]0;" s (char 7)))
+
+;;; ---- keys ----
+
+(def ^:private tilde-keys
+  {1 :home 2 :insert 3 :delete 4 :end 5 :page-up 6 :page-down 7 :home 8 :end
+   11 :f1 12 :f2 13 :f3 14 :f4 15 :f5 17 :f6 18 :f7 19 :f8 20 :f9 21 :f10 23 :f11 24 :f12})
+
+(def ^:private final-keys
+  {\A :up \B :down \C :right \D :left \H :home \F :end \P :f1 \Q :f2 \R :f3 \S :f4 \E :begin})
+
+(defn- with-mods
+  "Key k with the modifiers xterm's parameter m (1 + bits) gives."
+  [k m]
+  (let [bits (dec (or m 1))]
+    (cond-> k
+            (pos? (bit-and bits 1)) (assoc :shift true)
+            (pos? (bit-and bits 2)) (assoc :alt true)
+            (pos? (bit-and bits 12)) (assoc :ctrl true))))
+
+(defn- params
+  "The numbers in CSI parameter text \"1;5\" (each one's first
+  colon-separated part: the kitty protocol's \"97:65;6\" is [97 6])."
+  [s]
+  (mapv #(let [f (first (str/split % #":"))] (when (seq f) (parse-long f))) (str/split s #";")))
+
+(defn- mouse-key [ps final]
+  (let [[b col row] ps
+        wheel (pos? (bit-and b 64))
+        motion (pos? (bit-and b 32))
+        low (bit-and b 3)]
+    (cond-> {:key :mouse :row row :col col
+             :button (if wheel
+                       (nth [:wheel-up :wheel-down :wheel-left :wheel-right] low)
+                       (nth [:left :middle :right :none] low))
+             :action (cond wheel :scroll
+                           motion (if (= low 3) :move :drag)
+                           (= final \M) :press
+                           :else :release)}
+            (pos? (bit-and b 4)) (assoc :shift true)
+            (pos? (bit-and b 8)) (assoc :alt true)
+            (pos? (bit-and b 16)) (assoc :ctrl true))))
+
+(defn- control-key
+  "The key for byte b below 32, or 127."
+  [b]
+  (case b
+    (10 13) {:key :enter}
+    9 {:key :tab}
+    (8 127) {:key :backspace}
+    27 {:key :escape}
+    0 {:key \space :ctrl true}
+    (if (<= 1 b 26)
+      {:key (char (+ 96 b)) :ctrl true}
+      {:key (char (+ 64 b)) :ctrl true})))
+
+(defn- index-of-seq
+  "Where vector v holds the items of pat, from start; nil if nowhere."
+  [v pat start]
+  (let [n (count v) k (count pat)]
+    (loop [i start] (cond (> (+ i k) n) nil (= pat (subvec v i (+ i k))) i :else (recur (inc i))))))
+
+(def ^:private paste-end (mapv int (str esc "[201~")))
+
+(defn- text-of [v] (bytes->string (bytes v) true))
+
+(defn- decode-one
+  "[key next-index] for the key at index i of byte vector v, or
+  :incomplete when v ends partway through one."
+  [v i]
+  (let [n (count v) b (nth v i)]
+    (cond
+      (= b 27)
+      (if (>= (inc i) n)
+        :incomplete
+        (let [b1 (nth v (inc i))]
+          (cond
+            (= b1 91) ; CSI
+            (loop [j (+ i 2)]
+              (cond (>= j n) :incomplete
+                    (<= 0x20 (nth v j) 0x3f) (recur (inc j))
+                    :else
+                    (let [ps (text-of (subvec v (+ i 2) j)) final (char (nth v j)) next (inc j)]
+                      (cond
+                        (and (= final \~) (= ps "200"))
+                        (if-let [e (index-of-seq v paste-end next)]
+                          [{:key :paste :text (text-of (subvec v next e))} (+ e (count paste-end))]
+                          :incomplete)
+                        (and (str/starts-with? ps "<") (#{\M \m} final))
+                        [(mouse-key (params (subs ps 1)) final) next]
+                        (= final \~)
+                        (let [[k m] (params ps)]
+                          [(if-let [key (tilde-keys k)] (with-mods {:key key} m) {:key :unknown :sequence (text-of (subvec v i next))})
+                           next])
+                        (= final \Z) [{:key :tab :shift true} next]
+                        (= final \I) [{:key :focus-in} next]
+                        (= final \O) [{:key :focus-out} next]
+                        (and (= final \u) (str/starts-with? ps "?"))
+                        [{:key :keyboard-flags :flags (or (first (params (subs ps 1))) 0)} next]
+                        (= final \u)
+                        (let [[cp m] (params ps)]
+                          [(with-mods (case cp 13 {:key :enter} 9 {:key :tab} 27 {:key :escape} 127 {:key :backspace}
+                                            {:key (char cp)})
+                             m)
+                           next])
+                        (final-keys final) [(with-mods {:key (final-keys final)} (second (params ps))) next]
+                        :else [{:key :unknown :sequence (text-of (subvec v i next))} next]))))
+            (= b1 79) ; SS3
+            (if (>= (+ i 2) n)
+              :incomplete
+              (let [final (char (nth v (+ i 2)))]
+                [(if-let [k (final-keys final)] {:key k} {:key :unknown :sequence (text-of (subvec v i (+ i 3)))})
+                 (+ i 3)]))
+            (= b1 27) [{:key :escape :alt true} (+ i 2)]
+            :else (let [r (decode-one v (inc i))]
+                    (if (= r :incomplete) r [(assoc (first r) :alt true) (second r)])))))
+      (or (< b 32) (= b 127)) [(control-key b) (inc i)]
+      (< b 128) [{:key (char b)} (inc i)]
+      :else (let [len (cond (= 0xc0 (bit-and b 0xe0)) 2 (= 0xe0 (bit-and b 0xf0)) 3 (= 0xf0 (bit-and b 0xf8)) 4 :else 1)]
+              (if (> (+ i len) n)
+                :incomplete
+                [{:key (first (text-of (subvec v i (+ i len))))} (+ i len)])))))
+
+(defn decode-keys
+  "The keys in bytes bs (Bytes or a vector of byte values), and the bytes
+  left over at the end, the start of a key not complete yet:
+  {:keys [...] :rest bytes}. With :final true, nothing is left over: a
+  lone escape is :escape, and a partial character is U+FFFD."
+  [bs & {:keys [final]}]
+  (let [v (vec bs) n (count v)]
+    (loop [i 0 keys []]
+      (if (>= i n)
+        {:keys keys :rest (bytes [])}
+        (let [r (decode-one v i)]
+          (cond (not= r :incomplete) (recur (second r) (conj keys (first r)))
+                (not final) {:keys keys :rest (bytes (subvec v i))}
+                (= 27 (nth v i)) (recur (inc i) (conj keys {:key :escape}))
+                :else (recur (inc i) (conj keys {:key (char 0xFFFD)}))))))))
+
+(defn key-name
+  "Key k as text: \"a\", \"ctrl+c\", \"alt+shift+left\", \"f5\", \"paste\"."
+  [k]
+  (let [base (:key k)]
+    (str (when (:ctrl k) "ctrl+") (when (:alt k) "alt+") (when (:shift k) "shift+")
+         (if (char? base) (if (= base \space) "space" (str base)) (name base)))))
+
+;;; ---- raw input ----
+
+(def ^:private pending (atom []))
+(def ^:private queued (atom []))
+
+(defn- read-bytes!
+  "Bytes from the terminal within timeout ms (nil: no limit, waiting in
+  slices so the fiber stays interruptible): Bytes, empty on timeout, nil at
+  the end of input."
+  [timeout]
+  (if (nil? timeout)
+    (loop [] (let [b (%tty-read 0 4096 250)] (if (and b (zero? (count b))) (recur) b)))
+    (%tty-read 0 4096 timeout)))
+
+(defn read-key
+  "The next key typed (see the namespace doc for keys), nil if none comes
+  within :timeout ms (default: wait), or :eof at the end of input. Reads
+  standard input byte by byte: call it in raw mode (with-raw-mode), where
+  keys arrive as typed. An escape with nothing after it within
+  :escape-delay ms (default 50) is the Escape key."
+  [& {:keys [timeout escape-delay] :or {escape-delay 50}}]
+  (if-let [k (first @queued)]
+    (do (swap! queued #(vec (rest %))) k)
+    (let [deadline (when timeout (+ (nano-time) (* timeout 1000000)))]
+      (loop []
+        (let [{:keys [keys rest]} (decode-keys @pending)]
+          (if (seq keys)
+            (do (reset! pending (vec rest)) (reset! queued (vec (next keys))) (first keys))
+            (let [partial (seq @pending)
+                  wait (cond partial escape-delay
+                             deadline (max 0 (quot (- deadline (nano-time)) 1000000))
+                             :else nil)
+                  b (read-bytes! wait)]
+              (cond (nil? b) (if partial
+                               (let [{:keys [keys]} (decode-keys @pending :final true)]
+                                 (reset! pending []) (reset! queued (vec (next keys))) (first keys))
+                               :eof)
+                    (pos? (count b)) (do (swap! pending into (vec b)) (recur))
+                    partial (let [{:keys [keys rest]} (decode-keys @pending :final true)]
+                              (reset! pending (vec rest)) (reset! queued (vec (next keys))) (first keys))
+                    :else nil))))))))
+
+(def ^:private raw-modes
+  "What each with-raw-mode in effect turned on and will turn off, outermost
+  first: [{:on text :off text :raw changed?} …]."
+  (atom []))
+
+(defn call-with-raw-mode
+  "Call f with the terminal in raw mode (keys as typed, no echo, Ctrl-C and
+  Ctrl-Z keys), and put it back after, however f ends. Options turn on,
+  for f's extent: :alternate-screen, :hide-cursor, :mouse, :paste
+  (bracketed) and :keyboard (the kitty protocol: true, or flags for
+  keyboard-on). Standard input must be a terminal."
+  [f & {:keys [alternate-screen hide-cursor mouse paste keyboard]}]
+  (when-not (tty? :in) (error "norn.terminal: raw mode needs standard input to be a terminal"))
+  (let [changed (%tty-raw! 0)
+        on (str (when alternate-screen norn.terminal/alternate-screen) (when hide-cursor norn.terminal/hide-cursor)
+                (when mouse mouse-on) (when paste paste-on)
+                (when keyboard (if (integer? keyboard) (keyboard-on keyboard) (keyboard-on))))
+        off (str (when keyboard keyboard-off) (when paste paste-off) (when mouse mouse-off)
+                 (when hide-cursor show-cursor) (when alternate-screen main-screen))
+        before @raw-modes]
+    (try
+      (when (seq on) (print on))
+      (reset! raw-modes (conj before {:on on :off off :raw changed}))
+      (f)
+      (finally
+        (reset! raw-modes before)
+        (when (seq off) (print off))
+        (when changed (%tty-restore! 0))))))
+
+(defn suspend!
+  "Stop this program as Ctrl-Z does at a shell (in raw mode Ctrl-Z is just
+  a key, {:key \\z :ctrl true}). The terminal goes back as it was before
+  with-raw-mode first, so the shell's prompt works; when the shell resumes
+  the program (fg), raw mode and the options come back and suspend!
+  returns: redraw the screen then. Where nothing can resume it (no shell
+  with job control), it doesn't stop."
+  []
+  (let [modes @raw-modes]
+    (doseq [m (rseq modes)] (when (seq (:off m)) (print (:off m))))
+    (when (some :raw modes) (%tty-restore! 0))
+    (try
+      (%raise-signal :tstp)
+      (finally
+        (when (some :raw modes) (%tty-raw! 0))
+        (doseq [m modes] (when (seq (:on m)) (print (:on m))))))
+    nil))
+
+(defmacro with-raw-mode
+  "(with-raw-mode body…) or (with-raw-mode {:alternate-screen true …}
+  body…): body with the terminal in raw mode; see call-with-raw-mode."
+  [& body]
+  (let [[opts body] (if (map? (first body)) [(first body) (rest body)] [{} body])]
+    `(apply norn.terminal/call-with-raw-mode (fn [] ~@body) (mapcat identity ~opts))))

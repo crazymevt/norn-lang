@@ -182,6 +182,21 @@ pub(crate) fn rename(vm: &mut Vm, from: String, to: String) -> Result<Value> {
     pooled(vm, move || std::fs::rename(&from, &to).map_err(|e| err("Can't rename", &from, e)), |_, ()| Value::NIL)
 }
 
+/// Create one directory, failing with FileExists if the path exists.
+pub(crate) fn mkdir(vm: &mut Vm, path: String) -> Result<Value> {
+    pooled(vm, move || std::fs::create_dir(&path).map_err(|e| err("Can't create the directory", &path, e)), |_, ()| Value::NIL)
+}
+
+/// Flush a directory's entries to storage, so a rename or a new file in
+/// it survives a crash.
+pub(crate) fn sync_dir(vm: &mut Vm, path: String) -> Result<Value> {
+    pooled(
+        vm,
+        move || std::fs::File::open(&path).and_then(|d| d.sync_all()).map_err(|e| err("Can't sync the directory", &path, e)),
+        |_, ()| Value::NIL,
+    )
+}
+
 pub(crate) fn copy(vm: &mut Vm, from: String, to: String) -> Result<Value> {
     pooled(vm, move || std::fs::copy(&from, &to).map_err(|e| err("Can't copy", &from, e)), |_, n| Value::fix(n as i64))
 }
@@ -189,7 +204,8 @@ pub(crate) fn copy(vm: &mut Vm, from: String, to: String) -> Result<Value> {
 // ---- file handles -----------------------------------------------------------------------------
 
 /// `(%fs-open path mode)`: mode is :read, :write (create or truncate),
-/// :append (create, add to the end) or :read-write (create, keep contents).
+/// :append (create, add to the end), :read-write (create, keep contents) or
+/// :create-new (create, failing with FileExists if the path exists).
 pub(crate) fn open(vm: &mut Vm, path: String, mode: &str) -> Result<Value> {
     let mut o = std::fs::OpenOptions::new();
     match mode {
@@ -197,7 +213,8 @@ pub(crate) fn open(vm: &mut Vm, path: String, mode: &str) -> Result<Value> {
         "write" => o.write(true).create(true).truncate(true),
         "append" => o.append(true).create(true),
         "read-write" => o.read(true).write(true).create(true).truncate(false),
-        _ => return Err(Error::new(format!("Unknown file mode :{mode} (use :read, :write, :append or :read-write)"))),
+        "create-new" => o.write(true).create_new(true),
+        _ => return Err(Error::new(format!("Unknown file mode :{mode} (use :read, :write, :append, :read-write or :create-new)"))),
     };
     let mode = mode.to_owned();
     pooled(
@@ -227,6 +244,23 @@ pub(crate) fn file_read(vm: &mut Vm, h: Value, n: usize) -> Result<Value> {
             Ok(buf)
         },
         |m, b| if b.is_empty() { Value::NIL } else { bytes_new(m, &b) },
+    )
+}
+
+/// Flush a file handle's data and metadata to storage.
+pub(crate) fn file_sync(vm: &mut Vm, h: Value) -> Result<Value> {
+    let e = reactor::entry_of(h, "file")?;
+    pooled(
+        vm,
+        move || {
+            let io = e.io.lock().unwrap();
+            let Some(Io::File(f)) = io.as_ref() else { return Err(Failure::from("The handle is closed")) };
+            f.sync_all().map_err(|e| {
+                let (c, r) = crate::vm::io_kind(&e);
+                Failure::of(c, format!("sync failed: {e}")).with("reason", FailData::Kw(r))
+            })
+        },
+        |_, ()| Value::NIL,
     )
 }
 
@@ -387,6 +421,19 @@ pub(crate) fn args(m: &mut Mutator) -> Value {
     strings(m, &a)
 }
 
+static PROGRAM_ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// The running program's own arguments: those after a script's path, an
+/// image's, or a tool's name. The command line sets them once, before
+/// any Norn code runs; an embedder that never does gets none.
+pub fn set_program_args(args: Vec<String>) {
+    let _ = PROGRAM_ARGS.set(args);
+}
+
+pub(crate) fn program_args(m: &mut Mutator) -> Value {
+    strings(m, PROGRAM_ARGS.get().map(Vec::as_slice).unwrap_or(&[]))
+}
+
 fn hostname() -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: buf is writable for its length.
@@ -440,6 +487,7 @@ pub(crate) fn system(m: &mut Mutator) -> Value {
     let cwd = std::env::current_dir().map_or(Value::NIL, |d| str_new(m, &d.to_string_lossy()));
     let version = str_new(m, env!("CARGO_PKG_VERSION"));
     let build = str_new(m, &format!("{:016x}", crate::image::build_id()));
+    let exe = std::env::current_exe().map_or(Value::NIL, |p| str_new(m, &p.to_string_lossy()));
     map_of(
         m,
         &[
@@ -458,6 +506,7 @@ pub(crate) fn system(m: &mut Mutator) -> Value {
             ("cwd", cwd),
             ("norn-version", version),
             ("build", build),
+            ("executable", exe),
         ],
     )
 }
@@ -499,4 +548,135 @@ pub(crate) fn glob_base(pattern: &str) -> String {
     let n = fixed.len().min(pattern.split('/').count().saturating_sub(1));
     let base = fixed[..n].join("/");
     if base.is_empty() && pattern.starts_with('/') { "/".into() } else if base.is_empty() { ".".into() } else { base }
+}
+
+// ---- the host terminal ------------------------------------------------------------------------
+
+/// Terminal settings saved by `tty_raw`, restored by `tty_restore` or, for
+/// any still raw, when the process exits.
+static SAVED_TERMIOS: std::sync::Mutex<Vec<(libc::c_int, libc::termios)>> = std::sync::Mutex::new(Vec::new());
+
+fn tty_fd(v: Value) -> Result<libc::c_int> {
+    match v.is_fixnum().then(|| v.as_fixnum()) {
+        Some(fd @ 0..=2) => Ok(fd as libc::c_int),
+        _ => Err(Error::new("A terminal is standard input (0), output (1) or error (2)")),
+    }
+}
+
+/// Is descriptor `fd` (0–2) a terminal?
+pub(crate) fn is_tty(fd: Value) -> Result<Value> {
+    let fd = tty_fd(fd)?;
+    // SAFETY: isatty only inspects the descriptor.
+    Ok(Value::bool(unsafe { libc::isatty(fd) } == 1))
+}
+
+/// `[rows cols]` of the terminal on `fd`, or nil when it isn't one (or
+/// doesn't say).
+pub(crate) fn tty_size(m: &mut Mutator, fd: Value) -> Result<Value> {
+    let fd = tty_fd(fd)?;
+    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    // SAFETY: TIOCGWINSZ writes a winsize.
+    let r = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ as _, &mut ws) };
+    Ok(if r == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+        vec_from_slice(m, &[Value::fix(ws.ws_row as i64), Value::fix(ws.ws_col as i64)])
+    } else {
+        Value::NIL
+    })
+}
+
+extern "C" fn restore_terminals() {
+    if let Ok(saved) = SAVED_TERMIOS.lock() {
+        for (fd, t) in saved.iter().rev() {
+            // SAFETY: tcsetattr with settings tcgetattr gave for this descriptor.
+            unsafe { libc::tcsetattr(*fd, libc::TCSANOW, t) };
+        }
+    }
+}
+
+/// Put the terminal on `fd` in raw mode: bytes as typed, no echo, no line
+/// editing, no signals from Ctrl-C or Ctrl-Z. Output processing stays on,
+/// so a newline still returns the cursor. True if this changed it, false
+/// if it was already raw (from an earlier call).
+pub(crate) fn tty_raw(fd: Value) -> Result<Value> {
+    static AT_EXIT: std::sync::Once = std::sync::Once::new();
+    let fd = tty_fd(fd)?;
+    let mut saved = SAVED_TERMIOS.lock().unwrap();
+    if saved.iter().any(|(f, _)| *f == fd) {
+        return Ok(Value::FALSE);
+    }
+    // SAFETY: termios is plain data; tcgetattr fills it.
+    let mut orig: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut orig) } != 0 {
+        return Err(Error::new(format!("Can't use raw mode: {}", std::io::Error::last_os_error())));
+    }
+    let mut raw = orig;
+    // SAFETY: cfmakeraw edits the struct it's given.
+    unsafe { libc::cfmakeraw(&mut raw) };
+    raw.c_oflag |= libc::OPOST | libc::ONLCR;
+    raw.c_cc[libc::VMIN] = 1;
+    raw.c_cc[libc::VTIME] = 0;
+    // SAFETY: tcsetattr with a filled-in termios.
+    if unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &raw) } != 0 {
+        return Err(Error::new(format!("Can't use raw mode: {}", std::io::Error::last_os_error())));
+    }
+    saved.push((fd, orig));
+    // SAFETY: registers a function with no captured state.
+    AT_EXIT.call_once(|| unsafe {
+        libc::atexit(restore_terminals);
+    });
+    Ok(Value::TRUE)
+}
+
+/// Undo `tty_raw` on `fd`: true if it was raw.
+pub(crate) fn tty_restore(fd: Value) -> Result<Value> {
+    let fd = tty_fd(fd)?;
+    let mut saved = SAVED_TERMIOS.lock().unwrap();
+    let Some(i) = saved.iter().position(|(f, _)| *f == fd) else { return Ok(Value::FALSE) };
+    let (_, t) = saved.remove(i);
+    // SAFETY: tcsetattr with settings tcgetattr gave for this descriptor.
+    if unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &t) } != 0 {
+        return Err(Error::new(format!("Can't restore the terminal: {}", std::io::Error::last_os_error())));
+    }
+    Ok(Value::TRUE)
+}
+
+/// Up to `max` bytes from `fd` as they arrive, waiting at most `timeout_ms`
+/// (negative: no limit) for the first: Bytes (empty if none came in time),
+/// or nil at the end of input. Reads the descriptor itself, not the
+/// buffered standard input that read-line uses.
+pub(crate) fn tty_read(vm: &mut Vm, fd: Value, max: i64, timeout_ms: i64) -> Result<Value> {
+    let fd = tty_fd(fd)?;
+    let max = max.clamp(1, 65536) as usize;
+    let timeout = timeout_ms.clamp(-1, i32::MAX as i64) as libc::c_int;
+    pooled(
+        vm,
+        move || loop {
+            let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+            // SAFETY: poll on one pollfd.
+            let r = unsafe { libc::poll(&mut p, 1, timeout) };
+            if r < 0 {
+                let e = std::io::Error::last_os_error();
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(format!("Can't read the terminal: {e}").into());
+            }
+            if r == 0 {
+                return Ok(Some(Vec::new()));
+            }
+            let mut buf = vec![0u8; max];
+            // SAFETY: read into a buffer of max bytes.
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), max) };
+            if n < 0 {
+                let e = std::io::Error::last_os_error();
+                if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock) {
+                    continue;
+                }
+                return Err(format!("Can't read the terminal: {e}").into());
+            }
+            buf.truncate(n as usize);
+            return Ok((n > 0).then_some(buf));
+        },
+        |m, b: Option<Vec<u8>>| b.map_or(Value::NIL, |b| bytes_new(m, &b)),
+    )
 }

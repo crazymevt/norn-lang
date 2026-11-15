@@ -109,6 +109,32 @@ primary results with a named operator.
 | `(extend-protocol P Class (method [this args…] body…) …)` | Install implementations for several classes. |
 | `(satisfies? P x)` | Test whether `x` has a specialized method for every method in the protocol. |
 
+### Collections a class defines
+
+A class becomes a collection to core functions with methods on three generic
+functions in `norn.core`. `seq`, `count`, `nth`, `first`, `rest`, `next`,
+`vec` and `set` call them for its instances, so `reduce`, `into`,
+transducers, `map`, `sort` and the rest work too. Built-in collections never
+reach them and keep their fast paths.
+
+| Generic function | Behavior |
+| --- | --- |
+| `(collection-seq coll)` | Required. The items as a seq, a built-in collection, or `nil` when empty. Without a method, `seq` signals `TypeError`. |
+| `(collection-count coll)` | Optional. How many items there are. The default counts `collection-seq`'s items. |
+| `(collection-nth coll index)` | Optional. The item at `index`, or an `IndexError` when there is none. The default walks `collection-seq`. `(nth coll i default)` checks `i` against `collection-count` first. |
+
+```clojure
+(defclass countdown () ((from :initform 3)))
+(defmethod collection-seq ((c countdown)) (range (:from c) 0 -1))
+
+(vec (countdown :from 4))           ; => [4 3 2 1]
+(reduce + (countdown :from 4))      ; => 10
+```
+
+The methods run as ordinary calls in the calling fiber: their errors reach
+the caller's handlers, and they can park. `norn.buffer/Buffer` defines all
+three, so `count` and `nth` are constant time for packed buffers.
+
 The metaobject protocol exposes generic functions for object construction,
 slot access, printing, and dispatch. Start with `make-instance`,
 `initialize-instance`, `slot-value-using-class`, `print-object`,

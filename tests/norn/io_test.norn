@@ -1,0 +1,103 @@
+;;;; Stream and file helpers: exact reads, bounded copies, decoded text,
+;;;; exclusive creation, temporary files and atomic replacement.
+
+(ns io-test
+  (:require [norn.test :refer [deftest is testing]] [norn.io :as io] [norn.bytes :as b]))
+
+(defn- caught [f] (try (f) nil (catch Error e e)))
+
+(deftest exact-reads-and-copies
+  (io/with-temp-directory [d]
+    (let [f (io/path d "data.bin")]
+      (io/write-bytes f (bytes (range 10)))
+      (io/with-open [h (io/open f :read)]
+        (is (= [0 1 2 3] (vec (io/read-exactly h 4))))
+        (is (= [4 5 6 7 8 9] (vec (io/read-exactly h 6))))
+        (is (nil? (io/read-exactly h 3)) "nil at the end, before any byte"))
+      (io/with-open [h (io/open f :read)]
+        (io/read-exactly h 8)
+        (let [e (caught #(io/read-exactly h 5))]
+          (is (= "IOError" (name (class-name (class-of e)))))
+          (is (= :truncated (:reason (ex-data e))))))
+      (let [out (io/path d "copy.bin")]
+        (is (= 7 (io/with-open [in (io/open f :read)]
+                   (io/with-open [o (io/open out :write)] (io/copy-stream! in o :limit 7)))))
+        (is (= [0 1 2 3 4 5 6] (vec (io/read-bytes out))))
+        (is (= 10 (io/with-open [in (io/open f :read)]
+                    (io/with-open [o (io/open out :write)] (io/copy-stream! in o)))))))))
+
+(deftest decoded-text-from-a-stream
+  (io/with-temp-file [t]
+    (let [text (apply str (repeat 30000 "é🙂"))]
+      (io/write-text t text)
+      (is (= text (io/with-open [h (io/open t :read)]
+                    (let [r (io/text-reader h)]
+                      (loop [pieces []]
+                        (if-let [c (io/read-chunk r)] (recur (conj pieces c)) (apply str pieces))))))
+          "characters split between reads come whole"))
+    (io/write-bytes t (b/unhex "61c3"))
+    (is (some? (io/with-open [h (io/open t :read)]
+                 (let [r (io/text-reader h)]
+                   (try (io/read-chunk r) (io/read-chunk r) nil (catch ParseError e e)))))
+        "a stream ending partway through a character")
+    (io/write-bytes t (b/unhex "fffe6100"))
+    (is (= "﻿a" (io/with-open [h (io/open t :read)] (io/read-chunk (io/text-reader h :encoding :utf-16le)))))))
+
+(deftest exclusive-creation-and-temporary-files
+  (io/with-temp-directory [d]
+    (let [f (io/path d "only.txt")]
+      (io/with-open [h (io/open f :create-new)] (io/write h "first"))
+      (is (= "FileExists" (name (class-name (class-of (caught #(io/open f :create-new)))))))
+      (is (= "first" (io/read-text f)) "an existing file is left alone"))
+    (let [seen (atom nil)]
+      (io/with-temp-file [p :dir d :prefix "x-" :suffix ".json"]
+        (reset! seen p)
+        (is (io/file? p))
+        (is (= ".json" (str "." (io/extension p)))))
+      (is (not (io/exists? @seen)) "deleted when the body ends")
+      (try (io/with-temp-directory [sub :dir d] (reset! seen sub) (io/write-text (io/path sub "a") "") (error "stop"))
+           (catch Error _ nil))
+      (is (not (io/exists? @seen)) "and with everything in it, even after an error"))
+    (is (= 2 (count (set (repeatedly 2 #(io/temp-file :dir d))))) "names differ")))
+
+(deftest atomic-replacement
+  (io/with-temp-directory [d]
+    (let [target (io/path d "config.txt")]
+      (io/write-text target "old")
+      (io/write-atomic! target "new contents")
+      (is (= "new contents" (io/read-text target)))
+      (is (= ["config.txt"] (io/list-dir d)) "no file left beside it")
+      (is (some? (caught #(io/with-atomic-file [h target] (io/write h "half") (error "boom")))))
+      (is (= "new contents" (io/read-text target)) "a failed write leaves the file as it was")
+      (is (= ["config.txt"] (io/list-dir d)))
+      (is (= :done (io/with-atomic-file [h (io/path d "fresh.txt")] (io/write h "made") :done)) "the body's value")
+      (is (= "made" (io/read-text (io/path d "fresh.txt")))))
+    (testing "sync! flushes a handle"
+      (io/with-open [h (io/open (io/path d "s") :write)]
+        (io/write h "x")
+        (is (nil? (io/sync! h)))))))
+
+;; A class that is a stream: stream-read, stream-write and stream-close
+;; methods make the stream functions take its instances.
+(defclass Letters () ((left :required true) (written :initform nil) (closed :initform nil)))
+(defmethod io/stream-read ((s Letters) n)
+  (let [left @(:left s)]
+    (when (seq left)
+      (let [piece (subs left 0 (min n (count left)))]
+        (reset! (:left s) (subs left (count piece)))
+        (bytes piece)))))
+(defmethod io/stream-write ((s Letters) data) (swap! (:written s) conj (bytes->string data)))
+(defmethod io/stream-close ((s Letters)) (reset! (:closed s) true))
+
+(deftest instances-as-streams
+  (let [s (Letters :left (atom "ab\ncd\nlast") :written (atom []) :closed (atom false))]
+    (let [r (io/line-reader s)]
+      (is (= ["ab" "cd" "last" nil] [(io/read-line r) (io/read-line r) (io/read-line r) (io/read-line r)])))
+    (io/write s "out")
+    (is (= ["out"] @(:written s)))
+    (io/with-open [_ s] nil)
+    (is (true? @(:closed s)) "with-open closes it"))
+  (let [s (Letters :left (atom (apply str (repeat 5000 "xy"))) :written (atom []) :closed (atom false))]
+    (io/with-temp-file [f]
+      (io/with-open [out (io/open f :write)] (is (= 10000 (io/copy-stream! s out))))
+      (is (= 10000 (count (io/read-text f)))))))

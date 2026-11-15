@@ -4,7 +4,7 @@
 
 (defn listen
   "Listen for signals (:int :term :hup :usr1 :usr2 :winch :quit :pipe
-  :alrm :cont): {:handle h :signals ch}, where ch receives each signal's
+  :alrm :cont :tstp): {:handle h :signals ch}, where ch receives each signal's
   keyword as it arrives. Stop with stop."
   [& sigs]
   (let [[h ch] (%signal-listen (vec sigs))]

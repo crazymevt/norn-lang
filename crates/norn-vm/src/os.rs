@@ -244,6 +244,7 @@ pub(crate) fn signal_number(name: &str) -> Option<i32> {
         "alrm" => libc::SIGALRM,
         "cont" => libc::SIGCONT,
         "stop" => libc::SIGSTOP,
+        "tstp" => libc::SIGTSTP,
         _ => return None,
     })
 }
@@ -260,6 +261,7 @@ fn signal_name(n: i32) -> &'static str {
         libc::SIGPIPE => "pipe",
         libc::SIGALRM => "alrm",
         libc::SIGCONT => "cont",
+        libc::SIGTSTP => "tstp",
         _ => "other",
     }
 }

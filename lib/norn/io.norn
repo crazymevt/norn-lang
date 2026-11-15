@@ -6,7 +6,8 @@
 ;;;; no call ever blocks a carrier. An unreachable handle is closed by a
 ;;;; cleanup; close it yourself (or use with-open) to free it promptly.
 
-(ns norn.io)
+(ns norn.io
+  (:require [norn.bytes :as bytes] [norn.sys :as sys]))
 
 ;;; ---- whole files ----
 
@@ -68,9 +69,16 @@
 
 (defn open
   "Open a file as a stream. mode: :read, :write (create or truncate),
-  :append (create, add to the end) or :read-write."
+  :append (create, add to the end), :read-write, or :create-new (create
+  for writing, signalling FileExists if path exists already)."
   [path mode]
   (auto-close (%fs-open (str path) mode)))
+
+(defn sync!
+  "Flush everything written to file handle h to storage, so it survives a
+  crash. nil."
+  [h]
+  (%file-sync (ensure-live h)))
 
 (defn retry-io
   "Low level: call (f) until it stops answering :again (wait until h is
@@ -86,33 +94,55 @@
             (= r :again-write) (do (%io-wait h :write ws) (recur))
             :else r))))
 
+(defgeneric stream-read (s n)
+  "Up to n bytes from stream s, an instance of a class that is one (an HTTP
+  response body, say), or nil at the end. A method for a class makes read,
+  and everything built on it (read-line, read-all, copy-stream!,
+  text-reader…), take its instances.")
+
+(defgeneric stream-write (s data)
+  "Write all of data (bytes) to stream s, an instance of a class that is one.")
+
+(defgeneric stream-close (s)
+  "Close stream s, an instance of a class that is one (twice is harmless).")
+
+(defmethod stream-close ((s Object)) nil)
+
 (defn read
-  "Up to n bytes from a stream (file, pipe or socket), or nil at the end."
+  "Up to n bytes from a stream (file, pipe or socket, or an instance with
+  a stream-read method), or nil at the end."
   [h n]
-  (let [h (ensure-live h)]
-    (if (= :file (handle-kind h))
-      (%file-read h n)
-      (retry-io h (fn [] (%io-read h n))))))
+  (if (%instance? h)
+    (stream-read h n)
+    (let [h (ensure-live h)]
+      (if (= :file (handle-kind h))
+        (%file-read h n)
+        (retry-io h (fn [] (%io-read h n)))))))
 
 (defn write
-  "Write all of data (a string, as UTF-8, or bytes) to a stream."
+  "Write all of data (a string, as UTF-8, or bytes) to a stream (or an
+  instance with a stream-write method)."
   [h data]
-  (let [h (ensure-live h)
-        b (bytes data)]
-    (if (= :file (handle-kind h))
-      (%file-write h b)
-      (loop [i 0]
-        (when (< i (count b))
-          (recur (+ i (retry-io h (fn [] (%io-write h b i))))))))
+  (let [b (bytes data)]
+    (if (%instance? h)
+      (stream-write h b)
+      (let [h (ensure-live h)]
+        (if (= :file (handle-kind h))
+          (%file-write h b)
+          (loop [i 0]
+            (when (< i (count b))
+              (recur (+ i (retry-io h (fn [] (%io-write h b i))))))))))
     nil))
 
 (defn close
   "Close a stream (closing twice is harmless). A TLS stream first tells the
   peer it is closing."
   [h]
-  (when (and (= :tls (handle-kind h)) (%handle-live? h))
-    (try (retry-io h (fn [] (%tls-shutdown h))) (catch Error _ nil)))
-  (%io-close h))
+  (if (%instance? h)
+    (stream-close h)
+    (do (when (and (= :tls (handle-kind h)) (%handle-live? h))
+          (try (retry-io h (fn [] (%tls-shutdown h))) (catch Error _ nil)))
+        (%io-close h))))
 
 (defmacro with-open
   "(with-open [h (open path :read)] body…): close h when body ends, however it ends."
@@ -154,6 +184,131 @@
            (cond more (do (reset! (:buf r) (bytes-concat b more)) (recur))
                  (pos? (count b)) (do (reset! (:buf r) (bytes [])) (strip-cr (bytes->string b)))
                  :else nil)))))))
+
+;;; ---- exact reads, copying and decoding ----
+
+(defn read-exactly
+  "Exactly n bytes from a stream, or nil if it ends before the first. A
+  stream that ends partway signals IOError, with :reason :truncated."
+  [h n]
+  (when-not (and (integer? n) (<= 0 n)) (error "read-exactly needs a byte count" n))
+  (loop [parts [] left n]
+    (if (zero? left)
+      (apply bytes-concat parts)
+      (if-let [part (read h (min left 65536))]
+        (recur (conj parts part) (- left (count part)))
+        (when (< left n)
+          (error IOError :reason :truncated
+                 :message (str "The stream ended after " (- n left) " of " n " bytes")))))))
+
+(defn copy-stream!
+  "Copy from stream in to stream out until in ends, or, with :limit, until
+  that many bytes are copied. The number of bytes copied."
+  [in out & {:keys [limit]}]
+  (when (and limit (not (and (integer? limit) (<= 0 limit)))) (error "copy-stream! :limit is a byte count" limit))
+  (loop [total 0]
+    (let [want (if limit (min 65536 (- limit total)) 65536)]
+      (if-let [part (when (pos? want) (read in want))]
+        (do (write out part) (recur (+ total (count part))))
+        total))))
+
+(defn text-reader
+  "A reader of decoded text from stream h, for read-chunk. :encoding is
+  :utf-8 (the default), :utf-16le or :utf-16be."
+  [h & {:keys [encoding] :or {encoding :utf-8}}]
+  {:handle h :decoder (atom (bytes/decoder encoding))})
+
+(defn read-chunk
+  "The next piece of text from a text reader, or nil at the end. A
+  character split between reads comes whole in the next piece; a stream
+  that ends partway through one signals ParseError."
+  [r]
+  (loop []
+    (if-let [data (read (:handle r) 65536)]
+      (let [[state text] (bytes/decode-chunk @(:decoder r) data)]
+        (reset! (:decoder r) state)
+        (if (= "" text) (recur) text))
+      (do (bytes/finish-decoder @(:decoder r)) nil))))
+
+;;; ---- temporary files and atomic replacement ----
+
+(defn- unique-name [prefix suffix]
+  (str prefix (abs (%rand-seed)) suffix))
+
+(defn- create-unique
+  "Make a path in dir with (make path) until one is new: make signals
+  FileExists for a taken one."
+  [dir prefix suffix make]
+  (loop [tries 0]
+    (let [p (path dir (unique-name prefix suffix))
+          made (try (make p) p (catch FileExists e (if (< tries 100) nil (error e))))]
+      (or made (recur (inc tries))))))
+
+(defn temp-file
+  "Create a new, empty file with a name no other has, in :dir (the system's
+  temporary directory by default), and give its path. :prefix and :suffix
+  shape the name. Delete it when done, or use with-temp-file."
+  [& {:keys [dir prefix suffix] :or {prefix "norn-" suffix ".tmp"}}]
+  (create-unique (or dir (sys/temp-dir)) prefix suffix (fn [p] (close (open p :create-new)))))
+
+(defn temp-directory
+  "Create a new, empty directory with a name no other has, as temp-file
+  does, and give its path."
+  [& {:keys [dir prefix suffix] :or {prefix "norn-" suffix ""}}]
+  (create-unique (or dir (sys/temp-dir)) prefix suffix (fn [p] (%fs-mkdir p))))
+
+(defmacro with-temp-file
+  "(with-temp-file [p options…] body…): p is a new temporary file (options
+  as temp-file's), deleted when body ends, however it ends."
+  [[sym & opts] & body]
+  `(let [~sym (temp-file ~@opts)]
+     (try (do ~@body)
+          (finally (when (exists? ~sym) (delete! ~sym))))))
+
+(defmacro with-temp-directory
+  "(with-temp-directory [d options…] body…): d is a new temporary directory
+  (options as temp-directory's), deleted with everything in it when body
+  ends, however it ends."
+  [[sym & opts] & body]
+  `(let [~sym (temp-directory ~@opts)]
+     (try (do ~@body)
+          (finally (when (exists? ~sym) (delete! ~sym :recursive true))))))
+
+(defn call-with-atomic-file
+  "Call (f h) with h a stream writing a new file beside path. When f
+  returns, the file is flushed to storage and renamed over path, so readers
+  see the old contents or the new, never a mix, and a crash leaves one of
+  them. If f fails, path is untouched. f's result. The new file doesn't
+  keep the old one's permissions."
+  [path f]
+  (let [path (str path)
+        dir (or (parent (absolute path)) ".")
+        tmp (temp-file :dir dir :prefix (str "." (file-name path) ".") :suffix ".tmp")
+        done (atom false)]
+    (try
+      (let [result (with-open [h (open tmp :write)]
+                     (let [r (f h)] (sync! h) r))]
+        (rename! tmp path)
+        (reset! done true)
+        ;; (the rename itself is on storage once the directory is)
+        (%fs-sync-dir dir)
+        result)
+      (finally (when (and (not @done) (exists? tmp)) (delete! tmp))))))
+
+(defmacro with-atomic-file
+  "(with-atomic-file [h path] body…): write path's new contents to h, and
+  replace path with them all at once when body ends (see
+  call-with-atomic-file). If body fails, path is untouched."
+  [[sym path] & body]
+  `(call-with-atomic-file ~path (fn [~sym] ~@body)))
+
+(defn write-atomic!
+  "Replace path's contents with data (a string, as UTF-8, or bytes) all at
+  once: readers see the old file or the new one, never a mix, and a crash
+  leaves one of them."
+  [path data]
+  (call-with-atomic-file path (fn [h] (write h data)))
+  nil)
 
 ;;; ---- reconnecting after an image restore ----
 

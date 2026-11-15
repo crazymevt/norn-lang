@@ -1,0 +1,155 @@
+;;;; norn.terminal: key decoding, styling and screen control, and raw mode
+;;;; on a real pseudo-terminal (a child norn, where this runs as norn).
+
+(ns terminal-test
+  (:require [norn.test :refer [deftest is testing]] [norn.terminal :as t] [norn.process :as proc]
+            [norn.io :as io] [norn.string :as str] [norn.sys :as sys] [norn.property :as p]))
+
+(defn- keys-of [s] (:keys (t/decode-keys (bytes (str s)))))
+(def ^:private esc (str (char 27)))
+
+(deftest decoding-keys
+  (is (= [{:key \a} {:key \B} {:key :enter} {:key :tab} {:key :backspace} {:key \c :ctrl true} {:key \space :ctrl true}]
+         (keys-of (str "aB\r\t" (char 127) (char 3) (char 0)))))
+  (testing "escape sequences"
+    (is (= [{:key :up} {:key :right :ctrl true} {:key :delete} {:key :page-up :shift true} {:key :f1} {:key :f5}
+            {:key :tab :shift true} {:key :home} {:key :left :alt true :shift true}]
+           (keys-of (str esc "[A" esc "[1;5C" esc "[3~" esc "[5;2~" esc "OP" esc "[15~" esc "[Z" esc "[H" esc "[1;4D")))))
+  (is (= [{:key \x :alt true} {:key :escape :alt true} {:key \é} {:key \🙂}] (keys-of (str esc "x" esc esc "é🙂"))))
+  (is (= [{:key :paste :text "one\ntwo"}] (keys-of (str esc "[200~one\ntwo" esc "[201~"))) "bracketed paste")
+  (is (= [{:key \a :ctrl true} {:key :enter :shift true}] (keys-of (str esc "[97;5u" esc "[13;2u"))) "CSI u")
+  (testing "the kitty keyboard protocol"
+    (is (= [{:key :escape} {:key \i :ctrl true} {:key \a :ctrl true :shift true} {:key :keyboard-flags :flags 1}]
+           (keys-of (str esc "[27u" esc "[105;5u" esc "[97:65;6u" esc "[?1u")))
+        "Escape at once, Ctrl-I apart from Tab, alternate keys aside, and the answer to a query")
+    (is (= [(str esc "[>1u") (str esc "[>5u") (str esc "[<u") (str esc "[?u")]
+           [(t/keyboard-on) (t/keyboard-on 5) t/keyboard-off t/keyboard-query])))
+  (testing "the mouse (SGR)"
+    (is (= [{:key :mouse :button :left :action :press :row 3 :col 10}
+            {:key :mouse :button :left :action :release :row 3 :col 10}
+            {:key :mouse :button :wheel-down :action :scroll :row 5 :col 5 :ctrl true}
+            {:key :mouse :button :left :action :drag :row 2 :col 1}]
+           (keys-of (str esc "[<0;10;3M" esc "[<0;10;3m" esc "[<81;5;5M" esc "[<32;1;2M")))))
+  (is (= {:key :unknown :sequence (str esc "[99x")} (first (keys-of (str esc "[99x")))))
+  (testing "a key not complete yet waits for the rest"
+    (is (= {:keys [{:key \a}] :rest (bytes (str esc "[1;"))} (t/decode-keys (bytes (str "a" esc "[1;")))))
+    (is (= {:keys [] :rest (bytes [0xc3])} (t/decode-keys [0xc3])))
+    (is (= [{:key :escape}] (:keys (t/decode-keys (bytes esc) :final true))) "unless it's final")
+    (is (= [{:key (char 0xFFFD)}] (:keys (t/decode-keys [0xc3] :final true)))))
+  (is (= ["ctrl+a" "ctrl+shift+left" "space" "f12" "paste"]
+         (map t/key-name (keys-of (str (char 1) esc "[1;6D " esc "[24~" esc "[200~x" esc "[201~"))))))
+
+(p/defproperty text-decodes-to-its-characters [s (p/strings :unicode true)]
+  (let [printable (apply str (remove #(or (< (int %) 32) (= (int %) 127)) s))]
+    (= (map (fn [c] {:key c}) printable) (keys-of printable))))
+
+(p/defproperty decoding-any-bytes-in-pieces-agrees {:runs 200}
+  [v (p/vectors (p/integers :min 0 :max 255) :max 40) cut (p/naturals)]
+  (let [whole (t/decode-keys v :final true)
+        cut (min cut (count v))
+        first-part (t/decode-keys (subvec v 0 cut))
+        second-part (t/decode-keys (into (vec (:rest first-part)) (subvec v cut)) :final true)]
+    (= (:keys whole) (into (:keys first-part) (:keys second-part)))))
+
+(deftest styling
+  (binding [t/*color* :truecolor]
+    (is (= (str esc "[1;31mError" esc "[0m") (t/style "Error" :bold :red)))
+    (is (= (str esc "[38;2;255;128;0;48;2;0;0;255;4mx" esc "[0m") (t/style "x" {:fg [255 128 0] :bg "#0000ff" :underline true})))
+    (is (= (str esc "[31ma" esc "[34mb" esc "[0m" esc "[31mc" esc "[0m") (t/style (str "a" (t/style "b" :blue) "c") :red))
+        "an inner style ends back in the outer one")
+    (is (= (str esc "[38;5;200mx" esc "[0m") (t/style "x" {:fg 200})))
+    (is (= (str esc "[92;100mx" esc "[0m") (t/style "x" :bright-green {:bg :bright-black})))
+    (is (= "héllo" (t/strip (t/style "héllo" :red :italic))))
+    (is (= 4 (t/width (t/style "日本" :red)))))
+  (testing "brought down to what the terminal shows"
+    (binding [t/*color* :256] (is (= (str esc "[38;5;214mx" esc "[0m") (t/style "x" {:fg [255 128 0]}))))
+    (binding [t/*color* :basic] (is (= (str esc "[91mx" esc "[0m") (t/style "x" {:fg [250 10 10]})))))
+  (binding [t/*color* :none] (is (= "x" (t/style "x" :bold :red))))
+  (is (thrown? Error (t/style "x" :purple)) "a bad color is an error even when color is off")
+  (is (= (str esc "[3;7H" esc "[2J" esc "[2K" esc "[?25l") (str (t/cursor-to 3 7) (t/clear) (t/clear :line) t/hide-cursor))))
+
+(deftest color-support
+  (is (#{:none :basic :256 :truecolor} (t/color-support)))
+  (is (boolean? (t/tty?))))
+
+;;; ---- on a real terminal ----
+
+(def ^:private child
+  "(require '[norn.terminal :as t] '[norn.io :as io])
+(println \"tty\" (t/tty? :in) (t/tty? :out) (t/size))
+(t/with-raw-mode {:paste true}
+  (println \"raw\")
+  (loop []
+    (let [k (t/read-key)]
+      (prn k)
+      (cond (= k {:key \\z :ctrl true}) (do (t/suspend!) (println \"resumed\") (recur))
+            (not= k {:key \\q}) (recur)))))
+(println \"line mode\")
+(println \"read\" (io/read-line))
+")
+
+(defn- read-until [p s]
+  (loop [acc ""]
+    (if (str/includes? acc s)
+      acc
+      (if-let [b (io/read (:out p) 4096)] (recur (str acc (bytes->string b true))) acc))))
+
+(deftest raw-mode-on-a-terminal
+  (let [exe (:executable (sys/info))]
+    (if-not (and exe (= "norn" (io/file-name exe)))
+      (println "terminal_test: not running as norn; skipping the pseudo-terminal test")
+      (io/with-temp-file [script :suffix ".norn"]
+        (io/write-text script child)
+        (let [p (proc/start-pty exe :args [script] :rows 30 :cols 100)]
+          (is (str/includes? (read-until p "raw") "tty true true {:rows 30, :cols 100}"))
+          (io/write (:in p) (str "a" esc "[A" (char 3) esc "[200~pasted" esc "[201~"))
+          (let [shown (read-until p "pasted")]
+            (is (str/includes? shown "{:key \\a}"))
+            (is (str/includes? shown "{:key :up}"))
+            (is (str/includes? shown "{:key \\c, :ctrl true}") "Ctrl-C is a key, not a signal")
+            (is (str/includes? shown "{:key :paste, :text \"pasted\"}")))
+          (testing "suspend! with no shell to resume it carries on"
+            (io/write (:in p) (bytes [26]))
+            (is (str/includes? (read-until p "resumed") (str esc "[?2004l" esc "[?2004hresumed"))
+                "the options off, and back on"))
+          (io/write (:in p) esc)
+          (sleep 300)
+          (io/write (:in p) "q")
+          (let [shown (read-until p "line mode")]
+            (is (str/includes? shown "{:key :escape}") "a lone escape, after a moment")
+            (is (str/includes? shown "{:key \\q}")))
+          (io/write (:in p) "hello\n")
+          (is (str/includes? (read-until p "read hello") "hello\r\nread hello") "echo and lines are back")
+          (is (= 0 (:exit (proc/wait p)))))))))
+
+(deftest suspending-under-a-shell
+  (let [exe (:executable (sys/info))]
+    (when (and exe (= "norn" (io/file-name exe)) (io/file? "/bin/zsh"))
+      (io/with-temp-file [script :suffix ".norn"]
+        (io/write-text script child)
+        (let [p (proc/start-pty "/bin/zsh" :args ["-f" "-i"] :env {"PS1" "PROMPT> "})
+              out (atom "")
+              reader (future (loop [] (when-let [b (io/read (:out p) 4096)] (swap! out str (bytes->string b true)) (recur))))
+              seen? (fn [s] (loop [n 0]
+                              (cond (str/includes? @out s) true
+                                    (> n 200) false
+                                    :else (do (sleep 50) (recur (inc n))))))]
+          (is (seen? "PROMPT> "))
+          (io/write (:in p) (str exe " " script "\n"))
+          (is (seen? "raw"))
+          (io/write (:in p) (bytes [26]))
+          (is (seen? "suspended") "Ctrl-Z, as a key, stops it")
+          (io/write (:in p) "stty -a | grep -o ' -*icanon'; echo che''cked\n")
+          (is (seen? "checked"))
+          (is (re-find #"\r\n icanon\r\nchecked" @out) "the shell has its line mode back")
+          (io/write (:in p) "fg\n")
+          (is (seen? "resumed") "fg resumes it")
+          (io/write (:in p) "x")
+          (is (seen? "{:key \\x}") "in raw mode again")
+          (io/write (:in p) "q")
+          (is (seen? "line mode"))
+          (io/write (:in p) "hi\n")
+          (is (seen? "read hi"))
+          (io/write (:in p) "exit\n")
+          (proc/wait p)
+          @reader)))))

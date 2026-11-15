@@ -9,7 +9,7 @@ also substitute `./target/release/norn` after [building it](getting-started.md#b
 | --- | --- |
 | `norn` | Start the REPL in `user`. |
 | `norn -e 'EXPR'` | Evaluate forms and print the last result. |
-| `norn FILE.norn [ARGS…]` | Run a source file. Use `norn.sys/args` for the full process argument vector, starting with the program name. |
+| `norn FILE.norn [ARGS…]` | Run a source file. `norn.sys/program-args` returns the arguments after the file, and `norn.sys/args` returns the full process argument vector, starting with the program name. Use [`norn.cli`](reference/libraries.md#command-line-programs) to parse them. |
 | `norn --server [PORT]` | Start the REPL and listen on loopback for [editor protocol](ui-protocol.md) clients. The default port is 7888. |
 | `norn doc NAME…` | List a namespace, look up a qualified symbol, or look up an unqualified name in `norn.core`. |
 | `norn expand --steps -e 'EXPR'` | Show macro expansion steps. This command also accepts a source filename in place of `-e 'EXPR'`. |
@@ -35,6 +35,49 @@ Save this example as `greeting_test.norn`, then run
   (testing "includes the supplied name"
     (is (= "Hello, Ada!" (greeting "Ada")))))
 ```
+
+### Properties
+
+`norn.property` tests a claim against many generated values. A
+`defproperty` is a test like `deftest`: it runs 100 cases, with sizes
+growing from small to large. When a case fails, it shrinks the
+arguments to the simplest failing ones and reports them with a seed.
+Pass that seed in the options map to rerun the same cases.
+
+```clojure
+(ns codec-test
+  (:require [norn.property :as p] [norn.edn :as edn]))
+
+(p/defproperty edn-round-trips
+  [x (p/vectors (p/one-of (p/integers) (p/strings) (p/keyword)))]
+  (= x (edn/read-string (pr-str x))))
+
+;; Options go before the bindings.
+(p/defproperty short-vectors {:runs 20 :seed 9}
+  [v (p/vectors (p/integers))]
+  (< (count v) 3))
+;; FAIL: falsified with {:v [0 0 0]} (seed 9, case 2; rerun with :seed 9)
+```
+
+A binding can use an earlier one, as in
+`[n (p/naturals) v (p/vectors (p/integers) :max n)]`. A case also fails
+when its body signals a condition. `p/check` runs a `p/for-all` property
+and returns the result as a map, and `p/generate` draws one value.
+
+Generators:
+
+- Numbers and simple values: `integers` (`:min`, `:max`), `naturals`,
+  `floats`, `booleans`, `chars`, `strings` (`:unicode`, `:min`, `:max`),
+  `keyword`, `symbol`, `byte-strings`.
+- Collections: `vectors`, `lists`, `sets`, `maps`, `tuple`, and
+  `recursive` for trees.
+- Choices: `constant`, `elements`, `one-of`, `frequency`.
+- Combinators: `fmap`, `bind`, `such-that`.
+
+Generated values shrink toward 0, empty collections, `false`, the first
+choice, and `\a`.
+
+### Executable examples
 
 A definition can include executable examples in its attribute map. Each
 pair contains an expression and an expected expression. `norn check`

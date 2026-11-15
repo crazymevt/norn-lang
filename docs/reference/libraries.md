@@ -161,6 +161,12 @@ scale. Arithmetic is available through `add`, `subtract`, `multiply`, and
 half-even rounding. Use `compare` to compare numeric values across scales.
 Structural equality includes scale.
 
+Decimals are values with their own functions, not numbers to core
+arithmetic: `+`, `<`, `==` and `number?` don't take them. This keeps one
+numeric tower in core, with exact comparisons between its integers, ratios
+and floats. Convert at the edges with `parse` and `text`, or with
+`decimal` from an integer coefficient.
+
 ```clojure
 (require '[norn.decimal :as d])
 
@@ -176,11 +182,34 @@ next call. `finish-decoder` detects a truncated character at the end.
 characters so a format reader can interpret them.
 
 `norn.buffer/pack` writes numeric elements into an immutable packed buffer.
-`from-bytes` views existing `Bytes` without copying. `nth` reads an element,
-`count` returns the element count, and `to-bytes` returns the backing value.
+`from-bytes` views existing `Bytes` without copying. A buffer is a collection
+to core: `count` and `nth` are constant time, and `seq`, `reduce`, `into`,
+`vec` and the other sequence functions read its elements in order.
+`norn.buffer/values` gives them as a vector, and `to-bytes` returns the
+backing value.
 Supported types are `:u8`, `:i8`, `:u16`, `:i16`, `:u32`, `:i32`, `:u64`,
 `:i64`, `:f32`, and `:f64`. Byte order defaults to `:le`. Use `:order :be`
 for big-endian data.
+
+`norn.buffer/mutable` makes a buffer to update in place, such as pixels or
+audio samples: `(mutable :u8 (* 4 width height))` holds zeros, and
+`mutable-copy` starts from another buffer's elements. `set!`, `fill!` and
+`copy!` (from a buffer of the same type and byte order, as one block, or from
+values) write it, and `count`, `nth` and the sequence functions read it. Like
+any `(:mutable)` object, it belongs to the fiber that made it. Other fibers
+get an `OwnershipError` until it is handed on with `release!` or a channel
+send. `freeze!` turns it into an immutable buffer without copying, after
+which the mutable buffer can't be used. `snapshot` copies its elements
+instead, and writing carries on.
+
+```clojure
+(require '[norn.buffer :as buf])
+
+(let [pixels (buf/mutable :u8 (* 4 2 2))]
+  (buf/fill! pixels 255)
+  (buf/set! pixels 0 0)
+  (buf/to-bytes (buf/freeze! pixels))) ; Bytes, ready for a canvas :pixels command
+```
 
 ## I/O and the system
 
@@ -189,15 +218,17 @@ for big-endian data.
 | `norn.io` | Read and write whole files or streams, and work with paths. |
 | `norn.fs` | Walk directories, apply glob patterns, and watch for changes. |
 | `norn.sys` | Read process arguments, environment variables, and system information. |
+| `norn.cli` | Parse command lines: typed options, arguments, subcommands, and generated help. |
+| `norn.terminal` | Detect the terminal, read keys in raw mode, and style output with ANSI colors. |
 | `norn.process` | Run operating-system processes and work with pipes or pseudo-terminals. |
 | `norn.signal` | Receive operating-system signals through channels. |
 | `norn.net` | Work with TCP, UDP, and TLS. |
-| `norn.http` | Send HTTP/1.1 requests and serve request maps with functions. |
+| `norn.http` | Send HTTP/1.1 requests, stream response bodies, send and parse multipart forms, and serve request maps with functions. |
 | `norn.uri` | Parse, build, and percent-encode URIs. |
 | `norn.sqlite` | Open SQLite databases, bind query parameters, and run transactions. |
 | `norn.ffi` | Call C functions and describe native memory and data types. Pass `:main-thread true` for APIs that must run on the process's first thread, such as windowing and graphics. |
 | `norn.log` | Emit leveled, structured logs. |
-| `norn.time` | Work with instants, durations, and calendar dates. |
+| `norn.time` | Work with instants, durations, calendar dates, named time zones, and calendar arithmetic. |
 | `norn.schedule` | Run code on cron-like schedules. |
 
 `norn.time` also has `LocalDate`, `LocalTime`, and `LocalDateTime` values for
@@ -212,6 +243,29 @@ For a file, `norn.io/read-text` reads UTF-8 text and
 `(norn.io/with-open [h (norn.io/open path :read)] body…)` closes the
 handle when the body exits, including on failure.
 
+On streams, `read-exactly` reads a fixed number of bytes: it gives nil at the
+end, and signals `IOError` with `:reason :truncated` when the stream stops
+partway. `copy-stream!` copies one stream to another, up to `:limit` bytes
+if given. `text-reader` and `read-chunk` decode UTF-8 or UTF-16 incrementally,
+keeping characters whole across reads.
+
+For files, `(open path :create-new)` creates a file only if none exists,
+signalling `FileExists` otherwise, and `sync!` flushes a handle to storage.
+`temp-file` and `temp-directory` make new uniquely named paths, and
+`with-temp-file` and `with-temp-directory` delete them when the body ends.
+`write-atomic!` and `with-atomic-file` replace a file all at once. The new
+contents go to a file beside it, which is flushed and then renamed over the
+original, so readers see the old or the new and a crash leaves one of them.
+The replacement doesn't keep the old file's permissions.
+
+```clojure
+(require '[norn.io :as io])
+
+(io/write-atomic! "settings.edn" (pr-str settings))
+(io/with-temp-directory [dir]
+  (io/write-text (io/path dir "scratch.txt") "…")) ; dir is gone afterwards
+```
+
 SQLite uses the platform's SQLite library. `with-connection` closes the
 connection after its body. In a statement vector, the first item supplies
 SQL and the remaining items supply bound parameters.
@@ -225,6 +279,247 @@ SQL and the remaining items supply bound parameters.
   (db/query-one conn ["SELECT title FROM books WHERE title = ?" "The Left Hand of Darkness"]))
 ; => {:title "The Left Hand of Darkness"}
 ```
+
+### HTTP bodies and forms
+
+By default, `norn.http/request` reads the whole response body. With
+`:as :stream`, the body is a `norn.io` stream that you read as the data
+arrives. Every stream function accepts it, including `read`, `read-line`,
+`copy-stream!`, and `text-reader`. A streamed body can also be the `:body`
+of another request.
+
+If you read the body to the end, the client returns its connection to the
+pool for reuse. If you close the body first, the client closes the
+connection. `with-response` closes the body when its form ends, however it
+ends. `:timeout` covers the exchange only until the response headers arrive.
+
+```clojure
+(require '[norn.http :as http] '[norn.io :as io])
+
+(http/with-response [r {:url "https://example.com/big.log"}]
+  (let [lines (io/line-reader (:body r))]
+    (loop [n 0]
+      (if (io/read-line lines) (recur (inc n)) n))))
+```
+
+The `:multipart` option sends a `multipart/form-data` form. Each part has a
+`:name` and either a `:value` or a `:file` path. A `:value` can be a string,
+bytes, or a stream. Add `:filename` to make a part a file upload, and give
+`:content-type` or `:headers` as needed. When every part is a string or
+bytes, the client sends the body with a length. A file or stream part makes
+the client stream the whole body. On a server, `multipart-params` returns a
+request's parts in order as maps with `:name`, `:filename`, `:content-type`,
+`:headers`, `:body`, and, for a part that isn't a file, `:value`.
+
+```clojure
+(http/post "https://example.com/upload" nil
+           :multipart [{:name "title" :value "Holiday"}
+                       {:name "photo" :file "beach.jpg" :content-type "image/jpeg"}])
+
+(defn handler [req]
+  (let [parts (http/multipart-params req)]
+    {:status 200 :body (str (count parts) " parts")}))
+```
+
+Classes can act as streams too. Define methods on `norn.io/stream-read`,
+`stream-write`, and `stream-close` for a class, and the `norn.io` functions
+accept its instances.
+
+### Time zones and calendar arithmetic
+
+`norn.time/zone` returns a named IANA zone, such as `"Europe/Paris"`. Zone
+data comes from the system's TZif files in `$TZDIR` or `/usr/share/zoneinfo`.
+For times after a file's last listed transition, the file's POSIX TZ rule
+applies. Each zone file is read once and kept. `zone` also accepts:
+
+- `"+05:30"` or `"Z"`
+- an offset in seconds
+- `:utc`
+- `:local`, which is the same zone as `system-zone`
+
+`system-zone` reads `$TZ` (a zone name or a POSIX TZ string). Otherwise it
+uses the zone that `/etc/localtime` names. A zone also works anywhere
+`fields` and `format` accept a zone.
+
+A `ZonedDateTime` holds an instant, its zone, its offset, and the wall-clock
+`LocalDateTime` there. `in-zone` converts an instant. `zoned` converts a
+local date-time, and the `:resolve` option controls how it handles a
+wall-clock time that a clock change skips or repeats. The policies follow
+JavaScript's Temporal:
+
+- `:compatible` (the default) picks the later time for a skipped time and
+  the earlier one for a repeated time.
+- `:earlier` and `:later` pick that side in both cases.
+- `:reject` signals an error.
+
+```clojure
+(require '[norn.time :as t])
+
+(def ny "America/New_York")
+(t/format-zoned (t/zoned (t/parse-local-date-time "2026-03-08T02:30") ny))
+; => "2026-03-08T03:30:00-04:00[America/New_York]"  (2:30 is skipped)
+(t/format-zoned (t/zoned (t/parse-local-date-time "2026-11-01T01:30") ny :resolve :later))
+; => "2026-11-01T01:30:00-05:00[America/New_York]"  (the second 1:30)
+
+(let [z (t/zoned (t/parse-local-date-time "2026-03-07T09:00") ny)]
+  [(t/format-zoned (t/shift z :days 1))     ; the same wall-clock time
+   (t/format-zoned (t/shift z :hours 24))]) ; 24 hours later
+; => ["2026-03-08T09:00:00-04:00[America/New_York]"
+;     "2026-03-08T10:00:00-04:00[America/New_York]"]
+```
+
+`shift` moves a `LocalDate`, `LocalDateTime`, `ZonedDateTime`, or `Instant`
+by `:years`, `:months`, `:weeks`, `:days`, `:hours`, `:minutes`, `:seconds`,
+`:millis`, or `:nanos`. Negative amounts move backward. Years and months
+follow the calendar. A day past the end of the target month becomes that
+month's last day, so 2026-01-31 plus one month is 2026-02-28. A zoned time
+keeps its wall-clock time across date units, then moves along the time line
+for time units. Other calendar helpers are `days-between`, `months-between`,
+`weekday`, `day-of-year`, `days-in-month`, `leap-year?`, `epoch-day`,
+`from-epoch-day`, and `start-of-day`.
+
+`format-zoned` writes RFC 9557 text such as
+`2026-03-08T03:30:00-04:00[America/New_York]`, and `parse-zoned` reads it.
+`before?`, `after?`, and `compare-time` compare dates, times, and zoned
+date-times.
+
+### The terminal
+
+`norn.terminal` works with the terminal the program runs in. Its main
+functions are:
+
+- `tty?` checks whether `:in`, `:out`, or `:err` is a terminal.
+- `size` returns `{:rows :cols}`.
+- `color-support` returns `:none`, `:basic`, `:256`, or `:truecolor`. It
+  follows `NO_COLOR`, `FORCE_COLOR`, `COLORTERM`, and `TERM`.
+
+`style` adds ANSI attributes and colors to text, and nested styles work. It
+converts a color to what the terminal can show and returns plain text when
+color is off. Bind `*color*` to override that decision. `strip` removes
+escape sequences, and `width` counts the columns that text takes on screen.
+`cursor-to`, `clear`, `hide-cursor`, and `alternate-screen` produce control
+sequences for you to print.
+
+In raw mode, keys arrive as they are typed, with no echo, and Ctrl-C and
+Ctrl-Z are keys instead of signals. `with-raw-mode` turns raw mode on and
+restores the terminal afterward, even when its body fails. Its options can
+also turn on the alternate screen, a hidden cursor, mouse reports, bracketed
+paste, and the kitty keyboard protocol for the body's duration.
+
+The `:keyboard` option turns on the kitty keyboard protocol, which kitty,
+WezTerm, foot, Ghostty, and recent iTerm2 support. Other terminals ignore
+it. With the protocol, Escape arrives without the 50 ms wait, and
+combinations that look the same in a plain terminal arrive as different
+keys. For example, Ctrl-I is `{:key \i :ctrl true}` instead of Tab. Print
+`keyboard-query` to ask whether the terminal supports the protocol. A
+terminal that does answers with the key `{:key :keyboard-flags :flags n}`.
+
+To suspend the program when the user presses Ctrl-Z, call `suspend!`. It
+turns off the options and raw mode so that the shell works normally. When
+the shell resumes the program with `fg`, `suspend!` turns them back on and
+returns, and the program should then redraw the screen. If no shell with
+job control can resume the program, `suspend!` doesn't stop it.
+
+`read-key` returns keys as maps:
+
+- `{:key \a}` for a typed character
+- `{:key :up :ctrl true}` for a special key with modifiers
+- `{:key :f5}` for a function key
+- `{:key :paste :text "…"}` for a bracketed paste
+- `{:key :mouse :button :left :action :press :row 3 :col 10}` for a mouse
+  report
+
+`read-key` decodes xterm sequences, including kitty's `CSI u` keys. An
+Escape with nothing after it within 50 ms is the Escape key. `key-name`
+returns names such as `"ctrl+shift+left"`. `decode-keys` decodes bytes
+without a terminal.
+
+```clojure
+(require '[norn.terminal :as t])
+
+(t/with-raw-mode {:hide-cursor true}
+  (println (t/style "Press keys; q quits." :bold))
+  (loop []
+    (let [k (t/read-key)]
+      (println (t/style (t/key-name k) :cyan))
+      (when-not (= k {:key \q}) (recur)))))
+```
+
+To handle resizing, listen for `:winch` with `norn.signal/listen` and call
+`size` again. To run another program on a terminal of its own, use
+`norn.process/start-pty`.
+
+### Command-line programs
+
+`norn.cli` parses a command line against a spec, which is a map that
+describes the program's options, positional arguments, and subcommands.
+`run` parses `norn.sys/program-args`, the arguments after the script's path
+or the image. Then it does one of three things:
+
+- For `--help`, it prints the generated help and returns 0.
+- For a bad command line, it writes the error to stderr and returns 2.
+- Otherwise, it calls the matching command's `:run` with the parsed map and
+  returns the exit status.
+
+```clojure
+(ns greet (:require [norn.cli :as cli] [norn.string :as str] [norn.sys :as sys]))
+
+(def spec
+  {:name "greet" :summary "Say hello." :version "1.0"
+   :options [{:name :count :short \c :type :int :default 1 :doc "How many times"}
+             {:name :shout :short \s :doc "Upper case"}]
+   :args [{:name :who :optional true :default "world"}]
+   :run (fn [{:keys [options args]}]
+          (dotimes [_ (:count options)]
+            (println (cond-> (str "Hello, " (:who args) "!") (:shout options) str/upper-case))))})
+
+(sys/exit (cli/run spec))
+```
+
+`norn greet.norn -sc 2 Ada` prints `HELLO, ADA!` twice. `norn greet.norn
+--cuont 2` reports `greet: unknown option "--cuont" (did you mean
+"--count"?)` and exits with status 2. For a program built with `norn build`,
+the entry function receives the arguments. Write it as
+`(defn main [& args] (cli/run spec args))` and its result becomes the exit
+status.
+
+These keys describe an option:
+
+- `:name` is the option's keyword in `:options`.
+- `:long` is the long form. It defaults to the name, and `false` removes it.
+- `:short` is a single-character form.
+- `:value` is the placeholder for an option that takes a value.
+- `:type` converts the value. Use `:string`, `:int`, `:float`, `:keyword`,
+  `:boolean`, or a function. A function can signal a condition to reject the
+  value.
+- `:choices` lists the allowed values.
+- `:default` supplies the value when the option is not given.
+- `:env` names an environment variable to read when the option is not given.
+- `:required` makes the option mandatory.
+- `:multiple` collects every occurrence in a vector.
+- `:count` counts occurrences, as in `-vvv`.
+- `:negatable` adds a `--no-name` form for a flag.
+- `:doc` is the help text.
+
+An option without `:value`, `:type`, `:choices`, or `:multiple` is a flag.
+When a flag is not given, its value is `false`. A `:count` option is 0 and a
+`:multiple` option is `[]`.
+
+An argument in `:args` has a `:name`. It can also be `:optional` with a
+`:default`, or the last argument can be `:variadic` and collect the rest.
+Arguments accept `:type` and `:choices`. `:commands` holds subcommand specs,
+which can be nested. A subcommand accepts its parents' options too.
+
+The parser follows these rules:
+
+- Options can come after arguments unless the spec sets `:options-first`.
+- `--` ends the options.
+- `-abc` combines flags, and `-ofile` attaches a value to a short option.
+- A negative number such as `-5` is an argument.
+
+`cli/parse` returns the parsed map without acting on it and signals a
+`norn.cli/UsageError` for a bad command line. `cli/usage` returns the help
+text.
 
 ## Concurrency
 
@@ -248,6 +543,7 @@ transaction example.
 | `norn.compiler`, `norn.expander` | The compiler and hygienic expander. |
 | `norn.validate` | Validate the shapes of common forms during expansion. |
 | `norn.test` | Write tests, fixtures, and assertions and run suites. |
+| `norn.property` | Property-based tests: generators, shrinking, and seeds that reproduce failures. |
 | `norn.bench` | Measure code execution. |
 | `norn.fmt`, `norn.lint`, `norn.check` | Format, lint, and check source. |
 | `norn.doc`, `norn.expand` | Inspect documentation or trace macro expansion. |

@@ -7,11 +7,17 @@
 (defn getenv "An environment variable, or nil. (Read-only: set a child process's environment with norn.process.)" [name] (%getenv (str name)))
 (defn env "All environment variables, as a map of strings." [] (%env))
 (defn args "The process's command-line arguments (the program first)." [] (%args))
+(defn program-args
+  "The running program's own arguments: for `norn script.norn a b`, [\"a\" \"b\"];
+  for a built image, those after the image; for `norn -e` and the REPL, none."
+  []
+  (%program-args))
 (defn exit "End the process with status code (default 0)." ([] (norn.core/exit 0)) ([code] (norn.core/exit code)))
 
 (defn info
   "Everything at once: {:os :family :arch :endian :cores :page-size :memory
-  :pid :temp-dir :home-dir :user :hostname :cwd :norn-version :build}."
+  :pid :temp-dir :home-dir :user :hostname :cwd :norn-version :build
+  :executable}: :executable is the running program's path."
   []
   (%sys-info))
 

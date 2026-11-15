@@ -244,3 +244,28 @@ fn xml_suite() {
 fn data_formats_suite() {
     suite("data_formats_test.norn");
 }
+
+#[test]
+fn io_suite() {
+    suite("io_test.norn");
+}
+
+#[test]
+fn property_suite() {
+    suite("property_test.norn");
+}
+
+#[test]
+fn cli_suite() {
+    suite("cli_test.norn");
+}
+
+#[test]
+fn time_suite() {
+    suite("time_test.norn");
+}
+
+#[test]
+fn terminal_suite() {
+    suite("terminal_test.norn");
+}

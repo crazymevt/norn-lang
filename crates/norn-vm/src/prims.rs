@@ -110,14 +110,16 @@ prims! {
     "vector" 0 VAR => |vm, a| Ok(vec_from_slice(&mut vm.m, a));
     "hash-map" 0 VAR => |vm, a| hash_map(vm, a);
     "hash-set" 0 VAR => |vm, a| Ok(a.iter().fold(set_empty(), |s, &x| set_conj(&mut vm.m, s, x)));
-    "vec" 1 Some(1) => |vm, a| { if a[0].is(Kind::Vector) { return Ok(a[0]); } let xs = to_vec(vm, a[0])?; Ok(vec_from_slice(&mut vm.m, &xs)) };
-    "set" 1 Some(1) => |vm, a| { let xs = to_vec(vm, a[0])?; Ok(xs.into_iter().fold(set_empty(), |s, x| set_conj(&mut vm.m, s, x))) };
+    "vec" 1 Some(1) => |vm, a| { if a[0].is(Kind::Vector) { return Ok(a[0]); }
+        if a[0].is(Kind::Instance) { return collection_op(vm, "vec", a); }
+        let xs = to_vec(vm, a[0])?; Ok(vec_from_slice(&mut vm.m, &xs)) };
+    "set" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "set", a); } let xs = to_vec(vm, a[0])?; Ok(xs.into_iter().fold(set_empty(), |s, x| set_conj(&mut vm.m, s, x))) };
     "cons" 2 Some(2) => |vm, a| Ok(seq::cons_onto(&mut vm.m, a[0], a[1])?);
-    "first" 1 Some(1) => |vm, a| Ok(seq::first(&mut vm.m, a[0])?);
-    "rest" 1 Some(1) => |vm, a| Ok(seq::rest(&mut vm.m, a[0])?);
-    "next" 1 Some(1) => |vm, a| Ok(seq::next(&mut vm.m, a[0])?);
-    "seq" 1 Some(1) => |vm, a| Ok(seq::seq(&mut vm.m, a[0])?);
-    "count" 1 Some(1) => |_, a| Ok(Value::fix(seq::count(a[0])? as i64));
+    "first" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "first", a); } Ok(seq::first(&mut vm.m, a[0])?) };
+    "rest" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "rest", a); } Ok(seq::rest(&mut vm.m, a[0])?) };
+    "next" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "next", a); } Ok(seq::next(&mut vm.m, a[0])?) };
+    "seq" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "seq", a); } Ok(seq::seq(&mut vm.m, a[0])?) };
+    "count" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "count", a); } Ok(Value::fix(seq::count(a[0])? as i64)) };
     "nth" 2 Some(3) => nth;
     "get" 2 Some(3) => |vm, a| { crate::owned::check(vm, a[0], false)?; if a[0].is(Kind::Sorted) { let r = if a[0].sorted_is_set() { crate::sorted::find(a[0].sorted_root(), a[1])?.map(|_| a[1]) } else { crate::sorted::get(a[0], a[1])? }; return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))); } Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) };
     // sorted maps and sets, queues, transients (colls.rs, sorted.rs)
@@ -290,6 +292,14 @@ prims! {
     "subbytes" 2 Some(3) => |vm, a| { expect(a[0], Kind::Bytes, "subbytes")?; let b = a[0].as_bytes(); let s = int(a[1], "subbytes")?; let e = match a.get(2) { Some(&x) => int(x, "subbytes")?, None => b.len() as i64 }; if s < 0 || e < s || e as usize > b.len() { return Err(Error::new(format!("subbytes: range {s}..{e} out of bounds for {} bytes", b.len()))); } Ok(norn_rt::string::bytes_new(&mut vm.m, &b[s as usize..e as usize])) };
     "bytes-concat" 0 VAR => |vm, a| { let mut out = Vec::new(); for &x in a { expect(x, Kind::Bytes, "bytes-concat")?; out.extend_from_slice(x.as_bytes()); } Ok(norn_rt::string::bytes_new(&mut vm.m, &out)) };
     "%float-bytes" 2 Some(2) => float_bytes;
+    "%byte-array" 1 Some(1) => |vm, a| { let n = int(a[0], "%byte-array")?; if !(0..=(1i64 << 40)).contains(&n) { return Err(Error::new(format!("A mutable buffer can't hold {n} bytes"))); } Ok(norn_rt::string::byte_array_new(&mut vm.m, n as usize)) };
+    "%byte-array-from" 1 Some(1) => |vm, a| { if !a[0].is(Kind::Bytes) && !a[0].is(Kind::ByteArray) { return Err(type_err("%byte-array-from", "Bytes", a[0])); } let src = a[0].as_bytes().to_vec(); let v = norn_rt::string::byte_array_new(&mut vm.m, src.len()); unsafe { v.byte_array_mut().copy_from_slice(&src) }; Ok(v) };
+    "%mbuf-load" 4 Some(4) => mbuf_load;
+    "%mbuf-store!" 5 Some(5) => mbuf_store;
+    "%mbuf-fill!" 4 Some(4) => mbuf_fill;
+    "%mbuf-blit!" 3 Some(3) => mbuf_blit;
+    "%mbuf-freeze!" 1 Some(1) => mbuf_freeze;
+    "%mbuf-snapshot" 1 Some(1) => |vm, a| { let d = mbuf_storage(vm, a[0], false)?; let copy = d.as_bytes().to_vec(); Ok(norn_rt::string::bytes_new(&mut vm.m, &copy)) };
     "%bytes-float" 1 Some(1) => bytes_float;
     "%utf8-valid-up-to" 1 Some(1) => |_vm, a| { expect(a[0], Kind::Bytes, "%utf8-valid-up-to")?; Ok(match std::str::from_utf8(a[0].as_bytes()) { Ok(_) => Value::NIL, Err(e) => Value::fix(e.valid_up_to() as i64) }) };
     "%hex-encode" 1 Some(1) => |vm, a| { expect(a[0], Kind::Bytes, "hex")?; Ok(str_new(&mut vm.m, &crate::codec::hex_encode(a[0].as_bytes()))) };
@@ -310,6 +320,7 @@ prims! {
     "%handle-current?" 1 Some(1) => |_, a| { expect(a[0], Kind::Handle, "%handle-current?")?; Ok(Value::bool(a[0].word(norn_rt::conc::handle::EPOCH) == norn_rt::conc::process_epoch())) };
     "handle-kind" 1 Some(1) => |_, a| { expect(a[0], Kind::Handle, "handle-kind")?; Ok(a[0].field(norn_rt::conc::handle::KIND)) };
     "handle-info" 1 Some(1) => |_, a| { expect(a[0], Kind::Handle, "handle-info")?; Ok(a[0].field(norn_rt::conc::handle::INFO)) };
+    "%bytes-find" 3 Some(3) => |_, a| { expect(a[0], Kind::Bytes, "%bytes-find")?; expect(a[1], Kind::Bytes, "%bytes-find")?; let (h, n) = (a[0].as_bytes(), a[1].as_bytes()); let from = (int(a[2], "%bytes-find")?.max(0) as usize).min(h.len()); Ok(Value::fix(if n.is_empty() { from as i64 } else { h[from..].windows(n.len()).position(|w| w == n).map_or(-1, |i| (i + from) as i64) })) };
     "%bytes-index-of" 2 Some(2) => |_, a| { expect(a[0], Kind::Bytes, "%bytes-index-of")?; let x = int(a[1], "%bytes-index-of")? as u8; Ok(Value::fix(a[0].as_bytes().iter().position(|&b| b == x).map_or(-1, |i| i as i64))) };
     "%glob-match" 2 Some(2) => |_, a| Ok(Value::bool(crate::sys::glob_match(&text(a[0]), &text(a[1]))));
     "%glob-base" 1 Some(1) => |vm, a| Ok(str_new(&mut vm.m, &crate::sys::glob_base(&text(a[0]))));
@@ -327,6 +338,9 @@ prims! {
     "%fs-open" 2 Some(2) => |vm, a| { let mode = if a[1].is_keyword() { a[1].sym_name().to_owned() } else { text(a[1]) }; crate::sys::open(vm, text(a[0]), &mode) };
     "%file-read" 2 Some(2) => |vm, a| { let n = int(a[1], "read")?.max(1) as usize; crate::sys::file_read(vm, a[0], n) };
     "%file-write" 2 Some(2) => |vm, a| { let d = data_bytes(a[1])?; crate::sys::file_write(vm, a[0], d) };
+    "%file-sync" 1 Some(1) => |vm, a| crate::sys::file_sync(vm, a[0]);
+    "%fs-mkdir" 1 Some(1) => |vm, a| crate::sys::mkdir(vm, text(a[0]));
+    "%fs-sync-dir" 1 Some(1) => |vm, a| crate::sys::sync_dir(vm, text(a[0]));
     "%stdin-line" 0 Some(0) => |vm, _| crate::sys::stdin_line(vm);
     "%fs-watch" 2 Some(2) => |vm, a| crate::sys::watch(vm, text(a[0]), a[1].truthy());
     "%path-join" 1 Some(1) => |_vm, a| { let parts: Vec<String> = seq::SeqIter::new(a[0]).map(|it| it.map(text).collect()).unwrap_or_default(); Ok(str_new(&mut _vm.m, &crate::sys::path_join(&parts))) };
@@ -334,6 +348,12 @@ prims! {
     "%getenv" 1 Some(1) => |vm, a| Ok(crate::sys::getenv(&mut vm.m, &text(a[0])));
     "%env" 0 Some(0) => |vm, _| Ok(crate::sys::env(&mut vm.m));
     "%args" 0 Some(0) => |vm, _| Ok(crate::sys::args(&mut vm.m));
+    "%program-args" 0 Some(0) => |vm, _| Ok(crate::sys::program_args(&mut vm.m));
+    "%tty?" 1 Some(1) => |_, a| crate::sys::is_tty(a[0]);
+    "%tty-size" 1 Some(1) => |vm, a| crate::sys::tty_size(&mut vm.m, a[0]);
+    "%tty-raw!" 1 Some(1) => |_, a| crate::sys::tty_raw(a[0]);
+    "%tty-restore!" 1 Some(1) => |_, a| crate::sys::tty_restore(a[0]);
+    "%tty-read" 3 Some(3) => |vm, a| { let (max, t) = (int(a[1], "%tty-read")?, int(a[2], "%tty-read")?); crate::sys::tty_read(vm, a[0], max, t) };
     "%sys-info" 0 Some(0) => |vm, _| Ok(crate::sys::system(&mut vm.m));
     // string helpers for norn.rope: character and line arithmetic on a chunk
     "%str-stats" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "%str-stats")?; let t = a[0].as_str(); let c = a[0].str_char_count() as i64; let n = t.bytes().filter(|&b| b == b'\n').count() as i64; Ok(vec_from_slice(&mut vm.m, &[Value::fix(c), Value::fix(n)])) };
@@ -535,7 +555,7 @@ fn float_bytes(vm: &mut Vm, args: &[Value]) -> Result<Value> {
         4 => {
             let narrow = value as f32;
             if value.is_finite() && narrow.is_infinite() {
-                return Err(Error::new(format!("Float {value} is outside the 4-byte float range")));
+                return Err(Error::new(format!("Float {} is outside the 4-byte float range", norn_rt::print::fmt_float(value))));
             }
             Ok(norn_rt::string::bytes_new(&mut vm.m, &narrow.to_be_bytes()))
         }
@@ -552,6 +572,148 @@ fn bytes_float(vm: &mut Vm, args: &[Value]) -> Result<Value> {
         _ => return Err(Error::new("Float width must be 4 or 8 bytes")),
     };
     Ok(float_new(&mut vm.m, value))
+}
+
+// ---- mutable buffers (norn.buffer/MutableBuffer) ------------------------------------
+//
+// A MutableBuffer is a (:mutable) instance whose :data slot holds a
+// ByteArray. Every primitive here checks the instance's ownership first
+// (writes as a write), so only its owner fiber touches the bytes. Element
+// codes: 0 u8, 1 i8, 2 u16, 3 i16, 4 u32, 5 i32, 6 u64, 7 i64, 8 f32, 9 f64.
+
+fn mbuf_storage(vm: &mut Vm, mb: Value, write: bool) -> Result<Value> {
+    expect(mb, Kind::Instance, "mutable buffer")?;
+    crate::owned::check(vm, mb, write)?;
+    let key = rt().keyword(&mut vm.m, None, "data");
+    match norn_rt::clos::slot_get(mb, key) {
+        Some(d) if d.is(Kind::ByteArray) => Ok(d),
+        _ => Err(Error::new("This mutable buffer was frozen: its storage is now an immutable Buffer")),
+    }
+}
+
+fn elem_width(code: i64) -> Result<usize> {
+    Ok(match code {
+        0 | 1 => 1,
+        2 | 3 => 2,
+        4 | 5 | 8 => 4,
+        6 | 7 | 9 => 8,
+        _ => return Err(Error::new("Unknown buffer element type")),
+    })
+}
+
+/// The bytes of element value v as type `code`, in order `le`.
+fn encode_elem(code: i64, le: bool, v: Value) -> Result<Vec<u8>> {
+    use num_traits::ToPrimitive;
+    let width = elem_width(code)?;
+    if code >= 8 {
+        let x = crate::numeric::num(v)?.as_f64();
+        let mut b = if code == 8 {
+            let narrow = x as f32;
+            if x.is_finite() && narrow.is_infinite() {
+                return Err(Error::new(format!("Float {} is outside the 4-byte float range", norn_rt::print::fmt_float(x))));
+            }
+            narrow.to_be_bytes().to_vec()
+        } else {
+            x.to_be_bytes().to_vec()
+        };
+        if le {
+            b.reverse();
+        }
+        return Ok(b);
+    }
+    let n: i128 = match crate::numeric::num(v)? {
+        crate::numeric::Num::I(i) => i as i128,
+        crate::numeric::Num::B(b) => b.to_i128().ok_or_else(|| Error::new("Value outside buffer element range"))?,
+        _ => return Err(type_err("mutable buffer", "an integer", v)),
+    };
+    let bits = 8 * width as u32;
+    let (lo, hi) = if code % 2 == 1 { (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1) } else { (0, (1i128 << bits) - 1) };
+    if n < lo || n > hi {
+        return Err(Error::new(format!("Value {n} outside buffer element range")));
+    }
+    let u = (n as u128) & ((1u128 << bits) - 1);
+    let be = u.to_be_bytes();
+    let mut b = be[16 - width..].to_vec();
+    if le {
+        b.reverse();
+    }
+    Ok(b)
+}
+
+fn mbuf_offset(d: Value, offset: Value, width: usize) -> Result<usize> {
+    let o = int(offset, "mutable buffer")?;
+    let len = d.as_bytes().len();
+    if o < 0 || o as usize + width > len {
+        return Err(Error::of("IndexError", format!("Mutable buffer offset {o} is outside its {len} bytes")).with("index", crate::vm::ErrData::Int(o)));
+    }
+    Ok(o as usize)
+}
+
+fn mbuf_load(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let d = mbuf_storage(vm, a[0], false)?;
+    let code = int(a[2], "%mbuf-load")?;
+    let width = elem_width(code)?;
+    let at = mbuf_offset(d, a[1], width)?;
+    let mut b = d.as_bytes()[at..at + width].to_vec();
+    if a[3].truthy() {
+        b.reverse(); // to big-endian
+    }
+    let mut word = [0u8; 8];
+    word[8 - width..].copy_from_slice(&b);
+    let u = u64::from_be_bytes(word);
+    Ok(match code {
+        8 => float_new(&mut vm.m, f32::from_bits(u as u32) as f64),
+        9 => float_new(&mut vm.m, f64::from_bits(u)),
+        6 => norn_rt::numbers::int_value(&mut vm.m, &num_bigint::BigInt::from(u)),
+        _ if code % 2 == 1 => {
+            let shift = 64 - 8 * width as u32;
+            Value::fix(((u << shift) as i64) >> shift)
+        }
+        _ => Value::fix(u as i64),
+    })
+}
+
+fn mbuf_store(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let code = int(a[2], "%mbuf-store!")?;
+    let bytes = encode_elem(code, a[3].truthy(), a[4])?;
+    let d = mbuf_storage(vm, a[0], true)?;
+    let at = mbuf_offset(d, a[1], bytes.len())?;
+    // SAFETY: the owner check above makes this fiber the only writer.
+    unsafe { d.byte_array_mut()[at..at + bytes.len()].copy_from_slice(&bytes) };
+    Ok(a[0])
+}
+
+fn mbuf_fill(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let code = int(a[1], "%mbuf-fill!")?;
+    let bytes = encode_elem(code, a[2].truthy(), a[3])?;
+    let d = mbuf_storage(vm, a[0], true)?;
+    // SAFETY: as mbuf_store.
+    let data = unsafe { d.byte_array_mut() };
+    for chunk in data.chunks_exact_mut(bytes.len()) {
+        chunk.copy_from_slice(&bytes);
+    }
+    Ok(a[0])
+}
+
+fn mbuf_blit(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    if !a[2].is(Kind::Bytes) && !a[2].is(Kind::ByteArray) {
+        return Err(type_err("mutable buffer copy", "Bytes", a[2]));
+    }
+    let src = a[2].as_bytes().to_vec();
+    let d = mbuf_storage(vm, a[0], true)?;
+    let at = mbuf_offset(d, a[1], src.len())?;
+    // SAFETY: as mbuf_store.
+    unsafe { d.byte_array_mut()[at..at + src.len()].copy_from_slice(&src) };
+    Ok(a[0])
+}
+
+/// Hand the storage over as Bytes, without copying; the buffer is finished.
+fn mbuf_freeze(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let d = mbuf_storage(vm, a[0], true)?;
+    let key = rt().keyword(&mut vm.m, None, "data");
+    crate::owned::set_slot(vm, a[0], key, Value::NIL)?;
+    norn_rt::string::byte_array_freeze(d);
+    Ok(d)
 }
 
 /// Display text of a value (strings raw).
@@ -694,7 +856,48 @@ fn out(s: &str, newline: bool) -> Result<Value> {
 }
 
 fn to_vec(vm: &mut Vm, v: Value) -> Result<Vec<Value>> {
+    let v = seqable(vm, v)?;
     Ok(seq::to_vec(&mut vm.m, v)?)
+}
+
+// ---- collections a library defines ---------------------------------------------------
+//
+// An instance is a collection when its class has collection-seq (and
+// perhaps collection-count and collection-nth) methods, generic functions
+// in norn.core. The primitives call them only for instances, so built-in
+// collections never pay for the check beyond their kind.
+
+static COLLECTION_OP: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+static COLLECTION_SEQ: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+
+/// Hand primitive op's call on an instance to norn.core/%collection-op,
+/// which the interpreter runs in its place, in the fiber: the methods it
+/// calls can signal, be caught and park like any other call.
+fn collection_op(vm: &mut Vm, op: &str, a: &[Value]) -> Result<Value> {
+    let var = vm.core_fn("%collection-op", &COLLECTION_OP);
+    let f = if var.is(Kind::Var) { var.var_root() } else { var };
+    let mut args = Vec::with_capacity(a.len() + 1);
+    args.push(rt().keyword(&mut vm.m, None, op));
+    args.extend_from_slice(a);
+    let args = vec_from_slice(&mut vm.m, &args);
+    Err(Error::call(f, args))
+}
+
+/// v, or for an instance what its collection-seq method gives: something
+/// the seq functions take.
+fn seqable(vm: &mut Vm, v: Value) -> Result<Value> {
+    if !v.is(Kind::Instance) {
+        return Ok(v);
+    }
+    // (primitives that take any collection: made here, nested, so an
+    // error in the method ends the call rather than reaching a handler)
+    let var = vm.core_fn("collection-seq", &COLLECTION_SEQ);
+    let f = if var.is(Kind::Var) { var.var_root() } else { var };
+    let s = vm.apply(f, &[v])?;
+    if s.is(Kind::Instance) {
+        return Err(Error::new("collection-seq must give a seq or a built-in collection, not another instance"));
+    }
+    Ok(s)
 }
 
 // ---- numbers (the tower itself is in numeric.rs) ----------------------------------
@@ -1213,7 +1416,10 @@ pub fn get(coll: Value, key: Value) -> Option<Value> {
     }
 }
 
-fn nth(_: &mut Vm, a: &[Value]) -> Result<Value> {
+fn nth(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    if a[0].is(Kind::Instance) {
+        return collection_op(vm, "nth", a);
+    }
     let i = int(a[1], "nth")?;
     let r = if i < 0 { None } else { seq::nth(a[0], i as usize)? };
     match (r, a.get(2)) {

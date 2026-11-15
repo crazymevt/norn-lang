@@ -1,6 +1,6 @@
 ;;;; Data interchange and the values used by the codecs.
 (ns data-formats-test
-  (:require [norn.test :refer [deftest is]] [norn.bytes :as b] [norn.buffer :as buf]
+  (:require [norn.test :refer [deftest is testing]] [norn.bytes :as b] [norn.buffer :as buf]
             [norn.decimal :as d] [norn.time :as t] [norn.toml :as toml] [norn.cbor :as cbor]
             [norn.ndjson :as ndjson] [norn.yaml :as yaml] [norn.xml :as xml]
             [norn.io :as io] [norn.sys :as sys] [norn.string :as str]))
@@ -89,7 +89,10 @@
   (is (raises? #(buf/pack :f32 [3.4e39])))
   (is (= [##Inf] (buf/values (buf/pack :f32 [##Inf]))))
   (is (raises? #(buf/from-bytes :u32 (bytes [1 2 3]))))
-  (is (raises? #(buf/nth (buf/pack :u8 []) 0))))
+  (is (raises? #(buf/nth (buf/pack :u8 []) 0)))
+  (let [b (buf/pack :i16 [3 -1 4])]
+    (is (= [3 4 [3 -1 4] 6 [-1 3 4]] [(count b) (nth b 2) (vec b) (reduce + b) (sort b)]) "a Buffer is a collection to core")
+    (is (= [4 0 5] (into [] (map inc) b)))))
 
 (deftest cbor-interchange
   (doseq [[hex expected] [["00" 0] ["1818" 24] ["3903e7" -1000] ["f93e00" 1.5]
@@ -163,3 +166,41 @@
   (is (raises? #(xml/write-string "text")))
   (is (str/includes? (try (xml/write-string {:tag [nil "a"] :content [1]}) (catch Error e (condition-message e)))
                      "XML content")))
+
+(deftest mutable-buffers
+  (let [mb (buf/mutable :i16 4 :order :be)]
+    (buf/set! mb 0 -2)
+    (buf/set! mb 3 300)
+    (is (= [-2 0 0 300] (buf/values mb)))
+    (is (= [4 300 298] [(count mb) (nth mb 3) (reduce + mb)]) "a collection to core")
+    (is (raises? #(buf/set! mb 0 40000)) "values must fit the element type")
+    (is (raises? #(buf/set! mb 4 1)))
+    (let [snap (buf/snapshot mb)]
+      (buf/set! mb 1 7)
+      (is (= [-2 0 0 300] (buf/values snap)) "a snapshot is a copy")
+      (is (= "fffe00000000012c" (b/hex (buf/to-bytes snap)))))
+    (buf/fill! mb 5)
+    (buf/copy! mb 1 [9 8])
+    (buf/copy! mb 3 (buf/pack :i16 [1] :order :be))
+    (is (= [5 9 8 1] (buf/values mb)))
+    (is (raises? #(buf/copy! mb 0 (buf/pack :i16 [1]))) "a block copy needs the same type and byte order")
+    (let [frozen (buf/freeze! mb)]
+      (is (= [5 9 8 1] (buf/values frozen)))
+      (is (bytes? (buf/to-bytes frozen)) "freeze! hands over the storage as Bytes")
+      (is (= :k (get {(buf/to-bytes frozen) :k} (buf/to-bytes frozen))))
+      (is (raises? #(buf/set! mb 0 1)) "a frozen buffer is finished")))
+  (let [mf (buf/mutable :f32 2) m64 (buf/mutable :u64 1)]
+    (buf/set! mf 0 1.5)
+    (buf/set! m64 0 18446744073709551615)
+    (is (= [1.5 0.0] (buf/values mf)))
+    (is (raises? #(buf/set! mf 0 1e40)))
+    (is (= [18446744073709551615] (buf/values m64))))
+  (testing "only its owner fiber uses it, until handed on"
+    (let [mb (buf/mutable :u8 2)]
+      (is (= "OwnershipError" @(future (try (nth mb 0) nil (catch Error e (name (class-name (class-of e))))))))
+      (release! mb)
+      (is (= [42 0] @(future (buf/set! mb 0 42) (buf/values mb)))))
+    (let [mb (buf/mutable :u8 2) c (chan 1)]
+      (put! c mb)
+      (is (= [0 2] @(future (let [m (take! c)] (buf/set! m 1 2) (buf/values m)))) "a channel send releases it")))
+  (is (= [9 2 3] (let [m (buf/mutable-copy (buf/pack :u8 [1 2 3]))] (buf/set! m 0 9) (buf/values m)))))

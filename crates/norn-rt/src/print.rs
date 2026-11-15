@@ -326,6 +326,9 @@ fn write_one(out: &mut String, stack: &mut Vec<Work>, v: Value, readably: bool) 
         }
         Kind::Scope => out.push_str("#<scope>"),
         Kind::Weak => out.push_str("#<weak-ref>"),
+        Kind::ByteArray => {
+            let _ = write!(out, "#<byte-array {}>", v.as_bytes().len());
+        }
         // Printing never forces: the print primitives force a stream first.
         Kind::Stream if crate::seq::first_unrealized(v).is_some() => out.push_str("#<stream>"),
         Kind::Stream => stack.push(Work::Value(crate::seq::stream_items(v), readably)),

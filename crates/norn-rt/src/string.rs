@@ -6,6 +6,9 @@
 //!   other strings a per-thread cache of positions (`positions`, below)
 //!   makes a walk through the string linear rather than quadratic.
 //! - Bytes:   `[len][bytes, padded to 8]` — immutable, the same layout.
+//! - ByteArray: the Bytes layout, mutable: the storage of norn.buffer's
+//!   MutableBuffer, written only through its owner. Freezing retags it as
+//!   Bytes in place, so the bytes are handed over without copying.
 //! - Float:   `[f64 bits]`
 //! - Symbol / Keyword: `[ns: String|nil][name: String][hash]` — interned, so
 //!   equality is identity (see runtime.rs).
@@ -40,11 +43,40 @@ pub fn bytes_new(m: &mut Mutator, b: &[u8]) -> Value {
 }
 
 impl Value {
-    /// The contents of a Bytes object.
+    /// The contents of a Bytes (or ByteArray) object.
     pub fn as_bytes<'a>(self) -> &'a [u8] {
         // SAFETY: Bytes objects hold `len` bytes after the length word.
         unsafe { std::slice::from_raw_parts(self.payload_ptr().add(1) as *const u8, self.word(0) as usize) }
     }
+
+    /// The contents of a ByteArray, to write.
+    ///
+    /// # Safety
+    /// The caller writes only as the array's owner (norn.buffer checks its
+    /// MutableBuffer's ownership first), so no one else writes it meanwhile.
+    pub unsafe fn byte_array_mut<'a>(self) -> &'a mut [u8] {
+        debug_assert!(self.is(Kind::ByteArray));
+        // SAFETY: as as_bytes; the caller excludes other writers.
+        unsafe { std::slice::from_raw_parts_mut(self.payload_ptr().add(1) as *mut u8, self.word(0) as usize) }
+    }
+}
+
+/// A ByteArray of `len` zero bytes.
+pub fn byte_array_new(m: &mut Mutator, len: usize) -> Value {
+    let v = alloc(m, Kind::ByteArray, 1 + len.div_ceil(8));
+    v.set_word(0, len as u64);
+    // SAFETY: the payload has room for len bytes (padded) after the length word.
+    unsafe { std::ptr::write_bytes(v.payload_ptr().add(1) as *mut u8, 0, len.div_ceil(8) * 8) };
+    v
+}
+
+/// Turn ByteArray v into an immutable Bytes, in place: the two kinds share a
+/// layout, so the object keeps its size and contents.
+pub fn byte_array_freeze(v: Value) {
+    assert!(v.is(Kind::ByteArray), "only a ByteArray freezes");
+    let layout = &crate::object::LAYOUTS[Kind::Bytes as usize] as *const crate::object::Layout as u64;
+    // SAFETY: word 0 of an object is its layout pointer.
+    unsafe { v.ptr().write(layout) };
 }
 
 pub fn float_new(m: &mut Mutator, f: f64) -> Value {

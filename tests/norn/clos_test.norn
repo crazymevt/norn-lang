@@ -293,3 +293,31 @@
 (is (= :needs-mutable (try (eval '(defclass bad () ((v :mutable true)))) (catch Error e :needs-mutable))))
 (defclass savings (account) ((rate)))
 (is (= true (mutable? (savings :holder "s"))))
+
+;;; collections a library defines: collection-seq (and optionally
+;;; collection-count and collection-nth) make seq, count, nth and everything
+;;; built on them take a class's instances
+(defclass countdown () ((from :initform 3)))
+(defmethod collection-seq ((c countdown)) (range (:from c) 0 -1))
+(let [c (countdown :from 4)]
+  (is (= [4 [4 3 2 1] 3 :none 10] [(count c) (vec c) (nth c 1) (nth c 9 :none) (reduce + c)]))
+  (is (= [5 4 3 2] (into [] (map inc) c)))
+  (is (= [4 3] (take 2 c)))
+  (is (= [false true] [(empty? c) (empty? (countdown :from 0))])))
+(defclass counted () ((n :initform 0)))
+(def counted-calls (atom 0))
+(defmethod collection-seq ((c counted)) (range (:n c)))
+(defmethod collection-count ((c counted)) (swap! counted-calls inc) (:n c))
+(defmethod collection-nth ((c counted) i)
+  (when-not (< -1 i (:n c)) (error IndexError :message "out of range" :index i))
+  (* 10 i))
+(is (= [7 30 :none] [(count (counted :n 7)) (nth (counted :n 7) 3) (nth (counted :n 2) 5 :none)]))
+(is (pos? @counted-calls) "count used the class's own method")
+(defclass plain-thing () ((x)))
+(is (= "Don't know how to create a seq from plain-thing"
+       (try (seq (plain-thing)) (catch TypeError e (condition-message e)))))
+;; a method's error unwinds to the caller's handler like any other
+(defclass faulty () ())
+(defmethod collection-seq ((f faulty)) (error "broken collection"))
+(is (= "broken collection" (try (count (faulty)) (catch Error e (condition-message e)))))
+(is (= :index-error (try (nth (counted :n 1) 4) (catch IndexError _ :index-error))))
