@@ -29,7 +29,8 @@ their collection's type, with explicit lazy streams and transducers. The
 standard library covers I/O and the system (`norn.io`, `norn.fs`,
 `norn.sys`, `norn.process`, `norn.time`, `norn.signal`, `norn.net`,
 `norn.ffi`, `norn.bytes`), text and data (`norn.string`, `norn.regex`,
-`norn.json`, `norn.edn`, `norn.format`, `norn.pprint`, `norn.rope`) and
+`norn.json`, `norn.ndjson`, `norn.xml`, `norn.yaml`, `norn.cbor`, `norn.edn`,
+`norn.decimal`, `norn.buffer`, `norn.format`, `norn.pprint`, `norn.rope`) and
 the rest (`norn.math`, `norn.set`, `norn.walk`, `norn.random`,
 `norn.async`, `norn.sync`, `norn.cache`, `norn.log`). Tools: `norn test`,
 `norn fmt`, `norn lint`, `norn doc`, `norn check` and `norn image`, plus

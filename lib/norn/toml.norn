@@ -7,8 +7,8 @@
 ;;;; Tables are maps (keys as keywords; :keys identity keeps them strings),
 ;;;; arrays vectors, and strings, integers, floats (##Inf, ##NaN) and
 ;;;; booleans themselves. An offset date-time (1979-05-27T07:32:00Z) is a
-;;;; norn.time instant; a local date, time or date-time, which TOML gives no
-;;;; zone, stays its text. A key or table defined twice is an error, as the
+;;;; norn.time instant; :local-times true reads local dates and times as
+;;;; norn.time values. They stay strings by default. A key or table defined twice is an error, as the
 ;;;; spec says, and so is anything else that isn't TOML, with its line.
 
 (ns norn.toml
@@ -136,7 +136,11 @@
   #"^(\d{4}-\d{2}-\d{2})(?:[Tt ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(Z|z|[+-]\d{2}:\d{2})?)?$")
 (def ^:private time-re #"^\d{2}:\d{2}:\d{2}(?:\.\d+)?$")
 
-(defn- number-or-date! [st]
+(defn- local-time-value! [st parse token]
+  (try (parse token)
+       (catch Error e (fail! st (condition-message e)))))
+
+(defn- number-or-date! [st opts]
   (let [token (loop [out []]
                 (let [c (peek-c st)]
                   (if (and c (or (bare-key-char? c) (contains? #{\+ \. \: \Z \z} c)
@@ -162,8 +166,11 @@
         (bad))
       (re-find datetime-re token)
       (let [[_ _date time zone] (re-find datetime-re token)]
-        (if (and time zone) (t/parse (str/upper-case (str/replace token " " "T"))) token))
-      (re-find time-re token) token
+        (cond zone (t/parse (str/upper-case (str/replace token " " "T")))
+              (not (:local-times opts)) token
+              time (local-time-value! st t/parse-local-date-time token)
+              :else (local-time-value! st t/parse-local-date token)))
+      (re-find time-re token) (if (:local-times opts) (local-time-value! st t/parse-local-time token) token)
       :else (bad))))
 
 (declare value!)
@@ -227,7 +234,7 @@
           (= c \[) (array! st opts)
           (= c \{) (inline-table! st opts)
           (nil? c) (fail! st "a value expected")
-          :else (number-or-date! st))))
+          :else (number-or-date! st opts))))
 
 (defn- real-path
   "Where header keys ks lead in doc: through the last table of each array
@@ -248,11 +255,11 @@
               :else (fail! st (str header ": " (name k) " isn't a table")))))))
 
 (defn read-string
-  "The TOML document s, as a map. Option :keys, applied to every key
-  (keyword by default; identity keeps them strings)."
-  [s & {:keys [keys] :or {keys keyword}}]
+  "The TOML document s, as a map. :keys transforms keys (keyword by default).
+  With :local-times true, read local dates and times as norn.time values."
+  [s & {:keys [keys local-times] :or {keys keyword}}]
   (let [st (atom {:cs (vec (str s)) :i 0 :dotted #{} :inline #{} :aot #{}})
-        opts {:keys keys}]
+        opts {:keys keys :local-times local-times}]
     (loop [doc {} path [] defined #{}]
       (skip-blank! st)
       (let [c (peek-c st)]
@@ -312,6 +319,7 @@
         (float? x) (cond (NaN? x) "nan" (= x ##Inf) "inf" (= x ##-Inf) "-inf"
                          :else (let [s (str x)] (if (re-find #"[.eE]" s) s (str s ".0"))))
         (t/instant? x) (t/format x)
+        (or (t/local-date? x) (t/local-time? x) (t/local-date-time? x)) (t/format-local x)
         (map? x) (str "{ " (str/join ", " (map (fn [[k v]] (str (key-text k) " = " (scalar-text v))) x)) " }")
         (sequential? x) (str "[" (str/join ", " (map scalar-text x)) "]")
         :else (error (str "TOML has no way to write " (pr-str x)))))

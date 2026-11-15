@@ -278,3 +278,33 @@
       (is (= (ffi/callback-address a) (ffi/callback-address b)) "the same code")
       (is (= 2 (ffi/call (ffi/function-at (ffi/callback-address b) [:int :int] :long) 5 3)) "answering for the new one")
       (ffi/free-callback! b))))
+
+;; Whether f's calls run on the process's first thread (a function of no
+;; arguments, made with opts).
+(defn- first-thread-check [opts]
+  (if (= :macos (sys/os))
+    (let [f (apply ffi/function libc "pthread_main_np" [] :int opts)] (fn [] (= 1 (ffi/call f))))
+    (let [f (apply ffi/function libc "gettid" [] :int opts) pid (ffi/function libc "getpid" [] :int)]
+      (fn [] (= (ffi/call pid) (ffi/call f))))))
+
+(deftest main-thread-calls
+  (let [on-main? (first-thread-check [:main-thread true])
+        elsewhere? (first-thread-check [])]
+    (if (ffi/main-thread-available?)
+      (do
+        (is (on-main?) "a :main-thread call runs on the process's first thread")
+        (is (not (elsewhere?)) "an ordinary one doesn't")
+        (is (every? true? (mapv await (mapv (fn [_] (spawn-detached (on-main?))) (range 20)))) "from many fibers at once")
+        (is (string? (ffi/call (ffi/function libc "strerror" [:int] :string :main-thread true) 2)) "a string result")
+        (testing "a callback during a main-thread call can make main-thread calls"
+          (let [qsort-main (ffi/function libc "qsort" [:pointer :usize :usize [:callback [:pointer :pointer] :int]] :void
+                                         :main-thread true)
+                seen (atom [])
+                p (ints-at [3 1 2])]
+            (ffi/call qsort-main p 3 4 (fn [a b] (swap! seen conj (on-main?)) (by-value a b)))
+            (is (= [1 2 3] (ints-in p 3)))
+            (is (and (seq @seen) (every? true? @seen)))
+            (ffi/free! p))))
+      ;; (the norn-vm test harness serves no main thread)
+      (is (str/includes? (message on-main?) "No thread serves main-thread calls"))))
+  (is (str/includes? (message (fn [] (ffi/function libc "abs" [:int] :int :blocking true :main-thread true))) "both")))

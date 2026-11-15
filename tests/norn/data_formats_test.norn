@@ -1,0 +1,165 @@
+;;;; Data interchange and the values used by the codecs.
+(ns data-formats-test
+  (:require [norn.test :refer [deftest is]] [norn.bytes :as b] [norn.buffer :as buf]
+            [norn.decimal :as d] [norn.time :as t] [norn.toml :as toml] [norn.cbor :as cbor]
+            [norn.ndjson :as ndjson] [norn.yaml :as yaml] [norn.xml :as xml]
+            [norn.io :as io] [norn.sys :as sys] [norn.string :as str]))
+
+(defn- parse-error [f] (try (f) nil (catch ParseError e e)))
+(defn- raises? [f] (try (f) false (catch Error _ true)))
+
+(deftest local-calendar-values
+  (is (= "2000-02-29" (t/format-local (t/local-date 2000 2 29))))
+  (is (raises? #(t/local-date 1900 2 29)))
+  (is (raises? #(t/LocalDate :year 2025 :month 13 :day 1)))
+  (is (raises? #(t/local-time 24 0)))
+  (is (raises? #(t/local-date-time (t/now) (t/local-time 1 2))))
+  (is (= "09:01:00" (t/format-local (t/local-time 9 1))))
+  (is (= "1979-05-27T07:32:00.123456789"
+         (t/format-local (t/parse-local-date-time "1979-05-27 07:32:00.1234567895"))))
+  (let [input "d=2000-02-29\nm=09:01:00.1\nl=1979-05-27T07:32:00\nz=1979-05-27T07:32:00Z\n"
+        doc (toml/read-string input :local-times true)]
+    (is (= "2000-02-29" (:d (toml/read-string input))))
+    (is (t/local-date? (:d doc)))
+    (is (t/local-time? (:m doc)))
+    (is (t/local-date-time? (:l doc)))
+    (is (t/instant? (:z doc)))
+    (is (= doc (toml/read-string (toml/write-string doc) :local-times true))))
+  (is (= 1 (:line (parse-error #(toml/read-string "d=1900-02-29" :local-times true))))))
+
+(deftest exact-decimals
+  (let [a (d/parse "0.10") b (d/parse ".2")]
+    (is (= "0.30" (d/text (d/add a b))))
+    (is (= "-0.10" (d/text (d/subtract a b))))
+    (is (= "0.020" (d/text (d/multiply a b))))
+    (is (= "0.500" (d/text (d/divide a b 3))))
+    (is (= 0 (d/compare a (d/parse "0.100")))))
+  (doseq [[value scale mode expected] [["2.5" 0 :half-even "2"] ["3.5" 0 :half-even "4"]
+                                       ["-2.5" 0 :half-up "-3"] ["-2.1" 0 :floor "-3"]
+                                       ["-2.1" 0 :ceiling "-2"] ["1.9" 0 :toward-zero "1"]
+                                       ["123" -1 :half-even "12E+1"]]]
+    (is (= expected (d/text (d/quantize (d/parse value) scale mode)))))
+  (is (= "12E+4" (d/text (d/parse "12e+4"))))
+  (is (= "0.000" (d/text (d/parse "0.000"))))
+  (is (= "1E-1000000000000" (d/text (d/parse "1e-1000000000000"))))
+  (is (raises? #(d/quantize (d/parse "1.1") 0 :unnecessary)))
+  (is (raises? #(d/divide (d/decimal 1) (d/decimal 0) 2)))
+  ;; Far-apart scales compare and round without building huge powers of ten.
+  (let [tiny (d/parse "1e-1000000000000") huge (d/parse "-1e+1000000000000")]
+    (is (= 1 (d/compare tiny (d/decimal 0))))
+    (is (= -1 (d/compare tiny (d/parse "1e-999999999999"))))
+    (is (= -1 (d/compare huge (d/decimal -1))))
+    (is (= 1 (d/compare (d/parse "9") (d/parse "1.0"))))
+    (is (= "0.00" (d/text (d/quantize tiny 2))))
+    (is (= "0.01" (d/text (d/quantize tiny 2 :ceiling))))
+    (is (= "-0.01" (d/text (d/divide (d/decimal -1) (d/parse "1e+1000000000000") 2 :floor))))
+    (is (raises? #(d/quantize tiny 2 :unnecessary)))
+    (is (str/includes? (try (d/add tiny (d/decimal 1)) (catch Error e (condition-message e))) "limit")))
+  (is (some? (parse-error #(d/parse "NaN")))))
+
+(deftest incremental-decoding
+  (doseq [[encoding hex expected] [[:utf-8 "61c3a9f09f9982" "aé🙂"]
+                                   [:utf-16le "6100e9003dd842de" "aé🙂"]
+                                   [:utf-16be "006100e9d83dde42" "aé🙂"]]]
+    (let [data (b/unhex hex)]
+      (doseq [i (range (inc (count data)))]
+        (let [[state head] (b/decode-chunk (b/decoder encoding) (b/slice data 0 i))
+              [done tail] (b/decode-chunk state (b/slice data i))]
+          (is (nil? (b/finish-decoder done)))
+          (is (= expected (str head tail)))))))
+  (doseq [[encoding hex] [[:utf-8 "f09f"] [:utf-8 "80"] [:utf-8 "e08080"]
+                          [:utf-16le "00d8"] [:utf-16le "00d82000"] [:utf-16be "dc00"]]]
+    (is (some? (parse-error #(b/decode-text (b/unhex hex) encoding)))))
+  ;; Errors name the stream offset of the bad byte, across chunk boundaries.
+  (is (str/includes? (condition-message (parse-error #(b/decode-text (b/unhex "616161ff") :utf-8))) "byte 3"))
+  (let [[state _] (b/decode-chunk (b/decoder :utf-8) (b/unhex "6161c3"))]
+    (is (str/includes? (condition-message (parse-error #(b/decode-chunk state (b/unhex "ff")))) "byte 2"))))
+
+(deftest packed-buffers
+  (let [data (b/unhex "0102fffe") view (buf/from-bytes :i16 data :order :be)]
+    (is (identical? data (buf/to-bytes view)))
+    (is (= 2 (buf/count view)))
+    (is (= [258 -2] (buf/values view)))
+    (is (= data (buf/to-bytes (buf/pack :i16 [258 -2] :order :be)))))
+  (is (= "0000c03f00000080" (b/hex (buf/to-bytes (buf/pack :f32 [1.5 -0.0])))))
+  (is (= "8000000000000000" (b/hex (b/float-bytes (buf/nth (buf/pack :f64 [-0.0]) 0) 8 :be))))
+  (is (= [18446744073709551615] (buf/values (buf/pack :u64 [18446744073709551615]))))
+  (is (= [-9223372036854775808] (buf/values (buf/pack :i64 [-9223372036854775808]))))
+  (is (raises? #(buf/pack :u8 [256])))
+  (is (raises? #(buf/pack :f32 [3.4e39])))
+  (is (= [##Inf] (buf/values (buf/pack :f32 [##Inf]))))
+  (is (raises? #(buf/from-bytes :u32 (bytes [1 2 3]))))
+  (is (raises? #(buf/nth (buf/pack :u8 []) 0))))
+
+(deftest cbor-interchange
+  (doseq [[hex expected] [["00" 0] ["1818" 24] ["3903e7" -1000] ["f93e00" 1.5]
+                          ["fa47c35000" 100000.0] ["9f018202039f0405ffff" [1 [2 3] [4 5]]]
+                          ["5f42010243030405ff" (bytes [1 2 3 4 5])] ["7f657374726561646d696e67ff" "streaming"]
+                          ["bf616101ff" {"a" 1}] ["c48221196ab3" (d/decimal 27315 2)]]]
+    (is (= expected (cbor/decode (b/unhex hex))) hex))
+  (let [value {1 [nil false true ##Inf ##-Inf ##NaN 18446744073709551616 -18446744073709551617
+                  (cbor/tagged 37 (bytes [10])) (cbor/simple 23) (cbor/simple 32) (d/parse "1.00")]}]
+    (is (= value (cbor/decode (cbor/encode value)))))
+  (is (= "1bffffffffffffffff" (b/hex (cbor/encode 18446744073709551615))))
+  (is (= "c48221196ab3" (b/hex (cbor/encode (d/parse "273.15")))))
+  (doseq [hex ["" "ffff" "7f6161" "7f61c361a9ff" "a201010102" "bf61aaff" "f81f" "c401" "c201" "0102"]]
+    (is (some? (parse-error #(cbor/decode (b/unhex hex)))) hex))
+  (is (= 1 (d/compare (cbor/decode (b/unhex "c4821b00000000ffffffff01")) (d/decimal 1)))))
+
+(deftest json-lines
+  (is (= [{"key" "é"} nil false 42] (ndjson/read-string "{\"key\":\"é\"}\r\nnull\nfalse\n42" :keywords false)))
+  (is (= [] (ndjson/read-string "")))
+  (is (= 2 (:line (parse-error #(ndjson/read-string "true\n\n")))))
+  (is (= "null\n[1,2]\nfalse\n" (ndjson/write-string [nil [1 2] false])))
+  (let [path (io/path (sys/temp-dir) (str "norn-data-formats-" (sys/pid) "-" (nano-time)))]
+    (try
+      (ndjson/write-file path [nil 1 2])
+      (is (= [nil 1 2] (ndjson/read-file path)))
+      (io/with-open [handle (io/open path :read)]
+        (let [reader (io/line-reader handle)]
+          (is (= [nil] (ndjson/reduce-records (fn [_ v] (reduced [v])) [] reader)))
+          (is (= [1 2] (ndjson/reduce-records conj [] reader)))))
+      (finally (io/delete! path)))))
+
+(deftest yaml-configuration
+  (let [source (str "---\nitems:\n- name: Ada # comment\n  data: &defaults {\"flag\":true, n: 0x10}\n"
+                    "- name: 'Bob''s \"office\"'\n  data: *defaults\n"
+                    "message: >-\n  hello\n  world\n\n  again\n"
+                    "literal: |+2\n  hello # data\n\n"
+                    "flow: [yes,\n  False, \"\\U0001F642\", ~,\n  0o17, .Inf]\n...\n")
+        doc (yaml/read-string source :keys keyword)]
+    (is (= [{:name "Ada" :data {:flag true :n 16}}
+            {:name "Bob's \"office\"" :data {:flag true :n 16}}] (:items doc)))
+    (is (identical? (get-in doc [:items 0 :data]) (get-in doc [:items 1 :data])))
+    (is (= "hello world\nagain" (:message doc)))
+    (is (= "hello # data\n\n" (:literal doc)))
+    (is (= ["yes" false "🙂" nil 15 ##Inf] (:flow doc)))
+    (is (= doc (yaml/read-string (yaml/write-string doc) :keys keyword))))
+  (is (= {"u" "http://host/a#frag" "a" "" "b" nil}
+         (yaml/read-string "u: http://host/a#frag\na: ''\nb:\n")))
+  (is (= {"a" [1 2]} (yaml/read-string "a: &x\n  - 1\n  - 2\n")))
+  (is (= {"a" "x # y" "b" "x # y"} (yaml/read-string "---\na: &ref \"x # y\"\nb: *ref # removed\n")))
+  (is (= [{"a" 1} "other"] (yaml/read-string "--- [a: 1, other]")))
+  (is (raises? #(yaml/write-string {:a 1 "a" 2})))
+  (is (str/includes? (condition-message (parse-error #(yaml/read-string "a: hello\n  world\n"))) "multi-line"))
+  (is (= 2 (:line (parse-error #(yaml/read-string "- a\n  b\n")))))
+  (doseq [s ["a: 1\na: 2" "a: &x [*x]" "a: *unknown" "a: [1, 2" "a: '\n" "a:\n\t- 1" "a: 1\n---\nb: 2"
+             "a: b: c" "{[1, 2]: x}"]]
+    (is (some? (parse-error #(yaml/read-string s))) s)))
+
+(deftest xml-serialization
+  (let [tree (xml/read-string "<r xmlns='urn:r' xmlns:m='urn:m' a='&#9;&#10;&#13;&quot;&amp;'><m:n xmlns=''><x/>A&#13;&lt;</m:n><b/></r>")]
+    (is (= tree (xml/read-string (xml/write-string tree)))))
+  (let [source (xml/write-string {:tag ["urn:root" "item"]
+                                  :attrs {[nil "id"] "a" ["urn:meta" "kind"] "b"}
+                                  :content ["<&]']]>"]})
+        tree (xml/read-string source)]
+    (is (= ["urn:root" "item"] (:tag tree)))
+    (is (= {[nil "id"] "a" ["urn:meta" "kind"] "b"} (:attrs tree)))
+    (is (= ["<&]']]>"] (:content tree)))
+    (is (str/includes? source "xmlns:ns1=")))
+  (is (raises? #(xml/write-string {:tag [nil "x:y"]})))
+  (is (raises? #(xml/write-string {:tag [nil "r"] :content [(str (char 0))]})))
+  (is (raises? #(xml/write-string "text")))
+  (is (str/includes? (try (xml/write-string {:tag [nil "a"] :content [1]}) (catch Error e (condition-message e)))
+                     "XML content")))

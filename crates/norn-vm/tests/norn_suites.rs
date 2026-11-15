@@ -234,3 +234,13 @@ fn bin_suite() {
 fn small_libs_suite() {
     suite("small_libs_test.norn");
 }
+
+#[test]
+fn xml_suite() {
+    suite("xml_test.norn");
+}
+
+#[test]
+fn data_formats_suite() {
+    suite("data_formats_test.norn");
+}

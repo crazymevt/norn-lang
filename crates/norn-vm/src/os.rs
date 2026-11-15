@@ -466,6 +466,8 @@ fn wait_reason(f: Value) -> &'static str {
         "on I/O"
     } else if crate::blocking::holds_waiter(w) {
         "in a blocking call"
+    } else if crate::main_lane::holds_waiter(w) {
+        "in a main-thread call"
     } else if sched::timer_holds(w) {
         "sleeping"
     } else {

@@ -28,17 +28,16 @@ use unicode_width::UnicodeWidthStr;
 
 // ---- character indexes ----------------------------------------------------------------------
 
-/// The byte offset of character `ci` (the end for `ci == count`), or None.
-pub(crate) fn byte_of(s: &str, ci: usize) -> Option<usize> {
-    if s.is_ascii() {
-        return (ci <= s.len()).then_some(ci);
-    }
-    s.char_indices().map(|(b, _)| b).chain(std::iter::once(s.len())).nth(ci)
+/// The byte offset of character `ci` of string v (the end for `ci ==
+/// count`), or None. (Through the runtime's position cache, so stepping
+/// through a long non-ASCII string doesn't recount from its start.)
+pub(crate) fn byte_of(v: Value, ci: usize) -> Option<usize> {
+    v.str_byte_of(ci)
 }
 
-/// The character index of byte offset `b` (on a character boundary).
-pub(crate) fn char_of(s: &str, b: usize) -> usize {
-    if s.is_ascii() { b } else { s[..b].chars().count() }
+/// The character index of byte offset `b` (on a character boundary) of string v.
+pub(crate) fn char_of(v: Value, b: usize) -> usize {
+    v.str_char_of(b)
 }
 
 fn string(v: Value, op: &str) -> Result<&'static str> {
@@ -99,13 +98,13 @@ pub(crate) fn index(_: &mut Vm, a: &[Value]) -> Result<Value> {
     let from = if a[2].is_nil() { None } else { Some(int(a[2], "index-of")?.max(0) as usize) };
     let found = if last {
         let end = match from {
-            Some(f) => byte_of(s, f).map(|b| (b + n.len()).min(s.len())).unwrap_or(s.len()),
+            Some(f) => byte_of(a[0], f).map(|b| (b + n.len()).min(s.len())).unwrap_or(s.len()),
             None => s.len(),
         };
         s[..end].rfind(&n)
     } else {
         let start = match from {
-            Some(f) => match byte_of(s, f) {
+            Some(f) => match byte_of(a[0], f) {
                 Some(b) => b,
                 None => return Ok(Value::NIL),
             },
@@ -113,7 +112,7 @@ pub(crate) fn index(_: &mut Vm, a: &[Value]) -> Result<Value> {
         };
         s[start..].find(&n).map(|i| i + start)
     };
-    Ok(found.map(|b| Value::fix(char_of(s, b) as i64)).unwrap_or(Value::NIL))
+    Ok(found.map(|b| Value::fix(char_of(a[0], b) as i64)).unwrap_or(Value::NIL))
 }
 
 /// `(%str-split s sep limit)`: split on a literal string; `limit` > 0 caps
@@ -125,7 +124,7 @@ pub(crate) fn split(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let parts: Vec<&str> = if sep.is_empty() {
         let mut v: Vec<&str> = s.char_indices().map(|(i, c)| &s[i..i + c.len_utf8()]).collect();
         if limit > 0 && v.len() > limit {
-            let b = byte_of(s, limit - 1).unwrap();
+            let b = byte_of(a[0], limit - 1).unwrap();
             v.truncate(limit - 1);
             v.push(&s[b..]);
         }
@@ -266,7 +265,7 @@ pub(crate) fn re_pattern(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 /// One match as `[start end groups names]`: character indexes, the groups'
 /// text (nil when a group didn't take part), and their names (nil when
 /// unnamed).
-fn match_value(vm: &mut Vm, re: &regex::Regex, s: &str, c: &regex::Captures, names: Value) -> Value {
+fn match_value(vm: &mut Vm, re: &regex::Regex, sv: Value, c: &regex::Captures, names: Value) -> Value {
     let m0 = c.get(0).unwrap();
     let groups: Vec<Value> = (0..re.captures_len())
         .map(|i| match c.get(i) {
@@ -275,8 +274,8 @@ fn match_value(vm: &mut Vm, re: &regex::Regex, s: &str, c: &regex::Captures, nam
         })
         .collect();
     let groups = vec_from_slice(&mut vm.m, &groups);
-    let start = Value::fix(char_of(s, m0.start()) as i64);
-    let end = Value::fix(char_of(s, m0.end()) as i64);
+    let start = Value::fix(char_of(sv, m0.start()) as i64);
+    let end = Value::fix(char_of(sv, m0.end()) as i64);
     vec_from_slice(&mut vm.m, &[start, end, groups, names])
 }
 
@@ -291,7 +290,7 @@ pub(crate) fn re_search(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let re = regex_arg(a[0], "re-find")?;
     let s = string(a[1], "re-find")?;
     let from = int(a[2], "re-find")?.max(0) as usize;
-    let Some(start) = byte_of(s, from) else { return Ok(Value::NIL) };
+    let Some(start) = byte_of(a[1], from) else { return Ok(Value::NIL) };
     let Some(c) = re.captures_at(s, start) else { return Ok(Value::NIL) };
     let m0 = c.get(0).unwrap();
     if a[3].truthy() && (m0.start() != 0 || m0.end() != s.len()) {
@@ -299,16 +298,16 @@ pub(crate) fn re_search(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         let anchored = compile(&format!("^(?:{})$", re.as_str()))?;
         let Some(c) = anchored.captures(s) else { return Ok(Value::NIL) };
         let names = group_names(vm, &re);
-        let inner = shift_groups(vm, &c, s, names);
+        let inner = shift_groups(vm, &c, a[1], names);
         return Ok(inner);
     }
     let names = group_names(vm, &re);
-    Ok(match_value(vm, &re, s, &c, names))
+    Ok(match_value(vm, &re, a[1], &c, names))
 }
 
 /// The anchored pattern wraps the original in a non-capturing group, so its
 /// groups line up with the original's.
-fn shift_groups(vm: &mut Vm, c: &regex::Captures, s: &str, names: Value) -> Value {
+fn shift_groups(vm: &mut Vm, c: &regex::Captures, sv: Value, names: Value) -> Value {
     let groups: Vec<Value> = (0..c.len())
         .map(|i| match c.get(i) {
             Some(g) => str_new(&mut vm.m, g.as_str()),
@@ -316,7 +315,7 @@ fn shift_groups(vm: &mut Vm, c: &regex::Captures, s: &str, names: Value) -> Valu
         })
         .collect();
     let groups = vec_from_slice(&mut vm.m, &groups);
-    vec_from_slice(&mut vm.m, &[Value::fix(0), Value::fix(char_of(s, s.len()) as i64), groups, names])
+    vec_from_slice(&mut vm.m, &[Value::fix(0), Value::fix(sv.str_char_count() as i64), groups, names])
 }
 
 /// `(%re-all re s)`: every non-overlapping match, in order.
@@ -324,7 +323,7 @@ pub(crate) fn re_all(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let re = regex_arg(a[0], "re-seq")?;
     let s = string(a[1], "re-seq")?;
     let names = group_names(vm, &re);
-    let all: Vec<Value> = re.captures_iter(s).map(|c| match_value(vm, &re, s, &c, names)).collect();
+    let all: Vec<Value> = re.captures_iter(s).map(|c| match_value(vm, &re, a[1], &c, names)).collect();
     Ok(vec_from_slice(&mut vm.m, &all))
 }
 

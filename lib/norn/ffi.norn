@@ -29,7 +29,12 @@
 ;;;;
 ;;;; A function marked :blocking true runs on the blocking pool; others run
 ;;;; on the carrier (keep them quick: one that takes long makes the runtime
-;;;; start a spare carrier). After an image restore, libraries reload and
+;;;; start a spare carrier). One marked :main-thread true runs on the
+;;;; process's first thread, which the norn command keeps for such calls:
+;;;; window, event and graphics APIs that need that thread or one fixed
+;;;; thread. Its calls run one at a time, and a :string result is copied
+;;;; there, before the next call can reuse a static buffer. A callback C
+;;;; makes during one can make main-thread calls of its own. After an image restore, libraries reload and
 ;;;; functions re-resolve by themselves: a library holds no session state.
 ;;;;
 ;;;; Structs: (defcstruct point [x :i32 y :i32]) lays out fields as C does
@@ -56,7 +61,9 @@
   (:unsafe))
 
 (defclass Library () ((path) (cell)))
-(defclass ForeignFunction () ((name) (lib) (params) (ret) (blocking) (cell) (prep)))
+;; mode: false (on the carrier), true (the blocking pool) or :main (the
+;; main-thread lane), as %ffi-fn takes it.
+(defclass ForeignFunction () ((name) (lib) (params) (ret) (mode) (cell) (prep)))
 (defclass Callback () ((id) (address) (params) (ret) (fn) (chan)))
 
 (defmethod print-object ((f ForeignFunction)) (str "#<foreign " (:name f) ">"))
@@ -371,35 +378,45 @@
   [ps ret]
   (when (or (layout? ret) (some (fn [t] (or (vector? t) (layout? t))) ps)) true))
 
-(defn- open-fn [lib name params ret blocking]
+(defn main-thread-available?
+  "Does a thread serve :main-thread calls? The norn command's first thread
+  does; a program embedding Norn serves them only if it says so."
+  []
+  (%main-thread-served?))
+
+(defn- call-mode [blocking main-thread]
+  (when (and blocking main-thread) (error "A foreign function can't be both :blocking and :main-thread"))
+  (cond main-thread :main blocking true :else false))
+
+(defn- open-fn [lib name params ret mode]
   (if lib
-    (%ffi-fn (live-lib lib) (str name) (mapv low-type params) (by-value ret) blocking)
-    (%ffi-fn nil name (mapv low-type params) (by-value ret) blocking)))
+    (%ffi-fn (live-lib lib) (str name) (mapv low-type params) (by-value ret) mode)
+    (%ffi-fn nil name (mapv low-type params) (by-value ret) mode)))
 
 (defn function
   "A C function of lib: (function libc \"strlen\" [:string] :usize). A
   struct layout as a parameter or result type passes it by value (as a
-  map); :... last makes it variadic. Option: :blocking true runs calls on
-  the blocking pool."
-  [lib name params ret & {:keys [blocking]}]
-  (let [b (if blocking true false)
+  map); :... last makes it variadic. Options: :blocking true runs calls on
+  the blocking pool, :main-thread true on the process's first thread."
+  [lib name params ret & {:keys [blocking main-thread]}]
+  (let [mode (call-mode blocking main-thread)
         ps (vec params)]
-    (ForeignFunction :name (str name) :lib lib :params ps :ret ret :blocking b
-                     :cell (atom (open-fn lib (str name) ps ret b)) :prep (prep-for ps ret))))
+    (ForeignFunction :name (str name) :lib lib :params ps :ret ret :mode mode
+                     :cell (atom (open-fn lib (str name) ps ret mode)) :prep (prep-for ps ret))))
 
 (defn function-at
   "A C function known by its address (a function pointer C gave), as
   function. (It doesn't survive an image restore.)"
-  [addr params ret & {:keys [blocking]}]
-  (let [ps (vec params) b (if blocking true false)]
-    (ForeignFunction :name addr :lib nil :params ps :ret ret :blocking b
-                     :cell (atom (open-fn nil addr ps ret b)) :prep (prep-for ps ret))))
+  [addr params ret & {:keys [blocking main-thread]}]
+  (let [ps (vec params) mode (call-mode blocking main-thread)]
+    (ForeignFunction :name addr :lib nil :params ps :ret ret :mode mode
+                     :cell (atom (open-fn nil addr ps ret mode)) :prep (prep-for ps ret))))
 
 (defn- live-fn [ff]
   (let [h @(:cell ff)]
     (cond (%handle-current? h) h
           (nil? (:lib ff)) (error "A C function known by its address doesn't survive an image restore")
-          :else (reset! (:cell ff) (open-fn (:lib ff) (:name ff) (:params ff) (:ret ff) (:blocking ff))))))
+          :else (reset! (:cell ff) (open-fn (:lib ff) (:name ff) (:params ff) (:ret ff) (:mode ff))))))
 
 (defn- call-converting
   "Call ff with arguments converted for its struct and callback

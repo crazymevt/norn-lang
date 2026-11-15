@@ -288,6 +288,9 @@ prims! {
     "bytes->string" 1 Some(2) => |vm, a| { expect(a[0], Kind::Bytes, "bytes->string")?; let b = a[0].as_bytes(); let s = if a.get(1).is_some_and(|x| x.truthy()) { String::from_utf8_lossy(b).into_owned() } else { std::str::from_utf8(b).map_err(|e| Error::new(format!("Invalid UTF-8: {e}")))?.to_owned() }; Ok(str_new(&mut vm.m, &s)) };
     "subbytes" 2 Some(3) => |vm, a| { expect(a[0], Kind::Bytes, "subbytes")?; let b = a[0].as_bytes(); let s = int(a[1], "subbytes")?; let e = match a.get(2) { Some(&x) => int(x, "subbytes")?, None => b.len() as i64 }; if s < 0 || e < s || e as usize > b.len() { return Err(Error::new(format!("subbytes: range {s}..{e} out of bounds for {} bytes", b.len()))); } Ok(norn_rt::string::bytes_new(&mut vm.m, &b[s as usize..e as usize])) };
     "bytes-concat" 0 VAR => |vm, a| { let mut out = Vec::new(); for &x in a { expect(x, Kind::Bytes, "bytes-concat")?; out.extend_from_slice(x.as_bytes()); } Ok(norn_rt::string::bytes_new(&mut vm.m, &out)) };
+    "%float-bytes" 2 Some(2) => float_bytes;
+    "%bytes-float" 1 Some(1) => bytes_float;
+    "%utf8-valid-up-to" 1 Some(1) => |_vm, a| { expect(a[0], Kind::Bytes, "%utf8-valid-up-to")?; Ok(match std::str::from_utf8(a[0].as_bytes()) { Ok(_) => Value::NIL, Err(e) => Value::fix(e.valid_up_to() as i64) }) };
     "%hex-encode" 1 Some(1) => |vm, a| { expect(a[0], Kind::Bytes, "hex")?; Ok(str_new(&mut vm.m, &crate::codec::hex_encode(a[0].as_bytes()))) };
     "%hex-decode" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "unhex")?; let b = crate::codec::hex_decode(a[0].as_str()).map_err(Error::new)?; Ok(norn_rt::string::bytes_new(&mut vm.m, &b)) };
     "%base64-encode" 2 Some(2) => |vm, a| { expect(a[0], Kind::Bytes, "base64")?; Ok(str_new(&mut vm.m, &crate::codec::base64_encode(a[0].as_bytes(), a[1].truthy()))) };
@@ -391,7 +394,7 @@ prims! {
     "%tls-handshake" 1 Some(1) => |vm, a| tls_handshake(vm, a[0]);
     // the basic FFI (ffi.rs; norn.ffi)
     "%ffi-open" 1 Some(1) => |vm, a| crate::ffi::open(vm, &text(a[0]));
-    "%ffi-fn" 5 Some(5) => |vm, a| { let name = if a[0].is_nil() { a[1] } else { let t = text(a[1]); str_new(&mut vm.m, &t) }; crate::ffi::function(vm, a[0], name, a[2], a[3], a[4].truthy()) };
+    "%ffi-fn" 5 Some(5) => |vm, a| { let name = if a[0].is_nil() { a[1] } else { let t = text(a[1]); str_new(&mut vm.m, &t) }; let mode = if a[4].is_keyword() && a[4].sym_name() == "main" { crate::ffi::CallMode::Main } else if a[4].truthy() { crate::ffi::CallMode::Blocking } else { crate::ffi::CallMode::Carrier }; crate::ffi::function(vm, a[0], name, a[2], a[3], mode) };
     "%ffi-call" 1 VAR => |vm, a| crate::ffi::call(vm, a[0], &a[1..]);
     "%mem-alloc" 1 Some(1) => |_, a| crate::ffi::mem_alloc(a);
     "%mem-free" 1 Some(1) => |_, a| crate::ffi::mem_free(a);
@@ -401,6 +404,7 @@ prims! {
     "%mem-bytes" 2 Some(2) => |vm, a| crate::ffi::mem_bytes(&mut vm.m, a);
     "%mem-write-bytes!" 2 Some(2) => |_, a| crate::ffi::mem_write_bytes(a);
     "%ffi-callback" 4 Some(4) => |vm, a| crate::ffi::make_callback(vm, a);
+    "%main-thread-served?" 0 Some(0) => |_, _| Ok(Value::bool(crate::main_lane::served()));
     "%ffi-callback-reply!" 3 Some(3) => |_, a| crate::ffi::callback_reply(a);
     "%ffi-callback-free!" 1 Some(1) => |_, a| crate::ffi::callback_free(a);
     "%ffi-libc-path" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, if cfg!(target_os = "macos") { "/usr/lib/libSystem.B.dylib" } else { "libc.so.6" }));
@@ -522,6 +526,31 @@ pub(crate) fn expect(v: Value, k: Kind, op: &str) -> Result<()> {
 
 pub(crate) fn int(v: Value, op: &str) -> Result<i64> {
     if v.is_fixnum() { Ok(v.as_fixnum()) } else { Err(type_err(op, "an integer", v)) }
+}
+
+fn float_bytes(vm: &mut Vm, args: &[Value]) -> Result<Value> {
+    let value = crate::numeric::num(args[0])?.as_f64();
+    match int(args[1], "%float-bytes")? {
+        4 => {
+            let narrow = value as f32;
+            if value.is_finite() && narrow.is_infinite() {
+                return Err(Error::new(format!("Float {value} is outside the 4-byte float range")));
+            }
+            Ok(norn_rt::string::bytes_new(&mut vm.m, &narrow.to_be_bytes()))
+        }
+        8 => Ok(norn_rt::string::bytes_new(&mut vm.m, &value.to_be_bytes())),
+        _ => Err(Error::new("Float width must be 4 or 8 bytes")),
+    }
+}
+
+fn bytes_float(vm: &mut Vm, args: &[Value]) -> Result<Value> {
+    expect(args[0], Kind::Bytes, "%bytes-float")?;
+    let value = match args[0].as_bytes() {
+        &[a, b, c, d] => f32::from_be_bytes([a, b, c, d]) as f64,
+        &[a, b, c, d, e, f, g, h] => f64::from_be_bytes([a, b, c, d, e, f, g, h]),
+        _ => return Err(Error::new("Float width must be 4 or 8 bytes")),
+    };
+    Ok(float_new(&mut vm.m, value))
 }
 
 /// Display text of a value (strings raw).
@@ -1391,7 +1420,10 @@ fn subs(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         let out = &s[start as usize..end as usize];
         return Ok(str_new(&mut vm.m, out));
     }
-    let out: String = s.chars().skip(start as usize).take((end - start) as usize).collect();
+    // (in range, so both are character boundaries)
+    let b0 = a[0].str_byte_of(start as usize).unwrap_or(s.len());
+    let b1 = a[0].str_byte_of(end as usize).unwrap_or(s.len());
+    let out = s[b0..b1].to_owned();
     Ok(str_new(&mut vm.m, &out))
 }
 

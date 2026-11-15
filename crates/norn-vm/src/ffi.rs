@@ -23,8 +23,10 @@
 //!
 //! **Fast or blocking.** A fast call runs on the carrier in a native region,
 //! so the GC can run meanwhile and the monitor starts a spare carrier if it
-//! takes too long. A `:blocking` function runs on the blocking pool. Either
-//! way the Norn values it points into are rooted until it returns.
+//! takes too long. A `:blocking` function runs on the blocking pool, and a
+//! `:main-thread` one on the main-thread lane (`main_lane.rs`), which copies
+//! a string result there. Either way the Norn values it points into are
+//! rooted until it returns.
 //!
 //! **Memory** is addressed by integers, and struct layouts are Norn
 //! (`norn.ffi`). **Callbacks** are below.
@@ -293,7 +295,7 @@ pub(crate) struct Foreign {
     ret_string: bool,
     /// The fixed parameters' count, for a variadic function.
     variadic: Option<usize>,
-    blocking: bool,
+    mode: CallMode,
     /// Keeps the library loaded while the function exists (none for a
     /// function known only by its address).
     _lib: Option<Arc<libloading::Library>>,
@@ -427,9 +429,22 @@ fn keyword_name(v: Value) -> Result<String> {
     if v.is_keyword() { Ok(v.sym_name().to_owned()) } else { Err(Error::new(format!("Expected a type keyword, got {}", norn_rt::print::pr_str(v, true)))) }
 }
 
-/// `(%ffi-fn library name [param-types] ret-type blocking?)`: a `:foreign`
-/// handle. With nil for the library, name is the function's address.
-pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret: Value, blocking: bool) -> Result<Value> {
+/// Where a foreign function's calls run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CallMode {
+    /// On the calling carrier, in a native region.
+    Carrier,
+    /// On the blocking pool.
+    Blocking,
+    /// On the thread serving the main-thread lane (`main_lane.rs`).
+    Main,
+}
+
+/// `(%ffi-fn library name [param-types] ret-type mode)`: a `:foreign`
+/// handle, its calls run as mode says: false on the carrier, :main on the
+/// main-thread lane, otherwise (true) on the blocking pool. With nil for
+/// the library, name is the function's address.
+pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret: Value, mode: CallMode) -> Result<Value> {
     let lib_arc = if lib.is_nil() {
         None
     } else {
@@ -488,8 +503,15 @@ pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret:
             unsafe { l.get::<*const ()>(cname.as_bytes_with_nul()) }.map(|s| *s as usize).map_err(|e| Error::new(format!("No symbol {name}: {e}")))?
         }
     };
-    let f = Foreign { addr, stub, params: ps, tys, ret: ret_ty, ret_string, variadic, blocking, _lib: lib_arc };
-    let entries = [("library", lib), ("name", name), ("params", params), ("ret", ret), ("blocking", Value::bool(blocking))];
+    let f = Foreign { addr, stub, params: ps, tys, ret: ret_ty, ret_string, variadic, mode, _lib: lib_arc };
+    let entries = [
+        ("library", lib),
+        ("name", name),
+        ("params", params),
+        ("ret", ret),
+        ("blocking", Value::bool(mode == CallMode::Blocking)),
+        ("main-thread", Value::bool(mode == CallMode::Main)),
+    ];
     let mut info = map_empty();
     for (k, v) in entries {
         let k = kw(&mut vm.m, k);
@@ -625,14 +647,19 @@ fn result(m: &mut Mutator, ret: (CType, bool), r: u64, outs: Vec<Vec<u8>>) -> st
         (CType::I64, _) => norn_rt::numbers::int_value(m, &num_bigint::BigInt::from(r as i64)),
         _ => Value::fix(r as i64),
     };
+    Ok(with_outs(m, v, outs))
+}
+
+/// The result v, or with Bytes outs `[v out…]`.
+fn with_outs(m: &mut Mutator, v: Value, outs: Vec<Vec<u8>>) -> Value {
     if outs.is_empty() {
-        return Ok(v);
+        return v;
     }
     let mut vs = vec![v];
     for o in outs {
         vs.push(bytes_new(m, &o));
     }
-    Ok(vec_from_slice(m, &vs))
+    vec_from_slice(m, &vs)
 }
 
 /// `(%ffi-call f args…)`: the result; with `:out` parameters,
@@ -640,7 +667,7 @@ fn result(m: &mut Mutator, ret: (CType, bool), r: u64, outs: Vec<Vec<u8>>) -> st
 /// address to put it at (and gives nil).
 pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
     let e = reactor::entry_of(h, "foreign")?;
-    let (addr, ret, blocking, ret_at, mut prep) = {
+    let (addr, ret, mode, ret_at, mut prep) = {
         let io = e.io.lock().unwrap();
         let Some(Io::Foreign(f)) = io.as_ref() else { return Err(Error::new("The foreign function is closed")) };
         let (ret_at, args) = match f.ret {
@@ -654,11 +681,11 @@ pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
             Ty::C(c) => (c, f.ret_string),
             Ty::S(_) => (CType::Void, false),
         };
-        (f.addr, ret, f.blocking, ret_at, prepare(f, args)?)
+        (f.addr, ret, f.mode, ret_at, prepare(f, args)?)
     };
     // SAFETY: the stub was compiled for this signature.
     let stub: Stub = unsafe { std::mem::transmute(prep.stub) };
-    if !blocking {
+    if mode == CallMode::Carrier {
         let mut r: u64 = 0;
         let rp: *mut u64 = match ret_at {
             Some(a) => a as *mut u64,
@@ -681,7 +708,8 @@ pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
     }
     let key = crate::sched::root_many(&prep.keep);
     let e2 = e.clone();
-    crate::blocking::run(vm, move || {
+    let main = mode == CallMode::Main;
+    let job = move || {
         let _hold = e2; // the function (and its library) stays loaded
         let mut r: u64 = 0;
         let rp: *mut u64 = match ret_at {
@@ -690,13 +718,25 @@ pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
         };
         // SAFETY: as above; the Bytes are rooted until the result is built.
         unsafe { stub(addr as u64, prep.raw.as_ptr(), rp) };
+        // On the main thread, a string result is copied before the next
+        // call runs: C libraries often return text in a static buffer.
+        // SAFETY: the function promised a NUL-terminated string.
+        let text = (main && ret.1 && r != 0)
+            .then(|| unsafe { std::ffi::CStr::from_ptr(r as *const libc::c_char) }.to_string_lossy().into_owned());
         let outs = std::mem::take(&mut prep.outs);
         Box::new(move |m: &mut Mutator| {
             drop(prep);
             crate::sched::unroot_many(key);
-            result(m, ret, r, outs).map_err(crate::vm::Failure::from)
+            match text {
+                Some(s) => {
+                    let v = str_new(m, &s);
+                    Ok(with_outs(m, v, outs))
+                }
+                None => result(m, ret, r, outs).map_err(crate::vm::Failure::from),
+            }
         }) as crate::blocking::Finish
-    })
+    };
+    if main { crate::main_lane::run(vm, job) } else { crate::blocking::run(vm, job) }
 }
 
 // ---- memory (M9 part 9.8) ----
@@ -1007,6 +1047,12 @@ fn run_callback(id: u64, args: *const u64) -> u64 {
         return 0;
     }
     let (lock, cv) = &*reply;
+    if crate::main_lane::on_lane_thread() {
+        // Keep running main-thread jobs meanwhile: the callback may make
+        // main-thread calls itself.
+        crate::main_lane::run_until(&|| lock.lock().unwrap().is_some());
+        return lock.lock().unwrap().unwrap_or(0);
+    }
     let mut got = lock.lock().unwrap();
     while got.is_none() {
         got = cv.wait(got).unwrap();
@@ -1189,6 +1235,8 @@ pub(crate) fn callback_reply(a: &[Value]) -> Result<Value> {
         let (lock, cv) = &*reply;
         *lock.lock().unwrap() = Some(w);
         cv.notify_all();
+        // (the lane thread waits for an answer on the lane's queue instead)
+        crate::main_lane::wake();
     }
     Ok(Value::NIL)
 }

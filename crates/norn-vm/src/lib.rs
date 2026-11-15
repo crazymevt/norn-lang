@@ -15,6 +15,7 @@ pub mod ext;
 pub mod ffi;
 pub mod image;
 pub mod jit;
+pub mod main_lane;
 pub mod net;
 pub mod numeric;
 pub mod os;

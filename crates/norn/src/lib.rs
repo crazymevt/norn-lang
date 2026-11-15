@@ -19,6 +19,8 @@
 //! offer the same command line: `run()` is the whole CLI, and
 //! `run_with_main_thread(f)` runs it on a thread of its own and gives the
 //! process's first thread to `f` (macOS wants the UI event loop there).
+//! The `norn` command passes `norn_vm::main_lane::serve`, so Norn code can
+//! make `:main-thread` foreign calls on that thread.
 
 use norn_vm::{RootTask, start_with};
 use std::io::{self, BufRead, Write};
@@ -49,6 +51,8 @@ static CURRENT: AtomicU64 = AtomicU64::new(0);
 pub fn run_with_main_thread(f: impl FnOnce(&'static norn_vm::Norn) -> i32) -> ! {
     std::thread::Builder::new()
         .name("norn-cli".into())
+        // (as much stack as a process's first thread usually gets)
+        .stack_size(8 << 20)
         .spawn(|| {
             run();
             let _ = io::stdout().flush();

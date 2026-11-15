@@ -22,6 +22,7 @@ pub const EXPANDER_SRC: &str = include_str!("../../../lib/compiler/expander.norn
 /// single file. `(require 'norn.x)` loads one the first time it is needed.
 pub const LIBS: &[(&str, &str)] = &[
     ("norn.bytes", include_str!("../../../lib/norn/bytes.norn")),
+    ("norn.buffer", include_str!("../../../lib/norn/buffer.norn")),
     ("norn.io", include_str!("../../../lib/norn/io.norn")),
     ("norn.fs", include_str!("../../../lib/norn/fs.norn")),
     ("norn.sys", include_str!("../../../lib/norn/sys.norn")),
@@ -35,10 +36,15 @@ pub const LIBS: &[(&str, &str)] = &[
     ("norn.string", include_str!("../../../lib/norn/string.norn")),
     ("norn.regex", include_str!("../../../lib/norn/regex.norn")),
     ("norn.json", include_str!("../../../lib/norn/json.norn")),
+    ("norn.ndjson", include_str!("../../../lib/norn/ndjson.norn")),
+    ("norn.xml", include_str!("../../../lib/norn/xml.norn")),
+    ("norn.yaml", include_str!("../../../lib/norn/yaml.norn")),
+    ("norn.cbor", include_str!("../../../lib/norn/cbor.norn")),
     ("norn.edn", include_str!("../../../lib/norn/edn.norn")),
     ("norn.format", include_str!("../../../lib/norn/format.norn")),
     ("norn.pprint", include_str!("../../../lib/norn/pprint.norn")),
     ("norn.math", include_str!("../../../lib/norn/math.norn")),
+    ("norn.decimal", include_str!("../../../lib/norn/decimal.norn")),
     ("norn.set", include_str!("../../../lib/norn/set.norn")),
     ("norn.walk", include_str!("../../../lib/norn/walk.norn")),
     ("norn.random", include_str!("../../../lib/norn/random.norn")),

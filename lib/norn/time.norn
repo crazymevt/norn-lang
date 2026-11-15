@@ -6,13 +6,78 @@
 ;;;; local time, or a fixed offset in seconds.
 
 (ns norn.time
-  (:refer-core :exclude [format]))
+  (:refer-core :exclude [format])
+  (:require [norn.string :as str]))
 
 (defclass Instant () ((nanos :initform 0)))
 (defclass Duration () ((nanos :initform 0)))
+(defclass LocalDate () ((year :required true) (month :required true) (day :required true)))
+(defclass LocalTime () ((hour :required true) (minute :required true) (second :required true) (nanos :required true)))
+(defclass LocalDateTime () ((date :required true) (time :required true)))
 
 (defn instant? [x] (instance? Instant x))
 (defn duration? [x] (instance? Duration x))
+(defn local-date? [x] (instance? LocalDate x))
+(defn local-time? [x] (instance? LocalTime x))
+(defn local-date-time? [x] (instance? LocalDateTime x))
+
+(defn- leap-year? [year]
+  (and (zero? (mod year 4)) (or (not (zero? (mod year 100))) (zero? (mod year 400)))))
+
+(defmethod initialize-instance :after ((date LocalDate) _)
+  (let [{:keys [year month day]} (instance->map date)
+        days (when (and (integer? month) (<= 1 month 12))
+               (if (and (= month 2) (integer? year) (leap-year? year))
+                 29 (nth [31 28 31 30 31 30 31 31 30 31 30 31] (dec month))))]
+    (when-not (and (integer? year) (<= 0 year 9999) days (integer? day) (<= 1 day days))
+      (error "Invalid local date" year month day))))
+
+(defmethod initialize-instance :after ((clock LocalTime) _)
+  (let [{:keys [hour minute second nanos]} (instance->map clock)]
+    (when-not (and (every? integer? [hour minute second nanos])
+                   (<= 0 hour 23) (<= 0 minute 59) (<= 0 second 59) (<= 0 nanos 999999999))
+      (error "Invalid local time" hour minute second nanos))))
+
+(defmethod initialize-instance :after ((dt LocalDateTime) _)
+  (when-not (and (local-date? (:date dt)) (local-time? (:time dt)))
+    (error "LocalDateTime expects a local date and local time")))
+
+(defn local-date "A Gregorian date without a time zone, in years 0000–9999." [year month day]
+  (LocalDate :year year :month month :day day))
+
+(defn local-time "A time of day without a time zone, with seconds and nanoseconds defaulting to zero."
+  ([hour minute] (local-time hour minute 0 0))
+  ([hour minute second] (local-time hour minute second 0))
+  ([hour minute second nanos] (LocalTime :hour hour :minute minute :second second :nanos nanos)))
+
+(defn local-date-time "Combine a LocalDate and LocalTime without attaching a zone." [date clock]
+  (LocalDateTime :date date :time clock))
+
+(defn parse-local-date "Parse YYYY-MM-DD as a local date." [s]
+  (if-let [[_ year month day] (re-matches #"([0-9]{4})-([0-9]{2})-([0-9]{2})" s)]
+    (apply local-date (map parse-long [year month day]))
+    (error "Invalid local date" s)))
+
+(defn parse-local-time
+  "Parse HH:MM:SS with optional fractional seconds. Truncates precision beyond nanoseconds."
+  [s]
+  (if-let [[_ hour minute second fraction] (re-matches #"([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?" s)]
+    (let [digits (or fraction "") nanos (parse-long (subs (str digits "000000000") 0 9))]
+      (local-time (parse-long hour) (parse-long minute) (parse-long second) nanos))
+    (error "Invalid local time" s)))
+
+(defn parse-local-date-time "Parse a local date and time separated by T or a space." [s]
+  (if-let [[_ date clock] (re-matches #"([0-9]{4}-[0-9]{2}-[0-9]{2})[Tt ](.+)" s)]
+    (local-date-time (parse-local-date date) (parse-local-time clock))
+    (error "Invalid local date-time" s)))
+
+(defn format-local "Write a local date, local time or local date-time as ISO calendar text." [x]
+  (cond (local-date? x) (norn.core/format "%04d-%02d-%02d" (:year x) (:month x) (:day x))
+        (local-time? x) (str (norn.core/format "%02d:%02d:%02d" (:hour x) (:minute x) (:second x))
+                             (when (pos? (:nanos x))
+                               (str "." (str/replace (norn.core/format "%09d" (:nanos x)) #"0+$" ""))))
+        (local-date-time? x) (str (format-local (:date x)) "T" (format-local (:time x)))
+        :else (error "Expected a local date or time" x)))
 
 (defn now "The current instant (wall clock)." [] (Instant :nanos (%now-nanos)))
 (defn instant "The instant n nanoseconds after the epoch." [n] (Instant :nanos n))

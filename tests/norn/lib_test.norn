@@ -710,3 +710,26 @@
   (is (= "lib-test" (:ns (first (deref events)))))
   (is (= nil (some (fn [e] (= e :evaluated)) (deref events)))))
 (is (= 3 (log/spy (+ 1 2))))
+
+;; Character positions in non-ASCII strings come from a per-thread cache:
+;; check them against a vector of characters, on strings made fresh each
+;; round (so collections happen meanwhile and the cache must notice).
+(let [alphabet (vec "aé🙂z \nß漢")
+      rand-str (fn [n] (apply str (repeatedly n #(rand-nth alphabet))))
+      ok (atom true)]
+  (dotimes [_ 400]
+    (let [n (rand-int 60) s (rand-str n) cs (vec s)
+          i (rand-int (inc n)) j (+ i (rand-int (inc (- n i))))
+          c (rand-nth alphabet)
+          expected-index (first (keep-indexed (fn [k x] (when (and (>= k i) (= x c)) k)) cs))]
+      (when-not (and (= n (count s))
+                     (= (apply str (subvec cs i j)) (subs s i j))
+                     (= (get cs i) (nth s i nil))
+                     (= (seq (map #(nth s %) (range n))) (seq cs))
+                     (= (seq (reverse (map #(nth s %) (range n)))) (seq (reverse cs)))
+                     (= expected-index (str/index-of s (str c) i))
+                     (= (when-let [m (re-find #"[🙂漢]" (subs s i))] m)
+                        (when-let [k (first (keep-indexed (fn [k x] (when (contains? #{\🙂 \漢} x) k)) (subvec cs i)))]
+                          (str (get cs (+ i k))))))
+        (reset! ok [s i j c]))))
+  (is (= true @ok) "nth, subs, count, index-of and re-find agree with the characters"))

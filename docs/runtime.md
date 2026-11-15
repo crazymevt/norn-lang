@@ -169,7 +169,12 @@ Once the native compiler is good, moving more into Norn is an option.
 - **Strings index by code point.** `count`, `nth`, `subs` and every index
   in `norn.string` and `norn.regex` count characters (Unicode scalar
   values), never bytes; the Rust side converts at the boundary (text.rs),
-  with a fast path for ASCII. What a person sees as one character can be
+  with a fast path for ASCII. For other strings, each thread caches the
+  character count and the last position found for its last few strings
+  (`norn-rt` string.rs), and counts from the nearest known position, so a
+  pass through a string costs what its text does. An entry lasts until the
+  next collection, since only a collection frees memory for reuse and
+  objects never move. What a person sees as one character can be
   several code points, so `norn.string` adds `graphemes`, `grapheme-count`
   and `width` (terminal and editor columns; `unicode-segmentation` and
   `unicode-width`). `reverse`, `truncate` and the padding functions work in
@@ -657,6 +662,19 @@ heap under GC stress in M6; the fix and this rule came together.
   takes over 20 ms while work waits. A `:blocking` function runs on the
   blocking pool. Either way, the `Bytes` it points into are rooted until it
   returns.
+- **The main-thread lane.** A `:main-thread` function runs on the thread
+  serving the lane (`main_lane.rs`). The `norn` command runs its command
+  line on a second thread and serves the lane on the process's first, which
+  macOS requires for windows and events and which keeps a graphics context
+  on one thread. A program embedding Norn serves it by calling
+  `norn_vm::main_lane::serve` on a thread; otherwise a `:main-thread` call
+  is an error. As on the blocking pool, the caller's fiber parks while the
+  lane runs the job, which doesn't touch the heap, and a caller that can't
+  park waits in a native region. Jobs run one at a time in order. A
+  `:string` result is copied on the lane, before the next job can reuse a
+  static buffer. A callback C makes on the lane goes to the callback's
+  serving fiber, and the lane keeps running jobs until it answers, so the
+  callback can make main-thread calls itself.
 - **Images.** Library and function handles are dead after a restore. The
   Norn objects hold their handle in an atom and reload and re-resolve by
   themselves, with no `ResourceLost`, because a loaded library holds no

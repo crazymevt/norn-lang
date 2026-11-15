@@ -348,7 +348,7 @@ fn save_paused(path: &Path, saver: Value, entry: Value, keep: bool, layered: boo
             // the restored process won't have.
             let io_waiting = |f: Value| {
                 let w = crate::sched::aget(f, norn_rt::conc::fiber::PARK);
-                w.is(Kind::Waiter) && (crate::reactor::holds_waiter(w) || crate::blocking::holds_waiter(w))
+                w.is(Kind::Waiter) && (crate::reactor::holds_waiter(w) || crate::blocking::holds_waiter(w) || crate::main_lane::holds_waiter(w))
             };
             let dead = |f: Value| !keep || f == saver || io_waiting(f);
             norn_rt::image::save(path, &Save { roots: &roots, build: build_id(), layered, dead: &dead })
