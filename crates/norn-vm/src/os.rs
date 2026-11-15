@@ -98,6 +98,106 @@ pub(crate) fn start(vm: &mut Vm, s: Spawn) -> Result<Value> {
     Ok(map_of(m, &[("process", ph), ("pid", pidv), ("in", stdin), ("out", stdout), ("err", stderr)]))
 }
 
+/// Start a child on a pseudo-terminal (M9 part 9.10): its stdin, stdout and
+/// stderr are the terminal, which it has as its controlling terminal (a new
+/// session). `{:process h :pid n :in h :out h :err nil}`: :in writes to the
+/// terminal (the keyboard), :out reads it (the screen); both the master's.
+pub(crate) fn pty_start(vm: &mut Vm, s: Spawn, rows: u16, cols: u16) -> Result<Value> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+    let (mut master, mut slave): (libc::c_int, libc::c_int) = (-1, -1);
+    let mut ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+    // SAFETY: openpty writes the two descriptors; the rest may be null.
+    let r = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) };
+    if r != 0 {
+        return Err(Error::new(format!("Can't open a pseudo-terminal: {}", std::io::Error::last_os_error())));
+    }
+    // SAFETY: both are open descriptors we now own.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    let cloexec = |fd: &OwnedFd| {
+        use std::os::fd::AsRawFd;
+        // SAFETY: fcntl on an open descriptor.
+        unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+    };
+    cloexec(&master);
+    let io_err = |e: std::io::Error| Error::new(e.to_string());
+    let mut c = std::process::Command::new(&s.cmd);
+    c.args(&s.args)
+        .stdin(slave.try_clone().map_err(io_err)?)
+        .stdout(slave.try_clone().map_err(io_err)?)
+        .stderr(slave.try_clone().map_err(io_err)?);
+    if let Some(d) = &s.dir {
+        c.current_dir(d);
+    }
+    if s.clear_env {
+        c.env_clear();
+    }
+    c.envs(s.env.iter().map(|(k, v)| (k, v)));
+    // SAFETY: between fork and exec only async-signal-safe calls: the
+    // signals the runtime handles or ignores back to their defaults (an
+    // ignored one would stay ignored through exec, and ^C would do
+    // nothing), a new session, and the terminal (stdin) as its
+    // controlling terminal.
+    unsafe {
+        c.pre_exec(|| {
+            for sig in [
+                libc::SIGINT,
+                libc::SIGQUIT,
+                libc::SIGTSTP,
+                libc::SIGTTIN,
+                libc::SIGTTOU,
+                libc::SIGHUP,
+                libc::SIGTERM,
+                libc::SIGPIPE,
+                libc::SIGCHLD,
+                libc::SIGWINCH,
+                libc::SIGALRM,
+                libc::SIGUSR1,
+                libc::SIGUSR2,
+            ] {
+                libc::signal(sig, libc::SIG_DFL);
+            }
+            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = c.spawn().map_err(|e| Error::new(format!("Can't start {}: {e}", s.cmd)))?;
+    drop(c); // (the parent's copies of the slave)
+    drop(slave);
+    let pid = child.id();
+    let writer = master.try_clone().map_err(io_err)?;
+    let rx = mio::unix::pipe::Receiver::from(master);
+    rx.set_nonblocking(true).map_err(io_err)?;
+    let tx = mio::unix::pipe::Sender::from(writer);
+    let m = &mut vm.m;
+    let out = reactor::register(m, Io::PipeIn(rx), "pipe-in", Value::NIL).map_err(Error::new)?;
+    let input = reactor::register(m, Io::PipeOut(tx), "pipe-out", Value::NIL).map_err(Error::new)?;
+    let cmd = str_new(m, &s.cmd);
+    let pidv = Value::fix(pid as i64);
+    let info = map_of(m, &[("cmd", cmd), ("pid", pidv)]);
+    let ph = reactor::register(m, Io::Child(child), "process", info).map_err(Error::new)?;
+    Ok(map_of(m, &[("process", ph), ("pid", pidv), ("in", input), ("out", out), ("err", Value::NIL)]))
+}
+
+/// `(%pty-resize h rows cols)`: tell the terminal (h, its :in) its new size
+/// (the child gets SIGWINCH).
+pub(crate) fn pty_resize(h: Value, rows: u16, cols: u16) -> Result<Value> {
+    use std::os::fd::AsRawFd;
+    let fd = reactor::with_io(h, |io| match io {
+        Io::PipeOut(w) => Some(w.as_raw_fd()),
+        _ => None,
+    })?
+    .ok_or_else(|| Error::new("resize expects a terminal's :in"))?;
+    let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+    // SAFETY: TIOCSWINSZ on an open descriptor, with a winsize.
+    if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ as _, &ws) } != 0 {
+        return Err(Error::new(format!("Can't resize the terminal: {}", std::io::Error::last_os_error())));
+    }
+    Ok(Value::NIL)
+}
+
 /// Wait (on the blocking pool) for a child to end: `{:exit code :signal n}`
 /// (one of them nil).
 pub(crate) fn wait(vm: &mut Vm, h: Value) -> Result<Value> {

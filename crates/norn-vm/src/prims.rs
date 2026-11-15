@@ -407,6 +407,19 @@ prims! {
     "%ffi-libm-path" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, if cfg!(target_os = "macos") { "/usr/lib/libSystem.B.dylib" } else { "libm.so.6" }));
     // processes, time, signals, fiber dumps (os.rs; norn.process, norn.time, norn.signal)
     "%process-start" 6 Some(6) => |vm, a| process_start(vm, a);
+    "%deflate" 3 Some(3) => |vm, a| crate::pack::deflate(&mut vm.m, a);
+    "%inflate" 3 Some(3) => |vm, a| crate::pack::inflate(&mut vm.m, a);
+    "%crc32" 1 Some(1) => |_, a| crate::pack::crc32(a);
+    "%digest" 2 Some(2) => |vm, a| crate::pack::digest(&mut vm.m, a);
+    "%hmac" 3 Some(3) => |vm, a| crate::pack::hmac(&mut vm.m, a);
+    "%hmac-verify" 4 Some(4) => |_, a| crate::pack::hmac_verify(a);
+    "%pbkdf2" 5 Some(5) => |vm, a| crate::pack::pbkdf2(&mut vm.m, a);
+    "%secure-random" 1 Some(1) => |vm, a| crate::pack::secure_random(&mut vm.m, a);
+    "%constant-time=" 2 Some(2) => |_, a| crate::pack::constant_time_eq(a);
+    "%bin-write" 1 Some(1) => |vm, a| crate::binfmt::write(&mut vm.m, a[0]);
+    "%bin-read" 3 Some(3) => |vm, a| crate::binfmt::read(&mut vm.m, a[0], a[1], int(a[2], "norn.bin")?.clamp(1, 10_000) as usize);
+    "%pty-start" 6 Some(6) => |vm, a| pty_start(vm, a);
+    "%pty-resize" 3 Some(3) => |_, a| crate::os::pty_resize(a[0], int(a[1], "resize")?.clamp(1, 65535) as u16, int(a[2], "resize")?.clamp(1, 65535) as u16);
     "%process-wait" 1 Some(1) => |vm, a| crate::os::wait(vm, a[0]);
     "%process-kill" 2 Some(2) => |vm, a| { let n = signal_arg(a[1])?; crate::os::kill(vm, a[0], n) };
     "%signal-listen" 1 Some(1) => |vm, a| { let names: Vec<String> = seq::SeqIter::new(a[0]).map(|it| it.map(|k| if k.is_keyword() { k.sym_name().to_owned() } else { text(k) }).collect()).unwrap_or_default(); crate::os::listen(vm, &names) };
@@ -781,6 +794,29 @@ fn signal_arg(v: Value) -> Result<i32> {
 }
 
 /// `(%process-start cmd args dir env clear-env? [stdin stdout stderr])`.
+/// `(%pty-start cmd args dir env clear-env [rows cols])`.
+fn pty_start(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let strs = |v: Value| -> Vec<String> { seq::SeqIter::new(v).map(|it| it.map(text).collect()).unwrap_or_default() };
+    let mut env = Vec::new();
+    if a[3].is(Kind::Map) {
+        a[3].map_for_each(|k, v| {
+            env.push((text(k), text(v)));
+            true
+        });
+    }
+    let size: Vec<i64> = seq::SeqIter::new(a[5]).map(|it| it.map(|v| if v.is_fixnum() { v.as_fixnum() } else { 0 }).collect()).unwrap_or_default();
+    let (rows, cols) = (size.first().copied().unwrap_or(24).clamp(1, 65535) as u16, size.get(1).copied().unwrap_or(80).clamp(1, 65535) as u16);
+    let spawn = crate::os::Spawn {
+        cmd: text(a[0]),
+        args: strs(a[1]),
+        dir: if a[2].is_nil() { None } else { Some(text(a[2])) },
+        env,
+        clear_env: a[4].truthy(),
+        stdio: [crate::os::Stdio::Inherit; 3],
+    };
+    crate::os::pty_start(vm, spawn, rows, cols)
+}
+
 fn process_start(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let strs = |v: Value| -> Vec<String> { seq::SeqIter::new(v).map(|it| it.map(text).collect()).unwrap_or_default() };
     let mut env = Vec::new();
@@ -872,6 +908,8 @@ fn io_read(vm: &mut Vm, h: Value, n: i64) -> Result<Value> {
     })?;
     match r {
         R::Plain(Ok(0)) => Ok(Value::NIL),
+        // (a pseudo-terminal whose child has gone: the end of its output)
+        R::Plain(Err(e)) if e.raw_os_error() == Some(libc::EIO) => Ok(Value::NIL),
         R::Plain(Ok(k)) => Ok(norn_rt::string::bytes_new(&mut vm.m, &buf[..k])),
         R::Plain(Err(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => Ok(again(vm)),
         R::Plain(Err(e)) => Err(Error::io(format!("read failed: {e}"), &e)),

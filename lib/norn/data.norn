@@ -1,0 +1,50 @@
+;;;; norn.data — how two values differ (M9 part 9.12), as clojure.data's
+;;;; diff does it.
+;;;;
+;;;;   (diff {:a 1 :b 2} {:a 1 :b 3 :c 4})  ; => [{:b 2} {:b 3 :c 4} {:a 1}]
+;;;;
+;;;; [only-in-a only-in-b in-both]: maps are compared by key, sets by
+;;;; member, and sequential things by index (vectors of what's at each
+;;;; index, nil where it's the same); anything else is either equal or not.
+;;;; A part with nothing in it is nil.
+
+(ns norn.data (:require [norn.set :as set]))
+
+(declare diff)
+
+(defn- kind [x]
+  (cond (map? x) :map (set? x) :set (sequential? x) :seq :else :atom))
+
+(defn- vectorize
+  "{index value} as a vector up to its last index, nil elsewhere (nil if empty)."
+  [m]
+  (when (seq m)
+    (reduce (fn [v [i x]] (assoc v i x)) (vec (repeat (inc (reduce max (keys m))) nil)) m)))
+
+(defn- diff-associative [a b ks]
+  (reduce (fn [[x y both] k]
+            (let [[dx dy db] (diff (get a k) (get b k))
+                  in-a (contains? a k) in-b (contains? b k)]
+              [(if (and in-a (or (some? dx) (not in-b))) (assoc x k dx) x)
+               (if (and in-b (or (some? dy) (not in-a))) (assoc y k dy) y)
+               (if (and in-a in-b (or (some? db) (and (nil? (get a k)) (nil? (get b k))))) (assoc both k db) both)]))
+          [{} {} {}] ks))
+
+(defn- or-nil [x] (when (seq x) x))
+
+(defn diff
+  "[things only in a, things only in b, things in both]."
+  [a b]
+  (if (= a b)
+    [nil nil a]
+    (let [ka (kind a)]
+      (if (not= ka (kind b))
+        [a b nil]
+        (case ka
+          :map (let [[x y both] (diff-associative a b (set/union (set (keys a)) (set (keys b))))]
+                 [(or-nil x) (or-nil y) (or-nil both)])
+          :set [(or-nil (set/difference a b)) (or-nil (set/difference b a)) (or-nil (set/intersection a b))]
+          :seq (let [va (vec a) vb (vec b)
+                     [x y both] (diff-associative (zipmap (range) va) (zipmap (range) vb) (range (max (count va) (count vb))))]
+                 [(vectorize x) (vectorize y) (vectorize both)])
+          [a b nil])))))

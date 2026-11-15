@@ -1,0 +1,28 @@
+;;;; norn.compress — deflate, zlib and gzip (M9 part 9.12), on flate2.
+;;;;
+;;;;   (decompress (compress (bytes "…")))   ; gzip, by default
+;;;;   (compress data :format :zlib :level 9)
+;;;;
+;;;; Data is Bytes, or a string (its UTF-8). decompress stops at :max-size
+;;;; (256 MiB) bytes out: compressed input can claim far more than it takes,
+;;;; so a larger result is an error rather than the memory it would fill.
+;;;; Bad input is a ParseError.
+
+(ns norn.compress)
+
+(def default-max-size "decompress's limit on its result, in bytes." (* 256 1024 1024))
+
+(defn compress
+  "data, compressed. Options: :format :gzip (the default), :zlib or :raw
+  (bare deflate); :level 0 (store) to 9 (smallest), 6 by default."
+  [data & {:keys [format level] :or {format :gzip level 6}}]
+  (%deflate data level format))
+
+(defn decompress
+  "data, decompressed. Options: :format as for compress; :max-size."
+  [data & {:keys [format max-size] :or {format :gzip max-size default-max-size}}]
+  (%inflate data format max-size))
+
+(defn gzip "data as gzip." [data] (compress data :format :gzip))
+(defn gunzip "gzip data, decompressed (several members, one after another)." [data & opts] (apply decompress data :format :gzip opts))
+(defn crc32 "The CRC-32 of data (as zip and gzip use), an integer." [data] (%crc32 data))

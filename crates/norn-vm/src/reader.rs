@@ -75,7 +75,13 @@ pub struct Reader<'a> {
     pos: usize,
     fn_args: Option<FnArgs>,
     locs: Option<Locs>,
+    /// How deeply the form being read nests (MAX_DEPTH at most).
+    depth: usize,
 }
+
+/// How deeply a form may nest: reading recurses, and text nested deeper
+/// (untrusted input, for norn.edn) would overflow the native stack.
+const MAX_DEPTH: usize = 10_000;
 
 /// Where a form came from: 1-based line and column, character offsets.
 #[derive(Clone, Copy, Default)]
@@ -139,12 +145,12 @@ fn is_terminator(c: char) -> bool {
 
 impl<'a> Reader<'a> {
     pub fn new(src: &'a str) -> Self {
-        Reader { src, pos: 0, fn_args: None, locs: None }
+        Reader { src, pos: 0, fn_args: None, locs: None, depth: 0 }
     }
 
     /// A reader starting at byte offset `pos`.
     pub fn new_at(src: &'a str, pos: usize) -> Self {
-        Reader { src, pos: pos.min(src.len()), fn_args: None, locs: None }
+        Reader { src, pos: pos.min(src.len()), fn_args: None, locs: None, depth: 0 }
     }
 
     /// This reader, recording where each form comes from (`take_locations`).
@@ -331,6 +337,16 @@ impl<'a> Reader<'a> {
     }
 
     fn read_inner(&mut self, vm: &mut Vm) -> RResult<Value> {
+        if self.depth >= MAX_DEPTH {
+            return Err(ReadError::Syntax(format!("Nested more than {MAX_DEPTH} deep")));
+        }
+        self.depth += 1;
+        let r = self.read_nested(vm);
+        self.depth -= 1;
+        r
+    }
+
+    fn read_nested(&mut self, vm: &mut Vm) -> RResult<Value> {
         loop {
             self.skip_ws();
             let Some(c) = self.peek() else { return Err(ReadError::Eof) };
@@ -573,6 +589,25 @@ impl<'a> Reader<'a> {
                     }
                     let b = crate::codec::hex_decode(form.as_str()).map_err(ReadError::Syntax)?;
                     return Ok(Some(norn_rt::string::bytes_new(&mut vm.m, &b)));
+                }
+                if tok == "queue" {
+                    // #queue [1 2 3], as the printer writes a queue (its
+                    // items are data, not evaluated, as #bytes's are)
+                    let form = self.read_required(vm)?;
+                    if !form.is(Kind::Vector) {
+                        return Err(ReadError::Syntax("#queue must be followed by a vector".into()));
+                    }
+                    let e = rt().empty_vector;
+                    let mut q = norn_rt::colls::queue_new(&mut vm.m, 0, Value::NIL, e);
+                    let mut items = Vec::new();
+                    form.vec_for_each(|x| {
+                        items.push(x);
+                        true
+                    });
+                    for x in items {
+                        q = norn_rt::colls::queue_conj(&mut vm.m, q, x);
+                    }
+                    return Ok(Some(q));
                 }
                 if tok == "lang" {
                     Err(ReadError::Syntax("#lang isn't part of Norn (design.md §8.1): a file's language is Norn".into()))

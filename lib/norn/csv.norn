@@ -1,0 +1,74 @@
+;;;; norn.csv — comma-separated values (RFC 4180; M9 part 9.12).
+;;;;
+;;;;   (read-csv "a,b\n1,\"x, y\"\n")       ; => [["a" "b"] ["1" "x, y"]]
+;;;;   (read-maps "id,name\n1,ada\n")       ; => [{:id "1" :name "ada"}]
+;;;;   (write-csv [["a" "b"] [1 "x, y"]])  ; => "a,b\r\n1,\"x, y\"\r\n"
+;;;;
+;;;; A field in quotes may hold separators, quotes (doubled) and line
+;;;; breaks. Lines end in \n or \r\n. Fields are strings: convert them as the
+;;;; data needs. write-csv quotes a field only when it must, and ends lines
+;;;; with \r\n (as RFC 4180 says; :newline "\n" for the other).
+
+(ns norn.csv (:require [norn.string :as str]))
+
+(defn read-csv
+  "The rows of CSV text, each a vector of strings. Options: :separator
+  (\\,), :quote (\\\"). A quote left open is an error."
+  [text & {:keys [separator quote] :or {separator \, quote \"}}]
+  (let [[state field row rows]
+        (reduce (fn [[state field row rows] c]
+                  (case state
+                    ;; (:start: at a field's start; :plain: in an unquoted one;
+                    ;; :quoted: inside quotes; :quote: a quote inside quotes,
+                    ;; doubled or closing; :cr: after a \r)
+                    :quoted (if (= c quote) [:quote field row rows] [:quoted (conj! field c) row rows])
+                    :quote (cond (= c quote) [:quoted (conj! field c) row rows]
+                                 (= c separator) [:start (transient []) (conj! row (str/join (persistent! field))) rows]
+                                 (= c \newline) [:start (transient []) (transient []) (conj! rows (persistent! (conj! row (str/join (persistent! field)))))]
+                                 (= c \return) [:cr field row rows]
+                                 :else (error (str "CSV: text after a closing quote: " (pr-str c))))
+                    :cr (if (= c \newline)
+                          [:start (transient []) (transient []) (conj! rows (persistent! (conj! row (str/join (persistent! field)))))]
+                          (error "CSV: a \\r without its \\n"))
+                    (cond (and (= c quote) (= state :start)) [:quoted field row rows]
+                          (= c separator) [:start (transient []) (conj! row (str/join (persistent! field))) rows]
+                          (= c \newline) [:start (transient []) (transient []) (conj! rows (persistent! (conj! row (str/join (persistent! field)))))]
+                          (= c \return) [:cr field row rows]
+                          :else [:plain (conj! field c) row rows])))
+                [:start (transient []) (transient []) (transient [])]
+                (str text))
+        row (persistent! row)
+        field (persistent! field)]
+    (when (= state :quoted) (error "CSV: a quoted field is never closed"))
+    (persistent! (if (and (empty? row) (empty? field) (not= state :quote))
+                   rows
+                   (conj! rows (conj row (str/join field)))))))
+
+(defn read-maps
+  "CSV text with a header row, as maps of its column names (as keywords,
+  or :keys identity for the strings) to each row's fields. Options as
+  read-csv, and :keys."
+  [text & {:keys [keys] :or {keys keyword} :as opts}]
+  (let [[header & rows] (apply read-csv text (mapcat identity (dissoc opts :keys)))
+        ks (mapv keys header)]
+    (mapv (fn [r] (zipmap ks r)) rows)))
+
+(defn- field-text [x separator quote]
+  (let [s (if (nil? x) "" (str x))]
+    (if (some (fn [c] (or (= c separator) (= c quote) (= c \newline) (= c \return))) s)
+      (str quote (str/replace s (str quote) (str quote quote)) quote)
+      s)))
+
+(defn write-csv
+  "Rows (sequences of values, written with str; nil empty) as CSV text.
+  Options: :separator, :quote, :newline (\"\\r\\n\")."
+  [rows & {:keys [separator quote newline] :or {separator \, quote \" newline "\r\n"}}]
+  (str/join (map (fn [r] (str (str/join (str separator) (map (fn [x] (field-text x separator quote)) r)) newline)) rows)))
+
+(defn write-maps
+  "Maps as CSV text, a header row first: the columns are :columns, or the
+  first map's keys. Options as write-csv."
+  [ms & {:keys [columns] :as opts}]
+  (let [cols (or columns (vec (keys (first ms))))]
+    (apply write-csv (cons (mapv (fn [k] (if (keyword? k) (name k) k)) cols) (map (fn [m] (mapv (fn [k] (get m k)) cols)) ms))
+           (mapcat identity (dissoc opts :columns)))))

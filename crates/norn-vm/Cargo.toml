@@ -22,5 +22,8 @@ num-rational = { version = "0.4", default-features = false, features = ["num-big
 num-traits = "0.2"
 num-integer = "0.1"
 regex = "1"
+# (9.12: compression, and digests/HMAC/secure random; ring is rustls's own)
+flate2 = "1"
+ring = "0.17"
 unicode-segmentation = "1"
 unicode-width = "0.2"

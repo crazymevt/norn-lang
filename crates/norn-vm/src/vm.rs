@@ -799,8 +799,8 @@ impl Vm {
         }
     }
 
-    /// Calling a non-function value: keywords, maps, sets and vectors are
-    /// functions of their keys (Clojure semantics).
+    /// Calling a non-function value: keywords, maps, sets (sorted ones
+    /// too) and vectors are functions of their keys (Clojure semantics).
     fn call_data(&mut self, f: Value, args: &[Value]) -> Result<Value> {
         let not_fn = || Error::new(format!("{} is not a function: {}", f.type_name(), pr_str(f, true)));
         if f.is_keyword() {
@@ -821,6 +821,14 @@ impl Vm {
                 }
                 let d = args.get(1).copied().unwrap_or(Value::NIL);
                 Ok(crate::prims::get(f, args[0]).unwrap_or(d))
+            }
+            Kind::Sorted => {
+                // (a sorted map or set, as a map or set is)
+                if args.is_empty() || args.len() > 2 {
+                    return Err(arity_error(f, args.len()));
+                }
+                let d = args.get(1).copied().unwrap_or(Value::NIL);
+                Ok(crate::sorted::get(f, args[0])?.unwrap_or(d))
             }
             Kind::Vector => {
                 if args.len() != 1 {

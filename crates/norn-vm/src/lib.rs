@@ -1,6 +1,7 @@
 //! Norn tier 0: the bootstrap reader, seed compiler, bytecode interpreter
 //! and primitives. See docs/runtime.md §8.1 and §9.
 
+pub mod binfmt;
 pub mod blocking;
 pub mod bytecode;
 pub mod codec;
@@ -18,6 +19,7 @@ pub mod net;
 pub mod numeric;
 pub mod os;
 pub mod owned;
+pub mod pack;
 pub mod prims;
 pub mod reactor;
 pub mod reader;

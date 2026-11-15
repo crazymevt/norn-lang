@@ -1,0 +1,48 @@
+;;;; norn.crypto — digests, HMAC, key derivation and secure random (M9 part
+;;;; 9.12), on ring (rustls's own).
+;;;;
+;;;;   (hex (sha256 "abc"))
+;;;;   (hmac :sha256 key message)        ; and (hmac-valid? :sha256 key message tag)
+;;;;   (random-bytes 32), (random-token)
+;;;;
+;;;; Data and keys are Bytes, or strings (their UTF-8). Results are Bytes:
+;;;; norn.bytes's hex and base64 write them as text. Compare secrets with
+;;;; constant-time= (or hmac-valid?), never =: = stops at the first
+;;;; difference, and how long it takes tells an attacker where that is.
+
+(ns norn.crypto (:require [norn.bytes :as b]))
+
+(defn digest "The digest of data: alg :sha256, :sha384, :sha512, or :sha1 (for old protocols only)." [alg data]
+  (%digest alg data))
+
+(defn sha256 "The SHA-256 of data." [data] (%digest :sha256 data))
+(defn sha512 "The SHA-512 of data." [data] (%digest :sha512 data))
+(defn hex "Bytes b as lowercase hex." [b] (b/hex b))
+
+(defn hmac "The HMAC of data with key: alg :sha256, :sha384, :sha512 or :sha1." [alg key data] (%hmac alg key data))
+
+(defn hmac-valid?
+  "Is tag the HMAC of data with key? (Checked in constant time.)"
+  [alg key data tag]
+  (%hmac-verify alg key data tag))
+
+(defn pbkdf2
+  "A key derived from a password (PBKDF2): for storing passwords, or keys
+  from them. Options: :alg :sha256 (or :sha384, :sha512, :sha1),
+  :iterations 600000 (OWASP's advice for SHA-256), :length 32 bytes."
+  [password salt & {:keys [alg iterations length] :or {alg :sha256 iterations 600000 length 32}}]
+  (%pbkdf2 alg iterations salt password length))
+
+(defn random-bytes "n bytes from the system's secure random generator." [n] (%secure-random n))
+
+(defn random-token
+  "A random URL-safe text token of n random bytes (32): for session ids,
+  reset links and the like."
+  ([] (random-token 32))
+  ([n] (b/base64 (random-bytes n) :url)))
+
+(defn constant-time=
+  "Are a and b (Bytes or strings) the same? Taking as long whichever bytes
+  differ (the length isn't hidden)."
+  [a b]
+  (%constant-time= a b))

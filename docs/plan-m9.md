@@ -794,3 +794,131 @@ describe.**
   - a `:blocking` connection, and the statement cache.
 
   Run ten times at both tiers without a failure.
+
+**9.10, pseudo-terminals (2026-11-14): done.**
+
+- **`norn.process/start-pty`** starts a program on a pseudo-terminal
+  (`openpty`), rows × cols (24 × 80), with options as for `start`.
+  - The child gets a new session, with the terminal as its controlling
+    terminal (`setsid`, `TIOCSCTTY`), so `^C` at the terminal is a
+    SIGINT to it.
+  - Signals the runtime handles or ignores are set back to their
+    defaults before `exec`. An ignored one stays ignored across `exec`,
+    and `^C` would do nothing.
+  - `TERM` is `xterm-256color` unless `:env` says otherwise.
+- **Streams:** `:in` (what's typed) and `:out` (what the terminal shows:
+  standard output and error together, and the echo) are the master's.
+  They're the reactor's pipe kinds, so `norn.io` reads and writes them.
+  A read once the child has gone (`EIO`) is the end of input.
+- **`resize`** sets the size (`TIOCSWINSZ`; the child gets SIGWINCH).
+- **Something to know, found writing the tests:** on macOS a program's
+  exit waits until its last terminal output is read. A `wait` with that
+  output unread never returns. `start-pty`'s docstring says to read `:out`
+  as the program runs, as a terminal emulator does.
+- **Tests:** `pty_test.norn`, 13 checks at both tiers: size, a terminal
+  for stdin and stdout, `TERM`, echo and `\r\n`, the end of output,
+  resizing, `^C` as SIGINT, and `cat` ended by `^D`.
+
+**9.11, `norn.bin` (2026-11-14): done.**
+
+- **A binary format for Norn values:**
+  - `encode` and `decode`, and `write-file` and `read-file`;
+  - `NRNB`, a version byte, then tagged values, with LEB128 counts and
+    zigzag integers;
+  - every kind of data: nil, booleans, integers of any size, floats,
+    ratios, characters, strings, keywords, symbols, lists (and any
+    realized sequence), vectors, maps, sets, sorted maps and sets,
+    queues, Bytes, regexes, and instances of immutable classes;
+  - a keyword or symbol after its first use is a reference, so records
+    come out about a third smaller than their text;
+  - not written: functions, vars, atoms, channels, fibers, handles and
+    mutable objects (values only).
+- **Safe for untrusted input:**
+  - every count is checked against the bytes left;
+  - text must be UTF-8, a map or set may not repeat a key, and nothing
+    may follow the value;
+  - nesting is limited (`:max-depth`, 512; 10,000 at most);
+  - an instance is made only of a class in `:classes`, straight from its
+    slots (no `initialize-instance`);
+  - bad input is always a `ParseError`: 20,000 mutated encodings gave a
+    value or a `ParseError`, nothing else.
+- **Random values** (1,500 in the suite, seeded) round-trip equal, with
+  the same hash, printed the same, and through text with `norn.edn` too.
+- **Gaps it found:**
+  - **The printer writes a queue as `#queue [...]`, which the reader
+    didn't read.** It does now (its items are data, not evaluated, as
+    `#bytes`'s are).
+  - **Deep nesting crashed the process.** The reader overflowed the
+    native stack between 20,000 and 40,000 levels: 200 KB of `[` killed
+    it, which matters for `norn.edn`'s promise about untrusted text.
+    It's an error past 10,000 levels now, and so is `norn.bin` both
+    ways.
+  - **Still open:** printing and `=` overflow too, between 40,000 and
+    70,000 levels. Since reading stops at 10,000, only a value built in
+    code that deep reaches them. The fix is a stack that grows (the
+    `stacker` crate) or rewrites without recursion, a choice for later.
+- **Tests:** `bin_test.norn`, 128 checks at both tiers.
+
+**9.12, the smaller libraries (2026-11-14): done.**
+
+- **`norn.compress`:** deflate, zlib and gzip (flate2's pure-Rust
+  backend), `crc32`, and a `:max-size` limit (256 MiB) on what
+  decompressing makes.
+- **`norn.crypto`,** on ring, which rustls already links:
+  - SHA-256/384/512 (and SHA-1 for old protocols);
+  - HMAC, with `hmac-valid?` in constant time;
+  - PBKDF2;
+  - `random-bytes` and `random-token` from the system's secure
+    generator;
+  - `constant-time=`.
+
+  Checked against FIPS 180's, RFC 4231's and RFC 6070's examples.
+- **`norn.uuid`:** version 4 (secure random) and version 7 (ordered by
+  time) as canonical strings, `parse` (braces, no dashes, any case),
+  `valid?`, `version`, `timestamp-ms` and bytes both ways.
+- **`norn.csv`** (RFC 4180): `read-csv`, `read-maps`, `write-csv` and
+  `write-maps`. Quoted fields hold separators, doubled quotes and line
+  breaks; `:separator` and `:quote` are options.
+- **`norn.toml`** (TOML 1.0): `read-string` and `write-string`.
+  - It reads every value kind: four kinds of string with their escapes
+    and line-ending backslashes, integers in four bases with
+    underscores, floats with `inf`/`nan`, and dates and times (an offset
+    date-time is an instant, a local one its text).
+  - Also dotted keys, inline tables, and tables and arrays of tables,
+    nested.
+  - What the spec forbids (a key or table twice, leading zeros, bad
+    escapes…) is a `ParseError` with its line.
+  - It reads the example at toml.io.
+- **`norn.zip`:**
+  - `entries`, `read-entry`, `unzip`, `extract!` and `zip`;
+  - stored and deflated entries, UTF-8 names, and CRCs checked;
+  - for untrusted archives, a total `:max-size`, and `extract!` refuses
+    a name that would land outside its folder before writing anything;
+  - the system's `unzip -t` passes our archives, and we read its `zip`'s.
+- **`norn.schedule`:**
+  - cron expressions: five fields with ranges, lists, steps and names,
+    either-day matching as cron does, and `@daily` and the rest;
+  - `next-run` and `next-runs` in a zone;
+  - `schedule` runs a function in a fiber each time it's due, and
+    `stop!` stops it.
+- **`norn.data`:** `diff`, as clojure.data's: `[only-in-a only-in-b
+  in-both]`, by key, member and index.
+- **Gaps they found:**
+  - **Sorted maps and sets weren't functions of their keys**, as maps
+    and sets are. Now they are.
+  - **There's no metadata on values:** no `meta` or `with-meta`. The
+    reader keeps `^…` only for the expander. `norn.toml` keeps its
+    marks beside the data instead. Clojure code expects metadata, so
+    it's a question for sealing.
+- **Not done:** ZIP64, and encrypted or other-method zip entries.
+- **Tests:** `small_libs_test.norn`, 105 checks at both tiers. They're
+  checked against the system's `gzip`, `zip` and `unzip` as well as the
+  RFCs' vectors.
+
+**Open (found running 9.10–9.12's suites): an intermittent crash.** With
+every suite running in one runtime (`norn_suites`), the process sometimes
+dies (SIGSEGV or SIGBUS) in the GC's tracing or the interpreter's frames:
+heap corruption. It happens in about 1 run in 10, and 9.9's build does it
+too. It needs the SQLite suite alongside a broad mix of the others: no
+smaller set has shown it, nor any standalone stress of what the SQLite
+suite does. Being hunted next, with MMTk's heap checks.

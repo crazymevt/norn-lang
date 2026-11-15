@@ -219,3 +219,18 @@ fn ffi_suite() {
 fn sqlite_suite() {
     suite("sqlite_test.norn");
 }
+
+#[test]
+fn pty_suite() {
+    suite("pty_test.norn");
+}
+
+#[test]
+fn bin_suite() {
+    suite("bin_test.norn");
+}
+
+#[test]
+fn small_libs_suite() {
+    suite("small_libs_test.norn");
+}

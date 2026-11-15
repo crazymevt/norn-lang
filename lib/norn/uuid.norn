@@ -1,0 +1,61 @@
+;;;; norn.uuid — UUIDs (RFC 9562; M9 part 9.12), as canonical strings:
+;;;; 8-4-4-4-12 lowercase hex digits.
+;;;;
+;;;;   (v4)  ; random
+;;;;   (v7)  ; time-ordered: sorts by when it was made (good database keys)
+;;;;   (parse "6BA7B810-9DAD-11D1-80B4-00C04FD430C8")  ; canonical, or an error
+;;;;
+;;;; The random bits come from the system's secure generator.
+
+(ns norn.uuid (:require [norn.bytes :as b] [norn.string :as str]))
+
+(def nil-uuid "The nil UUID, all zeros." "00000000-0000-0000-0000-000000000000")
+
+(defn from-bytes
+  "The UUID of 16 bytes, as text."
+  [bs]
+  (when-not (and (bytes? bs) (= 16 (count bs))) (error "A UUID is 16 bytes"))
+  (let [h (b/hex bs)]
+    (str (subs h 0 8) "-" (subs h 8 12) "-" (subs h 12 16) "-" (subs h 16 20) "-" (subs h 20 32))))
+
+(defn ->bytes "UUID u's 16 bytes." [u] (b/unhex (str/replace (str u) "-" "")))
+
+(defn- stamp
+  "16 bytes with version v and RFC 9562's variant set in them."
+  [bs v]
+  (let [xs (vec (seq bs))]
+    (bytes (-> xs
+               (assoc 6 (bit-or (bit-shift-left v 4) (bit-and (nth xs 6) 0x0f)))
+               (assoc 8 (bit-or 0x80 (bit-and (nth xs 8) 0x3f)))))))
+
+(defn v4 "A random UUID (version 4)." [] (from-bytes (stamp (%secure-random 16) 4)))
+
+(defn v7
+  "A time-ordered UUID (version 7): the time in milliseconds, then random
+  bits. Made later, it sorts later (to the millisecond)."
+  ([] (v7 (quot (%now-nanos) 1000000)))
+  ([ms]
+   (let [r (vec (seq (%secure-random 10)))
+         t (mapv (fn [i] (bit-and (bit-shift-right ms (* 8 (- 5 i))) 0xff)) (range 6))]
+     (from-bytes (stamp (bytes (into t r)) 7)))))
+
+(def ^:private pattern #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+(defn valid? "Is s a UUID's text (any case)?" [s] (boolean (and (string? s) (re-find pattern s))))
+
+(defn parse
+  "UUID text, canonical (lowercase); also {…} braced, or 32 hex digits
+  without dashes. An error if it isn't one."
+  [s]
+  (let [t (str/trim (str s))
+        t (if (and (str/starts-with? t "{") (str/ends-with? t "}")) (subs t 1 (dec (count t))) t)
+        t (if (re-find #"^[0-9a-fA-F]{32}$" t)
+            (str (subs t 0 8) "-" (subs t 8 12) "-" (subs t 12 16) "-" (subs t 16 20) "-" (subs t 20))
+            t)]
+    (if (valid? t) (str/lower-case t) (error (str "Not a UUID: " (pr-str s))))))
+
+(defn version "The version of UUID u (4, 7…)." [u] (bit-shift-right (nth (vec (seq (->bytes u))) 6) 4))
+
+(defn timestamp-ms "When a version 7 UUID was made, in epoch milliseconds." [u]
+  (when-not (= 7 (version u)) (error "Only a version 7 UUID has a time"))
+  (reduce (fn [acc x] (+ (* acc 256) x)) 0 (take 6 (seq (->bytes u)))))
