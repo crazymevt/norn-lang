@@ -915,10 +915,35 @@ describe.**
   checked against the system's `gzip`, `zip` and `unzip` as well as the
   RFCs' vectors.
 
-**Open (found running 9.10–9.12's suites): an intermittent crash.** With
-every suite running in one runtime (`norn_suites`), the process sometimes
-dies (SIGSEGV or SIGBUS) in the GC's tracing or the interpreter's frames:
-heap corruption. It happens in about 1 run in 10, and 9.9's build does it
-too. It needs the SQLite suite alongside a broad mix of the others: no
-smaller set has shown it, nor any standalone stress of what the SQLite
-suite does. Being hunted next, with MMTk's heap checks.
+**Found and fixed (after 9.12): the intermittent crash.**
+
+- **What happened.** With every suite running in one runtime
+  (`norn_suites`), the process died now and then (SIGSEGV or SIGBUS), in
+  the GC's tracing or the interpreter's frames. That was about 1 run in 10,
+  and 9.9's build did it too. It needed the SQLite suite alongside a
+  broad mix of the others, and more than one carrier: with
+  `NORN_THREADS=1` it never happened.
+- **The cause.** A carrier keeps one free stack segment cached
+  (`Vm::spare`, the "hot split" cache), and the cache isn't a GC root. It
+  was dropped before a collection at a safepoint, and when a carrier
+  idles, but not in `native_region`. A collection can run while a carrier
+  is inside a fast FFI call, and then it freed the cached segment. Back
+  from C, the next deep call took that segment for its frames, writing
+  them over whatever had been put in its memory. SQLite's suite makes
+  thousands of fast calls, some of them long, so it was the one that hit
+  it.
+- **Also in the FFI:** a callback's nested run could leave a segment in
+  the cache before the carrier went back into native code. And an error a
+  callback raised, kept until C returns, could hold a condition that
+  wasn't rooted meanwhile. Both are fixed.
+- **How it was found.** First bisecting suites and tests, then
+  `NORN_THREADS=1` and `=2` (it needed two carriers, and two made it
+  frequent). Then a heap-check build: `norn-rt`'s new `gc-check` feature
+  (MMTk's valid-object bit) checks every pointer the GC follows. It found
+  no bad one, so the damage was in a stack segment, and a crash in
+  `backtrace` pointed there.
+- **The test:** `crates/norn/tests/io.rs`
+  `a_collection_during_a_native_call_spares_the_cached_segment`. One fiber
+  comes back across a segment boundary and enters a native call while
+  another collects. It crashed 6 runs out of 6 without the fix, and
+  passes with it.

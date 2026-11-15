@@ -1359,6 +1359,9 @@ impl Vm {
             unsafe { self.save(&*self.cur_st) };
         }
         let key = (!keep.is_empty()).then(|| crate::sched::root_many(keep));
+        // (the cached segment isn't a root: a collection meanwhile would free
+        // it, and the next frames would be written into whatever came next)
+        self.drop_spare();
         crate::sched::enter_native(self.carrier);
         let r = f();
         crate::sched::leave_native(self.carrier);

@@ -423,7 +423,14 @@ pub fn for_each_extra_root(f: &mut dyn FnMut(Value)) {
 
 impl Scanning<Norn> for Norn {
     fn scan_object<SV: SlotVisitor<NornSlot>>(_: VMWorkerThread, object: ObjectReference, sv: &mut SV) {
-        scan(object.to_raw_address().to_mut_ptr(), &mut |s| sv.visit_slot(s));
+        let p: *mut u64 = object.to_raw_address().to_mut_ptr();
+        #[cfg(feature = "gc-check")]
+        scan(p, &mut |s| {
+            check_slot(p, s);
+            sv.visit_slot(s)
+        });
+        #[cfg(not(feature = "gc-check"))]
+        scan(p, &mut |s| sv.visit_slot(s));
     }
     fn notify_initial_thread_scan_complete(_: bool, _: VMWorkerThread) {}
     fn scan_roots_in_mutator_thread(_: VMWorkerThread, _: &'static mut MmMutator, _: impl RootsWorkFactory<NornSlot>) {
@@ -434,6 +441,10 @@ impl Scanning<Norn> for Norn {
         let mut nodes = Vec::new();
         let mut add = |v: Value| {
             if let Some(r) = to_ref(v) {
+                #[cfg(feature = "gc-check")]
+                if mmtk::memory_manager::is_mmtk_object(r.to_raw_address()).is_none() {
+                    panic!("gc-check: a root is no object: {:#x}", v.0);
+                }
                 nodes.push(r);
             }
         };
@@ -455,6 +466,26 @@ impl Scanning<Norn> for Norn {
         false
     }
     fn prepare_for_roots_re_scanning() {}
+}
+
+/// gc-check: the word in slot s of the object at p must be a live object
+/// if it's a pointer; else panic, saying where it was.
+#[cfg(feature = "gc-check")]
+fn check_slot(p: *mut u64, s: NornSlot) {
+    if let Some(r) = s.load()
+        && mmtk::memory_manager::is_mmtk_object(r.to_raw_address()).is_none()
+    {
+        // SAFETY: the slot is within the object being scanned.
+        let w: u64 = unsafe { s.0.load() };
+        let index = (s.0.as_usize() - p as usize) / 8;
+        let kind = kind_at(p);
+        let extra = if kind == Kind::Fiber {
+            String::new()
+        } else {
+            String::new()
+        };
+        panic!("gc-check: word {index} of a {kind:?} at {p:p} is {w:#x}, which is no object{extra}");
+    }
 }
 
 // ---- collection: the safepoint protocol -------------------------------------------------------

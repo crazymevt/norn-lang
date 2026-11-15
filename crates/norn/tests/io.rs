@@ -61,6 +61,24 @@ fn a_slow_fast_ffi_call_gets_a_spare_carrier() {
     assert_eq!(r, "[4999950000 true [0 0]]");
 }
 
+#[test]
+fn a_collection_during_a_native_call_spares_the_cached_segment() {
+    // A carrier keeps one free stack segment cached, and it isn't a GC root.
+    // A fiber that has just come back across a segment boundary (so one is
+    // cached) enters a native call; another collects meanwhile. The cached
+    // segment must have been dropped first: else it's freed, and the next
+    // deep call writes its frames over whatever is put there (M9: SQLite's
+    // suite crashed the process this way, 1 run in 10).
+    let r = norn(
+        "2",
+        "(do (defn deep [n] (if (zero? n) 0 (inc (deep (dec n)))))
+             (let [a (spawn-detached (dotimes [_ 40] (deep 30000) (%native-stall 15) (deep 30000)) :a)
+                   b (spawn-detached (dotimes [_ 400] (gc) (count (pr-str (vec (range 3000))))) :b)]
+               [(await a) (await b)]))",
+    );
+    assert_eq!(r, "[:a :b]");
+}
+
 // ---- M6 done-check ------------------------------------------------------------------------
 
 #[test]

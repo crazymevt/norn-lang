@@ -594,6 +594,11 @@ OS (files, DNS, blocking FFI), so carriers never do.
   tail call's arguments live only in a Rust vector), and marks the carrier
   safe for the GC while native code runs. The code it runs must not touch
   the heap.
+- **It drops the carrier's cached free segment first** (`Vm::spare`, which
+  isn't a root), as every way into a GC-safe state must. A collection
+  during the native call would otherwise free it, and the next frames would
+  be written over reused memory. (This was M9's intermittent crash; see
+  plan-m9.md.)
 - The **monitor thread** checks every 10 ms. When carriers have been in a
   native region for more than 20 ms while fibers wait, it starts a spare
   carrier in one of the extra slots (`n..2n`). A spare retires when it's

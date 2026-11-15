@@ -11,3 +11,9 @@ num-bigint = "0.4"
 num-rational = { version = "0.4", default-features = false, features = ["num-bigint-std"] }
 num-integer = "0.1"
 num-traits = "0.2"
+
+[features]
+# Heap checks, for hunting corruption: every pointer the GC follows (and
+# every root) must be a live object, or the GC panics naming the object
+# and field that held it. Slow.
+gc-check = ["mmtk/vo_bit"]

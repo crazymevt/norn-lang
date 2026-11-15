@@ -57,7 +57,8 @@
   (testing "cancelling"
     (let [f (future (sleep 10000) :never)]
       (future-cancel f)
-      (sleep 20)
+      ;; (as soon as its fiber has stopped: at most 2 s on a busy machine)
+      (loop [n 0] (when (and (not (future-cancelled? f)) (< n 200)) (sleep 10) (recur (inc n))))
       (is (future-cancelled? f))
       (is (some? (message (fn [] @f)))))))
 

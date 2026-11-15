@@ -41,7 +41,9 @@
       (is (= "default" (handler-bind [FileNotFound (fn [_] (invoke-restart 'use-value "default"))] (io/read-text missing)))
           "use-value still offered")))
   (testing "connections"
-    (let [port (let [l (net/listen "127.0.0.1" 0) p (net/port (net/local-address l))] (io/close l) p)
+    ;; (port 1: nothing listens there. A port just freed could be taken by
+    ;; a suite running beside this one before the connect.)
+    (let [port 1
           c (caught (fn [] (net/connect "127.0.0.1" port)))]
       (is (= "ConnectionError" (class-of-name c)))
       (is (= :refused (:reason c)))

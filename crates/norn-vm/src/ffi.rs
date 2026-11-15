@@ -671,7 +671,10 @@ pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
         // at (prep's buffers, rooted Bytes, the struct memory) outlives the call.
         vm.native_region(&keep, || unsafe { stub(addr as u64, prep.raw.as_ptr(), rp) });
         CALLING_VM.with(|c| c.set(prev));
-        if let Some(e) = CALLBACK_ERROR.with(|c| c.borrow_mut().take()) {
+        if let Some((e, root)) = CALLBACK_ERROR.with(|c| c.borrow_mut().take()) {
+            if let Some(k) = root {
+                crate::sched::unroot(k);
+            }
             return Err(e);
         }
         return result(&mut vm.m, ret, r, std::mem::take(&mut prep.outs)).map_err(Error::new);
@@ -905,7 +908,8 @@ thread_local! {
     /// The Vm making a fast FFI call on this thread (null otherwise).
     static CALLING_VM: std::cell::Cell<*mut Vm> = const { std::cell::Cell::new(std::ptr::null_mut()) };
     /// An error a callback raised, for the FFI call to signal once C returns.
-    static CALLBACK_ERROR: std::cell::RefCell<Option<Error>> = const { std::cell::RefCell::new(None) };
+    /// (with the root that keeps its condition alive meanwhile)
+    static CALLBACK_ERROR: std::cell::RefCell<Option<(Error, Option<u64>)>> = const { std::cell::RefCell::new(None) };
 }
 
 fn callback(id: u64) -> Option<Arc<Callback>> {
@@ -962,14 +966,26 @@ fn run_callback(id: u64, args: *const u64) -> u64 {
             let v = vm.apply(cb.f, &argv)?;
             ret_word(&cb, v)
         })();
+        // (the nested run may have cached a segment: not a root, see native_region)
+        vm.drop_spare();
+        let r = r.map_err(|e| {
+            // (a condition the error carries stays alive until it's signalled)
+            let root = match &e.class {
+                Some(crate::vm::ErrClass::Value(v)) => Some(crate::sched::root(*v)),
+                _ => None,
+            };
+            (e, root)
+        });
         crate::sched::enter_native(vm.carrier);
         return match r {
             Ok(w) => w,
-            Err(e) => {
+            Err((e, root)) => {
                 CALLBACK_ERROR.with(|c| {
                     let mut c = c.borrow_mut();
                     if c.is_none() {
-                        *c = Some(e);
+                        *c = Some((e, root));
+                    } else if let Some(k) = root {
+                        crate::sched::unroot(k);
                     }
                 });
                 0
