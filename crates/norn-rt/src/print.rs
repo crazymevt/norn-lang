@@ -53,15 +53,38 @@ fn write_str_escaped(out: &mut String, s: &str) {
     out.push('"');
 }
 
-fn write_seq(out: &mut String, it: impl Iterator<Item = Value>, open: &str, close: &str, readably: bool) {
-    out.push_str(open);
-    for (i, x) in it.enumerate() {
+/// What is left to write: values, and the text between and after them.
+/// The printer keeps it on a stack of its own instead of recursing, so a
+/// value nested a million deep prints without exhausting the native stack.
+enum Work {
+    Value(Value, bool),
+    Text(&'static str),
+    Owned(String),
+}
+
+/// Queue items (written with spaces between them), then `close`; the
+/// opening text is written already.
+fn push_seq(stack: &mut Vec<Work>, items: Vec<Value>, close: &'static str, readably: bool) {
+    stack.push(Work::Text(close));
+    for (i, x) in items.into_iter().enumerate().rev() {
+        stack.push(Work::Value(x, readably));
         if i > 0 {
-            out.push(' ');
+            stack.push(Work::Text(" "));
         }
-        write_value(out, x, readably);
     }
-    out.push_str(close);
+}
+
+/// Queue `k v, k v…` pairs, then `close`.
+fn push_entries(stack: &mut Vec<Work>, entries: Vec<(Value, Value)>, close: &'static str, readably: bool) {
+    stack.push(Work::Text(close));
+    for (i, (k, x)) in entries.into_iter().enumerate().rev() {
+        stack.push(Work::Value(x, readably));
+        stack.push(Work::Text(" "));
+        stack.push(Work::Value(k, readably));
+        if i > 0 {
+            stack.push(Work::Text(", "));
+        }
+    }
 }
 
 fn write_qualified(out: &mut String, v: Value) {
@@ -100,12 +123,25 @@ pub fn with_overrides<R>(texts: Vec<(u64, String)>, f: impl FnOnce() -> R) -> R 
 }
 
 pub fn write_value(out: &mut String, v: Value, readably: bool) {
+    let mut stack = vec![Work::Value(v, readably)];
+    while let Some(w) = stack.pop() {
+        match w {
+            Work::Text(t) => out.push_str(t),
+            Work::Owned(t) => out.push_str(&t),
+            Work::Value(v, readably) => write_one(out, &mut stack, v, readably),
+        }
+    }
+}
+
+/// Write v itself, queueing what it contains.
+fn write_one(out: &mut String, stack: &mut Vec<Work>, v: Value, readably: bool) {
     if v.is_fixnum() {
         let _ = write!(out, "{}", v.as_fixnum());
         return;
     }
     if v.is_cons() {
-        write_seq(out, SeqIter::List(v), "(", ")", readably);
+        out.push('(');
+        push_seq(stack, SeqIter::List(v).collect(), ")", readably);
         return;
     }
     if v.is_imm() {
@@ -158,23 +194,21 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
                 items.push(x);
                 true
             });
-            write_seq(out, items.into_iter(), "[", "]", readably);
+            out.push('[');
+            push_seq(stack, items, "]", readably);
         }
-        Kind::VecSeq | Kind::Range => write_seq(out, SeqIter::new(v).unwrap(), "(", ")", readably),
+        Kind::VecSeq | Kind::Range => {
+            out.push('(');
+            push_seq(stack, SeqIter::new(v).unwrap().collect(), ")", readably);
+        }
         Kind::Map => {
-            out.push('{');
-            let mut first = true;
-            v.map_for_each(|k, val| {
-                if !first {
-                    out.push_str(", ");
-                }
-                first = false;
-                write_value(out, k, readably);
-                out.push(' ');
-                write_value(out, val, readably);
+            let mut entries = Vec::new();
+            v.map_for_each(|k, x| {
+                entries.push((k, x));
                 true
             });
-            out.push('}');
+            out.push('{');
+            push_entries(stack, entries, "}", readably);
         }
         Kind::Set => {
             let mut items = Vec::new();
@@ -182,26 +216,23 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
                 items.push(x);
                 true
             });
-            write_seq(out, items.into_iter(), "#{", "}", readably);
+            out.push_str("#{");
+            push_seq(stack, items, "}", readably);
         }
         Kind::Sorted => {
             let entries = crate::colls::sorted_entries(v);
             if v.sorted_is_set() {
-                write_seq(out, entries.into_iter().map(|e| e.0), "#{", "}", readably);
+                out.push_str("#{");
+                push_seq(stack, entries.into_iter().map(|e| e.0).collect(), "}", readably);
             } else {
                 out.push('{');
-                for (i, (k, val)) in entries.into_iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
-                    }
-                    write_value(out, k, readably);
-                    out.push(' ');
-                    write_value(out, val, readably);
-                }
-                out.push('}');
+                push_entries(stack, entries, "}", readably);
             }
         }
-        Kind::Queue => write_seq(out, crate::colls::queue_items(v).into_iter(), "#queue [", "]", readably),
+        Kind::Queue => {
+            out.push_str("#queue [");
+            push_seq(stack, crate::colls::queue_items(v), "]", readably);
+        }
         Kind::Transient => out.push_str("#<transient>"),
         Kind::Regex => {
             let pat = v.field(0).as_str();
@@ -257,19 +288,19 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
         }
         Kind::Atom => {
             out.push_str("#<atom ");
-            write_value(out, v.atom_get(), readably);
-            out.push('>');
+            stack.push(Work::Text(">"));
+            stack.push(Work::Value(v.atom_get(), readably));
         }
         Kind::Chan => out.push_str("#<channel>"),
         Kind::Class => {
             out.push_str("#<class ");
-            write_value(out, v.class_field(crate::clos::class::NAME), readably);
-            out.push('>');
+            stack.push(Work::Text(">"));
+            stack.push(Work::Value(v.class_field(crate::clos::class::NAME), readably));
         }
         Kind::Generic => {
             out.push_str("#<generic ");
-            write_value(out, v.field(crate::clos::generic::NAME), readably);
-            out.push('>');
+            stack.push(Work::Text(">"));
+            stack.push(Work::Value(v.field(crate::clos::generic::NAME), readably));
         }
         Kind::Instance
             if OVERRIDES.with(|o| {
@@ -286,39 +317,33 @@ pub fn write_value(out: &mut String, v: Value, readably: bool) {
             // #user/circle{:radius 3}, like a Clojure record.
             let class = v.instance_class();
             out.push('#');
-            write_value(out, class.class_field(crate::clos::class::NAME), readably);
-            out.push('{');
             let layout = class.class_field(crate::clos::class::LAYOUT);
-            for (i, (&k, x)) in crate::clos::layout_keys(layout).iter().zip(crate::clos::instance_values(v)).enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write_value(out, k, readably);
-                out.push(' ');
-                write_value(out, x, readably);
-            }
-            out.push('}');
+            let entries: Vec<(Value, Value)> =
+                crate::clos::layout_keys(layout).iter().copied().zip(crate::clos::instance_values(v).iter().copied()).collect();
+            push_entries(stack, entries, "}", readably);
+            stack.push(Work::Text("{"));
+            stack.push(Work::Value(class.class_field(crate::clos::class::NAME), readably));
         }
         Kind::Scope => out.push_str("#<scope>"),
         Kind::Weak => out.push_str("#<weak-ref>"),
         // Printing never forces: the print primitives force a stream first.
         Kind::Stream if crate::seq::first_unrealized(v).is_some() => out.push_str("#<stream>"),
-        Kind::Stream => write_value(out, crate::seq::stream_items(v), readably),
+        Kind::Stream => stack.push(Work::Value(crate::seq::stream_items(v), readably)),
         Kind::Reduced => {
             out.push_str("#<reduced ");
-            write_value(out, v.field(0), readably);
-            out.push('>');
+            stack.push(Work::Text(">"));
+            stack.push(Work::Value(v.field(0), readably));
         }
         Kind::BigInt => out.push_str(&crate::numbers::big_string(v)),
         Kind::Ratio => {
-            write_value(out, v.field(0), readably);
-            out.push('/');
-            write_value(out, v.field(1), readably);
+            stack.push(Work::Value(v.field(1), readably));
+            stack.push(Work::Text("/"));
+            stack.push(Work::Value(v.field(0), readably));
         }
         Kind::Handle => {
             out.push_str("#<");
-            write_value(out, v.field(crate::conc::handle::KIND), false);
-            let _ = write!(out, " {}>", v.word(crate::conc::handle::ID));
+            stack.push(Work::Owned(format!(" {}>", v.word(crate::conc::handle::ID))));
+            stack.push(Work::Value(v.field(crate::conc::handle::KIND), false));
         }
         Kind::Bytes => {
             // Readable as a literal: #bytes "68656c6c6f"

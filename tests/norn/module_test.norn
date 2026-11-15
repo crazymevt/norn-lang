@@ -78,6 +78,18 @@
   (is (= 60 (run '(mt.a/start))) "redefined in place")
   (is (= "mt.a/helper is private to mt.a" (message (fn [] (eval '(mt.a/helper))))) "still private"))
 
+(deftest a-reload-drops-what-the-source-no-longer-defines
+  (module! "shrink" "(ns mt.shrink)\n(defn kept [] 1)\n(defn gone [] 2)\n(def ^:private hidden 3)\n")
+  (module! "user" "(ns mt.user\n  (:require [mt.shrink :as s]))\n(defn call-gone [] (s/gone))\n")
+  (run '(require 'mt.user))
+  (module! "shrink" "(ns mt.shrink)\n(defn kept [] 10)\n")
+  (run '(require 'mt.shrink :reload))
+  (is (= ['kept] (vec (keys (ns-publics 'mt.shrink)))) "gone is no longer exported")
+  (is (not (contains? (ns-interns 'mt.shrink) 'hidden)) "nor its private definitions")
+  (is (= 10 (run '(mt.shrink/kept))) "what remains is redefined in place")
+  (is (= 2 (run '(mt.user/call-gone))) "code compiled against a removed var keeps it")
+  (is (some? (message (fn [] (eval '(mt.shrink/gone))))) "new code can't refer to it"))
+
 (deftest taking-core-names
   (run '(require 'mt.rc 'mt.ex))
   (testing ":rename: core's get under another name, and the module's own get"
@@ -134,3 +146,20 @@
            (lint "(ns lm-k (:require [norn.string :as s]))\n(defmacro up [x] (s/upper-case x))\n(defn f [] (s/upper-case \"a\"))\n")))
     (is (= [] (lint "(ns lm-l)\n(defn- dbl [x] (* 2 x))\n(defmacro twice [x] `(dbl ~x))\n"))
         "a template only names run-time code")))
+
+(deftest fibers-loading-opposite-ends-of-a-cycle-get-an-error
+  ;; (each waits before requiring the other, so both loads are under way)
+  (module! "cyca" "(ns mt.cyca)\n(sleep 200)\n(require (quote mt.cycb))\n(def a 1)\n")
+  (module! "cycb" "(ns mt.cycb)\n(sleep 200)\n(require (quote mt.cyca))\n(def b 2)\n")
+  (let [load (fn [lib] (future (try (run (list 'require (list 'quote lib))) :loaded
+                                    (catch Error e (condition-message e)))))
+        results [(load 'mt.cyca) (load 'mt.cycb)]
+        outcomes (mapv (fn [f] (deref f 10000 :timed-out)) results)]
+    (is (not-any? #{:timed-out} outcomes) "neither waits forever")
+    (is (some #(and (string? %) (str/includes? % "Circular require")) outcomes))))
+
+(deftest fibers-loading-one-library-share-the-load
+  (module! "shared" "(ns mt.shared)\n(sleep 100)\n(def loads (atom 0))\n(swap! loads inc)\n")
+  (let [loads (mapv (fn [_] (future (run '(require 'mt.shared)) :ok)) (range 4))]
+    (is (= [:ok :ok :ok :ok] (mapv #(deref % 10000 :timed-out) loads)))
+    (is (= 1 (run '@mt.shared/loads)) "loaded once")))

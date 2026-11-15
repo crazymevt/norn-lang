@@ -8,8 +8,8 @@
 | --- | --- |
 | `(+ x…)`, `(- x y…)`, `(* x…)`, `(/ x y…)` | Arithmetic. Integers grow to arbitrary precision. Exact division can produce a normalized ratio. A floating-point operand produces floating-point arithmetic. |
 | `(= x more…)` | Structural equality for values. Sequential collections compare by elements in order. Integers, ratios, and floats compare in their own categories. |
-| `(== x more…)` | Numeric equality across number categories. NaN is unequal to itself under `==`. |
-| `(< x more…)`, `(<= x more…)`, `(> x more…)`, `(>= x more…)` | Numeric ordering tests. |
+| `(== x more…)` | Numeric equality across number categories. A float compares with an integer or ratio by its exact value, so `(== 9007199254740993 9007199254740992.0)` and `(== 1/3 0.3333333333333333)` are false. NaN is unequal to itself under `==`. |
+| `(< x more…)`, `(<= x more…)`, `(> x more…)`, `(>= x more…)` | Numeric ordering tests, exact across number categories as for `==`. `compare` and `sort` use the same order, with NaN after every other number. |
 | `(identical? x y)` | Runtime identity test. |
 | `(hash x)` | Hash a value. Values that are equal under `=` have the same hash. |
 

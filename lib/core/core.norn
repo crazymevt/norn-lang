@@ -1929,6 +1929,18 @@
 (def *loading* #{})
 (def %libs (atom {}))
 
+;; While a library reloads, an atom of [namespace-name symbol] for each def
+;; compiled meanwhile (compile-def! adds them), so the library's own names
+;; its new source no longer defines can be unmapped after.
+(def *defined* nil)
+
+(defn- %unmap-stale!
+  "Unmap namespace ns's own vars that weren't defined again while it reloaded."
+  [ns defined]
+  (doseq [[sym _] (ns-interns ns)]
+    (when-not (contains? defined [(str ns) sym])
+      (%ns-unmap ns sym))))
+
 (defn- %load-lib-source [lib]
   (let [found (%find-lib (str lib))]
     (cond found
@@ -1951,6 +1963,28 @@
      (%load-lib-at lib key (if (= key lib) 0 s))
      key)))
 
+;; A library being loaded is {:done channel :owner fiber} in %libs; the
+;; channel closes when the load ends. %lib-waits maps each fiber waiting
+;; for another's load to the library it waits for. Two fibers loading
+;; opposite ends of a cycle would each wait for the other forever, so a
+;; fiber about to wait follows the chain first: the library's loader, the
+;; library that fiber waits for, its loader, and so on. Reaching itself is
+;; a circular require. (It records its own wait before looking, so of two
+;; fibers closing a cycle at once, at least one sees it.)
+(def %lib-waits (atom {}))
+
+(defn- %waits-for-me?
+  "Does the load of key wait, through other fibers' loads, for fiber me?"
+  [key me]
+  (loop [k key seen #{}]
+    (let [e (get @%libs k)
+          owner (when (map? e) (:owner e))]
+      (cond (nil? owner) false
+            (identical? owner me) true
+            (contains? seen owner) false
+            :else (let [next-key (get @%lib-waits owner)]
+                    (if (nil? next-key) false (recur next-key (conj seen owner))))))))
+
 (defn- %load-lib-at [lib key s]
   (when (contains? *loading* key)
     (error "Circular require:" (str key) "is already being loaded"))
@@ -1958,9 +1992,18 @@
     (let [m @%libs
           e (get m key)]
       (cond (= e :loaded) nil
-            (some? e) (do (take! e) (recur))      ; a channel, closed when that load ends
+            (some? e)
+            (let [me (current-fiber)]
+              (when me (swap! %lib-waits assoc me key))
+              (try
+                (when (and me (%waits-for-me? key me))
+                  (error "Circular require:" (str key)
+                         "is being loaded by another fiber that is waiting for a library this one is loading"))
+                (take! (:done e))
+                (finally (when me (swap! %lib-waits dissoc me))))
+              (recur))
             :else (let [done (chan)]
-                    (if (compare-and-set! %libs m (assoc m key done))
+                    (if (compare-and-set! %libs m (assoc m key {:done done :owner (current-fiber)}))
                       (try (binding [*loading* (conj *loading* key) *load-shift* s] (%load-lib-source lib))
                            (swap! %libs assoc key :loaded)
                            (catch Error c (swap! %libs dissoc key) (throw c))
@@ -1970,8 +2013,10 @@
 (defn require
   "Load libraries: (require 'norn.io '[norn.string :as str :refer [join]]).
   :refer :all refers every public var. :reload as a spec's option, or
-  after the specs, loads the library again even if it's loaded (its
-  definitions are replaced in place)."
+  after the specs, loads the library again even if it's loaded: its
+  definitions are replaced in place, and names its source no longer
+  defines are removed from its namespace (code already compiled against
+  one keeps calling it, but new code can't refer to it)."
   [& specs]
   (let [reload-all (some (fn [s] (= s :reload)) specs)]
     (doseq [spec (remove (fn [s] (= s :reload)) specs)]
@@ -1983,7 +2028,11 @@
               ;; (every phase's instance: each loads again when next
               ;; required, so none is left stale)
               _ (when reload (swap! %libs (fn [m] (into {} (remove (fn [e] (= lib (%base-ns (first e)))) m)))))
-              target (%load-lib lib shift)]
+              ;; (only a library with source: a native extension's names
+              ;; aren't defined by loading it)
+              defined (when (and reload (%find-lib (str lib))) (atom #{}))
+              target (binding [*defined* (or defined *defined*)] (%load-lib lib shift))
+              _ (when defined (%unmap-stale! target @defined))]
           (when as (%alias as target))
           (when refer
             (let [publics (ns-publics target)]
@@ -2368,7 +2417,10 @@
 (defn cat
   "A transducer that concatenates the collections it is given."
   [rf]
-  (fn ([] (rf)) ([acc] (rf acc)) ([acc coll] (reduce rf acc coll))))
+  ;; (an early end inside one collection is reduced twice: reduce unwraps
+  ;; one, and the outer reduction sees the other and stops too)
+  (let [preserving (fn [acc x] (let [r (rf acc x)] (if (reduced? r) (reduced r) r)))]
+    (fn ([] (rf)) ([acc] (rf acc)) ([acc coll] (reduce preserving acc coll)))))
 
 (def %concat concat)
 (defn concat

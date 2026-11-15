@@ -189,15 +189,39 @@ pub(crate) fn arith(m: &mut Mutator, a: &[Value], op: Op) -> Result<Value> {
     Ok(value(m, acc))
 }
 
-/// Numeric order, IEEE style: exact for integers and ratios; with a float,
-/// compared as floats, and None when either is NaN (so `<`, `==`… are false).
+/// Numeric order: exact, and None when either is NaN (so `<`, `==`… are
+/// false). Two floats compare as floats. A float and an exact number
+/// compare exactly, by the float's exact value, not by rounding the exact
+/// number to a float: otherwise 2^53 and 2^53 + 1 would both equal 2^53 as
+/// a float while differing from each other, and no sort could order them.
 pub(crate) fn partial_cmp(a: &Num, b: &Num) -> Option<Ordering> {
     match (a, b) {
         (Num::I(x), Num::I(y)) => Some(x.cmp(y)),
-        _ if a.level().max(b.level()) == 3 => a.as_f64().partial_cmp(&b.as_f64()),
+        (Num::F(x), Num::F(y)) => x.partial_cmp(y),
+        (Num::F(x), exact) => exact_cmp(exact, *x).map(Ordering::reverse),
+        (exact, Num::F(y)) => exact_cmp(exact, *y),
         _ if a.level().max(b.level()) == 2 => Some(a.to_ratio().cmp(&b.to_ratio())),
         _ => Some(a.to_big().cmp(&b.to_big())),
     }
+}
+
+/// An exact number (integer or ratio) against float f, exactly.
+fn exact_cmp(exact: &Num, f: f64) -> Option<Ordering> {
+    const EXACT_IN_F64: i64 = 1 << 53;
+    if f.is_nan() {
+        return None;
+    }
+    if f.is_infinite() {
+        return Some(if f > 0.0 { Ordering::Less } else { Ordering::Greater });
+    }
+    // (an integer this small is exactly a float)
+    if let Num::I(i) = exact
+        && i.abs() <= EXACT_IN_F64
+    {
+        return (*i as f64).partial_cmp(&f);
+    }
+    let f = BigRational::from_f64(f)?;
+    Some(exact.to_ratio().cmp(&f))
 }
 
 /// A total order for `compare` and `sort`: numeric, with NaN after every

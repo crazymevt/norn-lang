@@ -315,6 +315,7 @@
     (when (and (namespace sym) (not= (namespace sym) (name (current-ns))))
       (cerr "Can't create a var in another namespace with def"))
     (let [v (%intern (current-ns) (symbol (name sym)))
+          _ (when-let [defined norn.core/*defined*] (swap! defined conj [(str (current-ns)) (symbol (name sym))]))
           n (count xs)
           init (cond (= n 2) no-init
                      (= n 3) (nth xs 2)

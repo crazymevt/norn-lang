@@ -85,3 +85,17 @@
     (is (= {:hits 1} (counted form)))
     (is (= 7 (run '(ct.lazy/f))))
     (is (not (contains? (ns-interns 'cache-test) 'seven)) "its cached forms ran in ct.lazy, not here")))
+
+(deftest the-contract-mode-is-part-of-the-key
+  ;; Expansion decides which calls check contracts: a module cached under
+  ;; :none must expand again under :boundaries, and check its calls.
+  (module! "typed" "(ns ct.typed)\n(defn add ^Integer [^Integer a ^Integer b] (+ a b))\n")
+  (module! "caller" "(ns ct.caller\n  (:require [ct.typed :as t]))\n(defn f [] (t/add 1 \"x\"))\n")
+  (let [error-name (fn [] (try (run '(ct.caller/f)) nil (catch Error e (name (class-name (class-of e))))))]
+    (binding [*check-contracts* :none] (run '(do (require 'ct.typed :reload) (require 'ct.caller :reload))))
+    (is (= "TypeError" (error-name)) ":none: not checked")
+    (is (= {:misses 2 :writes 2} (counted '(do (require 'ct.typed :reload) (require 'ct.caller :reload))))
+        "not loaded from the :none entries")
+    (is (= "ContractError" (error-name)) ":boundaries: checked")
+    (is (= {:hits 2} (counted '(do (require 'ct.typed :reload) (require 'ct.caller :reload))))
+        "and cached under its own key")))

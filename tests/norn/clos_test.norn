@@ -187,6 +187,15 @@
 (defclass point () ((x :initform 0) (z :initform 7)))
 (is (= nil (get p1 :y)))
 (is (= 1 (:x p1)))
+;; Keys stay findable when a redefinition adds a defaulted slot, even ahead
+;; of the others: a slot holding its default adds nothing to the hash.
+(defclass keyed () ((x :initform 0) (tag :initform nil)))
+(let [a (keyed :x 1) b (keyed :x 2 :tag [:t]) s #{a b} m {a :a b :b} before (hash a)]
+  (defclass keyed () ((added :initform 5) (x :initform 0) (tag :initform nil)))
+  (is (= [true true :a :b] [(contains? s a) (contains? s b) (get m a) (get m b)]))
+  (is (= before (hash a)))
+  (is (= true (contains? s (keyed :x 1))) "an equal new instance finds it too")
+  (is (= false (contains? s (keyed :x 1 :added 6))) "a different value doesn't"))
 ;; Redefining a superclass reaches subclasses (and their dispatch caches).
 (defclass base () ((v :initform 1)))
 (defclass derived (base) ())

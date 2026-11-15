@@ -185,6 +185,7 @@ prims! {
     "current-ns" 0 Some(0) => |vm, _| Ok(vm.ns.name);
     "all-ns" 0 Some(0) => |vm, _| { let names: Vec<Value> = rt().all_namespaces().iter().map(|n| n.name).collect(); Ok(list_from(&mut vm.m, &names)) };
     "ns-publics" 1 Some(1) => |vm, a| { let ns = rt().find_ns(a[0]).ok_or_else(|| Error::new(format!("No namespace: {}", pr_str(a[0], true))))?; let mut m = map_empty(); for (k, v) in ns.mappings() { if v.var_ns() == ns.name && !v.var_is_private() { m = map_assoc(&mut vm.m, m, k, v); } } Ok(m) };
+    "%ns-unmap" 2 Some(2) => |_, a| { expect(a[1], Kind::Symbol, "%ns-unmap")?; let ns = rt().find_ns(a[0]).ok_or_else(|| Error::new(format!("No namespace: {}", pr_str(a[0], true))))?; Ok(Value::bool(ns.unmap_own(a[1]))) };
     "ns-interns" 1 Some(1) => |vm, a| { let ns = rt().find_ns(a[0]).ok_or_else(|| Error::new(format!("No namespace: {}", pr_str(a[0], true))))?; let mut m = map_empty(); for (k, v) in ns.mappings() { if v.var_ns() == ns.name { m = map_assoc(&mut vm.m, m, k, v); } } Ok(m) };
     "resolve" 1 Some(1) => |vm, a| Ok(vm.resolve(a[0]).unwrap_or(Value::NIL));
     "%resolve-in" 2 Some(2) => |vm, a| { expect(a[0], Kind::Symbol, "%resolve-in")?; expect(a[1], Kind::Symbol, "%resolve-in")?; let core = vm.core; Ok(rt().find_ns(a[0]).and_then(|ns| rt().resolve(&mut vm.m, ns, core, a[1])).unwrap_or(Value::NIL)) };
@@ -756,7 +757,41 @@ fn sort_keyed(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     Ok(vec_from_slice(&mut vm.m, &out))
 }
 
+/// The total order of `compare` and `sort`. Vectors compare by length,
+/// then element by element; nested ones are walked with a stack of our own
+/// (vector pairs and the next index), so deep nesting can't exhaust the
+/// native stack.
 pub fn compare(a: Value, b: Value) -> Result<Ordering> {
+    let mut stack: Vec<(Value, Value, usize)> = Vec::new();
+    let (mut a, mut b) = (a, b);
+    loop {
+        if a.is(Kind::Vector) && b.is(Kind::Vector) {
+            let o = a.vec_count().cmp(&b.vec_count());
+            if o != Ordering::Equal {
+                return Ok(o);
+            }
+            stack.push((a, b, 0));
+        } else {
+            let o = compare_scalar(a, b)?;
+            if o != Ordering::Equal {
+                return Ok(o);
+            }
+        }
+        // the next pair of elements to compare, or done
+        loop {
+            let Some(top) = stack.last_mut() else { return Ok(Ordering::Equal) };
+            if top.2 < top.0.vec_count() {
+                (a, b) = (top.0.vec_nth(top.2), top.1.vec_nth(top.2));
+                top.2 += 1;
+                break;
+            }
+            stack.pop();
+        }
+    }
+}
+
+/// compare for anything but two vectors.
+fn compare_scalar(a: Value, b: Value) -> Result<Ordering> {
     use norn_rt::numbers::is_number;
     if is_number(a) && is_number(b) {
         return Ok(crate::numeric::cmp(&crate::numeric::num(a)?, &crate::numeric::num(b)?));
@@ -775,19 +810,6 @@ pub fn compare(a: Value, b: Value) -> Result<Ordering> {
     }
     if (a.is_symbol() && b.is_symbol()) || (a.is_keyword() && b.is_keyword()) {
         return Ok(a.sym_ns().cmp(&b.sym_ns()).then(a.sym_name().cmp(b.sym_name())));
-    }
-    if a.is(Kind::Vector) && b.is(Kind::Vector) {
-        let o = a.vec_count().cmp(&b.vec_count());
-        if o != Ordering::Equal {
-            return Ok(o);
-        }
-        for i in 0..a.vec_count() {
-            let o = compare(a.vec_nth(i), b.vec_nth(i))?;
-            if o != Ordering::Equal {
-                return Ok(o);
-            }
-        }
-        return Ok(Ordering::Equal);
     }
     Err(Error::new(format!("Can't compare {} with {}", a.type_name(), b.type_name())))
 }

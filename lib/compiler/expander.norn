@@ -896,8 +896,11 @@
     (concat (map (fn [l] (%shifted l shift)) (names :require))
             (map (fn [l] (%shifted l (inc shift))) (names :require-for-syntax)))))
 
+;; (the contract mode is part of the key: expansion decides which calls
+;; check contracts, so code expanded under :none must not load under
+;; :boundaries)
 (defn- module-key [text src nsym d]
-  (%hash-text (pr-str [(%build-id) (str nsym) src (%hash-text text)
+  (%hash-text (pr-str [(%build-id) (str nsym) src (%hash-text text) norn.core/*check-contracts*
                        (mapv (fn [dep] [(str dep) (get-in @modules [dep :key])]) (deps-of d))])))
 
 (defn- cache-file [dir nsym src] (str dir "/" (%hash-text (str nsym "|" src)) ".nmod"))

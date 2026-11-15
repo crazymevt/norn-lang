@@ -50,6 +50,19 @@ impl Namespace {
         self.mappings.read().unwrap().iter().map(|(&k, &v)| (k, v)).collect()
     }
 
+    /// Remove `sym`'s mapping if it is one of this namespace's own vars.
+    /// Code already compiled against the var keeps it; new code no longer
+    /// resolves the name. True if it was removed.
+    pub fn unmap_own(&self, sym: Value) -> bool {
+        let mut map = self.mappings.write().unwrap();
+        if map.get(&sym).is_some_and(|v| v.var_ns() == self.name) {
+            map.remove(&sym);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Map `sym` in this namespace to `var` of another namespace (`:refer`).
     pub fn refer(&self, sym: Value, var: Value) {
         self.mappings.write().unwrap().insert(sym, var);
