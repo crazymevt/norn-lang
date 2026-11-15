@@ -5,6 +5,8 @@ CLOS-style generic functions, the condition system and images; immutable
 data and identity/state separation; hygienic macros and modules — on a Rust
 runtime built for many cores.
 
+- [User documentation](docs/README.md) — getting started, runnable examples,
+  language reference, and symbol index.
 - Language design: [docs/design.md](docs/design.md)
 - Runtime architecture and milestones: [docs/runtime.md](docs/runtime.md)
 
@@ -75,7 +77,7 @@ lib/norn         the standard libraries (norn.io, norn.net, …)
 tests/norn       Norn test suites
 bench/           benchmarks
 spikes/          throwaway platform experiments
-docs/            design documents
+docs/            user documentation, language reference, and design documents
 ```
 
 ## License

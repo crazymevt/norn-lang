@@ -1,0 +1,16 @@
+(ns examples.channels)
+
+(defn squares [n]
+  (with-scope [s]
+    (let [out (chan)]
+      (spawn s
+        (try
+          (doseq [i (range 1 (inc n))]
+            (put! out (* i i)))
+          (finally (close! out))))
+      (loop [result []]
+        (if-some [value (take! out)]
+          (recur (conj result value))
+          result)))))
+
+(prn (squares 5))

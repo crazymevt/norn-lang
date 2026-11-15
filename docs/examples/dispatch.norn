@@ -1,0 +1,23 @@
+(ns examples.dispatch)
+
+(defclass shipment () ())
+(defclass book (shipment) ())
+(defclass parcel (shipment) ())
+
+(defclass delivery () ())
+(defclass express (delivery) ())
+
+(defgeneric packaging (item service))
+
+(defmethod packaging ((item shipment) (service delivery))
+  :standard)
+
+(defmethod packaging ((item book) (service delivery))
+  :book-envelope)
+
+(defmethod packaging ((item parcel) (service express))
+  :express-parcel)
+
+(prn [(packaging (book) (delivery))
+      (packaging (parcel) (express))
+      (packaging (parcel) (delivery))])

@@ -1,0 +1,15 @@
+(ns examples.restarts)
+
+(defclass invalid-reading (Error)
+  ((input :required true)))
+
+(defn read-value [s]
+  (restart-case
+    (if-some [n (parse-long s)]
+      n
+      (error invalid-reading :message "Invalid reading" :input s))
+    (use-reading [n] n)
+    (skip-reading [] nil)))
+
+(prn (handler-bind [invalid-reading (fn [_] (invoke-restart 'use-reading 0))]
+       (keep read-value ["12" "missing" "7"])))

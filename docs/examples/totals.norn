@@ -1,0 +1,17 @@
+(ns examples.totals
+  (:require [norn.json :as json]))
+
+(def orders
+  (json/read-string
+   "[{\"category\":\"books\",\"amount\":20,\"paid\":true},
+      {\"category\":\"games\",\"amount\":30,\"paid\":true},
+      {\"category\":\"books\",\"amount\":15,\"paid\":true},
+      {\"category\":\"games\",\"amount\":10,\"paid\":false}]"))
+
+(defn totals-by-category [orders]
+  (let [paid-orders (filter :paid)
+        add-order (fn [totals {:keys [category amount]}]
+                    (update totals (keyword category) (fnil + 0) amount))]
+    (vec (sort-by first (transduce paid-orders (completing add-order) {} orders)))))
+
+(prn (totals-by-category orders))
