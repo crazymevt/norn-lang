@@ -191,3 +191,21 @@
         c (try (a/ask p [:get] 30) nil (catch TimeoutError e e))]
     (is (= 30 (:after c)))
     (a/exit! p)))
+
+(deftest a-crash-stays-in-the-debugger-while-it-is-restarted
+  ;; (M9a's done-check: the supervisor hears of the crash and restarts the
+  ;; child, while the crashed fiber waits in the debugger to be looked at)
+  (let [sup (binding [*debugger* :park] (a/supervisor {} [(a/child :held-counter counter 0)]))
+        first-one (eventually (fn [] (a/whereis :held-counter)))
+        id (fiber-id @(:fiber first-one))
+        held (fn [] (first (filter (fn [d] (= id (:fiber d))) (debugging))))]
+    (a/send :held-counter [:crash])
+    (let [second-one (eventually (fn [] (let [p (a/whereis :held-counter)] (when (and p (not (identical? p first-one))) p))))]
+      (is (some? second-one) "restarted")
+      (is (= 0 (a/ask :held-counter [:get])) "and answering")
+      (is (= "Divide by zero" (:condition (eventually held))) "while the crash waits in the debugger")
+      (debug-abort id)
+      (is (eventually (fn [] (nil? (held)))))
+      (is (identical? second-one (a/whereis :held-counter)) "aborting it restarts nothing"))
+    (a/stop-supervisor! sup)
+    (is (= :normal (a/exit-reason sup)))))

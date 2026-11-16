@@ -621,6 +621,9 @@
 (is (= "(my-indented-macro 1\n  2)\n"
        (do (eval '(defmacro my-indented-macro {:indent 1} [a & body] `(do ~a ~@body)))
            (codefmt/format-string "(my-indented-macro 1\n 2)"))))
+;; (a result type before an arity's parameters doesn't move its body)
+(is (= "(defn f\n  (^Map [^Map a]\n   (g a)\n   (h a)))\n"
+       (codefmt/format-string "(defn f\n  (^Map [^Map a]\n          (g a)\n   (h a)))")))
 (is (thrown? Error (codefmt/format-string "(a")))
 (is (thrown? Error (codefmt/format-string "a)")))
 (is (every? (fn [f] (codefmt/formatted? (slurp f)))

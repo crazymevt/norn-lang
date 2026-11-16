@@ -77,7 +77,7 @@
    :i64 8 :long 8 :isize 8 :ssize 8 :u64 8 :ulong 8 :usize 8 :size 8 :f64 8 :double 8 :pointer 8
    :string 8})
 
-(defn layout? "Is x a struct layout (from defcstruct)?" [x] (and (map? x) (contains? x ::fields)))
+(defn layout? "Is x a struct layout (from defcstruct)?" ^Boolean [x] (and (map? x) (contains? x ::fields)))
 
 ;; ([:bits type width]: a bit field, width bits of an integer type's unit)
 (defn- array-type? [t] (and (vector? t) (= :array (first t))))
@@ -88,13 +88,13 @@
 
 (defn- signed? [t] (contains? unsigned-of t))
 
-(defn sizeof "The size of C type t (a keyword, a struct or union layout, [:array t n]) in bytes." [t]
+(defn sizeof "The size of C type t (a keyword, a struct or union layout, [:array t n]) in bytes." ^Integer [^(U Keyword Map Vector) t]
   (cond (layout? t) (:size t)
         (array-type? t) (* (sizeof (second t)) (nth t 2))
         (bits-type? t) (error "A bit field has no size of its own")
         :else (or (get prim-sizes t) (error (str "Not a C type: " (pr-str t))))))
 
-(defn alignof "The alignment of C type t." [t]
+(defn alignof "The alignment of C type t." ^Integer [^(U Keyword Map Vector) t]
   (cond (layout? t) (:align t)
         (array-type? t) (alignof (second t))
         (bits-type? t) (sizeof (second t))
@@ -117,7 +117,7 @@
   A bit field, [:bits type width], goes in the unit of its type it starts
   in, if it fits there, else the next one (width 0: on to the next unit);
   bits go from the lowest up."
-  [sname fields]
+  ^Map [sname ^Sequential fields]
   (loop [fs (field-pairs "defcstruct" sname fields) bit 0 align 1 out []]
     (if (empty? fs)
       (finish-layout sname out (quot (+ bit 7) 8) align false)
@@ -139,7 +139,7 @@
 (defn union-layout
   "A union's layout: every field at offset 0, the size the largest
   field's, rounded up to the largest alignment."
-  [uname fields]
+  ^Map [uname ^Sequential fields]
   (let [fs (field-pairs "defcunion" uname fields)]
     (when (some (fn [[_ t]] (bits-type? t)) fs) (error (str "defcunion " uname ": no bit fields in a union")))
     (finish-layout uname (mapv (fn [[n t]] {:name n :type t :offset 0}) fs)
@@ -166,7 +166,7 @@
 (defn offset-of
   "The offset of a field in a struct layout: a key, or a path of them
   through nested structs ([:origin :x]). (A bit field's: its unit's.)"
-  [layout k]
+  ^Integer [^Map layout ^(U Keyword Vector) k]
   (if (vector? k)
     (loop [l layout ks (seq k) off 0]
       (if ks
@@ -177,8 +177,8 @@
 (defn %leaves
   "The scalar pieces of C type t, [[offset type]…] (for passing structs by
   value: the runtime classifies them)."
-  ([t] (%leaves t 0))
-  ([t at]
+  (^Vector [^(U Keyword Map Vector) t] (%leaves t 0))
+  (^Vector [^(U Keyword Map Vector) t ^Integer at]
    (cond (layout? t) (vec (distinct (mapcat (fn [f]
                                               (if (bits-type? (:type f))
                                                 (let [ut (second (:type f))] [[(+ at (:offset f)) (get unsigned-of ut ut)]])
@@ -193,10 +193,10 @@
 (defn alloc
   "n zeroed bytes from C's allocator (or room for C type n: a layout, an
   array type, a keyword): their address. free! them."
-  [n]
+  ^Integer [^(U Integer Keyword Map Vector) n]
   (%mem-alloc (if (integer? n) n (sizeof n))))
 
-(defn free! "Give memory from alloc back." [addr] (%mem-free addr))
+(defn free! "Give memory from alloc back." [^(? Integer) addr] (%mem-free addr))
 
 (declare struct-get struct-set!)
 
@@ -204,8 +204,8 @@
   "The C value of type t at addr (+ offset): a number, an address for
   :pointer, the string pointed to for :string, a map for a layout, a
   vector for [:array t n]."
-  ([addr t] (mem-get addr t 0))
-  ([addr t offset]
+  ([^Integer addr ^(U Keyword Map Vector) t] (mem-get addr t 0))
+  ([^Integer addr ^(U Keyword Map Vector) t ^Integer offset]
    (cond (layout? t) (struct-get (+ addr offset) t)
          (array-type? t) (let [[_ et n] t s (sizeof et)]
                            (mapv (fn [i] (mem-get addr et (+ offset (* i s)))) (range n)))
@@ -215,8 +215,8 @@
 (defn mem-set!
   "Write v at addr (+ offset) as C type t (a map for a layout, a
   sequence for an array; :string takes an address). v."
-  ([addr t v] (mem-set! addr t 0 v))
-  ([addr t offset v]
+  ([^Integer addr ^(U Keyword Map Vector) t v] (mem-set! addr t 0 v))
+  ([^Integer addr ^(U Keyword Map Vector) t ^Integer offset v]
    (cond (layout? t) (struct-set! (+ addr offset) t v)
          (array-type? t) (let [[_ et n] t s (sizeof et)]
                            (when (> (count v) n) (error (str "More than " n " items for " (pr-str t))))
@@ -249,12 +249,12 @@
       v)
     (mem-set! addr (:type f) (+ base (:offset f)) v)))
 
-(defn struct-get "The struct (or union) at addr, as a map of its fields." [addr layout]
+(defn struct-get "The struct (or union) at addr, as a map of its fields." ^Map [^Integer addr ^Map layout]
   (into {} (map (fn [f] [(:name f) (read-field addr 0 f)]) (::fields layout))))
 
 (defn struct-set!
   "Write the fields of map m (those it has) into the struct at addr. addr."
-  [addr layout m]
+  ^Integer [^Integer addr ^Map layout ^Map m]
   (doseq [[k v] m] (write-field! addr 0 (field-of layout k) v))
   addr)
 
@@ -266,13 +266,13 @@
       [(field-of inner (peek k)) (if (= 1 (count k)) 0 (offset-of layout (pop k)))])
     [(field-of layout k) 0]))
 
-(defn field "The field k (or path) of the struct at addr." [addr layout k]
+(defn field "The field k (or path) of the struct at addr." [^Integer addr ^Map layout ^(U Keyword Vector) k]
   (let [[f base] (field-at layout k)] (read-field addr base f)))
 
-(defn set-field! "Set field k (or path) of the struct at addr to v. v." [addr layout k v]
+(defn set-field! "Set field k (or path) of the struct at addr to v. v." [^Integer addr ^Map layout ^(U Keyword Vector) k v]
   (let [[f base] (field-at layout k)] (write-field! addr base f v)))
 
-(defn new-struct "Room for a struct, its fields from map m (the rest zero): its address. free! it." [layout m]
+(defn new-struct "Room for a struct, its fields from map m (the rest zero): its address. free! it." ^Integer [^Map layout ^Map m]
   (struct-set! (alloc layout) layout m))
 
 (defmacro with-alloc
@@ -283,11 +283,11 @@
      (try ~@(when init [`(mem-set! ~n ~t ~init)]) ~@body
           (finally (free! ~n)))))
 
-(defn string-at "The NUL-terminated string at addr (nil for NULL)." [addr] (%mem-string addr))
-(defn bytes-at "A copy of n bytes at addr, as Bytes." [addr n] (%mem-bytes addr n))
-(defn write-bytes! "Copy bytes (or a string's UTF-8) to addr: the count." [addr b] (%mem-write-bytes! addr b))
+(defn string-at "The NUL-terminated string at addr (nil for NULL)." ^(? String) [^(? Integer) addr] (%mem-string addr))
+(defn bytes-at "A copy of n bytes at addr, as Bytes." ^Bytes [^Integer addr ^Integer n] (%mem-bytes addr n))
+(defn write-bytes! "Copy bytes (or a string's UTF-8) to addr: the count." ^Integer [^Integer addr ^(U String Bytes) b] (%mem-write-bytes! addr b))
 
-(defn alloc-string "A NUL-terminated copy of string s in new memory: its address. free! it." [s]
+(defn alloc-string "A NUL-terminated copy of string s in new memory: its address. free! it." ^Integer [^String s]
   (let [b (bytes (str s)) p (alloc (inc (count b)))]
     (write-bytes! p b)
     p))
@@ -315,7 +315,7 @@
   (callback [:pointer :pointer] :int f). Parameters and the result are
   numbers and addresses, or structs by value (layouts), as maps.
   free-callback! it when C is done with it."
-  [params ret f]
+  ^Callback [^Sequential params ^(U Keyword Map) ret f]
   (let [ch (chan 1024)
         g (struct-converting (vec params) ret f)
         [id address] (%ffi-callback (mapv by-value params) (by-value ret) g ch)
@@ -329,9 +329,9 @@
           (recur))))
     cb))
 
-(defn callback? "Is x a callback?" [x] (instance? Callback x))
-(defn callback-address "Callback cb's address, to pass to C as a function pointer." [cb] (:address cb))
-(defn free-callback! "C mustn't call callback cb after this." [cb] (%ffi-callback-free! (:id cb)) nil)
+(defn callback? "Is x a callback?" ^Boolean [x] (instance? Callback x))
+(defn callback-address "Callback cb's address, to pass to C as a function pointer." ^Integer [^Callback cb] (:address cb))
+(defn free-callback! "C mustn't call callback cb after this." [^Callback cb] (%ffi-callback-free! (:id cb)) nil)
 
 (def ^:private fn-callbacks "(the callbacks made for functions passed as [:callback …]: [f type] → callback)" (atom {}))
 
@@ -347,7 +347,7 @@
 
 (defn library
   "Load a dynamic library: a path or name, or :c / :m for the C and math libraries."
-  [name]
+  ^Library [^(U String Keyword) name]
   (let [path (cond (= name :c) (%ffi-libc-path)
                    (= name :m) (%ffi-libm-path)
                    :else (str name))]
@@ -381,7 +381,7 @@
 (defn main-thread-available?
   "Does a thread serve :main-thread calls? The norn command's first thread
   does; a program embedding Norn serves them only if it says so."
-  []
+  ^Boolean []
   (%main-thread-served?))
 
 (defn- call-mode [blocking main-thread]
@@ -398,7 +398,7 @@
   struct layout as a parameter or result type passes it by value (as a
   map); :... last makes it variadic. Options: :blocking true runs calls on
   the blocking pool, :main-thread true on the process's first thread."
-  [lib name params ret & {:keys [blocking main-thread]}]
+  ^ForeignFunction [^Library lib ^String name ^Sequential params ^(U Keyword Map) ret & {:keys [blocking main-thread]}]
   (let [mode (call-mode blocking main-thread)
         ps (vec params)]
     (ForeignFunction :name (str name) :lib lib :params ps :ret ret :mode mode
@@ -407,7 +407,7 @@
 (defn function-at
   "A C function known by its address (a function pointer C gave), as
   function. (It doesn't survive an image restore.)"
-  [addr params ret & {:keys [blocking main-thread]}]
+  ^ForeignFunction [^Integer addr ^Sequential params ^(U Keyword Map) ret & {:keys [blocking main-thread]}]
   (let [ps (vec params) mode (call-mode blocking main-thread)]
     (ForeignFunction :name addr :lib nil :params ps :ret ret :mode mode
                      :cell (atom (open-fn nil addr ps ret mode)) :prep (prep-for ps ret))))
@@ -469,6 +469,8 @@
 (defn call
   "Call a foreign function. With :out parameters, the result is
   [return-value out…]."
+  ;; (no signature: every defcfun function calls this, and checks its
+  ;; arguments against its own C signature first)
   [ff & args]
   (if (:prep ff)
     (call-converting ff args)

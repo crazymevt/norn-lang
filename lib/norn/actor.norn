@@ -48,11 +48,11 @@
 (def ^:private ids (atom 0))
 (def ^:private registry "Name → process." (atom {}))
 
-(defn process? "Is x a process?" [x] (instance? Process x))
+(defn process? "Is x a process?" ^Boolean [x] (instance? Process x))
 
 (defn self
   "The process running this code (an error outside one)."
-  []
+  ^Process []
   (or (when (and *self* (identical? (current-fiber) @(:fiber *self*))) *self*)
       (error "self: not inside a process (a fiber a process spawned isn't the process)")))
 
@@ -61,23 +61,23 @@
         :links (atom #{}) :monitors (atom {}) :trapping (atom false)
         :reason (atom nil) :done (promise) :name (atom nil)))
 
-(defn whereis "The process registered as name, or nil." [name] (get @registry name))
+(defn whereis "The process registered as name, or nil." ^(? Process) [name] (get @registry name))
 
 (defn- target [p]
   (cond (process? p) p
         :else (or (whereis p) (error (str "No process is registered as " (pr-str p))))))
 
-(defn alive? "Is process p (or the process registered as p) still running?" [p]
+(defn alive? "Is process p (or the process registered as p) still running?" ^Boolean [p]
   (let [p (if (process? p) p (whereis p))]
     (boolean (and p (nil? @(:reason p))))))
 
-(defn exit-reason "Why process p ended: :normal, a condition, :killed…; nil while it runs." [p]
+(defn exit-reason "Why process p ended: :normal, a condition, :killed…; nil while it runs." [^Process p]
   @(:reason p))
 
 (defn await-exit
   "Wait for process p to end (at most ms, then :timeout): its reason."
-  ([p] @(:done p))
-  ([p ms] (deref (:done p) ms :timeout)))
+  ([^Process p] @(:done p))
+  ([^Process p ^Integer ms] (deref (:done p) ms :timeout)))
 
 ;; ---- messages ----
 
@@ -169,7 +169,7 @@
 
 (defn spawn-process
   "Start a process running (apply f args): the process."
-  [f & args]
+  ^Process [f & args]
   (let [p (new-process)
         run (fn []
               (reset! (:fiber p) (current-fiber)) ; (before anything can ask)
@@ -190,7 +190,7 @@
 (defn link!
   "Link this process and p: when either ends abnormally, so does the other
   (or it hears of it, trapping exits)."
-  [p]
+  ^Process [p]
   (let [me (self) p (target p)]
     (swap! (:links me) conj p)
     (swap! (:links p) conj me)
@@ -200,7 +200,7 @@
             (not= r :normal) (end! me r)))
     p))
 
-(defn spawn-link "spawn-process, linked to this process." [f & args]
+(defn spawn-link "spawn-process, linked to this process." ^Process [f & args]
   (let [p (apply spawn-process f args)] (link! p) p))
 
 (defn trap-exits!
@@ -212,7 +212,7 @@
 (defn monitor
   "Watch process p: when it ends, this process gets [:DOWN ref p reason]
   (at once if it has). The ref."
-  [p]
+  ^Symbol [p]
   (let [me (self) p (target p) ref (gensym "monitor")]
     (swap! (:monitors p) assoc ref me)
     (when-let [r @(:reason p)] (send me [:DOWN ref p r]))
@@ -221,8 +221,8 @@
 (defn register!
   "Register process p (default: this one) under name, for send, whereis and
   exit!. An error if another living process has the name."
-  ([name] (register! name (self)))
-  ([name p]
+  (^Process [name] (register! name (self)))
+  (^Process [name ^Process p]
    (swap! registry (fn [r] (if (and (get r name) (alive? (get r name)) (not (identical? (get r name) p)))
                              (error (str (pr-str name) " is registered already"))
                              (assoc r name p))))
@@ -245,8 +245,8 @@
 
     [:get reply] (do (deliver reply n) (recur n))   ; in the process
     (ask counter [:get])                            ; elsewhere"
-  ([p msg] (ask p msg 5000))
-  ([p msg ms]
+  ([p ^Vector msg] (ask p msg 5000))
+  ([p ^Vector msg ^Integer ms]
    (let [reply (promise)]
      (send p (conj msg reply))
      (let [v (deref reply ms ::no-answer)]
@@ -262,7 +262,7 @@
   map before f: :restart :permanent (always restarted), :transient (after
   a crash) or :temporary (never); :shutdown-ms, how long it has to end when
   told to (5000) before it's killed."
-  [id & more]
+  ^Map [id & more]
   (let [[opts f & args] (if (map? (first more)) more (cons {} more))]
     {:id id :start (fn [] (let [p (apply spawn-process f args)]
                             (when (or (keyword? id) (symbol? id)) (register! id p))
@@ -296,7 +296,7 @@
 (defn supervise
   "What a supervisor process runs (see supervisor): a child's function,
   for a supervisor under a supervisor, (child :id supervise opts children)."
-  [opts specs]
+  [^(? Map) opts ^(? Sequential) specs]
   (trap-exits!)
   (let [strategy (or (:strategy opts) :one-for-one)
         max-restarts (or (:max-restarts opts) 3)
@@ -351,16 +351,16 @@
   supervisor process. Options: :strategy :one-for-one (restart the child
   that ended), :one-for-all (all of them) or :rest-for-one (it and those
   after it); more than :max-restarts (3) in :max-ms (5000) and it gives up."
-  [opts children]
+  ^Process [^(? Map) opts ^(? Sequential) children]
   (spawn-process supervise opts children))
 
-(defn which-children "Supervisor sup's children now: [[id process]…]." [sup]
+(defn which-children "Supervisor sup's children now: [[id process]…]." ^Vector [sup]
   (ask sup [:which-children]))
 
 (defn stop-supervisor!
   "Stop supervisor sup: its children are stopped, the last started first,
   then it ends (:normal)."
-  [sup]
+  [^Process sup]
   (ask sup [:stop] 60000)
   (await-exit sup)
   nil)

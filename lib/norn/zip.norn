@@ -38,7 +38,7 @@
   "The entries of archive bs, in the central directory's order: {:name
   :size :compressed-size :method (:stored or :deflated) :crc :modified
   (epoch ms) :directory? :offset}."
-  [bs]
+  ^Vector [^Bytes bs]
   (when-not (bytes? bs) (error "A zip archive is Bytes"))
   (let [n (count bs)
         eocd (first (filter (fn [i] (and (>= i 0) (= (u32 bs i) 0x06054b50)))
@@ -81,14 +81,14 @@
 (defn read-entry
   "The contents of entry name (a string, or an entry map) in archive bs,
   as Bytes; nil if there's none. Option :max-size."
-  [bs name & {:keys [max-size] :or {max-size z/default-max-size}}]
+  ^(? Bytes) [^Bytes bs ^(U String Map) name & {:keys [max-size] :or {max-size z/default-max-size}}]
   (when-let [e (if (map? name) name (first (filter (fn [e] (= (:name e) name)) (entries bs))))]
     (data-of bs e max-size)))
 
 (defn unzip
   "Every file in archive bs: {name bytes} (directories left out). Option
   :max-size, for all of them together."
-  [bs & {:keys [max-size] :or {max-size z/default-max-size}}]
+  ^Map [^Bytes bs & {:keys [max-size] :or {max-size z/default-max-size}}]
   (loop [es (remove :directory? (entries bs)) left max-size out {}]
     (if (empty? es)
       out
@@ -108,7 +108,7 @@
   "Write archive bs's files under folder dir (made as needed); their paths.
   A name that would land outside dir is an error, before anything's
   written. Option :max-size."
-  [bs dir & opts]
+  ^Vector [^Bytes bs ^String dir & opts]
   (let [files (apply unzip bs opts)]
     (doseq [n (keys files)] (safe-name n))
     (vec (for [[n data] (sort-by first files)]
@@ -122,7 +122,7 @@
   a string as UTF-8; a name ending / is a directory). Each is deflated
   unless that doesn't make it smaller. Option :modified (epoch ms, now by
   default)."
-  [entries & {:keys [modified]}]
+  ^Bytes [^(U Map Sequential) entries & {:keys [modified]}]
   (let [ms (or modified (quot (%now-nanos) 1000000))
         [t d] (dos-time ms)
         parts (reduce (fn [{:keys [out offset central]} [name content]]

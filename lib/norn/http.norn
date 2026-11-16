@@ -211,7 +211,7 @@
    431 "Request Header Fields Too Large" 500 "Internal Server Error" 501 "Not Implemented"
    502 "Bad Gateway" 503 "Service Unavailable" 504 "Gateway Timeout"})
 
-(defn reason "The usual reason phrase for HTTP status code n." [n] (core-get reasons n "Unknown"))
+(defn reason "The usual reason phrase for HTTP status code n." ^String [^Integer n] (core-get reasons n "Unknown"))
 
 (defn- streamed? [body] (or (sequential? body) (and (some? body) (not (string? body)) (not (bytes? body)))))
 
@@ -261,7 +261,7 @@
                    application/octet-stream)
     :headers       more headers for the part
   :boundary picks the boundary (default: a random one)."
-  [parts & {:keys [boundary]}]
+  ^Map [^Sequential parts & {:keys [boundary]}]
   (let [boundary (or boundary (str "norn-" (b/hex (%secure-random 16))))
         head (fn [p]
                (let [filename (or (:filename p) (when (:file p) (io/file-name (:file p))))
@@ -308,7 +308,7 @@
   in order: [{:name :filename :content-type :headers :body} …], :body the
   part's bytes; a part that isn't a file also has :value, its text. A
   body that isn't multipart, or is malformed, is a ParseError."
-  [m]
+  ^Vector [^Map m]
   (let [ct (core-get (:headers m) "content-type" "")
         boundary (core-get (header-params ct) "boundary")
         body (let [b (:body m)] (cond (nil? b) (bytes []) (string? b) (bytes b) :else b))
@@ -490,7 +490,7 @@
     :follow-redirects  true (default) or false; :max-redirects 5
     :keep-alive    false to close the connection after this request
     :ca-file       a PEM file of certificates to trust (a private CA)"
-  [req]
+  ^Map [^Map req]
   (let [start (:url req)
         u0 (uri/parse start)
         u0 (if-let [qp (:query-params req)]
@@ -521,11 +521,11 @@
                           (-> (as-body (dissoc resp :closes) (:as req))
                               (assoc :url (uri/format u))))))))))
 
-(defn get "A GET request to url (options as request's)." [url & {:as opts}] (request (assoc opts :method :get :url url)))
-(defn head "A HEAD request to url." [url & {:as opts}] (request (assoc opts :method :head :url url)))
-(defn post "A POST of body to url." [url body & {:as opts}] (request (assoc opts :method :post :url url :body body)))
-(defn put "A PUT of body to url." [url body & {:as opts}] (request (assoc opts :method :put :url url :body body)))
-(defn delete "A DELETE request to url." [url & {:as opts}] (request (assoc opts :method :delete :url url)))
+(defn get "A GET request to url (options as request's)." ^Map [^String url & {:as opts}] (request (assoc opts :method :get :url url)))
+(defn head "A HEAD request to url." ^Map [^String url & {:as opts}] (request (assoc opts :method :head :url url)))
+(defn post "A POST of body to url." ^Map [^String url body & {:as opts}] (request (assoc opts :method :post :url url :body body)))
+(defn put "A PUT of body to url." ^Map [^String url body & {:as opts}] (request (assoc opts :method :put :url url :body body)))
+(defn delete "A DELETE request to url." ^Map [^String url & {:as opts}] (request (assoc opts :method :delete :url url)))
 
 (defmacro with-response
   "(with-response [resp req] body…): resp is (request req) with its body a
@@ -631,7 +631,7 @@
                    request (default 30000)
     :on-error      (fn [error request]), called when the handler fails;
                    the client gets a 500 (default: print the error)"
-  [handler & {:keys [host port tls cert-file key-file max-body idle-timeout on-error]}]
+  ^Map [handler & {:keys [host port tls cert-file key-file max-body idle-timeout on-error]}]
   (let [listener (net/listen (or host "127.0.0.1") (or port 0))
         server {:listener listener :connections (atom #{}) :running (atom true)
                 :address (net/local-address listener) :port (net/port (net/local-address listener))}
@@ -650,15 +650,15 @@
                                                                     (try (io/close listener) (catch Error _ nil))
                                                                     (doseq [s @(:connections server)] (try (io/close s) (catch Error _ nil)))))))
 
-(defn stop! "Stop server: no more connections, and the open ones closed." [server] ((:stop! server)))
+(defn stop! "Stop server: no more connections, and the open ones closed." [^Map server] ((:stop! server)))
 
 ;; ---- helpers ----
 
-(defn body-text "Message m's body as text (UTF-8)." [m]
+(defn body-text "Message m's body as text (UTF-8)." ^String [^Map m]
   (let [b (:body m)] (cond (nil? b) "" (string? b) b :else (bytes->string b true))))
 
 (defn form-params
   "Request req's form fields (an application/x-www-form-urlencoded body),
   as query-params gives them."
-  [req]
+  ^Map [^Map req]
   (uri/query-params (body-text req)))

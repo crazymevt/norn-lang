@@ -116,6 +116,11 @@
   elements placed so far (the new line starts the next one)."
   [col open placed]
   (let [placed (filterv (fn [p] (form? (:node p))) placed) ; comments don't count
+        ;; (a leading ^hint belongs to what follows it: (^Map [a] body)
+        ;; indents as ([a] body) does)
+        placed (if (let [h (:node (first placed))] (and (= :prefix (kind h)) (= "^" (nth h 1))))
+                 (subvec placed 1)
+                 placed)
         head (:node (first placed))
         inner (+ col (count open))
         rule (when (and head (symbol-token? head)) (indent-rule (nth head 1)))

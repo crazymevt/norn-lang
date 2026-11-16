@@ -128,4 +128,6 @@
             n (io/with-open [h (io/open f :read)]
                 (let [r (io/line-reader h)] (loop [n 0] (if (io/read-line r) (recur (inc n)) n))))]
         (is (= 50000 n))
-        (is (< (quot (- (nano-time) t0) 1000000) 5000) "(quadratic copying took minutes)")))))
+        ;; (about 0.5 s in a debug build; the limit leaves room for a loaded
+        ;; machine, the workspace run's suites in parallel)
+        (is (< (quot (- (nano-time) t0) 1000000) 30000) "(quadratic copying took minutes)")))))

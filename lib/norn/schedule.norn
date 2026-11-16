@@ -50,7 +50,7 @@
 (defn parse
   "Cron expression text, parsed: {:minute :hour :day :month :weekday} (sets
   of values), and which days are restricted."
-  [expr]
+  ^Map [^String expr]
   (let [text (get shorthands (str/trim expr) (str/trim expr))
         fields (str/split text #"\s+")]
     (when-not (= 5 (count fields))
@@ -86,8 +86,8 @@
   "The first time after instant from (now) that cron expression c (text or
   parsed) is due. Option :zone. nil if none comes within 5 years
   (30 February…)."
-  ([c] (next-run c (t/now)))
-  ([c from & {:keys [zone] :or {zone :utc}}]
+  (^(? t/Instant) [^(U String Map) c] (next-run c (t/now)))
+  (^(? t/Instant) [^(U String Map) c ^t/Instant from & {:keys [zone] :or {zone :utc}}]
    (let [c (if (string? c) (parse c) c)
          limit (+ (t/epoch-ms from) (* 5 366 24 3600 1000))]
      (loop [i (t/plus (at (start-of (t/fields from zone) :minute)) (t/duration :minutes 1))]
@@ -103,7 +103,8 @@
            (not ((:minute c) (:minute f))) (recur (t/plus i (t/duration :minutes 1)))
            :else i))))))
 
-(defn next-runs "The next n times c is due after from (fewer if it stops coming)." [c from n & opts]
+(defn next-runs "The next n times c is due after from (fewer if it stops coming)."
+  ^Vector [^(U String Map) c ^t/Instant from ^Integer n & opts]
   (let [c (if (string? c) (parse c) c)]
     (vec (take n (take-while some? (rest (iterate (fn [i] (when i (apply next-run c i opts))) from)))))))
 
@@ -113,7 +114,7 @@
 (defn schedule
   "Run (f) each time cron expression c is due, in a fiber of its own:
   a schedule, for stop!. Option :zone."
-  [c f & {:keys [zone] :or {zone :utc}}]
+  ^Map [^(U String Map) c f & {:keys [zone] :or {zone :utc}}]
   (let [c (if (string? c) (parse c) c)
         runs (atom 0)
         fiber (spawn-detached
@@ -126,6 +127,6 @@
                       (recur due)))))]
     {:cron c :fiber fiber :runs runs}))
 
-(defn stop! "Stop schedule s (a run going on is cancelled)." [s] (cancel! (:fiber s)) nil)
+(defn stop! "Stop schedule s (a run going on is cancelled)." [^Map s] (cancel! (:fiber s)) nil)
 
-(defn runs "How many times schedule s has run." [s] @(:runs s))
+(defn runs "How many times schedule s has run." ^Integer [^Map s] @(:runs s))

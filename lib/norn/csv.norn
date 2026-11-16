@@ -14,7 +14,7 @@
 (defn read-csv
   "The rows of CSV text, each a vector of strings. Options: :separator
   (\\,), :quote (\\\"). A quote left open is an error."
-  [text & {:keys [separator quote] :or {separator \, quote \"}}]
+  ^Vector [^String text & {:keys [separator quote] :or {separator \, quote \"}}]
   (let [[state field row rows]
         (reduce (fn [[state field row rows] c]
                   (case state
@@ -48,7 +48,7 @@
   "CSV text with a header row, as maps of its column names (as keywords,
   or :keys identity for the strings) to each row's fields. Options as
   read-csv, and :keys."
-  [text & {:keys [keys] :or {keys keyword} :as opts}]
+  ^Vector [^String text & {:keys [keys] :or {keys keyword} :as opts}]
   (let [[header & rows] (apply read-csv text (mapcat identity (dissoc opts :keys)))
         ks (mapv keys header)]
     (mapv (fn [r] (zipmap ks r)) rows)))
@@ -62,13 +62,13 @@
 (defn write-csv
   "Rows (sequences of values, written with str; nil empty) as CSV text.
   Options: :separator, :quote, :newline (\"\\r\\n\")."
-  [rows & {:keys [separator quote newline] :or {separator \, quote \" newline "\r\n"}}]
+  ^String [^Sequential rows & {:keys [separator quote newline] :or {separator \, quote \" newline "\r\n"}}]
   (str/join (map (fn [r] (str (str/join (str separator) (map (fn [x] (field-text x separator quote)) r)) newline)) rows)))
 
 (defn write-maps
   "Maps as CSV text, a header row first: the columns are :columns, or the
   first map's keys. Options as write-csv."
-  [ms & {:keys [columns] :as opts}]
+  ^String [^Sequential ms & {:keys [columns] :as opts}]
   (let [cols (or columns (vec (keys (first ms))))]
     (apply write-csv (cons (mapv (fn [k] (if (keyword? k) (name k) k)) cols) (map (fn [m] (mapv (fn [k] (get m k)) cols)) ms))
            (mapcat identity (dissoc opts :columns)))))

@@ -44,15 +44,15 @@
 
 (defn generator?
   "Is x a generator?"
-  [x]
+  ^Boolean [x]
   (instance? Generator x))
 
 (defn generate
   "A value from generator gen. With a seed, the same one each time; size
   (default 30) bounds numbers and collection lengths."
-  ([gen] (generate gen 30))
-  ([gen size] (generate gen size (%rand-seed)))
-  ([gen size seed] ((:run gen) (random-source (random/generator seed)) size)))
+  ([^Generator gen] (generate gen 30))
+  ([^Generator gen ^Integer size] (generate gen size (%rand-seed)))
+  ([^Generator gen ^Integer size ^Integer seed] ((:run gen) (random-source (random/generator seed)) size)))
 
 (defn- run-gen [gen src size]
   (when-not (generator? gen) (error "norn.property: expected a generator, got" gen))
@@ -60,14 +60,14 @@
 
 (defn- gen [f] (Generator :run f))
 
-(defn constant "A generator always giving x." [x] (gen (fn [_ _] x)))
+(defn constant "A generator always giving x." ^Generator [x] (gen (fn [_ _] x)))
 
-(defn fmap "A generator giving (f x) for each x gen gives." [f g]
+(defn fmap "A generator giving (f x) for each x gen gives." ^Generator [f ^Generator g]
   (gen (fn [src size] (f (run-gen g src size)))))
 
 (defn bind
   "A generator: a value x from g, then a value from the generator (f x)."
-  [g f]
+  ^Generator [^Generator g f]
   (gen (fn [src size] (run-gen (f (run-gen g src size)) src size))))
 
 (defn- magnitude
@@ -84,7 +84,7 @@
 (defn integers
   "A generator of integers, shrinking toward 0 (or the bound nearest it).
   :min and :max bound them; without them, they grow with the size."
-  [& {:keys [min max]}]
+  ^Generator [& {:keys [min max]}]
   (gen (fn [src size]
          (let [lo (or min (- (* size size))) hi (or max (* size size))]
            (when (> lo hi) (error "norn.property/integers: :min is above :max" lo hi))
@@ -94,14 +94,14 @@
                    (pos? up) (+ origin (magnitude src up))
                    :else (- origin (magnitude src down))))))))
 
-(defn naturals "A generator of integers from 0, growing with the size." [] (integers :min 0))
+(defn naturals "A generator of integers from 0, growing with the size." ^Generator [] (integers :min 0))
 
-(defn booleans "A generator of booleans, shrinking toward false." [] (gen (fn [src _] (= 1 (draw! src 2)))))
+(defn booleans "A generator of booleans, shrinking toward false." ^Generator [] (gen (fn [src _] (= 1 (draw! src 2)))))
 
 (defn floats
   "A generator of finite floats, shrinking toward 0.0: whole numbers,
   fractions and, now and then, very large or small magnitudes."
-  []
+  ^Generator []
   (gen (fn [src size]
          (let [whole (run-gen (integers) src size)
                kind (draw! src 4)]
@@ -111,19 +111,19 @@
              2 (* (double whole) (math/pow 10.0 (- (draw! src 300) 150)))
              (+ whole (/ (draw! src 1000000) 1000000.0)))))))
 
-(defn elements "A generator of coll's items, shrinking toward the first." [coll]
+(defn elements "A generator of coll's items, shrinking toward the first." ^Generator [coll]
   (let [v (vec coll)]
     (when (empty? v) (error "norn.property/elements needs at least one item"))
     (gen (fn [src _] (nth v (draw! src (count v)))))))
 
-(defn one-of "A generator of values from one of gens, shrinking toward the first." [& gens]
+(defn one-of "A generator of values from one of gens, shrinking toward the first." ^Generator [& ^Generator gens]
   (let [v (vec gens)]
     (gen (fn [src size] (run-gen (nth v (draw! src (count v))) src size)))))
 
 (defn frequency
   "A generator choosing among [weight generator] pairs by weight, shrinking
   toward the first."
-  [& pairs]
+  ^Generator [& ^Sequential pairs]
   (let [total (reduce + (map first pairs))]
     (gen (fn [src size]
            (let [r (draw! src total)]
@@ -132,7 +132,7 @@
 
 (defn such-that
   "A generator of gen's values that satisfy pred, trying up to :tries times."
-  [pred g & {:keys [tries] :or {tries 100}}]
+  ^Generator [pred ^Generator g & {:keys [tries] :or {tries 100}}]
   (gen (fn [src size]
          (loop [n 0]
            (let [x (run-gen g src size)]
@@ -147,21 +147,21 @@
 (defn vectors
   "A generator of vectors of g's values, shrinking toward shorter ones.
   :min and :max bound the length; without :max it grows with the size."
-  [g & {:keys [min max]}]
+  ^Generator [^Generator g & {:keys [min max]}]
   (gen (fn [src size] (mapv (fn [_] (run-gen g src size)) (range (sized-count src size min max))))))
 
-(defn lists "As vectors, giving lists." [g & {:as opts}]
+(defn lists "As vectors, giving lists." ^Generator [^Generator g & {:as opts}]
   (fmap (fn [v] (apply norn.core/list v)) (apply vectors g (mapcat identity opts))))
 
-(defn sets "A generator of sets of g's values (as many as are distinct)." [g & {:as opts}]
+(defn sets "A generator of sets of g's values (as many as are distinct)." ^Generator [^Generator g & {:as opts}]
   (fmap set (apply vectors g (mapcat identity opts))))
 
-(defn maps "A generator of maps from key-gen's values to value-gen's." [key-gen value-gen & {:as opts}]
+(defn maps "A generator of maps from key-gen's values to value-gen's." ^Generator [^Generator key-gen ^Generator value-gen & {:as opts}]
   (fmap (fn [pairs] (into {} pairs))
         (apply vectors (gen (fn [src size] [(run-gen key-gen src size) (run-gen value-gen src size)]))
                (mapcat identity opts))))
 
-(defn tuple "A generator of vectors: a value from each of gens, in order." [& gens]
+(defn tuple "A generator of vectors: a value from each of gens, in order." ^Generator [& ^Generator gens]
   (gen (fn [src size] (mapv (fn [g] (run-gen g src size)) gens))))
 
 (def ^:private printable (mapv char (range 32 127)))
@@ -169,7 +169,7 @@
 (defn chars
   "A generator of characters, shrinking toward \\a: printable ASCII by
   default, or :unicode for any Unicode scalar value."
-  [& {:keys [unicode]}]
+  ^Generator [& {:keys [unicode]}]
   (if unicode
     (gen (fn [src _]
            (let [n (draw! src 0x10F800)]
@@ -180,7 +180,7 @@
 (defn strings
   "A generator of strings of chars's characters (options as chars's, and
   :min and :max for the length), shrinking toward shorter ones."
-  [& {:keys [unicode min max]}]
+  ^Generator [& {:keys [unicode min max]}]
   (let [c (chars :unicode unicode)]
     (fmap (fn [cs] (apply str cs)) (vectors c :min min :max max))))
 
@@ -191,17 +191,17 @@
          (apply str (nth letters (draw! src (count letters)))
                 (map (fn [_] (nth letters (draw! src (count letters)))) (range (draw! src (+ 1 (quot size 3)))))))))
 
-(defn keyword "A generator of unqualified keywords." [] (fmap norn.core/keyword (name-gen)))
+(defn keyword "A generator of unqualified keywords." ^Generator [] (fmap norn.core/keyword (name-gen)))
 
-(defn symbol "A generator of unqualified symbols." [] (fmap norn.core/symbol (name-gen)))
+(defn symbol "A generator of unqualified symbols." ^Generator [] (fmap norn.core/symbol (name-gen)))
 
-(defn byte-strings "A generator of Bytes, shrinking toward fewer and smaller bytes." [& {:keys [min max]}]
+(defn byte-strings "A generator of Bytes, shrinking toward fewer and smaller bytes." ^Generator [& {:keys [min max]}]
   (fmap bytes (vectors (integers :min 0 :max 255) :min min :max max)))
 
 (defn recursive
   "A generator of trees: leaf-gen's values, or (branch inner) where inner
   generates smaller trees. Depth is bounded by the size."
-  [branch leaf-gen]
+  ^Generator [branch ^Generator leaf-gen]
   (gen (fn [src size]
          (letfn [(tree [depth]
                        (if (or (zero? depth) (zero? (draw! src 3)))
@@ -290,7 +290,7 @@
   :max-size (default 50). {:pass? true :runs n :seed s}, or for a failure
   {:pass? false :seed s :run i :args … (shrunk) :original … :failure …},
   with the arguments by name. :seed reruns a failure's cases exactly."
-  [p & {:keys [runs seed max-size max-shrinks] :or {runs 100 max-size 50 max-shrinks 5000}}]
+  ^Map [^Property p & {:keys [runs seed max-size max-shrinks] :or {runs 100 max-size 50 max-shrinks 5000}}]
   (let [seed (or seed (abs (%rand-seed)))
         named (fn [args] (zipmap (map norn.core/keyword (:names p)) args))]
     (loop [i 0]
@@ -310,7 +310,7 @@
 
 (defn %describe
   "A failed check's result, as text for a report."
-  [{:keys [seed run args failure]}]
+  ^String [^Map {:keys [seed run args failure]}]
   (str "falsified with " (pr-str args)
        (when-let [e (:error failure)] (str ", signalling: " e))
        " (seed " seed ", case " run "; rerun with :seed " seed ")"))

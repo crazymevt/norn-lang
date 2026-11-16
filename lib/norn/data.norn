@@ -34,7 +34,7 @@
 
 (defn diff
   "[things only in a, things only in b, things in both]."
-  [a b]
+  ^Vector [a b]
   (if (= a b)
     [nil nil a]
     (let [ka (kind a)]

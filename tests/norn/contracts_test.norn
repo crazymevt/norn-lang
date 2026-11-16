@@ -116,3 +116,32 @@
     (is (= 4 (f 2)) "doing nothing yet")
     (is (= '[(optimize (speed 3)) (type Integer x)] (second (last @%declarations))))
     (is (= (inc before) (count @%declarations)))))
+
+(def signed-libraries
+  "M9a's libraries, whose public functions carry checked signatures."
+  '[norn.actor norn.bin norn.cli norn.compress norn.crypto norn.csv norn.data norn.ffi norn.http
+    norn.process norn.property norn.schedule norn.sqlite norn.stm norn.terminal norn.time norn.toml
+    norn.uri norn.uuid norn.zip])
+
+(def unsigned
+  "The functions there that take nothing a type can say (no arguments,
+  only a function, or any value or name), and ffi/call, which every
+  defcfun function calls after checking its own C signature."
+  '#{norn.actor/exit! norn.actor/run-in-process norn.actor/send norn.actor/trap-exits!
+     norn.ffi/call norn.http/close-idle! norn.sqlite/c-libversion norn.stm/after-commit norn.stm/run-transaction
+     norn.terminal/call-with-raw-mode norn.terminal/suspend!})
+
+(deftest the-libraries-public-functions-are-checked
+  (doseq [l signed-libraries] (require l))
+  (is (= []
+         (vec (for [l signed-libraries
+                    [s v] (sort-by (fn [[s _]] (str s)) (ns-publics l))
+                    :let [full (symbol (str l) (str s))]
+                    :when (and (fn? (var-get v)) (not (macro? v)) (not (str/starts-with? (str s) "%"))
+                               (not (contains? unsigned full)) (not (%contracted? v)))]
+                full)))
+      "every public function has a signature, or is listed as taking nothing typeable")
+  (is (= []
+         (vec (filter (fn [full] (%contracted? (resolve full))) (sort-by str unsigned))))
+      "the list holds only unsigned functions")
+  (is (str/starts-with? (:message (caught '(norn.uri/parse 5))) "norn.uri/parse: its 1st argument should be String, got 5")))

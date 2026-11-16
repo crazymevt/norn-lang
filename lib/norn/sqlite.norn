@@ -92,7 +92,7 @@
 ;; (SQLITE_OPEN_READONLY 1, READWRITE 2, CREATE 4, URI 0x40, FULLMUTEX 0x10000)
 (def ^:private TRANSIENT "SQLITE_TRANSIENT: SQLite copies the value." 18446744073709551615)
 
-(defn version "The SQLite library's version." [] (c-libversion))
+(defn version "The SQLite library's version." ^String [] (c-libversion))
 
 ;; ---- errors ----
 
@@ -121,7 +121,7 @@
   "Open (creating) the database at path, or \":memory:\". Options:
   :readonly, :create (true), :busy-timeout ms to wait for another
   connection's lock (5000), :blocking (I/O on the blocking pool)."
-  [path & {:keys [readonly create busy-timeout blocking] :or {create true busy-timeout 5000}}]
+  ^Connection [^String path & {:keys [readonly create busy-timeout blocking] :or {create true busy-timeout 5000}}]
   (ffi/with-alloc [out :pointer]
     (let [flags (bit-or (if readonly 1 (bit-or 2 (if create 4 0))) 0x40 0x10000)
           rc (c-open (str path) out flags nil)
@@ -148,7 +148,7 @@
 (defn close!
   "Close connection c (its prepared statements too). Closing it again does
   nothing."
-  [c]
+  [^Connection c]
   (with-connection-lock c
     (fn []
       (when-let [h @(:handle c)]
@@ -166,7 +166,7 @@
   `(let [~n (open ~path ~@opts)]
      (try ~@body (finally (close! ~n)))))
 
-(defn open? "Is connection c open?" [c] (some? @(:handle c)))
+(defn open? "Is connection c open?" ^Boolean [^Connection c] (some? @(:handle c)))
 
 ;; ---- statements ----
 
@@ -263,8 +263,8 @@
 (defn query
   "The rows q (SQL, or [SQL params…]) gives, as maps of column keywords
   to values (or, {:as :vectors}, as vectors in column order)."
-  ([c q] (query c q nil))
-  ([c q opts]
+  (^Vector [^Connection c ^(U String Vector) q] (query c q nil))
+  (^Vector [^Connection c ^(U String Vector) q ^(? Map) opts]
    (let [rows (volatile! (transient []))
          vectors? (= :vectors (:as opts))]
      (run-statement! c q (fn [stmt names]
@@ -293,7 +293,7 @@
   no rows). :limit stops after that many rows, :more? saying whether
   another followed. A statement that gives no rows (an UPDATE, say) runs
   and gives {:columns [] :rows [] :changed n}."
-  [c q & {:keys [limit]}]
+  ^Map [^Connection c ^(U String Vector) q & {:keys [limit]}]
   (let [rows (volatile! (transient []))
         more (volatile! false)
         names (column-names c q)
@@ -309,28 +309,30 @@
   "Call (f row) for each row q gives, row a vector in column order, as the
   rows come (none are held): for exporting a large table. The number of
   rows."
-  [c q f]
+  ^Integer [^Connection c ^(U String Vector) q f]
   (let [n (volatile! 0)]
     (run-statement! c q (fn [stmt names] (vswap! n inc) (f (row-vector stmt (count names))) nil))
     @n))
 
-(defn query-one "The first row q gives (a map), or nil." ([c q] (first (query c q))) ([c q opts] (first (query c q opts))))
+(defn query-one "The first row q gives (a map, or a vector with :as :vectors), or nil."
+  (^(? (U Map Vector)) [^Connection c ^(U String Vector) q] (first (query c q)))
+  (^(? (U Map Vector)) [^Connection c ^(U String Vector) q ^(? Map) opts] (first (query c q opts))))
 
 (defn execute!
   "Run q, a statement giving no rows (INSERT, UPDATE, CREATE…): the number
   of rows it changed."
-  [c q]
+  ^Integer [^Connection c ^(U String Vector) q]
   (run-statement! c q (fn [_ _] nil)))
 
 (defn exec!
   "Run a script: several statements, no parameters."
-  [c sql]
+  [^Connection c ^String sql]
   (with-connection-lock c
     (fn [] (let [h (handle! c)] (check! h ((if (:blocking c) c-exec-blocking c-exec) h sql nil nil nil) sql) nil))))
 
-(defn last-insert-id "The rowid of the last row inserted on c." [c] (c-last-insert-rowid (handle! c)))
+(defn last-insert-id "The rowid of the last row inserted on c." ^Integer [^Connection c] (c-last-insert-rowid (handle! c)))
 
-(defn in-transaction? "Is c in a transaction?" [c] (zero? (c-autocommit (handle! c))))
+(defn in-transaction? "Is c in a transaction?" ^Boolean [^Connection c] (zero? (c-autocommit (handle! c))))
 
 ;; ---- transactions ----
 
@@ -338,8 +340,8 @@
   "(f) in a transaction on c: committed if it returns, rolled back if it
   fails. Inside another, a savepoint: rolled back alone. Options: :mode
   :deferred (the default), :immediate or :exclusive. f's value."
-  ([c f] (transact c f nil))
-  ([c f opts]
+  ([^Connection c f] (transact c f nil))
+  ([^Connection c f ^(? Map) opts]
    (with-connection-lock c
      (fn []
        (let [depth (swap! (:depth c) inc)
@@ -364,22 +366,22 @@
   [[c & opts] & body]
   `(transact ~c (fn [] ~@body) ~(apply hash-map opts)))
 
-(defn tables "The names of c's tables." [c]
+(defn tables "The names of c's tables." ^(Vec String) [^Connection c]
   (mapv :name (query c "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")))
 
 (defn schema
   "c's tables and views, sorted by name: [{:name :type (:table or :view)} …]."
-  [c]
+  ^(Vec Map) [^Connection c]
   (mapv (fn [r] (update r :type keyword))
         (query c "SELECT name, type FROM sqlite_schema WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name COLLATE NOCASE")))
 
 (defn columns
   "The columns of table (or view) t: [{:name :type :not-null? :primary-key?} …]."
-  [c t]
+  ^(Vec Map) [^Connection c ^String t]
   (mapv (fn [r] {:name (:name r) :type (:type r) :not-null? (= 1 (:notnull r)) :primary-key? (pos? (:pk r))})
         (query c ["SELECT name, type, \"notnull\", pk FROM pragma_table_info(?)" t])))
 
 (defn quote-name
   "Name as an SQL identifier, in double quotes: \"my table\"."
-  [name]
+  ^String [^String name]
   (str "\"" (str/replace (str name) "\"" "\"\"") "\""))

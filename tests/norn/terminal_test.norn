@@ -130,13 +130,16 @@
         (let [p (proc/start-pty "/bin/zsh" :args ["-f" "-i"] :env {"PS1" "PROMPT> "})
               out (atom "")
               reader (future (loop [] (when-let [b (io/read (:out p) 4096)] (swap! out str (bytes->string b true)) (recur))))
-              seen? (fn [s] (loop [n 0]
-                              (cond (str/includes? @out s) true
-                                    (> n 200) false
-                                    :else (do (sleep 50) (recur (inc n))))))]
+              ;; (within 10 s; a child norn starting gets 60, since a debug
+              ;; build at tier 1 takes about 10 to start and load the library)
+              seen? (fn seen? ([s] (seen? s 200))
+                      ([s tries] (loop [n 0]
+                                   (cond (str/includes? @out s) true
+                                         (> n tries) false
+                                         :else (do (sleep 50) (recur (inc n)))))))]
           (is (seen? "PROMPT> "))
           (io/write (:in p) (str exe " " script "\n"))
-          (is (seen? "raw"))
+          (is (seen? "raw" 1200))
           (io/write (:in p) (bytes [26]))
           (is (seen? "suspended") "Ctrl-Z, as a key, stops it")
           (io/write (:in p) "stty -a | grep -o ' -*icanon'; echo che''cked\n")

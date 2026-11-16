@@ -257,7 +257,7 @@
 (defn read-string
   "The TOML document s, as a map. :keys transforms keys (keyword by default).
   With :local-times true, read local dates and times as norn.time values."
-  [s & {:keys [keys local-times] :or {keys keyword}}]
+  ^Map [^String s & {:keys [keys local-times] :or {keys keyword}}]
   (let [st (atom {:cs (vec (str s)) :i 0 :dotted #{} :inline #{} :aot #{}})
         opts {:keys keys :local-times local-times}]
     (loop [doc {} path [] defined #{}]
@@ -345,7 +345,7 @@
 (defn write-string
   "Map m as a TOML document: plain values first, then tables, then arrays
   of tables. Keys may be keywords or strings."
-  [m]
+  ^String [^Map m]
   (let [out (atom [])]
     (write-table out [] m)
     (str (str/join "\n" (drop-while empty? @out)) "\n")))

@@ -15,14 +15,14 @@
 (defn compress
   "data, compressed. Options: :format :gzip (the default), :zlib or :raw
   (bare deflate); :level 0 (store) to 9 (smallest), 6 by default."
-  [data & {:keys [format level] :or {format :gzip level 6}}]
+  ^Bytes [^(U String Bytes) data & {:keys [format level] :or {format :gzip level 6}}]
   (%deflate data level format))
 
 (defn decompress
   "data, decompressed. Options: :format as for compress; :max-size."
-  [data & {:keys [format max-size] :or {format :gzip max-size default-max-size}}]
+  ^Bytes [^(U String Bytes) data & {:keys [format max-size] :or {format :gzip max-size default-max-size}}]
   (%inflate data format max-size))
 
-(defn gzip "data as gzip." [data] (compress data :format :gzip))
-(defn gunzip "gzip data, decompressed (several members, one after another)." [data & opts] (apply decompress data :format :gzip opts))
-(defn crc32 "The CRC-32 of data (as zip and gzip use), an integer." [data] (%crc32 data))
+(defn gzip "data as gzip." ^Bytes [^(U String Bytes) data] (compress data :format :gzip))
+(defn gunzip "gzip data, decompressed (several members, one after another)." ^Bytes [^(U String Bytes) data & opts] (apply decompress data :format :gzip opts))
+(defn crc32 "The CRC-32 of data (as zip and gzip use), an integer." ^Integer [^(U String Bytes) data] (%crc32 data))

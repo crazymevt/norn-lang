@@ -25,13 +25,13 @@
 (defclass LocalTime () ((hour :required true) (minute :required true) (second :required true) (nanos :required true)))
 (defclass LocalDateTime () ((date :required true) (time :required true)))
 
-(defn instant? [x] (instance? Instant x))
-(defn duration? [x] (instance? Duration x))
-(defn local-date? [x] (instance? LocalDate x))
-(defn local-time? [x] (instance? LocalTime x))
-(defn local-date-time? [x] (instance? LocalDateTime x))
+(defn instant? ^Boolean [x] (instance? Instant x))
+(defn duration? ^Boolean [x] (instance? Duration x))
+(defn local-date? ^Boolean [x] (instance? LocalDate x))
+(defn local-time? ^Boolean [x] (instance? LocalTime x))
+(defn local-date-time? ^Boolean [x] (instance? LocalDateTime x))
 
-(defn leap-year? "Is year a leap year in the Gregorian calendar?" [year]
+(defn leap-year? "Is year a leap year in the Gregorian calendar?" ^Boolean [^Integer year]
   (and (zero? (mod year 4)) (or (not (zero? (mod year 100))) (zero? (mod year 400)))))
 
 (defmethod initialize-instance :after ((date LocalDate) _)
@@ -52,36 +52,40 @@
   (when-not (and (local-date? (:date dt)) (local-time? (:time dt)))
     (error "LocalDateTime expects a local date and local time")))
 
-(defn local-date "A Gregorian date without a time zone, in years 0000–9999." [year month day]
+(defn local-date "A Gregorian date without a time zone, in years 0000–9999."
+  ^LocalDate [^Integer year ^Integer month ^Integer day]
   (LocalDate :year year :month month :day day))
 
 (defn local-time "A time of day without a time zone, with seconds and nanoseconds defaulting to zero."
-  ([hour minute] (local-time hour minute 0 0))
-  ([hour minute second] (local-time hour minute second 0))
-  ([hour minute second nanos] (LocalTime :hour hour :minute minute :second second :nanos nanos)))
+  (^LocalTime [^Integer hour ^Integer minute] (local-time hour minute 0 0))
+  (^LocalTime [^Integer hour ^Integer minute ^Integer second] (local-time hour minute second 0))
+  (^LocalTime [^Integer hour ^Integer minute ^Integer second ^Integer nanos]
+   (LocalTime :hour hour :minute minute :second second :nanos nanos)))
 
-(defn local-date-time "Combine a LocalDate and LocalTime without attaching a zone." [date clock]
+(defn local-date-time "Combine a LocalDate and LocalTime without attaching a zone."
+  ^LocalDateTime [^LocalDate date ^LocalTime clock]
   (LocalDateTime :date date :time clock))
 
-(defn parse-local-date "Parse YYYY-MM-DD as a local date." [s]
+(defn parse-local-date "Parse YYYY-MM-DD as a local date." ^LocalDate [^String s]
   (if-let [[_ year month day] (re-matches #"([0-9]{4})-([0-9]{2})-([0-9]{2})" s)]
     (apply local-date (map parse-long [year month day]))
     (error "Invalid local date" s)))
 
 (defn parse-local-time
   "Parse HH:MM, or HH:MM:SS with optional fractional seconds. Truncates precision beyond nanoseconds."
-  [s]
+  ^LocalTime [^String s]
   (if-let [[_ hour minute second fraction] (re-matches #"([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]+))?)?" s)]
     (let [digits (or fraction "") nanos (parse-long (subs (str digits "000000000") 0 9))]
       (local-time (parse-long hour) (parse-long minute) (parse-long (or second "0")) nanos))
     (error "Invalid local time" s)))
 
-(defn parse-local-date-time "Parse a local date and time separated by T or a space." [s]
+(defn parse-local-date-time "Parse a local date and time separated by T or a space." ^LocalDateTime [^String s]
   (if-let [[_ date clock] (re-matches #"([0-9]{4}-[0-9]{2}-[0-9]{2})[Tt ](.+)" s)]
     (local-date-time (parse-local-date date) (parse-local-time clock))
     (error "Invalid local date-time" s)))
 
-(defn format-local "Write a local date, local time or local date-time as ISO calendar text." [x]
+(defn format-local "Write a local date, local time or local date-time as ISO calendar text."
+  ^String [^(U LocalDate LocalTime LocalDateTime) x]
   (cond (local-date? x) (norn.core/format "%04d-%02d-%02d" (:year x) (:month x) (:day x))
         (local-time? x) (str (norn.core/format "%02d:%02d:%02d" (:hour x) (:minute x) (:second x))
                              (when (pos? (:nanos x))
@@ -89,31 +93,32 @@
         (local-date-time? x) (str (format-local (:date x)) "T" (format-local (:time x)))
         :else (error "Expected a local date or time" x)))
 
-(defn now "The current instant (wall clock)." [] (Instant :nanos (%now-nanos)))
-(defn instant "The instant n nanoseconds after the epoch." [n] (Instant :nanos n))
-(defn of-epoch-ms "The instant ms milliseconds after the epoch." [ms] (Instant :nanos (* ms 1000000)))
-(defn epoch-ms [i] (quot (:nanos i) 1000000))
-(defn epoch-nanos [i] (:nanos i))
+(defn now "The current instant (wall clock)." ^Instant [] (Instant :nanos (%now-nanos)))
+(defn instant "The instant n nanoseconds after the epoch." ^Instant [^Integer n] (Instant :nanos n))
+(defn of-epoch-ms "The instant ms milliseconds after the epoch." ^Instant [^Integer ms] (Instant :nanos (* ms 1000000)))
+(defn epoch-ms ^Integer [^Instant i] (quot (:nanos i) 1000000))
+(defn epoch-nanos ^Integer [^Instant i] (:nanos i))
 
 (defn duration
   "(duration :hours 1 :minutes 30) — any of :days :hours :minutes :seconds :millis :nanos."
-  [& {:keys [days hours minutes seconds millis nanos]}]
+  ^Duration [& {:keys [days hours minutes seconds millis nanos]}]
   (Duration :nanos (+ (* (or days 0) 86400000000000) (* (or hours 0) 3600000000000)
                       (* (or minutes 0) 60000000000) (* (or seconds 0) 1000000000)
                       (* (or millis 0) 1000000) (or nanos 0))))
-(defn nanos [d] (:nanos d))
-(defn millis [d] (quot (:nanos d) 1000000))
-(defn seconds [d] (quot (:nanos d) 1000000000))
+(defn nanos ^Integer [^Duration d] (:nanos d))
+(defn millis ^Integer [^Duration d] (quot (:nanos d) 1000000))
+(defn seconds ^Integer [^Duration d] (quot (:nanos d) 1000000000))
 
 (defn plus
   "An instant moved forward by a duration, or two durations added."
-  [x d]
+  ^(U Instant Duration) [^(U Instant Duration) x ^Duration d]
   (if (instant? x) (Instant :nanos (+ (:nanos x) (:nanos d))) (Duration :nanos (+ (:nanos x) (:nanos d)))))
 (defn minus
   "An instant moved back by a duration, or one duration less another."
-  [x d]
+  ^(U Instant Duration) [^(U Instant Duration) x ^Duration d]
   (if (instant? x) (Instant :nanos (- (:nanos x) (:nanos d))) (Duration :nanos (- (:nanos x) (:nanos d)))))
-(defn between "The duration from instant a to instant b." [a b] (Duration :nanos (- (:nanos b) (:nanos a))))
+(defn between "The duration from instant a to instant b." ^Duration [^Instant a ^Instant b]
+  (Duration :nanos (- (:nanos b) (:nanos a))))
 
 (def ^:private ns-per-second 1000000000)
 (def ^:private ns-per-day 86400000000000)
@@ -132,7 +137,7 @@
 
 (defmethod print-object ((z Zone)) (str "#<Zone " (:name z) ">"))
 
-(defn zone? "Is x a Zone?" [x] (instance? Zone x))
+(defn zone? "Is x a Zone?" ^Boolean [x] (instance? Zone x))
 
 (defn- hms
   "Seconds in POSIX TZ text [+-]h[:mm[:ss]]."
@@ -164,7 +169,7 @@
          :end (date-rule (or end "M11.1.0") end-time)}
         {:std std}))))
 
-(defn days-in-month "The number of days in month (1–12) of year." [year month]
+(defn days-in-month "The number of days in month (1–12) of year." ^Integer [^Integer year ^Integer month]
   (if (and (= month 2) (leap-year? year)) 29 (nth [31 28 31 30 31 30 31 31 30 31 30 31] (dec month))))
 
 ;; Days and dates, in whole days so any year a LocalDate holds works
@@ -285,7 +290,7 @@
 
 (defn zone-directories
   "Where zone files are looked for: $TZDIR, else the usual system places."
-  []
+  ^Vector []
   (if-let [d (sys/getenv "TZDIR")]
     [d]
     ["/usr/share/zoneinfo" "/usr/lib/zoneinfo" "/usr/share/lib/zoneinfo" "/etc/zoneinfo"]))
@@ -295,7 +300,7 @@
 (defn system-zone
   "This machine's zone: $TZ (a zone name or a POSIX TZ string), else the
   zone /etc/localtime names or holds, else UTC."
-  []
+  ^Zone []
   (let [tz (sys/getenv "TZ") tz (if (and tz (str/starts-with? tz ":")) (subs tz 1) tz)]
     (or (when (seq tz)
           (or (try (zone tz) (catch Error _ nil))
@@ -320,7 +325,7 @@
   "The zone z names: an IANA name (\"America/New_York\"), \"+05:30\" or
   \"Z\", an offset in seconds, :utc, :local (system-zone), or a Zone
   (itself). Named zones are read once and kept."
-  [z]
+  ^Zone [^(U Zone String Integer Keyword) z]
   (cond (zone? z) z
         (= z :utc) utc
         (= z :local) (system-zone)
@@ -331,11 +336,11 @@
                         (let [loaded (load-zone z)] (swap! zone-cache assoc z loaded) loaded))
         :else (error "norn.time: not a zone:" (pr-str z))))
 
-(defn zone-name "Zone z's name." [z] (:name (zone z)))
+(defn zone-name "Zone z's name." ^String [^(U Zone String Integer Keyword) z] (:name (zone z)))
 
 (defn available-zones
   "The names of the zones in the first zone directory that exists, sorted."
-  []
+  ^Vector []
   (if-let [root (first (filter io/directory? (zone-directories)))]
     (letfn [(walk [prefix dir]
                   (mapcat (fn [n]
@@ -350,8 +355,8 @@
 
 (defn zone-info
   "{:offset (seconds) :dst? :abbreviation} for zone z at instant i (default now)."
-  ([z] (zone-info z (now)))
-  ([z i] (type-at (zone z) (seconds-of i))))
+  (^Map [^(U Zone String Integer Keyword) z] (zone-info z (now)))
+  (^Map [^(U Zone String Integer Keyword) z ^Instant i] (type-at (zone z) (seconds-of i))))
 
 (defn- offset-at [i z]
   (cond (or (nil? z) (= z :utc)) 0
@@ -361,14 +366,14 @@
 
 (defn local-offset
   "This machine's UTC offset in seconds, now or at instant i."
-  ([] (local-offset (now)))
-  ([i] (offset-at i :local)))
+  (^Integer [] (local-offset (now)))
+  (^Integer [^Instant i] (offset-at i :local)))
 
 ;;; ---- zoned date-times ----
 
 (defclass ZonedDateTime () ((instant :required true) (zone :required true) (offset :required true) (local :required true)))
 
-(defn zoned? "Is x a ZonedDateTime?" [x] (instance? ZonedDateTime x))
+(defn zoned? "Is x a ZonedDateTime?" ^Boolean [x] (instance? ZonedDateTime x))
 
 (defn- local-nanos
   "A local date-time's nanoseconds since 1970-01-01T00:00, as if in UTC."
@@ -384,7 +389,7 @@
 
 (defn in-zone
   "Instant i as a ZonedDateTime in zone z (anything zone accepts)."
-  [i z]
+  ^ZonedDateTime [^Instant i ^(U Zone String Integer Keyword) z]
   (let [z (zone z) o (:offset (type-at z (seconds-of i)))]
     (ZonedDateTime :instant i :zone z :offset o :local (civil->local (:nanos i) o))))
 
@@ -395,7 +400,8 @@
   zone skips or repeats is resolved by :resolve — :compatible (default;
   later for skipped, earlier for repeated), :earlier, :later or :reject.
   :offset (seconds) picks that offset when it's one of the valid ones."
-  [ldt z & {:keys [resolve offset] :or {resolve :compatible}}]
+  ^ZonedDateTime
+  [^LocalDateTime ldt ^(U Zone String Integer Keyword) z & {:keys [resolve offset] :or {resolve :compatible}}]
   (when-not (#{:compatible :earlier :later :reject} resolve)
     (error "norn.time: :resolve is :compatible, :earlier, :later or :reject, not" (pr-str resolve)))
   (let [z (zone z)
@@ -420,18 +426,19 @@
                   :reject (error (str "norn.time: " (local-text ldt) " doesn't exist in " (:name z)
                                       " (a clock change skips it); pass :resolve :earlier or :later"))))))
 
-(defn to-instant "The instant of a ZonedDateTime (an Instant is itself)." [x] (if (zoned? x) (:instant x) x))
+(defn to-instant "The instant of a ZonedDateTime (an Instant is itself)." ^Instant [^(U ZonedDateTime Instant) x]
+  (if (zoned? x) (:instant x) x))
 
 (defn format-zoned
   "A ZonedDateTime as RFC 9557 text: 2026-03-08T03:30:00-04:00[America/New_York]."
-  [z]
+  ^String [^ZonedDateTime z]
   (str (%format-iso (:nanos (:instant z)) (:offset z)) "[" (:name (:zone z)) "]"))
 
 (defn parse-zoned
   "The ZonedDateTime written as RFC 9557 text (format-zoned's), or as RFC
   3339 text, whose offset is then its zone. A bracketed zone must have
   the offset given at that wall-clock time (to the minute)."
-  [s]
+  ^ZonedDateTime [^String s]
   (if-let [[_ text zname] (re-matches #"(.*)\[([^\]]+)\]" s)]
     ;; The wall-clock time written, in that zone at the offset given (to
     ;; the minute, as text can't hold an offset's seconds).
@@ -451,24 +458,28 @@
         (zoned? x) (:date (:local x))
         :else (error "norn.time: expected a date, not" (pr-str x))))
 
-(defn epoch-day "Days from 1970-01-01 to the date of x (a date, date-time or zoned date-time)." [x]
+(defn epoch-day "Days from 1970-01-01 to the date of x (a date, date-time or zoned date-time)."
+  ^Integer [^(U LocalDate LocalDateTime ZonedDateTime) x]
   (let [d (as-date x)] (days-from-civil (:year d) (:month d) (:day d))))
 
-(defn from-epoch-day "The LocalDate n days after 1970-01-01." [n]
+(defn from-epoch-day "The LocalDate n days after 1970-01-01." ^LocalDate [^Integer n]
   (apply local-date (civil-from-days n)))
 
-(defn weekday "The weekday of x's date: 1 = Monday … 7 = Sunday." [x]
+(defn weekday "The weekday of x's date: 1 = Monday … 7 = Sunday."
+  ^Integer [^(U LocalDate LocalDateTime ZonedDateTime) x]
   (inc (mod (+ (epoch-day x) 3) 7)))
 
-(defn day-of-year "The day of the year of x's date, from 1." [x]
+(defn day-of-year "The day of the year of x's date, from 1." ^Integer [^(U LocalDate LocalDateTime ZonedDateTime) x]
   (inc (- (epoch-day x) (days-from-civil (:year (as-date x)) 1 1))))
 
-(defn days-between "Days from the date of a to the date of b." [a b] (- (epoch-day b) (epoch-day a)))
+(defn days-between "Days from the date of a to the date of b."
+  ^Integer [^(U LocalDate LocalDateTime ZonedDateTime) a ^(U LocalDate LocalDateTime ZonedDateTime) b]
+  (- (epoch-day b) (epoch-day a)))
 
 (defn months-between
   "Whole months from the date of a to the date of b (negative if b is
   earlier): 2026-01-31 to 2026-02-28 is 0, to 2026-03-01 is 1."
-  [a b]
+  ^Integer [^(U LocalDate LocalDateTime ZonedDateTime) a ^(U LocalDate LocalDateTime ZonedDateTime) b]
   (let [a (as-date a) b (as-date b)
         m (- (+ (* 12 (:year b)) (:month b)) (+ (* 12 (:year a)) (:month a)))]
     (cond (and (pos? m) (< (:day b) (:day a))) (dec m)
@@ -493,7 +504,9 @@
       :resolve as in zoned, keeping the offset when it still holds), then
       time units move along the time line (an hour is always an hour).
     Instant: time units only."
-  [x & {:keys [years months weeks days hours minutes seconds millis nanos resolve] :or {resolve :compatible}}]
+  ^(U LocalDate LocalDateTime ZonedDateTime Instant)
+  [^(U LocalDate LocalDateTime ZonedDateTime Instant) x
+   & {:keys [years months weeks days hours minutes seconds millis nanos resolve] :or {resolve :compatible}}]
   (let [months (+ (* 12 (or years 0)) (or months 0))
         days (+ (* 7 (or weeks 0)) (or days 0))
         span (+ (* (or hours 0) 3600000000000) (* (or minutes 0) 60000000000) (* (or seconds 0) ns-per-second)
@@ -519,10 +532,11 @@
           :else (error "norn.time/shift: expected a date, date-time, zoned date-time or instant, not" (pr-str x)))))
 
 (defn start-of-day
-  "The first instant of date d (a LocalDate) in zone z, as a
+  "The first instant of date d (a LocalDate, or the date of a date-time
+  or zoned date-time) in zone z, as a
   ZonedDateTime: midnight, or the first time after it when a clock change
   skips midnight there."
-  [d z]
+  ^ZonedDateTime [^(U LocalDate LocalDateTime ZonedDateTime) d ^(U Zone String Integer Keyword) z]
   (zoned (local-date-time (as-date d) (local-time 0 0)) z :resolve :later))
 
 ;;; ---- comparing ----
@@ -530,15 +544,22 @@
 (defn compare-time
   "Like compare, for two instants, durations, zoned date-times (by
   instant), local dates, local times or local date-times."
-  [a b]
+  ^Integer [^(U Instant Duration ZonedDateTime LocalDate LocalTime LocalDateTime) a
+            ^(U Instant Duration ZonedDateTime LocalDate LocalTime LocalDateTime) b]
   (cond (or (zoned? a) (zoned? b)) (compare (:nanos (to-instant a)) (:nanos (to-instant b)))
         (local-date? a) (compare (epoch-day a) (epoch-day b))
         (local-time? a) (compare (time-nanos a) (time-nanos b))
         (local-date-time? a) (compare (local-nanos a) (local-nanos b))
         :else (compare (:nanos a) (:nanos b))))
 
-(defn before? "Is a earlier than b? (Anything compare-time takes.)" [a b] (neg? (compare-time a b)))
-(defn after? "Is a later than b?" [a b] (pos? (compare-time a b)))
+(defn before? "Is a earlier than b? (Anything compare-time takes.)"
+  ^Boolean [^(U Instant Duration ZonedDateTime LocalDate LocalTime LocalDateTime) a
+            ^(U Instant Duration ZonedDateTime LocalDate LocalTime LocalDateTime) b]
+  (neg? (compare-time a b)))
+(defn after? "Is a later than b?"
+  ^Boolean [^(U Instant Duration ZonedDateTime LocalDate LocalTime LocalDateTime) a
+            ^(U Instant Duration ZonedDateTime LocalDate LocalTime LocalDateTime) b]
+  (pos? (compare-time a b)))
 
 ;;; ---- fields and text ----
 
@@ -547,8 +568,8 @@
   :nanos :weekday (1 = Monday) :yearday :offset}. zone: :utc (default),
   :local, an offset in seconds, or a named zone (anything zone takes). A
   ZonedDateTime gives its own fields."
-  ([i] (if (zoned? i) (fields (:instant i) (:offset i)) (fields i :utc)))
-  ([i zone]
+  (^Map [^(U Instant ZonedDateTime) i] (if (zoned? i) (fields (:instant i) (:offset i)) (fields i :utc)))
+  (^Map [^(U Instant ZonedDateTime) i ^(? (U Zone String Integer Keyword)) zone]
    (let [i (to-instant i)
          o (offset-at i zone)
          [y mo d h mi s ns wd yd] (%civil (:nanos i) o)]
@@ -557,7 +578,7 @@
 (defn from-fields
   "The instant of {:year :month :day :hour :minute :second :nanos :offset}
   (missing time fields are 0; :offset in seconds, default 0 = UTC)."
-  [m]
+  ^Instant [^Map m]
   (Instant :nanos (%from-civil [(:year m) (:month m) (:day m) (or (:hour m) 0) (or (:minute m) 0)
                                 (or (:second m) 0) (or (:nanos m) 0)]
                                (or (:offset m) 0))))
@@ -565,18 +586,19 @@
 (defn format
   "RFC 3339 text of instant i, e.g. 2026-11-13T07:05:00Z. zone as for
   fields; a ZonedDateTime is written at its own offset."
-  ([i] (if (zoned? i) (format (:instant i) (:offset i)) (format i :utc)))
-  ([i zone] (let [i (to-instant i)] (%format-iso (:nanos i) (offset-at i zone)))))
+  (^String [^(U Instant ZonedDateTime) i] (if (zoned? i) (format (:instant i) (:offset i)) (format i :utc)))
+  (^String [^(U Instant ZonedDateTime) i ^(? (U Zone String Integer Keyword)) zone]
+   (let [i (to-instant i)] (%format-iso (:nanos i) (offset-at i zone)))))
 
 (defn parse
   "The instant written as RFC 3339 text (2026-11-13T07:05:00Z,
   2026-11-13T08:05:00.5+01:00, or a date alone for midnight UTC)."
-  [s]
+  ^Instant [^String s]
   (Instant :nanos (first (%parse-iso s))))
 
 (defn monotonic-nanos
   "A clock for measuring elapsed time: it never jumps, but has no epoch."
-  []
+  ^Integer []
   (nano-time))
 
-(defn sleep-for "Sleep for a duration." [d] (sleep (millis d)))
+(defn sleep-for "Sleep for a duration." [^Duration d] (sleep (millis d)))

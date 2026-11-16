@@ -3391,18 +3391,29 @@
                                 :value v :blame (:blame ctx))))))
 
 (defn nilable "A contract: nil, or what c says." [c]
-  (let [c (->contract c)]
-    (make Contract :name (str "nil or " (:name c)) :check (fn [v fail] (if (nil? v) v ((:check c) v fail))))))
+  (let [c (->contract c)
+        t (:test c)]
+    (make Contract :name (str "nil or " (:name c)) :check (fn [v fail] (if (nil? v) v ((:check c) v fail)))
+          ;; (a plain test when c has one, as for a class: cheaper to check)
+          :test (when t (fn [v] (or (nil? v) (t v)))))))
 
 (defn any-of "A contract: what any of cs says (the first that holds)." [& cs]
-  (let [cs (mapv ->contract cs)]
+  (let [cs (mapv ->contract cs)
+        ;; (when each of cs has a plain test, as classes and predicates do,
+        ;; so does this: no catch for each one tried)
+        test (when (every? :test cs)
+               (let [ts (mapv :test cs)]
+                 (fn [v] (loop [ts (seq ts)] (cond (nil? ts) false ((first ts) v) true :else (recur (next ts)))))))]
     (make Contract :name (apply str (interpose " or " (map :name cs)))
-          :check (fn [v fail]
-                   (loop [cs (seq cs)]
-                     (if (nil? cs)
-                       (fail)
-                       (let [r (catch-tag ::failed ((:check (first cs)) v (fn [] (throw-tag ::failed ::failed))))]
-                         (if (= r ::failed) (recur (next cs)) r))))))))
+          :check (if test
+                   (fn [v fail] (if (test v) v (fail)))
+                   (fn [v fail]
+                     (loop [cs (seq cs)]
+                       (if (nil? cs)
+                         (fail)
+                         (let [r (catch-tag ::failed ((:check (first cs)) v (fn [] (throw-tag ::failed ::failed))))]
+                           (if (= r ::failed) (recur (next cs)) r))))))
+          :test test)))
 
 (defn all-of "A contract: what every one of cs says." [& cs]
   (let [cs (mapv ->contract cs)]

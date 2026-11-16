@@ -26,15 +26,15 @@
 
 (ns norn.bin)
 
-(defn encode "Value x as Bytes (an error for what isn't data)." [x] (%bin-write x))
+(defn encode "Value x as Bytes (an error for what isn't data)." ^Bytes [x] (%bin-write x))
 
 (defn decode
   "The value Bytes b hold. Options: :classes, the classes instances may be
   of (none by default); :max-depth (512)."
-  [b & {:keys [classes max-depth]}]
+  [^Bytes b & {:keys [classes max-depth]}]
   (%bin-read b (into {} (map (fn [c] [(class-name c) c]) classes)) (or max-depth 512)))
 
-(defn write-file "Write value x to a file, as bytes." [path x] (%fs-write (str path) (encode x) false))
+(defn write-file "Write value x to a file, as bytes." [^String path x] (%fs-write (str path) (encode x) false))
 
-(defn read-file "The value in a file written by write-file (options as decode)." [path & opts]
+(defn read-file "The value in a file written by write-file (options as decode)." [^String path & opts]
   (apply decode (%fs-read (str path) false) opts))

@@ -40,7 +40,7 @@
 (def ^:private ids (atom 0))
 (def ^:private stats (atom {:commits 0 :retries 0 :conflicts 0 :history 0 :locks 0}))
 
-(defn ref? "Is x a ref?" [x] (instance? Ref x))
+(defn ref? "Is x a ref?" ^Boolean [x] (instance? Ref x))
 
 (defn- check-value [v]
   (when (and (mutable? v) (not= :shared (owner v)))
@@ -52,13 +52,13 @@
   "A ref holding x. Options: :validator (a function the new value must
   satisfy for a commit; a falsey answer or an error refuses it),
   :max-history (old values kept for older transactions, 10)."
-  [x & {:keys [validator max-history]}]
+  ^Ref [x & {:keys [validator max-history]}]
   (check-value x)
   (when (and validator (not (validator x))) (error "ref: the validator refuses the initial value"))
   (make Ref :id (swap! ids inc) :versions (atom [[0 x]]) :lock (atom nil)
         :validator validator :max-history (or max-history 10)))
 
-(defn ref-history-count "How many old values ref r keeps now." [r] (dec (count @(:versions r))))
+(defn ref-history-count "How many old values ref r keeps now." ^Integer [^Ref r] (dec (count @(:versions r))))
 
 ;; ---- the transaction ----
 
@@ -81,7 +81,7 @@
   (let [tx *tx*]
     (when (and tx (identical? (:fiber @tx) (current-fiber))) tx)))
 
-(defn in-transaction? "Is this code running in a transaction?" [] (some? (current-tx)))
+(defn in-transaction? "Is this code running in a transaction?" ^Boolean [] (some? (current-tx)))
 
 (defn- tx! [what]
   (or (current-tx) (error (str what ": not in a transaction (dosync)"))))
@@ -121,7 +121,7 @@
 
 (defn ref-set
   "Set ref r to v, in this transaction. v."
-  [r v]
+  [^Ref r v]
   (let [tx (tx! "ref-set")]
     (check-value v)
     (when (contains? (:commutes @tx) (:id r)) (error "ref-set: can't set a ref after commuting it"))
@@ -133,7 +133,7 @@
 
 (defn alter
   "Set ref r to (apply f its-value args), in this transaction. The value."
-  [r f & args]
+  [^Ref r f & args]
   (let [tx (tx! "alter")]
     (ref-set r (apply f (tx-value tx r) args))))
 
@@ -142,7 +142,7 @@
   f is applied again to r's newest value, so other transactions changing
   r don't conflict with this one. For an f whose order doesn't matter.
   The value this transaction sees."
-  [r f & args]
+  [^Ref r f & args]
   (let [tx (tx! "commute")
         ;; (a value too old for r's history: its newest will do, as
         ;; commit applies f again to the newest anyway)
@@ -154,7 +154,7 @@
 (defn ensure
   "Ref r's value, guarded: this transaction conflicts with any other that
   changes r before it commits (against write skew)."
-  [r]
+  [^Ref r]
   (let [tx (tx! "ensure")]
     (swap! tx update :ensures assoc (:id r) r)
     (tx-value tx r)))
@@ -263,5 +263,5 @@
   reasons: :conflicts (another transaction changed a ref first), :history
   (a value older than a ref keeps), :locks (a commit's lock held too
   long)}."
-  []
+  ^Map []
   @stats)

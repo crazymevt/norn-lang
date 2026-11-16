@@ -249,8 +249,8 @@
   -abc for flags together; --no-name for a :negatable flag. -- ends the
   options. Options may follow positional arguments unless the spec says
   :options-first; a subcommand's options include its ancestors'."
-  ([spec] (parse spec (sys/program-args)))
-  ([spec args]
+  (^Map [^Map spec] (parse spec (sys/program-args)))
+  (^Map [^Map spec ^(? Sequential) args]
    (check-spec spec [])
    (loop [toks (seq args) levels [spec] path [] vals {} pos [] raw false]
      (let [lvl (peek levels) table (option-table levels) t (first toks)]
@@ -311,8 +311,8 @@
 (defn usage
   "The help text for spec, or for the subcommand at path (a vector of
   command names) within it."
-  ([spec] (usage spec []))
-  ([spec path]
+  (^String [^Map spec] (usage spec []))
+  (^String [^Map spec ^Sequential path]
    (let [levels (levels-at spec path)
          lvl (peek levels)
          prog (str/join " " (cons (or (:name spec) "program") path))
@@ -345,8 +345,8 @@
   (see parse). Returns the exit status: :run's value when it's an
   integer, else 0. For a script, (norn.sys/exit (run spec)); a built
   program's entry function can return it."
-  ([spec] (run spec (sys/program-args)))
-  ([spec args]
+  (^Integer [^Map spec] (run spec (sys/program-args)))
+  (^Integer [^Map spec ^(? Sequential) args]
    (let [prog (or (:name spec) "program")
          r (try (parse spec args)
                 (catch UsageError e

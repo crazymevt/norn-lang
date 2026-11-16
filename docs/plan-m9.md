@@ -99,7 +99,7 @@ come early so the libraries after them are written with signatures, and
 they test them. 9.10, 9.11 and 9.12 fit in when Studio or a library needs
 them.
 
-**Done-check (M9a), proposed:**
+**Done-check (M9a)** (met on 2026-11-15; see the end of Status):
 
 - Studio's API workbench, terminal and Databases view run on `norn.http`,
   the pty support and SQLite.
@@ -947,3 +947,45 @@ describe.**
   comes back across a segment boundary and enters a native call while
   another collects. It crashed 6 runs out of 6 without the fix, and
   passes with it.
+
+**The M9a done-check (2026-11-15).**
+
+- **Studio's panels:** the API workbench, the terminal and the Databases
+  view run on `norn.http`, the pty support and SQLite.
+- **Checked signatures:** every public function of the twenty libraries
+  M9a and the stdlib batch added has one:
+  - `norn.actor`, `bin`, `cli`, `compress`, `crypto`, `csv`, `data`,
+    `ffi`, `http`, `process`, `property`, `schedule`, `sqlite`, `stm`,
+    `terminal`, `time`, `toml`, `uri`, `uuid` and `zip`.
+  - The exceptions are listed in `contracts_test.norn`, which checks the
+    rest:
+    - ten functions that take nothing a type can say (no arguments,
+      only a function, or a process or its name);
+    - `ffi/call`, which every `defcfun` function calls after checking its
+      own C signature.
+  - Types are as wide as what each function accepts. Keyword options and
+    function-valued parameters are left untyped. A result type is written
+    only where every path gives it.
+  - Four functions that ran their argument through `str` now want what
+    their docs say: `uri/parse`, `csv/read-csv`, `process/start` and
+    `bin/write-file`.
+- **What it cost, and two fixes:**
+  - At first, SQLite inserts were three times slower, because every C
+    call went through `ffi/call`'s check on its slow path. `call` has no
+    signature now.
+  - `(U …)` and `(? …)` tried each member behind a catch, as costly as a
+    `try`. When each member is a class or a predicate, they now use a
+    plain test, as a class does.
+  - 10,000 inserts take 110 ms (93 ms with no signatures). The rest is the
+    check on each `sqlite/execute!` call.
+- **Blame:** `contracts_test.norn` checks both sides.
+- **A crash held in the debugger:** `actor_test.norn`
+  `a-crash-stays-in-the-debugger-while-it-is-restarted`. Under
+  `*debugger* :park`, the supervisor restarts the child and the new one
+  answers, while the crash waits in the debugger.
+- **Tiers:** every suite passes at tier 0 and tier 1.
+- **Found on the way:** `norn fmt` indented a body under the parameter
+  vector when a result type came first (`(^Map [a]` and the body on the
+  next line). A leading `^hint` now belongs to what follows it.
+
+Sealing can start once the M7.6 working stretch is done.

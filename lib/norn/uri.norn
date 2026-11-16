@@ -53,7 +53,7 @@
 
 (defn parse
   "URI string s's parts, as a map (see above)."
-  [s]
+  ^Map [^String s]
   (let [s (str s)
         [frag-at fragment] (if-let [i (index-of s \# 0)] [i (subs s (inc i))] [(count s) nil])
         s (subs s 0 frag-at)
@@ -73,7 +73,7 @@
 
 (defn format
   "URI map u as a string (parse's inverse)."
-  [u]
+  ^String [^Map u]
   (let [{:keys [scheme user-info host port path query fragment]} u
         host-text (when host (if (str/includes? host ":") (str "[" host "]") host))]
     (str (when scheme (str scheme ":"))
@@ -82,10 +82,10 @@
          (when query (str "?" query))
          (when fragment (str "#" fragment)))))
 
-(defn default-port "The port a scheme uses when a URI gives none, or nil." [scheme]
+(defn default-port "The port a scheme uses when a URI gives none, or nil." ^(? Integer) [^(? String) scheme]
   (get {"http" 80 "https" 443 "ws" 80 "wss" 443 "ftp" 21} scheme))
 
-(defn port-of "URI u's port: its own, or its scheme's default." [u]
+(defn port-of "URI u's port: its own, or its scheme's default." [^Map u]
   (or (:port u) (default-port (:scheme u))))
 
 ;; ---- percent-encoding ----
@@ -97,8 +97,8 @@
   "Text s percent-encoded for a URI part: every byte of its UTF-8 but the
   unreserved characters (letters, digits, - . _ ~). Characters in keep
   (a string, e.g. \"/\" for a path) stay as they are."
-  ([s] (encode s ""))
-  ([s keep]
+  (^String [^String s] (encode s ""))
+  (^String [^String s ^String keep]
    (let [ok (str unreserved keep)]
      (apply str (for [b (bytes (str s))
                       :let [b (bit-and b 255) c (char b)]]
@@ -113,8 +113,8 @@
 (defn decode
   "Text s with its percent-encodings decoded (as UTF-8). With plus?, a +
   is a space, as in a form's query."
-  ([s] (decode s false))
-  ([s plus?]
+  (^String [^String s] (decode s false))
+  (^String [^String s plus?]
    (let [s (str s)
          n (count s)]
      (if-not (or (str/includes? s "%") (and plus? (str/includes? s "+")))
@@ -135,7 +135,7 @@
 (defn query-pairs
   "Query string q (or URI u's) as [name value] pairs, decoded, in order (a
   name without = has the value \"\")."
-  [q]
+  ^Vector [^(? (U String Map)) q]
   (let [q (if (map? q) (:query q) q)]
     (if (empty? q)
       []
@@ -149,7 +149,7 @@
 (defn query-params
   "Query string q (or URI u's) as a map of name to value, decoded; a name
   given more than once has a vector of its values."
-  [q]
+  ^Map [^(? (U String Map)) q]
   (reduce (fn [m [k v]]
             (if (contains? m k)
               (update m k (fn [old] (if (vector? old) (conj old v) [old v])))
@@ -160,7 +160,7 @@
   "Parameters ps (a map, or [name value] pairs; a vector value is several)
   as an encoded query string. Names and values are strings, keywords
   (their names) or anything str gives text for."
-  [ps]
+  ^String [^(? (U Map Sequential)) ps]
   (let [text (fn [x] (if (keyword? x) (name x) (str x)))]
     (str/join "&" (for [[k v] ps
                         v (if (vector? v) v [v])]
@@ -194,7 +194,7 @@
 (defn resolve
   "Reference ref (a string or map) made absolute against base (RFC 3986
   §5.2), as a string: what a link, or a redirect's Location, means."
-  [base ref]
+  ^String [^(U String Map) base ^(U String Map) ref]
   (let [b (if (map? base) base (parse base))
         r (if (map? ref) ref (parse ref))
         t (cond (:scheme r) (assoc r :path (remove-dots (:path r)))
