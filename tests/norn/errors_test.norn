@@ -130,7 +130,7 @@
 
 (def standard-libraries
   "Every library that comes with Norn but norn.core."
-  '[norn.actor norn.async norn.bench norn.bin norn.buffer norn.bytes norn.cache norn.cbor
+  '[norn.actor norn.api-diff norn.async norn.bench norn.bin norn.buffer norn.bytes norn.cache norn.cbor
     norn.check norn.cli norn.compress norn.crypto norn.csv norn.data norn.decimal norn.deps
     norn.dev norn.doc norn.edn norn.expand norn.ffi norn.fmt norn.format norn.fs norn.http
     norn.image norn.io norn.json norn.lint norn.log norn.markdown norn.math norn.ndjson

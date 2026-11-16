@@ -637,6 +637,17 @@ Images work as described above, with these details and gaps (runtime.md §7.5):
 - **Release mode:** modules are *sealed*, which enables direct linking,
   inlining and dead-code elimination (Clojure's direct linking, but per module
   and reversible: unsealing at the REPL deoptimises).
+- **Sealing, as built [decided, 2026-11-16]:**
+  - The standard library is sealed as it loads; a release build (`norn
+    build`, `norn package`) seals the modules it loaded. The REPL, `norn
+    run` and `norn dev` leave a project's modules open.
+  - Redefining a var of a sealed module unseals it, with a warning the
+    first time. `norn lint` reports it (`sealed`).
+  - Each sealed module's interface is recorded under `api/` by `norn
+    api-diff --record`, and `norn api-diff` (and a test, for the standard
+    library) reports breaking changes against it.
+  - Direct linking, inlining and deoptimisation come with M10, which they
+    pay off in: today a call through a var is one load, at both tiers.
 
 ### 8.2 Macros **[decided]**
 

@@ -5,6 +5,13 @@
 (ns compiler-test
   (:require [norn.test :refer [is]]))
 
+;; (compiling core and the compiler again defines their vars again, which
+;; would unseal them: this is the language rebuilding itself, not a change
+;; to it, so quietly, and sealed again after)
+(defn- resealed [f]
+  (try (handler-bind [Warning (fn [_] (muffle-warning))] (f))
+       (finally (seal! 'norn.core) (seal! 'norn.compiler))))
+
 ;; The expander (M8) runs in front of the compiler.
 (is (= norn.expander/eval norn.core/eval))
 
@@ -12,15 +19,17 @@
 ;;; (compiled in its own namespace) and on the compiler itself (in a scratch
 ;;; one: compiling interns the names it defines, and norn.core shouldn't
 ;;; gain the compiler's).
-(is (= [] (do (in-ns 'compiler-test.scratch)
-              (let [d (norn.compiler/compare-compilers (%compiler-source) "compiler.norn")]
-                (in-ns 'compiler-test)
-                d))))
-(is (= [] (let [saved (current-ns)]
-            (in-ns 'norn.core)
-            (let [d (norn.compiler/compare-compilers (%core-source) "core.norn")]
-              (in-ns saved)
-              d))))
+(is (= [] (resealed (fn []
+                      (in-ns 'compiler-test.scratch)
+                      (let [d (norn.compiler/compare-compilers (%compiler-source) "compiler.norn")]
+                        (in-ns 'compiler-test)
+                        d)))))
+(is (= [] (resealed (fn []
+                      (let [saved (current-ns)]
+                        (in-ns 'norn.core)
+                        (let [d (norn.compiler/compare-compilers (%core-source) "core.norn")]
+                          (in-ns saved)
+                          d))))))
 
 ;;; The self-hosting fixpoint: the compiler compiled by the seed (stage 1),
 ;;; by itself (stage 2) and by stage 2 (stage 3) are the same code.
@@ -39,9 +48,9 @@
          (finally (in-ns (symbol (str saved)))))))
 
 (def stage1 (snapshot))
-(compile-by-compiler (%compiler-source))
+(resealed (fn [] (compile-by-compiler (%compiler-source))))
 (def stage2 (snapshot))
-(compile-by-compiler (%compiler-source))
+(resealed (fn [] (compile-by-compiler (%compiler-source))))
 (def stage3 (snapshot))
 (is (= true (> (count stage1) 50)))
 (is (= true (= stage1 stage2)))

@@ -566,6 +566,25 @@ later).**
   version, and conflicts are settled by an override (runtime.md has the
   registry later).
 
+**Sealing (2026-11-16): built; the baseline waits for M7.6's working
+stretch.**
+
+- A sealed flag per module: `sealed?`, `seal!`, `unseal!`. The standard
+  library is sealed as it loads (core, the compiler, `norn.syntax` and the
+  expander when the expander installs); `norn build` seals what it loaded.
+- Redefining a var of a sealed module unseals it, warning once. The
+  `sealed` lint rule reports definitions after `in-ns` into a sealed
+  module other than the file's own.
+- `norn api-diff` (`norn.api-diff`): each module's interface, recorded
+  under `api/`, and the changes since, breaking or compatible.
+  `api_diff_test.norn` checks the standard library once `api/` exists.
+- **Decided (the user, 2026-11-16):** direct linking, inlining and
+  deoptimisation move to M10, where inlining pays for them; redefinition
+  unseals with a warning rather than failing; release builds seal a
+  project's modules; baselines are files under `api/`, checked by a test.
+- **Left:** taking the baseline (`norn api-diff --record`, committed) once
+  the M7.6 working stretch is done. That is the sealing.
+
 **8.11, the bytecode verifier (2026-11-14): done.**
 
 - **Why.** The interpreter and the tier-1 compiler trust code completely.

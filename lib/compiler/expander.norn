@@ -418,6 +418,8 @@
                   typed (and (vector? sigs) (seq? f) (= 'fn* (first f))
                              (some (fn [a] (or (some some? (:args a)) (:rest a) (:result a))) sigs))
                   was (when (zero? *phase*) (%resolve-in (ns-sym) nm))
+                  ;; (a def in a sealed module unseals it, warning once)
+                  _ (when (zero? *phase*) (norn.core/%unseal-for-def! (ns-sym) nm))
                   extra (concat (when (syn/syntax-property id :private)
                                   [(list 'norn.core/%set-private! (list 'var nm))])
                                 (when (syn/syntax-property id :dynamic)
@@ -1105,6 +1107,8 @@
   expands, and modules the way files load."
   []
   (mark-bootstrap-defs!)
+  ;; (the language itself: sealed, as the libraries are when they load)
+  (doseq [n '[norn.core norn.compiler norn.syntax norn.expander]] (norn.core/seal! n))
   (%set-root! (var norn.core/eval) eval)
   (%set-root! (var norn.core/%eval-reader) eval-reader)
   (%set-root! (var norn.core/macroexpand-1) macroexpand-1*)

@@ -480,6 +480,7 @@ prims! {
     "add-cleanup!" 2 Some(2) => |vm, a| Ok(norn_rt::weak::weak_new(&mut vm.m, a[0], a[1]));
     "cancel-cleanup!" 1 Some(1) => |_, a| { expect(a[0], Kind::Weak, "cancel-cleanup!")?; Ok(Value::bool(a[0].weak_cancel())) };
     // libraries and namespaces
+    "%embedded-libs" 0 Some(0) => |vm, _| { let names: Vec<Value> = crate::eval::LIBS.iter().map(|(n, _)| str_new(&mut vm.m, n)).collect(); Ok(vec_from_slice(&mut vm.m, &names)) };
     "%find-lib" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "%find-lib")?; Ok(match crate::eval::find_lib(a[0].as_str()) { Some((src, origin)) => { let s = str_new(&mut vm.m, &src); let o = str_new(&mut vm.m, &origin); vec_from_slice(&mut vm.m, &[s, o]) } None => Value::NIL }) };
     "%alias" 2 Some(2) => |vm, a| { expect(a[0], Kind::Symbol, "alias")?; expect(a[1], Kind::Symbol, "alias")?; if rt().find_ns(a[1]).is_none() { return Err(Error::new(format!("No namespace: {}", text(a[1])))); } vm.ns.add_alias(a[0], a[1]); Ok(Value::NIL) };
     "%refer" 2 Some(2) => |vm, a| { expect(a[0], Kind::Symbol, "refer")?; expect(a[1], Kind::Var, "refer")?; vm.ns.refer(a[0], a[1]); Ok(Value::NIL) };

@@ -280,8 +280,9 @@ in the debugger and offers both restarts, so you can choose.
 Saving from a running program captures whatever that program did,
 including state you didn't mean to keep. For a release, build the image
 from source instead, so the same sources always give the same image.
-`norn build` starts a fresh Norn, loads your code, and saves it with
-`:fibers :none`.
+`norn build` starts a fresh Norn, loads your code, seals the modules it
+loaded (their interfaces are fixed from then on, as the standard library's
+are), and saves it with `:fibers :none`.
 
 In a project, it needs only the output path. `norn.edn`'s `:main` names the
 entry function, and `norn build` loads its namespace (see

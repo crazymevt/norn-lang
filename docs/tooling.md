@@ -20,6 +20,7 @@ also substitute `./target/release/norn` after [building it](getting-started.md#b
 | `norn new NAME [--dir DIR] [--app] [--no-git]` | Make a new project, ready to run, test and package. See [Projects and dependencies](#projects-and-dependencies). |
 | `norn run [ARGS…]` | Call the project's `:main` with the arguments. Its integer result is the exit status. |
 | `norn dev [ARGS…]` | Run the project's `:main`, and reload each module that's saved while it runs. See [Live reloading](#live-reloading). |
+| `norn api-diff [--record] [MODULE…]` | Compare each sealed module's public interface with the one recorded under `api/`: breaking changes, and compatible ones. `--record` records them. See [Sealed modules](#sealed-modules). |
 | `norn package [--cli] [--app] [--out DIR]` | Package the project for release: a command-line archive and, on macOS, an app. See [Packaging](#packaging). |
 
 ## Write and run a test
@@ -140,6 +141,28 @@ project's `:paths`. Each time you save a module, it loads it again:
 - `(norn.dev/after-reload! key f)` calls `(f modules)` after each reload,
   so a program can redraw.
 - When `:main` has returned, the next save runs it again.
+
+## Sealed modules
+
+A sealed module's interface is fixed: `norn api-diff` records it, and the
+optimising compiler (M10) will link and inline calls to it. The standard
+library is sealed as it loads. `norn build`, and so `norn package`, seals
+the modules it loaded before saving the image. The REPL, `norn run` and
+`norn dev` leave a project's modules open.
+
+- `(sealed? ns)`, `(seal! ns)` and `(unseal! ns)` ask and change it.
+- Redefining a var of a sealed module, after `(in-ns 'norn.string)` say,
+  unseals the module, with a warning the first time: sealing is
+  reversible, so live programming goes on. `norn lint` reports such
+  definitions as `sealed`.
+- `norn api-diff --record` writes each module's interface to `api/NAME.edn`:
+  a function's parameter lists and checked signature, a macro's or generic
+  function's parameter lists, a class's superclasses and slots, and which
+  vars are dynamic. `norn api-diff` compares the modules with those files.
+  Additions are compatible; a name or an arity removed, a kind or a
+  signature's types changed, a slot or superclass removed are breaking,
+  and make it exit with status 1. `api_diff_test.norn` runs the check on
+  the standard library once `api/` exists.
 
 ## Images
 

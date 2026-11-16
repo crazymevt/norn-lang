@@ -46,6 +46,7 @@ const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --ser
        norn new NAME [--dir DIR] [--app] [--no-git]
        norn run [ARGS…]   (the project's :main)
        norn dev [ARGS…]   (the project's :main, reloading what's saved)
+       norn api-diff [--record] [MODULE…]   (sealed modules' interfaces against api/)
        norn doc NAMESPACE | NAME | NS/NAME …
        norn image info IMG.nimg | norn image diff A.nimg B.nimg";
 
@@ -258,7 +259,7 @@ pub fn run() {
         }
     }
 
-    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand" | "deps" | "package" | "new" | "run" | "dev")) = args.first().map(String::as_str) {
+    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand" | "deps" | "package" | "new" | "run" | "dev" | "api-diff")) = args.first().map(String::as_str) {
         // `norn test …`, `norn fmt …`: the library's main returns the exit status.
         let call = format!(
             "(do (require 'norn.{tool}) (norn.{tool}/main {}))",
@@ -422,6 +423,9 @@ fn build(args: &[String]) -> i32 {
         Some(e) => format!("(var {e})"),
         None => "nil".into(),
     };
+    // A release build seals what it loaded: the project's modules and its
+    // packages' (design §8.1). The REPL, norn run and norn dev don't.
+    norn.run(RootTask::EvalRaw("(norn.core/%seal-loaded!)".into()), "user");
     let save = format!(
         "(let [r (save-image {} :entry {entry} :fibers :none :layered {layered})] (str (:objects r) \" objects, \" (:bytes r) \" bytes\"))",
         norn_string(&out)

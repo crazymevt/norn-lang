@@ -2456,13 +2456,64 @@
       (error "Library" (str lib) "is found at" (str path ",") "but that file defines" (str n)
              "(its ns form says so): rename the file or change its ns form"))))
 
+;;; ---- sealing (M8; design §8.1) ----
+;;;
+;;; A sealed module's interface is fixed: api-diff records it, and M10 will
+;;; link and inline calls to it directly. The standard library is sealed as
+;;; it loads, and a release build (norn build, norn package) seals the
+;;; project's own modules. Redefining a var of a sealed module unseals it,
+;;; with a warning: sealing is reversible, as live programming needs.
+
+(def %sealed "The names (strings) of the sealed namespaces." (atom #{}))
+
+(defn sealed?
+  "Is namespace ns (a symbol, a string or a namespace) sealed? A sealed
+  module's interface is recorded (norn api-diff); redefining one of its
+  vars unseals it."
+  [ns]
+  (contains? @%sealed (str ns)))
+
+(defn seal!
+  "Seal namespace ns (a symbol, a string or a namespace): its interface is
+  fixed from now on, as a release build's are. nil."
+  [ns]
+  (swap! %sealed conj (str ns))
+  nil)
+
+(defn unseal!
+  "Unseal namespace ns, so its vars can be redefined without a warning
+  (as redefining one does, after warning). nil."
+  [ns]
+  (swap! %sealed disj (str ns))
+  nil)
+
+(defn %seal-loaded!
+  "Seal every module loaded, as a release build does before it saves its
+  image: all namespaces but user and the compile-time copies (ns$1)."
+  []
+  (doseq [n (all-ns)
+          :let [s (str n)]
+          :when (and (not= s "user") (nil? (%str-index s "$" nil false)))]
+    (seal! s)))
+
+(defn %unseal-for-def!
+  "nsym is about to define name: when nsym is sealed, unseal it, warning
+  once (sealing is reversible, so live programming goes on)."
+  [nsym name]
+  (when (sealed? nsym)
+    (unseal! nsym)
+    (warn (str "Redefining " nsym "/" name " unseals " nsym
+               " (a sealed module: its interface is recorded, and redefining its vars is a change to it)"))))
+
 (defn- %load-lib-source [lib]
   (let [found (%find-lib (str lib))]
     (cond found
           (let [ns (current-ns)]
             (%check-lib-ns lib (nth found 0) (nth found 1))
             (try (%eval-reader (%reader (nth found 0) (nth found 1)))
-                 (finally (in-ns ns))))
+                 (finally (in-ns ns)))
+            ;; (a library that comes with Norn is sealed once it has loaded)
+            (when (= "<" (subs (nth found 1) 0 1)) (seal! lib)))
           ;; A namespace with no source that already has definitions: a
           ;; native extension's (norn.ui.native), or one made at the REPL.
           (and (some (fn [n] (= (str n) (str lib))) (all-ns)) (seq (ns-publics lib))) nil

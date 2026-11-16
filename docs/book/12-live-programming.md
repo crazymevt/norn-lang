@@ -150,7 +150,22 @@ Two things don't change under a running fiber. The body of a `loop` that is
 already executing keeps running the code it was compiled from, which is why
 the worker above does its real work in a separate, named function. And a
 function that calls itself by its own name inside `defn` calls itself
-directly, not through the var. So when you expect to change a piece of long-running code, put that piece in its own top-level function and call it by name.
+directly, not through the var. So when you expect to change a piece of
+long-running code, put that piece in its own top-level function and call it
+by name.
+
+The standard library is *sealed*: its interfaces are fixed, and recorded so
+that a change to one shows up (see `norn api-diff` in
+[Chapter 26](26-tools-and-performance.md)). You can still redefine one of
+its functions, by switching to its namespace with `in-ns`. That unseals the
+module, and the first time it happens, a warning says so. Your own modules
+stay open while you work; a release build seals them
+([Chapter 27](27-images-and-deployment.md)).
+
+```clojure
+(sealed? 'norn.core) ; => true
+(sealed? 'user) ; => false
+```
 
 ## Reloading as you save
 

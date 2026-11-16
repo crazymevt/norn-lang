@@ -1,0 +1,77 @@
+;;;; Sealing (M8; design §8.1): the standard library is sealed, redefining a
+;;;; sealed var unseals its module with a warning, and norn api-diff tells
+;;;; breaking changes to a sealed module's interface from compatible ones.
+
+(ns api-diff-test
+  (:require [norn.test :refer [is deftest testing]] [norn.api-diff :as api] [norn.io :as io] [norn.sys :as sys]
+            [norn.string :as str]))
+
+(deftest the-standard-library-is-sealed
+  (require 'norn.csv)
+  ;; (not norn.core or the compiler: compiler_test compiles them again, in
+  ;; parallel, sealing them after)
+  (is (every? sealed? ['norn.syntax 'norn.csv]))
+  (is (not (sealed? 'api-diff-test)) "a module loaded from a file isn't, until a release build seals it"))
+
+(deftest redefining-a-sealed-var-unseals-its-module
+  (load-string "(ns sealed-demo) (defn f [] 1)")
+  (seal! 'sealed-demo)
+  (let [warned (atom [])]
+    (handler-bind [Warning (fn [w] (swap! warned conj (condition-message w)) (muffle-warning))]
+      (load-string "(in-ns 'sealed-demo) (defn f [] 2) (defn g [] 3) (in-ns 'api-diff-test)"))
+    (is (= 1 (count @warned)) "once")
+    (is (str/includes? (first @warned) "Redefining sealed-demo/f unseals sealed-demo"))
+    (is (not (sealed? 'sealed-demo)))
+    (is (= 2 ((resolve 'sealed-demo/f))) "and the redefinition takes effect")))
+
+(def before
+  {"f" {:kind :function :arglists ["[a]" "[a b]"] :signature [{:args ["String"] :result "String"}
+                                                              {:args ["String" "Any"] :result "String"}]}
+   "g" {:kind :function :arglists ["[x & more]"]}
+   "m" {:kind :macro :arglists ["[x & body]"]}
+   "C" {:kind :class :supers ["norn.core/Error"] :slots ["a" "b"]}
+   "*d*" {:kind :var :dynamic true}})
+
+(defn- breaking [after] (vec (for [c (api/changes before after) :when (:breaking c)] [(:name c) (:change c)])))
+(defn- compatible [after] (vec (for [c (api/changes before after) :when (not (:breaking c))] [(:name c) (:change c)])))
+
+(deftest what-breaks-and-what-doesnt
+  (is (= [] (api/changes before before)))
+  (testing "breaking"
+    (is (= [["g" "removed (a function)"]] (breaking (dissoc before "g"))))
+    (is (= [["f" "no longer takes [a b]"]] (breaking (assoc-in before ["f" :arglists] ["[a]"]))))
+    (is (= [["m" "was a macro, is a function"]] (breaking (assoc-in before ["m" :kind] :function))))
+    (is (= [["C" "slot b removed"]] (breaking (assoc-in before ["C" :slots] ["a"]))))
+    (is (= [["C" "no longer a norn.core/Error"]] (breaking (assoc-in before ["C" :supers] ["norn.core/Object"]))))
+    (is (= [["*d*" "no longer dynamic"]] (breaking (assoc before "*d*" {:kind :var}))))
+    (is (= 1 (count (breaking (assoc-in before ["f" :signature 0 :args] ["Integer"])))) "a signature's types"))
+  (testing "compatible"
+    (is (= [["h" "added (a function)"]] (compatible (assoc before "h" {:kind :function :arglists ["[]"]}))))
+    (is (= [] (breaking (assoc-in before ["f" :arglists] ["[a]" "[a b]" "[a b c]"]))) "a new arity")
+    (is (= [] (breaking (assoc-in before ["g" :arglists] ["[& more]"]))) "taking more than before")
+    (is (= [] (breaking (assoc-in before ["C" :slots] ["a" "b" "c"]))) "a new slot")
+    (is (= [] (breaking (assoc-in before ["g" :signature] [{:args [] :rest "Any" :result "Any"}]))) "a first signature")))
+
+(deftest a-module-against-its-record
+  (let [dir (io/path (sys/temp-dir) (str "norn-api-test-" (sys/pid) "-" (nano-time)))]
+    (api/record! dir "norn.csv")
+    (is (= {"norn.csv" []} (api/diff dir ["norn.csv"])) "unchanged")
+    (io/write-text (io/path dir "norn.csv.edn")
+                   (str/replace (io/read-text (io/path dir "norn.csv.edn")) "\"read-maps\"" "\"read-mapz\""))
+    (is (= #{["read-mapz" true] ["read-maps" false]}
+           (set (map (juxt :name :breaking) (get (api/diff dir ["norn.csv"]) "norn.csv")))))
+    (io/delete! dir :recursive true)))
+
+;; The standard library against its recorded interfaces (api/ at the root
+;; of the checkout), once there are some.
+(def root
+  (loop [d (io/absolute (sys/cwd))]
+    (cond (nil? d) nil
+          (io/file? (io/path d "lib" "core" "core.norn")) d
+          :else (let [p (io/parent d)] (when (and p (not= p d)) (recur p))))))
+
+(deftest the-standard-library-against-api
+  (let [dir (when root (io/path root "api"))]
+    (when (and dir (io/directory? dir))
+      (is (= [] (vec (for [[m cs] (api/diff dir (api/standard-modules)) c cs :when (:breaking c)] (str m "/" (:name c) ": " (:change c)))))
+          "no breaking change since the interfaces were recorded (norn api-diff says more)"))))

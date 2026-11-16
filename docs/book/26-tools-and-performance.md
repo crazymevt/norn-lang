@@ -104,9 +104,7 @@ map:
 
 The hint is recorded when the macro is defined, so it applies where the
 macro is loaded, as in a REPL or an editor session that has loaded your
-code. `norn fmt` run from the shell doesn't load the files it formats, but
-it reads the hints from the `defmacro` forms in them, so it knows your
-project's macros as well as the standard library's.
+code. `norn fmt` run from the shell doesn't load the files it formats, but it reads the hints from the `defmacro` forms in them, so it knows your project's macros as well as the standard library's.
 
 ## Likely mistakes: `norn lint`
 
@@ -153,11 +151,12 @@ and it exits 1 when it finds anything. The kinds include:
   name from a namespace the module doesn't require.
 - `deprecated` and `private`: a use of a definition marked deprecated, or of
   another module's private var.
-- `shadow`, `def-in-fn`, `method-shape`, `macro`, `macro-order` and
-  `phase`, for definitions that hide special forms, `def` inside a
+- `shadow`, `def-in-fn`, `method-shape`, `macro`, `macro-order`, `sealed`
+  and `phase`, for definitions that hide special forms, `def` inside a
   function, a `defmethod` that doesn't fit its generic function, a macro
   call that fails to expand, a call to a macro defined further down the
-  module, and compile-time code that uses a run-time name.
+  module, a definition in a sealed module other than the file's own (after
+  `in-ns` into it), and compile-time code that uses a run-time name.
 
 The linter evaluates only the forms that change how later forms read and
 expand: `ns`, `in-ns`, `require`, `defmacro`, and the syntax definitions.
@@ -256,6 +255,27 @@ Fully expanded:
 Give it a file name in place of `-e` to expand a whole file. At the REPL,
 `macroexpand` and `macro-steps` do the same.
 [Chapter 14](14-macros.md) covers macros and hygiene in full.
+
+## Interfaces: `norn api-diff`
+
+A sealed module's public interface is recorded: each function's parameter
+lists and checked signature, each macro's and generic function's parameter
+lists, each class's superclasses and slots, and which vars are dynamic.
+`norn api-diff --record` writes it, a file per module under `api/`.
+`norn api-diff` then compares the modules with what's recorded. Adding is
+fine. Removing a name or an arity, changing a signature's types, or
+removing a class's slot breaks the code that used it, so `api-diff` lists
+those as breaking and exits with status 1:
+
+```text
+BREAKING  norn.csv/read-maps: removed (a function)
+          norn.csv/read-records: added (a function)
+norn api-diff: 1 module, 1 breaking, 1 compatible change
+```
+
+The standard library is checked this way, so a breaking change to it can't
+slip in unnoticed. Use it for your own library too: record its interface
+when you release a version, and compare before the next one.
 
 ## Measuring
 
