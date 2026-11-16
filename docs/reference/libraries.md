@@ -419,6 +419,9 @@ for time units. Other calendar helpers are `days-between`, `months-between`,
 `format-zoned` writes RFC 9557 text such as
 `2026-03-08T03:30:00-04:00[America/New_York]`, and `parse-zoned` reads it.
 
+`today` and `local-now` give the date, and the date and time, on this
+machine's clock (or in a zone given).
+
 `format-local`, `format-zoned` and `format` take a strftime pattern, and
 `parse-local-date`, `parse-local-time`, `parse-local-date-time` and
 `parse-zoned` read one: `%Y %y %m %d %e %j %b %B %a %A %H %I %p %M %S %f %z

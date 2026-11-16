@@ -481,6 +481,17 @@
                                           " (a clock change skips it); pass :resolve :earlier or :later")
                                      "a wall-clock time that happens once" ldt)))))
 
+(defn today
+  "Today's date where this machine is (:local), or in zone z: a LocalDate."
+  (^LocalDate [] (today :local))
+  (^LocalDate [^(U Zone String Integer Keyword) z] (:date (:local (in-zone (now) z)))))
+
+(defn local-now
+  "The date and time now where this machine is (:local), or in zone z: a
+  LocalDateTime."
+  (^LocalDateTime [] (local-now :local))
+  (^LocalDateTime [^(U Zone String Integer Keyword) z] (:local (in-zone (now) z))))
+
 (defn to-instant "The instant of a ZonedDateTime (an Instant is itself)." ^Instant [^(U ZonedDateTime Instant) x]
   (if (zoned? x) (:instant x) x))
 

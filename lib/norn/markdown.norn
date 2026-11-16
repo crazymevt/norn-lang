@@ -7,8 +7,9 @@
 ;;;; Blocks: [:heading {:level n} inline…], [:paragraph inline…],
 ;;;; [:code-block {:lang s} text], [:block-quote block…], [:list {:ordered
 ;;;; bool :start n :tight bool} [:item {:checked bool?} block…]…],
-;;;; [:table {:align […]} [:row {:head bool} [:cell inline…]…]…] and
-;;;; [:thematic-break].
+;;;; [:table {:align […]} [:row {:head bool} [:cell inline…]…]…],
+;;;; [:thematic-break], and [:plain inline…]: a tight list item's text,
+;;;; which isn't a paragraph (html writes it bare, with no <p>).
 ;;;;
 ;;;; Inlines: strings, [:em …], [:strong …], [:strike …], [:code text],
 ;;;; [:link {:href url :title t} …], [:image {:src url :alt text :title t}]

@@ -931,7 +931,26 @@ impl Vm {
                             // condition kept for whoever awaits the fiber)
                             let kw = rt().keyword(&mut self.m, None, "die");
                             let cond = args.get(2).copied().unwrap_or(Value::NIL);
-                            let how = vec_from_slice(&mut self.m, &[args[1], cond]);
+                            // (a condition error made has no trace of its
+                            // own: the stack here, but the frames that are
+                            // the condition system's handing it on)
+                            let given = args[1];
+                            let trace = if given.is_nil() || (given.is(Kind::Vector) && given.vec_count() == 0) {
+                                let lines: Vec<String> = unsafe { self.backtrace(st) }
+                                    .into_iter()
+                                    .skip_while(|t| {
+                                        matches!(
+                                            t.as_str(),
+                                            "norn.core/%abort" | "norn.core/invoke-debugger" | "norn.core/error" | "norn.core/throw" | "norn.core/signal"
+                                        )
+                                    })
+                                    .collect();
+                                let lines: Vec<Value> = lines.iter().map(|t| str_new(&mut self.m, t)).collect();
+                                vec_from_slice(&mut self.m, &lines)
+                            } else {
+                                given
+                            };
+                            let how = vec_from_slice(&mut self.m, &[trace, cond]);
                             return self.unwind(st, Target::Bottom, kw, args[0], how);
                         }
                         _ => self.call_prim(f, args)?,

@@ -244,6 +244,14 @@
     (is (= ":term\n" (:out r)) "one listener left still gets it")
     (is (= :term (:signal r)))))
 
+;; An error nothing handles shows where it happened: error's condition
+;; has no trace of its own, and the fiber's end used to take its stack
+;; after unwinding (quire finding: every trace was %finish-unwind).
+(when norn-exe
+  (let [r (proc/sh norn-exe "-e" "(do (defn bt-inner [] (error \"deep\")) (defn bt-outer [] (inc (bt-inner))) (bt-outer))")]
+    (is (str/includes? (:err r) "deep\n  at user/bt-outer"))
+    (is (not (str/includes? (:err r) "%finish-unwind")))))
+
 ;; Ctrl-C is a program's own while it listens for :int: the norn command
 ;; doesn't interrupt the evaluation as well (pulse finding). Without a
 ;; listener it does.

@@ -266,8 +266,10 @@ pub fn run() {
 
     if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand" | "deps" | "package" | "new" | "run" | "dev" | "api-diff")) = args.first().map(String::as_str) {
         // `norn test …`, `norn fmt …`: the library's main returns the exit status.
+        // (no location of its own: an error escaping main says where it
+        // was raised, or nothing, not "<string>:1", this wrapper)
         let call = format!(
-            "(do (require 'norn.{tool}) (norn.{tool}/main {}))",
+            "(do (%set-location! nil) (require 'norn.{tool}) (norn.{tool}/main {}))",
             args[1..].iter().map(|a| norn_string(a)).collect::<Vec<_>>().join(" ")
         );
         let t = norn.submit(RootTask::Eval(call), "user");

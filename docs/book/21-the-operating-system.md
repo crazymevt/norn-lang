@@ -571,7 +571,14 @@ that doesn't make a date or time is a `ParseError`:
 ```
 
 They print as tagged literals, `#norn/date "2026-01-31"`, `#norn/time` and
-`#norn/date-time`, which read back as the same values.
+`#norn/date-time`, which read back as the same values. `today` is today's
+date where the machine is, and `local-now` the date and time on its
+clock; both take a zone for somewhere else:
+
+```clojure
+(t/local-date? (t/today)) ; => true
+(t/local-date? (t/today "Asia/Tokyo")) ; => true
+```
 
 ### Patterns
 

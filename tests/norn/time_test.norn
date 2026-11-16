@@ -177,3 +177,13 @@
    pattern (p/elements ["%Y-%m-%d" "%m/%d/%Y" "%d %b %Y" "%A, %B %e, %Y" "%d.%m.%y" "%Y-%j" "%a %d %B %Y"])]
   (let [d (t/from-epoch-day day)]
     (= d (t/parse-local-date (t/format-local d pattern) pattern))))
+
+;; Today, and now on the wall clock (quire finding: (:date (:local (in-zone
+;; (now) :local))) was the way).
+(deftest today-and-local-now
+  (let [before (t/now) d (t/today) n (t/local-now)]
+    (is (t/local-date? d))
+    (is (t/local-date-time? n))
+    (is (<= (abs (t/days-between d (:date n))) 1))
+    (is (= (t/today 0) (:date (:local (t/in-zone (t/now) 0)))) "in a zone")
+    (is (#{0 1} (t/days-between (:date (:local (t/in-zone before 0))) (t/today 0))))))
