@@ -24,8 +24,8 @@
 (defn set-level!
   "Log at level and above: globally, or for namespace ns (a symbol or
   string) and the namespaces under it."
-  ([level] (swap! config assoc :level level) nil)
-  ([level ns] (swap! config assoc-in [:ns-levels (str ns)] level) nil))
+  ([^Keyword level] (swap! config assoc :level level) nil)
+  ([^Keyword level ^(U Symbol String) ns] (swap! config assoc-in [:ns-levels (str ns)] level) nil))
 
 (defn- level-for [ns]
   (let [{:keys [level ns-levels]} (deref config)]
@@ -36,7 +36,7 @@
         *level*
         level)))
 
-(defn enabled? "Would a message at level from namespace ns be logged?" [level ns]
+(defn enabled? "Would a message at level from namespace ns be logged?" ^Boolean [^Keyword level ^(U String Symbol) ns]
   (>= (get levels level 0) (get levels (level-for ns) 2)))
 
 (defn- default-sink [{:keys [level ns msg data time]}]
@@ -58,7 +58,7 @@
 (defn emit
   "Log msg with key-value pairs kvs at level from namespace ns (the macros
   call this after checking the level)."
-  [level ns msg kvs]
+  [^Keyword level ^(U String Symbol) ns msg ^Sequential kvs]
   (let [event {:level level :ns ns :msg (str msg) :data (vec (partition-all 2 kvs)) :time (norn.time/now)}]
     ((or (:sink (deref config)) default-sink) event)
     nil))

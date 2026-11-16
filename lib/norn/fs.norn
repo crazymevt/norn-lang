@@ -5,7 +5,7 @@
 (defn walk
   "Every path under dir (files and directories, not following symbolic
   links), depth first and sorted."
-  [dir]
+  ^Vector [^String dir]
   (%fs-walk (str dir)))
 
 (defn glob
@@ -13,7 +13,7 @@
   number of segments, ? one character. E.g. (glob \"src/**/*.norn\"). A
   pattern's segments are divided by / on every OS. Nothing matches under
   a folder that isn't there: [] then."
-  [pattern]
+  ^Vector [^String pattern]
   (let [base (%glob-base pattern)
         rel (fn [p] (if (= base ".") (subs p 2) p))]
     (if (%fs-info base)
@@ -24,10 +24,10 @@
   "Watch a file or directory (with :recursive true, everything under it).
   Returns {:handle h :events ch}: ch receives {:kind :create|:modify|:remove|:other
   :paths [...]} as things change. Stop with unwatch."
-  [path & {:keys [recursive]}]
+  ^Map [^String path & {:keys [recursive]}]
   (let [[h ch] (%fs-watch (str path) (if recursive true false))]
     {:handle h :events ch}))
 
-(defn unwatch "Stop a watch; its channel closes." [w]
+(defn unwatch "Stop a watch; its channel closes." [^Map w]
   (%io-close (:handle w))
   (close! (:events w)))

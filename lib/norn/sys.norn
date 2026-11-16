@@ -8,49 +8,49 @@
   "An environment variable, or nil: name is a string, or a keyword or symbol
   naming it ((getenv :HOME)). (Read-only: set a child process's environment
   with norn.process.)"
-  [name]
+  ^(? String) [^(U String Keyword Symbol) name]
   (%getenv (if (or (keyword? name) (symbol? name)) (norn.core/name name) (str name))))
-(defn env "All environment variables, as a map of strings." [] (%env))
-(defn args "The process's command-line arguments (the program first)." [] (%args))
+(defn env "All environment variables, as a map of strings." ^Map [] (%env))
+(defn args "The process's command-line arguments (the program first)." ^Vector [] (%args))
 (defn program-args
   "The running program's own arguments: for `norn script.norn a b`, [\"a\" \"b\"];
   for a built image, those after the image; for `norn -e` and the REPL, none."
-  []
+  ^Vector []
   (%program-args))
 (defn app-resources
   "A packaged app's resources folder (where norn package put its image
   and the files :package :resources named), or nil when this isn't one."
-  []
+  ^(? String) []
   (%getenv "NORN_APP_RESOURCES"))
-(defn exit "End the process with status code (default 0)." ([] (norn.core/exit 0)) ([code] (norn.core/exit code)))
+(defn exit "End the process with status code (default 0)." ([] (norn.core/exit 0)) ([^Integer code] (norn.core/exit code)))
 
 (defn info
   "Everything at once: {:os :family :arch :endian :cores :page-size :memory
   :pid :temp-dir :home-dir :user :hostname :cwd :norn-version :build
   :executable}: :executable is the running program's path."
-  []
+  ^Map []
   (%sys-info))
 
-(defn os "The OS: :macos, :linux, :windows…" [] (:os (info)))
-(defn family "The OS family: :unix or :windows." [] (:family (info)))
-(defn arch "The CPU architecture: :aarch64, :x86_64…" [] (:arch (info)))
-(defn endian "Byte order: :little or :big." [] (:endian (info)))
-(defn cores "Logical CPUs available." [] (:cores (info)))
-(defn page-size "The memory page size, in bytes." [] (:page-size (info)))
-(defn memory "Total physical memory in bytes, or nil if unknown." [] (:memory (info)))
-(defn pid "This process's id." [] (:pid (info)))
-(defn temp-dir "The folder for temporary files ($TMPDIR, else the system's)." [] (:temp-dir (info)))
-(defn home-dir "The user's home folder ($HOME), or nil." [] (:home-dir (info)))
-(defn user "The user's name ($USER, else $LOGNAME), or nil." [] (:user (info)))
-(defn hostname "This machine's host name, or nil." [] (:hostname (info)))
-(defn cwd "The current directory." [] (:cwd (info)))
-(defn norn-version "This Norn's version, as text: \"0.0.1\"." [] (:norn-version (info)))
-(defn build "The runtime build fingerprint (images record it)." [] (:build (info)))
+(defn os "The OS: :macos, :linux, :windows…" ^Keyword [] (:os (info)))
+(defn family "The OS family: :unix or :windows." ^Keyword [] (:family (info)))
+(defn arch "The CPU architecture: :aarch64, :x86_64…" ^Keyword [] (:arch (info)))
+(defn endian "Byte order: :little or :big." ^Keyword [] (:endian (info)))
+(defn cores "Logical CPUs available." ^Integer [] (:cores (info)))
+(defn page-size "The memory page size, in bytes." ^Integer [] (:page-size (info)))
+(defn memory "Total physical memory in bytes, or nil if unknown." ^(? Integer) [] (:memory (info)))
+(defn pid "This process's id." ^Integer [] (:pid (info)))
+(defn temp-dir "The folder for temporary files ($TMPDIR, else the system's)." ^String [] (:temp-dir (info)))
+(defn home-dir "The user's home folder ($HOME), or nil." ^(? String) [] (:home-dir (info)))
+(defn user "The user's name ($USER, else $LOGNAME), or nil." ^(? String) [] (:user (info)))
+(defn hostname "This machine's host name, or nil." ^(? String) [] (:hostname (info)))
+(defn cwd "The current directory." ^(? String) [] (:cwd (info)))
+(defn norn-version "This Norn's version, as text: \"0.0.1\"." ^String [] (:norn-version (info)))
+(defn build "The runtime build fingerprint (images record it)." ^String [] (:build (info)))
 
 (defn runtime
   "The Norn runtime: {:carriers :carrier-threads :blocking-threads :handles
   :heap-bytes :gc-count :image}."
-  []
+  ^Map []
   (let [io (%io-stats)]
     {:carriers (carrier-count) :carrier-threads (:carrier-threads io)
      :blocking-threads (:blocking-threads io) :handles (:handles io)
