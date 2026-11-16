@@ -13,47 +13,47 @@
 (ns norn.string
   (:refer-core :exclude [reverse]))
 
-(defn upper-case "s in upper case." ^String [s] (%str-case (str s) 0))
-(defn lower-case "s in lower case." ^String [s] (%str-case (str s) 1))
-(defn capitalize "s with its first character in upper case and the rest in lower case." ^String [s] (%str-case (str s) 2))
+(defn upper-case "s in upper case." [s] (%str-case (str s) 0))
+(defn lower-case "s in lower case." [s] (%str-case (str s) 1))
+(defn capitalize "s with its first character in upper case and the rest in lower case." [s] (%str-case (str s) 2))
 
-(defn trim "s without whitespace at either end." ^String [^String s] (%str-trim s 0))
-(defn triml "s without whitespace at the start." ^String [^String s] (%str-trim s 1))
-(defn trimr "s without whitespace at the end." ^String [^String s] (%str-trim s 2))
-(defn trim-newline "s without trailing newlines (\\n and \\r)." ^String [^String s] (%str-trim s 3))
+(defn trim "s without whitespace at either end." [s] (%str-trim s 0))
+(defn triml "s without whitespace at the start." [s] (%str-trim s 1))
+(defn trimr "s without whitespace at the end." [s] (%str-trim s 2))
+(defn trim-newline "s without trailing newlines (\\n and \\r)." [s] (%str-trim s 3))
 
-(defn blank? "Is s nil, empty or only whitespace?" ^Boolean [^(? String) s] (or (nil? s) (= "" (%str-trim s 0))))
+(defn blank? "Is s nil, empty or only whitespace?" [s] (or (nil? s) (= "" (%str-trim s 0))))
 
 (defn index-of
   "The index of the first occurrence of x (a string or character) in s, at
   or after from; nil if there is none."
-  (^(? Integer) [^String s ^(U String Character) x] (%str-index s x nil false))
-  (^(? Integer) [^String s ^(U String Character) x ^(? Integer) from] (%str-index s x from false)))
+  ([s x] (%str-index s x nil false))
+  ([s x from] (%str-index s x from false)))
 
 (defn last-index-of
   "The index of the last occurrence of x in s, starting at or before from."
-  (^(? Integer) [^String s ^(U String Character) x] (%str-index s x nil true))
-  (^(? Integer) [^String s ^(U String Character) x ^(? Integer) from] (%str-index s x from true)))
+  ([s x] (%str-index s x nil true))
+  ([s x from] (%str-index s x from true)))
 
-(defn includes? "Does s contain x (a string or character)?" ^Boolean [^String s ^(U String Character) x] (some? (%str-index s x nil false)))
-(defn starts-with? "Does s start with prefix?" ^Boolean [^String s ^String prefix] (= 0 (%str-index (subs s 0 (min (count s) (count prefix))) prefix nil false)))
-(defn ends-with? "Does s end with suffix?" ^Boolean [^String s ^String suffix]
+(defn includes? "Does s contain x (a string or character)?" [s x] (some? (%str-index s x nil false)))
+(defn starts-with? "Does s start with prefix?" [s prefix] (= 0 (%str-index (subs s 0 (min (count s) (count prefix))) prefix nil false)))
+(defn ends-with? "Does s end with suffix?" [s suffix]
   (let [n (count s) k (count suffix)] (and (<= k n) (= suffix (subs s (- n k))))))
 
 (defn split
   "The parts of s between matches of pattern (a string, character or regex).
   With limit, at most that many parts; the last holds the rest. An empty
   string pattern splits into characters."
-  (^(Vec String) [^String s ^(U String Character Regex) pattern] (split s pattern nil))
-  (^(Vec String) [^String s ^(U String Character Regex) pattern ^(? Integer) limit]
+  ([s pattern] (split s pattern nil))
+  ([s pattern limit]
    (if (regex? pattern) (%re-split pattern s limit) (%str-split s pattern limit))))
 
-(defn split-lines "The lines of s, split at \\n or \\r\\n." ^(Vec String) [^String s] (%re-split #"\r?\n" s nil))
+(defn split-lines "The lines of s, split at \\n or \\r\\n." [s] (%re-split #"\r?\n" s nil))
 
 (defn join
   "The items' text (as str gives it), with separator between them."
-  (^String [coll] (apply str coll))
-  (^String [separator coll] (apply str (interpose (str separator) coll))))
+  ([coll] (apply str coll))
+  ([separator coll] (apply str (interpose (str separator) coll))))
 
 (defn- match-arg
   "What a replacement function receives: the matched text, or a vector of it
@@ -79,15 +79,15 @@
   "s with every match of pattern replaced. With a regex, the replacement
   can refer to groups as $1 or ${name}; or it can be a function of the
   match (the matched text, or a vector of it and its groups)."
-  ^String [^String s ^(U String Character Regex) pattern replacement]
+  [s pattern replacement]
   (replace* s pattern replacement true))
 
-(defn replace-first "s with the first match of pattern replaced (as replace)." ^String [^String s ^(U String Character Regex) pattern replacement]
+(defn replace-first "s with the first match of pattern replaced (as replace)." [s pattern replacement]
   (replace* s pattern replacement false))
 
-(defn graphemes "The user-perceived characters of s, as strings." ^(Vec String) [^String s] (%graphemes s))
-(defn grapheme-count "How many user-perceived characters s has." ^Integer [^String s] (%grapheme-count s))
-(defn reverse "s reversed, keeping each grapheme (a letter and its accents) intact." ^String [^String s] (%str-reverse s))
+(defn graphemes "The user-perceived characters of s, as strings." [s] (%graphemes s))
+(defn grapheme-count "How many user-perceived characters s has." [s] (%grapheme-count s))
+(defn reverse "s reversed, keeping each grapheme (a letter and its accents) intact." [s] (%str-reverse s))
 
 ;; (as norn.terminal/strip removes them)
 (def ^:private ansi-re #"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
@@ -97,7 +97,7 @@
   "The columns s takes in a terminal or monospace font: wide East Asian
   characters take two, combining marks and ANSI escape sequences (colours,
   cursor movement) none."
-  ^Integer [^(U String Character) s]
+  [s]
   (if (and (string? s) (%str-index s esc nil false))
     (%str-width (%re-replace ansi-re s "" true))
     (%str-width s)))
@@ -105,8 +105,8 @@
 (defn truncate
   "The longest start of s at most cols columns wide; with ellipsis, a
   shortened s ends with it (the whole fitting in cols)."
-  (^String [^String s ^Integer cols] (%str-truncate s cols))
-  (^String [^String s ^Integer cols ^(U String Character) ellipsis]
+  ([s cols] (%str-truncate s cols))
+  ([s cols ellipsis]
    (if (<= (width s) cols)
      s
      (str (%str-truncate s (max 0 (- cols (width ellipsis)))) ellipsis))))
@@ -116,25 +116,25 @@
 (defn pad-left
   "s right-aligned in cols columns (pad defaults to a space), measured as
   width does."
-  (^String [s ^Integer cols] (pad-left s cols " "))
-  (^String [s ^Integer cols pad] (let [s (str s)] (str (fill (- cols (width s)) pad) s))))
+  ([s cols] (pad-left s cols " "))
+  ([s cols pad] (let [s (str s)] (str (fill (- cols (width s)) pad) s))))
 
 (defn pad-right "s left-aligned in cols columns, measured as width does."
-  (^String [s ^Integer cols] (pad-right s cols " "))
-  (^String [s ^Integer cols pad] (let [s (str s)] (str s (fill (- cols (width s)) pad)))))
+  ([s cols] (pad-right s cols " "))
+  ([s cols pad] (let [s (str s)] (str s (fill (- cols (width s)) pad)))))
 
 (defn center "s centered in cols columns."
-  (^String [s ^Integer cols] (center s cols " "))
-  (^String [s ^Integer cols pad]
+  ([s cols] (center s cols " "))
+  ([s cols pad]
    (let [s (str s) extra (max 0 (- cols (width s))) l (quot extra 2)]
      (str (fill l pad) s (fill (- extra l) pad)))))
 
 (defn escape
   "s with each character c replaced by (cmap c) when that isn't nil. cmap
   can be a map or a function."
-  ^String [^String s cmap]
+  [s cmap]
   (apply str (map (fn [c] (let [r (cmap c)] (if (nil? r) c r))) s)))
 
-(defn repeat-str "s repeated n times." ^String [^Integer n s] (fill n s))
+(defn repeat-str "s repeated n times." [n s] (fill n s))
 
-(defn lines "Alias of split-lines." ^(Vec String) [^String s] (split-lines s))
+(defn lines "Alias of split-lines." [s] (split-lines s))

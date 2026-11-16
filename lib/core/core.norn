@@ -3996,10 +3996,10 @@
 ;;; argument, the function's own module for a bad result. A signature
 ;;; (9.3: ^Integer x) is a contract too; defcontract gives one directly.
 
-(defclass ContractError (Error)
-  ((function :initform nil) (position :initform nil) (expected :initform nil)
-                            (value :initform nil) (blame :initform nil))
-  (:doc "A contract or signature didn't hold. :function names the function,
+(defclass ContractError (TypeError)
+  ((function :initform nil) (position :initform nil) (blame :initform nil))
+  (:doc "A contract or signature didn't hold: a kind of TypeError, so a
+  TypeError handler catches it too. :function names the function,
   :position says what was wrong (\"its 2nd argument\", its result),
   :expected is the contract's name, :value what came, and :blame the side
   at fault (a module, or \"the function's caller\")."))

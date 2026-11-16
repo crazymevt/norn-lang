@@ -8,49 +8,49 @@
 
 (defn utf8
   "The UTF-8 bytes of string s."
-  ^Bytes [^String s]
+  [s]
   (bytes (str s)))
 
 (defn utf8-string
   "Decode UTF-8. Invalid sequences are an error, unless lossy? is true, which
   replaces them with U+FFFD."
-  (^String [^Bytes b] (bytes->string b))
-  (^String [^Bytes b lossy?] (bytes->string b lossy?)))
+  ([b] (bytes->string b))
+  ([b lossy?] (bytes->string b lossy?)))
 
 (defn hex
   "Lower-case hex digits of b."
-  ^String [^Bytes b]
+  [b]
   (%hex-encode b))
 
 (defn unhex
   "Bytes from hex digits (either case)."
-  ^Bytes [^String s]
+  [s]
   (%hex-decode s))
 
 (defn base64
   "Base64 of b: the standard alphabet with padding, or with :url the
   URL-safe alphabet without padding."
-  (^String [^Bytes b] (%base64-encode b false))
-  (^String [^Bytes b alphabet] (%base64-encode b (= alphabet :url))))
+  ([b] (%base64-encode b false))
+  ([b alphabet] (%base64-encode b (= alphabet :url))))
 
 (defn unbase64
   "Bytes from base64 in either alphabet, padded or not."
-  ^Bytes [^String s]
+  [s]
   (%base64-decode s))
 
 (defn concat-bytes
   "One byte string from several."
-  ^Bytes [& ^Bytes bs]
+  [& bs]
   (apply bytes-concat bs))
 
 (defn slice
   "Bytes from index start (inclusive) to end (exclusive, default: the end)."
-  (^Bytes [^Bytes b ^Integer start] (subbytes b start))
-  (^Bytes [^Bytes b ^Integer start ^Integer end] (subbytes b start end)))
+  ([b start] (subbytes b start))
+  ([b start end] (subbytes b start end)))
 
 (defn read-uint
   "Read width bytes as an unsigned integer at offset. Byte order is :be or :le."
-  ^Integer [^Bytes b ^Integer offset ^Integer width ^Keyword order]
+  [b offset width order]
   (when-not (and (bytes? b) (integer? offset) (integer? width) (<= 0 offset (+ offset width) (count b)))
     (error IndexError :message "Unsigned integer is outside the byte string" :index offset))
   (let [start (case order :be offset :le (+ offset (dec width)) (error "Unknown byte order" order))
@@ -60,7 +60,7 @@
 
 (defn uint-bytes
   "Encode a nonnegative integer in exactly width bytes, in :be or :le order."
-  ^Bytes [^Integer n ^Integer width ^Keyword order]
+  [n width order]
   (when-not (and (integer? n) (<= 0 n) (integer? width) (<= 0 width))
     (error "Expected an unsigned integer and byte width" n width))
   (let [out (loop [remaining width value n out []]
@@ -69,12 +69,12 @@
                 (recur (dec remaining) (quot value 256) (conj out (mod value 256)))))]
     (case order :be (bytes (reverse out)) :le (bytes out) (error "Unknown byte order" order))))
 
-(defn float-bytes "Encode an IEEE 754 number in 4 or 8 bytes, in :be or :le order." ^Bytes [^Number n ^Integer width ^Keyword order]
+(defn float-bytes "Encode an IEEE 754 number in 4 or 8 bytes, in :be or :le order." [n width order]
   (let [b (%float-bytes n width)]
     (case order :be b :le (bytes (reverse (vec b))) (error "Unknown byte order" order))))
 
 (defn read-float "Read an IEEE 754 number in 4 or 8 bytes at offset, in :be or :le order."
-  ^Float [^Bytes b ^Integer offset ^Integer width ^Keyword order]
+  [b offset width order]
   (when-not (contains? #{4 8} width) (error "Float width must be 4 or 8 bytes"))
   (let [part (slice b offset (+ offset width))]
     (%bytes-float (case order :be part :le (bytes (reverse (vec part))) (error "Unknown byte order" order)))))
@@ -82,7 +82,7 @@
 (defn decoder
   "Create an incremental decoder for :utf-8, :utf-16le or :utf-16be.
   The decoder preserves byte order marks as characters."
-  ^Map [^Keyword encoding]
+  [encoding]
   (when-not (contains? #{:utf-8 :utf-16le :utf-16be} encoding)
     (error "Unsupported text encoding" encoding))
   {:encoding encoding :pending (bytes []) :offset 0})
@@ -127,7 +127,7 @@
 
 (defn decode-chunk
   "Decode the complete characters in a byte chunk. Returns [next-state text]."
-  ^Vector [^Map state ^Bytes chunk]
+  [state chunk]
   (when-not (bytes? chunk) (error "decode-chunk expects Bytes"))
   (let [{:keys [encoding pending offset]} state
         data (if (zero? (count pending)) chunk (bytes-concat pending chunk))
@@ -142,7 +142,7 @@
 
 (defn finish-decoder
   "Signal ParseError if the stream ended partway through a character."
-  [^Map {:keys [encoding pending offset]}]
+  [{:keys [encoding pending offset]}]
   (when (pos? (count pending))
     (encoding-error! encoding offset
                      (cond (= encoding :utf-8) "incomplete UTF-8 sequence"
@@ -151,7 +151,7 @@
 
 (defn decode-text
   "Decode a complete Bytes value as :utf-8, :utf-16le or :utf-16be."
-  ^String [^Bytes data ^Keyword encoding]
+  [data encoding]
   (let [[state text] (decode-chunk (decoder encoding) data)]
     (finish-decoder state)
     text))
