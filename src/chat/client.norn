@@ -1,0 +1,42 @@
+(ns chat.client
+  "A chat client: a connection whose lines arrive on a channel."
+  (:require [norn.io :as io]
+            [norn.net :as net]))
+
+(defn connect!
+  "Connect to the chat at host:port: {:sock :lines}, lines a channel of what
+  the server says, closed when it goes. Options as norn.net/connect's (:tls,
+  :ca-file)."
+  [host port & opts]
+  (let [sock (apply net/connect host port opts)
+        ;; (room for a busy room's worth, so a client reading slowly
+        ;; isn't let go for it)
+        lines (chan 100000)]
+    (spawn-detached
+      (let [r (io/line-reader sock)]
+        (loop []
+          (when-let [l (try (io/read-line r) (catch Error _ nil))]
+            (put! lines l)
+            (recur))))
+      (close! lines))
+    {:sock sock :lines lines}))
+
+(defn say! "Send line to the server." [c line] (io/write (:sock c) (str line "\n")) nil)
+
+(defn next-line
+  "The next line from the server, waiting at most ms (2000): nil if none."
+  ([c] (next-line c 2000))
+  ([c ms] (first (alts! [(:lines c) (timeout ms)]))))
+
+(defn until
+  "Lines from the server up to and including the first that pred is true
+  of (at most ms each, 2000): a vector, ending early if none comes."
+  ([c pred] (until c pred 2000))
+  ([c pred ms]
+   (loop [seen []]
+     (let [l (next-line c ms)]
+       (cond (nil? l) seen
+             (pred l) (conj seen l)
+             :else (recur (conj seen l)))))))
+
+(defn leave! "Leave." [c] (try (io/close (:sock c)) (catch Error _ nil)) nil)
