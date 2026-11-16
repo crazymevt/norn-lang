@@ -1,0 +1,32 @@
+;; norn.string's public interface, recorded by norn api-diff --record.
+{
+ "blank?" {:arglists ["[s]"], :kind :function}
+ "capitalize" {:arglists ["[s]"], :kind :function}
+ "center" {:arglists ["[s cols]" "[s cols pad]"], :kind :function}
+ "ends-with?" {:arglists ["[s suffix]"], :kind :function}
+ "escape" {:arglists ["[s cmap]"], :kind :function}
+ "grapheme-count" {:arglists ["[s]"], :kind :function}
+ "graphemes" {:arglists ["[s]"], :kind :function}
+ "includes?" {:arglists ["[s x]"], :kind :function}
+ "index-of" {:arglists ["[s x]" "[s x from]"], :kind :function}
+ "join" {:arglists ["[coll]" "[separator coll]"], :kind :function}
+ "last-index-of" {:arglists ["[s x]" "[s x from]"], :kind :function}
+ "lines" {:arglists ["[s]"], :kind :function}
+ "lower-case" {:arglists ["[s]"], :kind :function}
+ "pad-left" {:arglists ["[s cols]" "[s cols pad]"], :kind :function}
+ "pad-right" {:arglists ["[s cols]" "[s cols pad]"], :kind :function}
+ "repeat-str" {:arglists ["[n s]"], :kind :function}
+ "replace" {:arglists ["[s pattern replacement]"], :kind :function}
+ "replace-first" {:arglists ["[s pattern replacement]"], :kind :function}
+ "reverse" {:arglists ["[s]"], :kind :function}
+ "split" {:arglists ["[s pattern]" "[s pattern limit]"], :kind :function}
+ "split-lines" {:arglists ["[s]"], :kind :function}
+ "starts-with?" {:arglists ["[s prefix]"], :kind :function}
+ "trim" {:arglists ["[s]"], :kind :function}
+ "trim-newline" {:arglists ["[s]"], :kind :function}
+ "triml" {:arglists ["[s]"], :kind :function}
+ "trimr" {:arglists ["[s]"], :kind :function}
+ "truncate" {:arglists ["[s cols]" "[s cols ellipsis]"], :kind :function}
+ "upper-case" {:arglists ["[s]"], :kind :function}
+ "width" {:arglists ["[s]"], :kind :function}
+}

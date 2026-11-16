@@ -566,8 +566,8 @@ later).**
   version, and conflicts are settled by an override (runtime.md has the
   registry later).
 
-**Sealing (2026-11-16): built; the baseline waits for M7.6's working
-stretch.**
+**Sealing (2026-11-16): done. The standard library is sealed: its
+baseline is recorded in `api/`.**
 
 - A sealed flag per module: `sealed?`, `seal!`, `unseal!`. The standard
   library is sealed as it loads (core, the compiler, `norn.syntax` and the
@@ -582,8 +582,14 @@ stretch.**
   deoptimisation move to M10, where inlining pays for them; redefinition
   unseals with a warning rather than failing; release builds seal a
   project's modules; baselines are files under `api/`, checked by a test.
-- **Left:** taking the baseline (`norn api-diff --record`, committed) once
-  the M7.6 working stretch is done. That is the sealing.
+- **The baseline (2026-11-16).** Taken before the M7.6 working stretch,
+  the user deciding, after five test programs (pulse, ledger, quire, chat,
+  loglens, in `lang-tests/`) and an interface sweep found what they could:
+  65 modules recorded in `api/`. Recording is deterministic (the same at
+  both tiers). `api_diff_test.norn`, run by `norn test`, `norn check` and
+  cargo's tier comparison, fails on a breaking change until it's recorded
+  on purpose (`norn api-diff --record`, and the change to `api/`
+  committed); additions are compatible.
 
 **8.11, the bytecode verifier (2026-11-14): done.**
 

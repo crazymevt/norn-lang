@@ -1,0 +1,9 @@
+;; norn.lint's public interface, recorded by norn api-diff --record.
+{
+ "first-party" {:kind :var}
+ "first-party?" {:arglists ["[m]"], :kind :function, :signature [{:result "Boolean", :args ["String"]}]}
+ "format-warning" {:arglists ["[{:keys [file line kind message]}]"], :kind :function}
+ "lint-file" {:arglists ["[path]"], :kind :function}
+ "lint-string" {:arglists ["[s]" "[s path]"], :kind :function}
+ "main" {:arglists ["[& args]"], :kind :function}
+}

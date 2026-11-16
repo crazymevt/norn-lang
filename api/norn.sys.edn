@@ -1,0 +1,26 @@
+;; norn.sys's public interface, recorded by norn api-diff --record.
+{
+ "app-resources" {:arglists ["[]"], :kind :function, :signature [{:result "nil or String", :args []}]}
+ "arch" {:arglists ["[]"], :kind :function, :signature [{:result "Keyword", :args []}]}
+ "args" {:arglists ["[]"], :kind :function, :signature [{:result "Vector", :args []}]}
+ "build" {:arglists ["[]"], :kind :function, :signature [{:result "String", :args []}]}
+ "cores" {:arglists ["[]"], :kind :function, :signature [{:result "Integer", :args []}]}
+ "cwd" {:arglists ["[]"], :kind :function, :signature [{:result "nil or String", :args []}]}
+ "endian" {:arglists ["[]"], :kind :function, :signature [{:result "Keyword", :args []}]}
+ "env" {:arglists ["[]"], :kind :function, :signature [{:result "Map", :args []}]}
+ "exit" {:arglists ["[]" "[code]"], :kind :function, :signature [{:result "Any", :args []} {:result "Any", :args ["Integer"]}]}
+ "family" {:arglists ["[]"], :kind :function, :signature [{:result "Keyword", :args []}]}
+ "getenv" {:arglists ["[name]"], :kind :function, :signature [{:result "nil or String", :args ["String or Keyword or Symbol"]}]}
+ "home-dir" {:arglists ["[]"], :kind :function, :signature [{:result "nil or String", :args []}]}
+ "hostname" {:arglists ["[]"], :kind :function, :signature [{:result "nil or String", :args []}]}
+ "info" {:arglists ["[]"], :kind :function, :signature [{:result "Map", :args []}]}
+ "memory" {:arglists ["[]"], :kind :function, :signature [{:result "nil or Integer", :args []}]}
+ "norn-version" {:arglists ["[]"], :kind :function, :signature [{:result "String", :args []}]}
+ "os" {:arglists ["[]"], :kind :function, :signature [{:result "Keyword", :args []}]}
+ "page-size" {:arglists ["[]"], :kind :function, :signature [{:result "Integer", :args []}]}
+ "pid" {:arglists ["[]"], :kind :function, :signature [{:result "Integer", :args []}]}
+ "program-args" {:arglists ["[]"], :kind :function, :signature [{:result "Vector", :args []}]}
+ "runtime" {:arglists ["[]"], :kind :function, :signature [{:result "Map", :args []}]}
+ "temp-dir" {:arglists ["[]"], :kind :function, :signature [{:result "String", :args []}]}
+ "user" {:arglists ["[]"], :kind :function, :signature [{:result "nil or String", :args []}]}
+}

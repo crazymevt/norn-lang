@@ -1,0 +1,70 @@
+;; norn.time's public interface, recorded by norn api-diff --record.
+{
+ "Duration" {:kind :class, :slots ["nanos"], :supers ["norn.core/StandardObject"]}
+ "Instant" {:kind :class, :slots ["nanos"], :supers ["norn.core/StandardObject"]}
+ "LocalDate" {:kind :class, :slots ["day" "month" "year"], :supers ["norn.core/StandardObject"]}
+ "LocalDateTime" {:kind :class, :slots ["date" "time"], :supers ["norn.core/StandardObject"]}
+ "LocalTime" {:kind :class, :slots ["hour" "minute" "nanos" "second"], :supers ["norn.core/StandardObject"]}
+ "Zone" {:kind :class, :slots ["index" "name" "rule" "times" "types"], :supers ["norn.core/StandardObject"]}
+ "ZonedDateTime" {:kind :class, :slots ["instant" "local" "offset" "zone"], :supers ["norn.core/StandardObject"]}
+ "after?" {:arglists ["[a b]"], :kind :function, :signature [{:result "Boolean", :args ["Instant or Duration or ZonedDateTime or LocalDate or LocalTime or LocalDateTime" "Instant or Duration or ZonedDateTime or LocalDate or LocalTime or LocalDateTime"]}]}
+ "available-zones" {:arglists ["[]"], :kind :function, :signature [{:result "Vector", :args []}]}
+ "before?" {:arglists ["[a b]"], :kind :function, :signature [{:result "Boolean", :args ["Instant or Duration or ZonedDateTime or LocalDate or LocalTime or LocalDateTime" "Instant or Duration or ZonedDateTime or LocalDate or LocalTime or LocalDateTime"]}]}
+ "between" {:arglists ["[a b]"], :kind :function, :signature [{:result "Duration", :args ["Instant" "Instant"]}]}
+ "compare-time" {:arglists ["[a b]"], :kind :function, :signature [{:result "Integer", :args ["Instant or Duration or ZonedDateTime or LocalDate or LocalTime or LocalDateTime" "Instant or Duration or ZonedDateTime or LocalDate or LocalTime or LocalDateTime"]}]}
+ "day-of-year" {:arglists ["[x]"], :kind :function, :signature [{:result "Integer", :args ["LocalDate or LocalDateTime or ZonedDateTime"]}]}
+ "days-between" {:arglists ["[a b]"], :kind :function, :signature [{:result "Integer", :args ["LocalDate or LocalDateTime or ZonedDateTime" "LocalDate or LocalDateTime or ZonedDateTime"]}]}
+ "days-in-month" {:arglists ["[year month]"], :kind :function, :signature [{:result "Integer", :args ["Integer" "Integer"]}]}
+ "duration" {:arglists ["[& {:keys [days hours minutes seconds millis nanos]}]"], :kind :function, :signature [{:result "Duration", :args [], :rest "Any"}]}
+ "duration?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "epoch-day" {:arglists ["[x]"], :kind :function, :signature [{:result "Integer", :args ["LocalDate or LocalDateTime or ZonedDateTime"]}]}
+ "epoch-ms" {:arglists ["[i]"], :kind :function, :signature [{:result "Integer", :args ["Instant"]}]}
+ "epoch-nanos" {:arglists ["[i]"], :kind :function, :signature [{:result "Integer", :args ["Instant"]}]}
+ "fields" {:arglists ["[i]" "[i zone]"], :kind :function, :signature [{:result "Map", :args ["Instant or ZonedDateTime"]} {:result "Map", :args ["Instant or ZonedDateTime" "nil or Zone or String or Integer or Keyword"]}]}
+ "format" {:arglists ["[i]" "[i zone]" "[i zone pattern]"], :kind :function, :signature [{:result "String", :args ["Instant or ZonedDateTime"]} {:result "String", :args ["Instant or ZonedDateTime" "nil or Zone or String or Integer or Keyword"]} {:result "String", :args ["Instant or ZonedDateTime" "nil or Zone or String or Integer or Keyword" "String"]}]}
+ "format-local" {:arglists ["[x pattern]" "[x]"], :kind :function, :signature [{:result "String", :args ["LocalDate or LocalTime or LocalDateTime" "String"]} {:result "String", :args ["LocalDate or LocalTime or LocalDateTime"]}]}
+ "format-zoned" {:arglists ["[z]" "[z pattern]"], :kind :function, :signature [{:result "String", :args ["ZonedDateTime"]} {:result "String", :args ["ZonedDateTime" "String"]}]}
+ "from-epoch-day" {:arglists ["[n]"], :kind :function, :signature [{:result "LocalDate", :args ["Integer"]}]}
+ "from-fields" {:arglists ["[m]"], :kind :function, :signature [{:result "Instant", :args ["Map"]}]}
+ "in-zone" {:arglists ["[i z]"], :kind :function, :signature [{:result "ZonedDateTime", :args ["Instant" "Zone or String or Integer or Keyword"]}]}
+ "instant" {:arglists ["[n]"], :kind :function, :signature [{:result "Instant", :args ["Integer"]}]}
+ "instant?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "leap-year?" {:arglists ["[year]"], :kind :function, :signature [{:result "Boolean", :args ["Integer"]}]}
+ "local-date" {:arglists ["[year month day]"], :kind :function, :signature [{:result "LocalDate", :args ["Integer" "Integer" "Integer"]}]}
+ "local-date-time" {:arglists ["[date clock]"], :kind :function, :signature [{:result "LocalDateTime", :args ["LocalDate" "LocalTime"]}]}
+ "local-date-time?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "local-date?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "local-now" {:arglists ["[]" "[z]"], :kind :function, :signature [{:result "LocalDateTime", :args []} {:result "LocalDateTime", :args ["Zone or String or Integer or Keyword"]}]}
+ "local-offset" {:arglists ["[]" "[i]"], :kind :function, :signature [{:result "Integer", :args []} {:result "Integer", :args ["Instant"]}]}
+ "local-time" {:arglists ["[hour minute]" "[hour minute second]" "[hour minute second nanos]"], :kind :function, :signature [{:result "LocalTime", :args ["Integer" "Integer"]} {:result "LocalTime", :args ["Integer" "Integer" "Integer"]} {:result "LocalTime", :args ["Integer" "Integer" "Integer" "Integer"]}]}
+ "local-time?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "millis" {:arglists ["[d]"], :kind :function, :signature [{:result "Integer", :args ["Duration"]}]}
+ "minus" {:arglists ["[x d]"], :kind :function, :signature [{:result "Instant or Duration", :args ["Instant or Duration" "Duration"]}]}
+ "monotonic-nanos" {:arglists ["[]"], :kind :function, :signature [{:result "Integer", :args []}]}
+ "months-between" {:arglists ["[a b]"], :kind :function, :signature [{:result "Integer", :args ["LocalDate or LocalDateTime or ZonedDateTime" "LocalDate or LocalDateTime or ZonedDateTime"]}]}
+ "nanos" {:arglists ["[d]"], :kind :function, :signature [{:result "Integer", :args ["Duration"]}]}
+ "now" {:arglists ["[]"], :kind :function, :signature [{:result "Instant", :args []}]}
+ "of-epoch-ms" {:arglists ["[ms]"], :kind :function, :signature [{:result "Instant", :args ["Integer"]}]}
+ "parse" {:arglists ["[s]"], :kind :function, :signature [{:result "Instant", :args ["String"]}]}
+ "parse-local-date" {:arglists ["[s]" "[s pattern]"], :kind :function, :signature [{:result "LocalDate", :args ["String"]} {:result "LocalDate", :args ["String" "String"]}]}
+ "parse-local-date-time" {:arglists ["[s]" "[s pattern]"], :kind :function, :signature [{:result "LocalDateTime", :args ["String"]} {:result "LocalDateTime", :args ["String" "String"]}]}
+ "parse-local-time" {:arglists ["[s]" "[s pattern]"], :kind :function, :signature [{:result "LocalTime", :args ["String"]} {:result "LocalTime", :args ["String" "String"]}]}
+ "parse-zoned" {:arglists ["[s pattern]" "[s]"], :kind :function, :signature [{:result "ZonedDateTime", :args ["String" "String"]} {:result "ZonedDateTime", :args ["String"]}]}
+ "plus" {:arglists ["[x d]"], :kind :function, :signature [{:result "Instant or Duration", :args ["Instant or Duration" "Duration"]}]}
+ "seconds" {:arglists ["[d]"], :kind :function, :signature [{:result "Integer", :args ["Duration"]}]}
+ "shift" {:arglists ["[x & {:or {resolve :compatible}, :keys [years months weeks days hours minutes seconds millis nanos resolve]}]"], :kind :function, :signature [{:result "LocalDate or LocalDateTime or ZonedDateTime or Instant", :args ["LocalDate or LocalDateTime or ZonedDateTime or Instant"], :rest "Any"}]}
+ "sleep-for" {:arglists ["[d]"], :kind :function, :signature [{:result "Any", :args ["Duration"]}]}
+ "start-of-day" {:arglists ["[d z]"], :kind :function, :signature [{:result "ZonedDateTime", :args ["LocalDate or LocalDateTime or ZonedDateTime" "Zone or String or Integer or Keyword"]}]}
+ "system-zone" {:arglists ["[]"], :kind :function, :signature [{:result "Zone", :args []}]}
+ "to-instant" {:arglists ["[x]"], :kind :function, :signature [{:result "Instant", :args ["ZonedDateTime or Instant"]}]}
+ "today" {:arglists ["[]" "[z]"], :kind :function, :signature [{:result "LocalDate", :args []} {:result "LocalDate", :args ["Zone or String or Integer or Keyword"]}]}
+ "utc" {:kind :var}
+ "weekday" {:arglists ["[x]"], :kind :function, :signature [{:result "Integer", :args ["LocalDate or LocalDateTime or ZonedDateTime"]}]}
+ "zone" {:arglists ["[z]"], :kind :function, :signature [{:result "Zone", :args ["Zone or String or Integer or Keyword"]}]}
+ "zone-directories" {:arglists ["[]"], :kind :function, :signature [{:result "Vector", :args []}]}
+ "zone-info" {:arglists ["[z]" "[z i]"], :kind :function, :signature [{:result "Map", :args ["Zone or String or Integer or Keyword"]} {:result "Map", :args ["Zone or String or Integer or Keyword" "Instant"]}]}
+ "zone-name" {:arglists ["[z]"], :kind :function, :signature [{:result "String", :args ["Zone or String or Integer or Keyword"]}]}
+ "zone?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "zoned" {:arglists ["[ldt z & {:or {resolve :compatible}, :keys [resolve offset]}]"], :kind :function, :signature [{:result "ZonedDateTime", :args ["LocalDateTime" "Zone or String or Integer or Keyword"], :rest "Any"}]}
+ "zoned?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+}

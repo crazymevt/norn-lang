@@ -1,0 +1,12 @@
+;; norn.api-diff's public interface, recorded by norn api-diff --record.
+{
+ "changes" {:arglists ["[old new]"], :kind :function, :signature [{:result "Vector", :args ["Map" "Map"]}]}
+ "diff" {:arglists ["[dir modules]"], :kind :function, :signature [{:result "Map", :args ["String" "Any"]}]}
+ "interface" {:arglists ["[m]"], :kind :function, :signature [{:result "Map", :args ["String"]}]}
+ "internal" {:kind :var}
+ "main" {:arglists ["[& args]"], :kind :function}
+ "project-modules" {:arglists ["[dir]"], :kind :function, :signature [{:result "Vector", :args ["String"]}]}
+ "record!" {:arglists ["[dir m]"], :kind :function, :signature [{:result "String", :args ["String" "String"]}]}
+ "recorded" {:arglists ["[dir m]"], :kind :function, :signature [{:result "Any", :args ["String" "String"]}]}
+ "standard-modules" {:arglists ["[]"], :kind :function, :signature [{:result "Vector", :args []}]}
+}

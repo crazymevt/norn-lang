@@ -1,0 +1,22 @@
+;; norn.async's public interface, recorded by norn api-diff --record.
+{
+ "Mult" {:kind :class, :slots ["source" "taps"], :supers ["norn.core/StandardObject"]}
+ "Pub" {:kind :class, :slots ["source" "subs" "topic-fn"], :supers ["norn.core/StandardObject"]}
+ "filter" {:arglists ["[pred ch & {:or {buffer 0}, :keys [buffer]}]"], :kind :function, :signature [{:result "Channel", :args ["Any" "Channel"], :rest "Any"}]}
+ "into" {:arglists ["[coll ch]"], :kind :function, :signature [{:result "Any", :args ["Any" "Channel"]}]}
+ "map" {:arglists ["[f ch & {:or {buffer 0}, :keys [buffer]}]"], :kind :function, :signature [{:result "Channel", :args ["Any" "Channel"], :rest "Any"}]}
+ "merge" {:arglists ["[chs & {:or {buffer 0}, :keys [buffer]}]"], :kind :function, :signature [{:result "Channel", :args ["nil or Collection"], :rest "Any"}]}
+ "mult" {:arglists ["[ch]"], :kind :function, :signature [{:result "Mult", :args ["Channel"]}]}
+ "onto-chan!" {:arglists ["[ch coll]" "[ch coll close?]"], :kind :function, :signature [{:result "Fiber", :args ["Channel" "Any"]} {:result "Fiber", :args ["Channel" "Any" "Any"]}]}
+ "pipe" {:arglists ["[from to]" "[from to close?]"], :kind :function, :signature [{:result "Channel", :args ["Channel" "Channel"]} {:result "Channel", :args ["Channel" "Channel" "Any"]}]}
+ "pipeline" {:arglists ["[n to f from]" "[n to f from close?]"], :kind :function, :signature [{:result "Fiber", :args ["Integer" "Channel" "Any" "Channel"]} {:result "Fiber", :args ["Integer" "Channel" "Any" "Channel" "Any"]}]}
+ "pub" {:arglists ["[ch topic-fn]"], :kind :function, :signature [{:result "Pub", :args ["Channel" "Any"]}]}
+ "reduce" {:arglists ["[f init ch]"], :kind :function, :signature [{:result "Any", :args ["Any" "Any" "Channel"]}]}
+ "split" {:arglists ["[pred ch]"], :kind :function, :signature [{:result "Vector", :args ["Any" "Channel"]}]}
+ "sub" {:arglists ["[p topic ch]" "[p topic ch close?]"], :kind :function, :signature [{:result "Channel", :args ["Pub" "Any" "Channel"]} {:result "Channel", :args ["Pub" "Any" "Channel" "Any"]}]}
+ "tap" {:arglists ["[m ch]" "[m ch close?]"], :kind :function, :signature [{:result "Channel", :args ["Mult" "Channel"]} {:result "Channel", :args ["Mult" "Channel" "Any"]}]}
+ "to-chan!" {:arglists ["[coll]"], :kind :function, :signature [{:result "Channel", :args ["Any"]}]}
+ "transduce-chan" {:arglists ["[xf ch & {:or {buffer 0}, :keys [buffer]}]"], :kind :function, :signature [{:result "Channel", :args ["Any" "Channel"], :rest "Any"}]}
+ "unsub" {:arglists ["[p topic ch]"], :kind :function, :signature [{:result "Any", :args ["Pub" "Any" "Channel"]}]}
+ "untap" {:arglists ["[m ch]"], :kind :function, :signature [{:result "Any", :args ["Mult" "Channel"]}]}
+}

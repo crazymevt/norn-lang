@@ -1,0 +1,44 @@
+;; norn.syntax's public interface, recorded by norn api-diff --record.
+{
+ "*failures*" {:kind :var, :dynamic true}
+ "*pattern-env*" {:kind :var, :dynamic true}
+ "*progress*" {:kind :var, :dynamic true}
+ "Syntax" {:kind :class, :slots ["e" "loc" "pending" "props" "raw" "scopes" "tree"], :supers ["norn.core/StandardObject"]}
+ "SyntaxError" {:kind :class, :slots ["location" "message" "stx" "trace"], :supers ["norn.core/RuntimeError"]}
+ "Transformer" {:kind :class, :slots ["f"], :supers ["norn.core/StandardObject"]}
+ "add-scope" {:arglists ["[s sc]"], :kind :function}
+ "attr" {:arglists ["[x]"], :kind :macro}
+ "bound-identifier=?" {:arglists ["[a b]"], :kind :function}
+ "datum->syntax" {:arglists ["[ctx v]" "[ctx v loc]"], :kind :function}
+ "define-syntax-class" {:arglists ["[cname desc & patterns]"], :kind :macro}
+ "defsyntax" {:arglists ["[mname & body]"], :kind :macro}
+ "flip-scope" {:arglists ["[s sc]"], :kind :function}
+ "free-identifier=?" {:arglists ["[a b]"], :kind :function}
+ "identifier?" {:arglists ["[x]"], :kind :function}
+ "new-scope" {:arglists ["[]"], :kind :function}
+ "pmatch" {:arglists ["[p s]"], :kind :function}
+ "read-all-syntax" {:arglists ["[text source]"], :kind :function}
+ "read-syntax" {:arglists ["[r]"], :kind :function}
+ "remove-scope" {:arglists ["[s sc]"], :kind :function}
+ "syntax" {:arglists ["[template]"], :kind :macro}
+ "syntax->datum" {:arglists ["[s]"], :kind :function}
+ "syntax->list" {:arglists ["[s]"], :kind :function}
+ "syntax-case" {:arglists ["[stx literals & clauses]"], :kind :macro}
+ "syntax-column" {:arglists ["[s]"], :kind :function}
+ "syntax-e" {:arglists ["[s]"], :kind :function}
+ "syntax-error" {:arglists ["[s & msg]"], :kind :function}
+ "syntax-line" {:arglists ["[s]"], :kind :function}
+ "syntax-loc" {:arglists ["[s]"], :kind :function}
+ "syntax-parse" {:arglists ["[stx & clauses]"], :kind :macro}
+ "syntax-parser" {:arglists ["[& clauses]"], :kind :macro}
+ "syntax-position" {:arglists ["[s]"], :kind :function}
+ "syntax-property" {:arglists ["[s k]"], :kind :function}
+ "syntax-props" {:arglists ["[s]"], :kind :function}
+ "syntax-rules" {:arglists ["[literals & clauses]"], :kind :macro}
+ "syntax-scopes" {:arglists ["[s]"], :kind :function}
+ "syntax-source" {:arglists ["[s]"], :kind :function}
+ "syntax-span" {:arglists ["[s]"], :kind :function}
+ "syntax-where" {:arglists ["[s]"], :kind :function}
+ "syntax?" {:arglists ["[x]"], :kind :function}
+ "transformer" {:arglists ["[f]"], :kind :function}
+}

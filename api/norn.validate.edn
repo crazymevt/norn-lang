@@ -1,0 +1,4 @@
+;; norn.validate's public interface, recorded by norn api-diff --record.
+{
+ "validators" {:kind :var}
+}

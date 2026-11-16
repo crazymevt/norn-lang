@@ -1,0 +1,15 @@
+;; norn.regex's public interface, recorded by norn api-diff --record.
+{
+ "find" {:arglists ["[re s]" "[re s from]"], :kind :function}
+ "find-all" {:arglists ["[re s]"], :kind :function}
+ "found?" {:arglists ["[re s]"], :kind :function}
+ "literal" {:arglists ["[s]"], :kind :function}
+ "match" {:arglists ["[re s]" "[re s from]"], :kind :function}
+ "match-all" {:arglists ["[re s]"], :kind :function}
+ "matches" {:arglists ["[re s]"], :kind :function}
+ "matches?" {:arglists ["[re s]"], :kind :function}
+ "pattern" {:arglists ["[s]"], :kind :function}
+ "replace" {:arglists ["[re s replacement]"], :kind :function}
+ "replace-first" {:arglists ["[re s replacement]"], :kind :function}
+ "split" {:arglists ["[re s]" "[re s limit]"], :kind :function}
+}

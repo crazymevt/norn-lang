@@ -1,0 +1,12 @@
+;; norn.uuid's public interface, recorded by norn api-diff --record.
+{
+ "->bytes" {:arglists ["[u]"], :kind :function, :signature [{:result "Bytes", :args ["String"]}]}
+ "from-bytes" {:arglists ["[bs]"], :kind :function, :signature [{:result "String", :args ["Bytes"]}]}
+ "nil-uuid" {:kind :var}
+ "parse" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "timestamp-ms" {:arglists ["[u]"], :kind :function, :signature [{:result "Integer", :args ["String"]}]}
+ "v4" {:arglists ["[]"], :kind :function, :signature [{:result "String", :args []}]}
+ "v7" {:arglists ["[]" "[ms]"], :kind :function, :signature [{:result "String", :args []} {:result "String", :args ["Integer"]}]}
+ "valid?" {:arglists ["[s]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "version" {:arglists ["[u]"], :kind :function, :signature [{:result "Integer", :args ["String"]}]}
+}

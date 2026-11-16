@@ -75,6 +75,8 @@ Fine as they are, for M12's implementation: `io/info` reports `:readonly`, not m
 - [x] **An interface sweep before sealing (2026-11-16).** Every public signature read for one idea under two names, missing pairs, and odd results for empty input. Changed: `norn.json` and `norn.ndjson` take `:keys` (a function: keyword, identity, …) as `norn.yaml`, `norn.toml` and `norn.csv` do, in place of `:keywords` true/false; `norn.edn` has `read-file` and `write-file`, as every other format does; `norn.signal/stop` is `stop!`, as `norn.schedule/stop!` and `norn.http/stop!` are. Left as they are, for being long-standing and readable: `io/close` and `process/close` without `!` beside `sqlite/close!`; `io/write-text` without `!` beside `io/write-atomic!`; `process/kill` without `!`; `norn.string/lines`, an alias of `split-lines`. Empty input behaves: statistics of nothing are nil, `sum` and `product` 0 and 1.
 - [x] **A detached fiber that will be awaited printed its failure anyway.** `norn.async/pipeline`'s fiber raises f's error for whoever awaits it, but the consumer awaits it only after `to` closes, by when the fiber had died with nobody waiting, so the runtime printed "Fiber N failed: …" too. `pipeline` and `onto-chan!` start theirs as `future` does (core's `%spawn-held`: a scope of its own nobody joins), keeping the failure for the awaiter.
 
+- [x] **Seal the standard library (2026-11-16).** `norn api-diff --record` took the baseline: 65 modules in `api/`. `api_diff_test.norn` checks every change against it; a breaking one fails until it's recorded on purpose.
+
 Module sealing and API compatibility checks are tracked in the [M8](plan-m8.md) and [M9](plan-m9.md) plans.
 
 ## App packaging

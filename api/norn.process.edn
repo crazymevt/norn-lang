@@ -1,0 +1,10 @@
+;; norn.process's public interface, recorded by norn api-diff --record.
+{
+ "close" {:arglists ["[p]"], :kind :function, :signature [{:result "Any", :args ["Map"]}]}
+ "kill" {:arglists ["[p]" "[p sig]"], :kind :function, :signature [{:result "Any", :args ["Map"]} {:result "Any", :args ["Map" "Keyword or Integer"]}]}
+ "resize" {:arglists ["[p rows cols]"], :kind :function, :signature [{:result "Any", :args ["Map" "Integer" "Integer"]}]}
+ "sh" {:arglists ["[cmd & args]"], :kind :function, :signature [{:result "Map", :args ["String"], :rest "Any"}]}
+ "start" {:arglists ["[cmd & {:keys [args dir env clear-env in out err]}]"], :kind :function, :signature [{:result "Map", :args ["String"], :rest "Any"}]}
+ "start-pty" {:arglists ["[cmd & {:keys [args dir env clear-env rows cols]}]"], :kind :function, :signature [{:result "Map", :args ["String"], :rest "Any"}]}
+ "wait" {:arglists ["[p]"], :kind :function, :signature [{:result "Map", :args ["Map"]}]}
+}

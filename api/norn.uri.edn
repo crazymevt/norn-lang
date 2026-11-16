@@ -1,0 +1,13 @@
+;; norn.uri's public interface, recorded by norn api-diff --record.
+{
+ "decode" {:arglists ["[s]" "[s plus?]"], :kind :function, :signature [{:result "String", :args ["String"]} {:result "String", :args ["String" "Any"]}]}
+ "default-port" {:arglists ["[scheme]"], :kind :function, :signature [{:result "nil or Integer", :args ["nil or String"]}]}
+ "encode" {:arglists ["[s]" "[s keep]"], :kind :function, :signature [{:result "String", :args ["String"]} {:result "String", :args ["String" "String"]}]}
+ "format" {:arglists ["[u]"], :kind :function, :signature [{:result "String", :args ["Map"]}]}
+ "parse" {:arglists ["[s]"], :kind :function, :signature [{:result "Map", :args ["String"]}]}
+ "port-of" {:arglists ["[u]"], :kind :function, :signature [{:result "Any", :args ["Map"]}]}
+ "query-pairs" {:arglists ["[q]"], :kind :function, :signature [{:result "Vector", :args ["nil or String or Map"]}]}
+ "query-params" {:arglists ["[q]"], :kind :function, :signature [{:result "Map", :args ["nil or String or Map"]}]}
+ "query-string" {:arglists ["[ps]"], :kind :function, :signature [{:result "String", :args ["nil or Map or Sequential"]}]}
+ "resolve" {:arglists ["[base ref]"], :kind :function, :signature [{:result "String", :args ["String or Map" "String or Map"]}]}
+}

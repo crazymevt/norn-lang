@@ -1,0 +1,58 @@
+;; norn.io's public interface, recorded by norn api-diff --record.
+{
+ "BytesStream" {:kind :class, :slots ["at" "data"], :supers ["norn.core/StandardObject"]}
+ "LineReader" {:kind :class, :slots ["state" "stream"], :supers ["norn.core/StandardObject"]}
+ "TextReader" {:kind :class, :slots ["decoder" "stream"], :supers ["norn.core/StandardObject"]}
+ "absolute" {:arglists ["[p]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "append-text" {:arglists ["[path s]"], :kind :function, :signature [{:result "Any", :args ["String" "String"]}]}
+ "auto-close" {:arglists ["[h]"], :kind :function}
+ "bytes-stream" {:arglists ["[data]"], :kind :function, :signature [{:result "BytesStream", :args ["String or Bytes"]}]}
+ "call-with-atomic-file" {:arglists ["[path f]"], :kind :function, :signature [{:result "Any", :args ["String" "Any"]}]}
+ "canonical" {:arglists ["[p]"], :kind :function, :signature [{:result "nil or String", :args ["String"]}]}
+ "close" {:arglists ["[h]"], :kind :function}
+ "copy!" {:arglists ["[from to]"], :kind :function, :signature [{:result "Integer", :args ["String" "String"]}]}
+ "copy-stream!" {:arglists ["[in out & {:keys [limit]}]"], :kind :function, :signature [{:result "Integer", :args ["Any" "Any"], :rest "Any"}]}
+ "delete!" {:arglists ["[path & {:keys [recursive]}]"], :kind :function, :signature [{:result "Any", :args ["String"], :rest "Any"}]}
+ "directory?" {:arglists ["[path]"], :kind :function, :signature [{:result "Boolean", :args ["String"]}]}
+ "eprint" {:arglists ["[& xs]"], :kind :function}
+ "eprintln" {:arglists ["[& xs]"], :kind :function}
+ "exists?" {:arglists ["[path]"], :kind :function, :signature [{:result "Boolean", :args ["String"]}]}
+ "extension" {:arglists ["[p]"], :kind :function, :signature [{:result "nil or String", :args ["nil or String"]}]}
+ "file-name" {:arglists ["[p]"], :kind :function, :signature [{:result "nil or String", :args ["nil or String"]}]}
+ "file?" {:arglists ["[path]"], :kind :function, :signature [{:result "Boolean", :args ["String"]}]}
+ "info" {:arglists ["[path]"], :kind :function, :signature [{:result "nil or Map", :args ["String"]}]}
+ "line-reader" {:arglists ["[h]"], :kind :function, :signature [{:result "LineReader", :args ["Any"]}]}
+ "line-reader?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "lines" {:arglists ["[path]"], :kind :function, :signature [{:result "Vector", :args ["String"]}]}
+ "list-dir" {:arglists ["[path]"], :kind :function, :signature [{:result "Vector", :args ["String"]}]}
+ "mkdirs!" {:arglists ["[path]"], :kind :function, :signature [{:result "Any", :args ["nil or String"]}]}
+ "open" {:arglists ["[path mode]"], :kind :function, :signature [{:result "Handle", :args ["String" "Keyword"]}]}
+ "parent" {:arglists ["[p]"], :kind :function, :signature [{:result "nil or String", :args ["nil or String"]}]}
+ "path" {:arglists ["[& parts]"], :kind :function, :signature [{:result "String", :args [], :rest "String"}]}
+ "read" {:arglists ["[h n]"], :kind :function, :signature [{:result "Any", :args ["Any" "Integer"]}]}
+ "read-all" {:arglists ["[h]"], :kind :function, :signature [{:result "Bytes", :args ["Any"]}]}
+ "read-bytes" {:arglists ["[path]"], :kind :function, :signature [{:result "Bytes", :args ["String"]}]}
+ "read-chunk" {:arglists ["[r]"], :kind :function, :signature [{:result "nil or String", :args ["TextReader"]}]}
+ "read-exactly" {:arglists ["[h n]"], :kind :function, :signature [{:result "nil or Bytes", :args ["Any" "Integer"]}]}
+ "read-line" {:arglists ["[]" "[r]"], :kind :function, :signature [{:result "nil or String", :args []} {:result "nil or String", :args ["LineReader"]}]}
+ "read-text" {:arglists ["[path]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "rename!" {:arglists ["[from to]"], :kind :function, :signature [{:result "Any", :args ["String" "String"]}]}
+ "retry-io" {:arglists ["[h f]"], :kind :function}
+ "stem" {:arglists ["[p]"], :kind :function, :signature [{:result "nil or String", :args ["nil or String"]}]}
+ "stream-close" {:arglists ["[s]"], :kind :generic}
+ "stream-read" {:arglists ["[s n]"], :kind :generic}
+ "stream-write" {:arglists ["[s data]"], :kind :generic}
+ "sync!" {:arglists ["[h]"], :kind :function, :signature [{:result "Any", :args ["Handle"]}]}
+ "temp-directory" {:arglists ["[& {:or {prefix \"norn-\", suffix \"\"}, :keys [dir prefix suffix]}]"], :kind :function, :signature [{:result "String", :args [], :rest "Any"}]}
+ "temp-file" {:arglists ["[& {:or {prefix \"norn-\", suffix \".tmp\"}, :keys [dir prefix suffix]}]"], :kind :function, :signature [{:result "String", :args [], :rest "Any"}]}
+ "text-reader" {:arglists ["[h & {:or {encoding :utf-8}, :keys [encoding]}]"], :kind :function, :signature [{:result "TextReader", :args ["Any"], :rest "Any"}]}
+ "text-reader?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "with-atomic-file" {:arglists ["[[sym path] & body]"], :kind :macro}
+ "with-open" {:arglists ["[bindings & body]"], :kind :macro}
+ "with-temp-directory" {:arglists ["[[sym & opts] & body]"], :kind :macro}
+ "with-temp-file" {:arglists ["[[sym & opts] & body]"], :kind :macro}
+ "write" {:arglists ["[h data]"], :kind :function, :signature [{:result "Any", :args ["Any" "String or Bytes"]}]}
+ "write-atomic!" {:arglists ["[path data]"], :kind :function, :signature [{:result "Any", :args ["String" "String or Bytes"]}]}
+ "write-bytes" {:arglists ["[path b]"], :kind :function, :signature [{:result "Any", :args ["String" "Bytes"]}]}
+ "write-text" {:arglists ["[path s]"], :kind :function, :signature [{:result "Any", :args ["String" "String"]}]}
+}

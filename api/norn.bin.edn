@@ -1,0 +1,7 @@
+;; norn.bin's public interface, recorded by norn api-diff --record.
+{
+ "decode" {:arglists ["[b & {:keys [classes max-depth]}]"], :kind :function, :signature [{:result "Any", :args ["Bytes"], :rest "Any"}]}
+ "encode" {:arglists ["[x]"], :kind :function, :signature [{:result "Bytes", :args ["Any"]}]}
+ "read-file" {:arglists ["[path & opts]"], :kind :function, :signature [{:result "Any", :args ["String"], :rest "Any"}]}
+ "write-file" {:arglists ["[path x]"], :kind :function, :signature [{:result "Any", :args ["String" "Any"]}]}
+}

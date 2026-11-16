@@ -1,0 +1,9 @@
+;; norn.ndjson's public interface, recorded by norn api-diff --record.
+{
+ "read-file" {:arglists ["[path & {:or {keys keyword}, :keys [keys]}]"], :kind :function, :signature [{:result "Vector", :args ["String"], :rest "Any"}]}
+ "read-string" {:arglists ["[s & {:or {keys keyword}, :keys [keys]}]"], :kind :function, :signature [{:result "Vector", :args ["String"], :rest "Any"}]}
+ "reduce-records" {:arglists ["[f init reader & {:or {keys keyword}, :keys [keys]}]"], :kind :function, :signature [{:result "Any", :args ["Any" "Any" "LineReader"], :rest "Any"}]}
+ "write-file" {:arglists ["[path values]"], :kind :function, :signature [{:result "Any", :args ["String" "Any"]}]}
+ "write-record" {:arglists ["[handle value]"], :kind :function}
+ "write-string" {:arglists ["[values]"], :kind :function, :signature [{:result "String", :args ["Any"]}]}
+}

@@ -169,8 +169,10 @@ the modules it loaded before saving the image. The REPL, `norn run` and
   vars are dynamic. `norn api-diff` compares the modules with those files.
   Additions are compatible; a name or an arity removed, a kind or a
   signature's types changed, a slot or superclass removed are breaking,
-  and make it exit with status 1. `api_diff_test.norn` runs the check on
-  the standard library once `api/` exists.
+  and make it exit with status 1. The standard library's interfaces are
+  recorded in `api/` at the root of the checkout, and `api_diff_test.norn`
+  checks the library against them: a breaking change fails it until
+  it's meant, recorded again and committed.
 - In a project, the modules are the project's own (every module under its
   `:paths`) unless you name some; in the Norn checkout, the standard
   library's.

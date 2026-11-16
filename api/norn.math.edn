@@ -1,0 +1,50 @@
+;; norn.math's public interface, recorded by norn api-diff --record.
+{
+ "E" {:kind :var}
+ "PI" {:kind :var}
+ "TAU" {:kind :var}
+ "acos" {:arglists ["[x]"], :kind :function}
+ "approx=" {:arglists ["[x y]" "[x y epsilon]"], :kind :function}
+ "asin" {:arglists ["[x]"], :kind :function}
+ "atan" {:arglists ["[x]" "[y x]"], :kind :function}
+ "cbrt" {:arglists ["[x]"], :kind :function}
+ "ceil" {:arglists ["[x]"], :kind :function}
+ "clamp" {:arglists ["[x lo hi]"], :kind :function}
+ "cos" {:arglists ["[x]"], :kind :function}
+ "cosh" {:arglists ["[x]"], :kind :function}
+ "exp" {:arglists ["[x]"], :kind :function}
+ "expm1" {:arglists ["[x]"], :kind :function}
+ "expt" {:arglists ["[base n]"], :kind :function}
+ "finite?" {:arglists ["[x]"], :kind :function}
+ "floor" {:arglists ["[x]"], :kind :function}
+ "gcd" {:arglists ["[]" "[a]" "[a b]" "[a b & more]"], :kind :function}
+ "hypot" {:arglists ["[x y]"], :kind :function}
+ "infinite?" {:arglists ["[x]"], :kind :function}
+ "isqrt" {:arglists ["[n]"], :kind :function}
+ "lcm" {:arglists ["[a b]" "[a b & more]"], :kind :function}
+ "lerp" {:arglists ["[a b t]"], :kind :function}
+ "log" {:arglists ["[x]" "[base x]"], :kind :function}
+ "log10" {:arglists ["[x]"], :kind :function}
+ "log1p" {:arglists ["[x]"], :kind :function}
+ "log2" {:arglists ["[x]"], :kind :function}
+ "mean" {:arglists ["[xs]"], :kind :function}
+ "median" {:arglists ["[xs]"], :kind :function}
+ "nan?" {:arglists ["[x]"], :kind :function}
+ "percentile" {:arglists ["[xs p]"], :kind :function, :signature [{:result "nil or Number", :args ["nil or Collection" "Number"]}]}
+ "pow" {:arglists ["[x y]"], :kind :function}
+ "product" {:arglists ["[xs]"], :kind :function}
+ "round" {:arglists ["[x]" "[x mode]"], :kind :function}
+ "round-to" {:arglists ["[x digits]"], :kind :function}
+ "signum" {:arglists ["[x]"], :kind :function}
+ "sin" {:arglists ["[x]"], :kind :function}
+ "sinh" {:arglists ["[x]"], :kind :function}
+ "sqrt" {:arglists ["[x]"], :kind :function}
+ "std-dev" {:arglists ["[xs]"], :kind :function}
+ "sum" {:arglists ["[xs]"], :kind :function}
+ "tan" {:arglists ["[x]"], :kind :function}
+ "tanh" {:arglists ["[x]"], :kind :function}
+ "to-degrees" {:arglists ["[radians]"], :kind :function}
+ "to-radians" {:arglists ["[degrees]"], :kind :function}
+ "trunc" {:arglists ["[x]"], :kind :function}
+ "variance" {:arglists ["[xs]"], :kind :function}
+}

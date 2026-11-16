@@ -1,0 +1,4 @@
+;; norn.run's public interface, recorded by norn api-diff --record.
+{
+ "main" {:arglists ["[& args]"], :kind :function}
+}

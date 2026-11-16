@@ -1,0 +1,7 @@
+;; norn.expand's public interface, recorded by norn api-diff --record.
+{
+ "expand-steps-for-editor" {:arglists ["[code ns]"], :kind :function}
+ "macro-steps" {:arglists ["[form]"], :kind :function}
+ "main" {:arglists ["[& args]"], :kind :function}
+ "steps-text" {:arglists ["[r]"], :kind :function}
+}

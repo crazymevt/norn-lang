@@ -1,0 +1,38 @@
+;; norn.ffi's public interface, recorded by norn api-diff --record.
+{
+ "Callback" {:kind :class, :slots ["address" "chan" "fn" "id" "params" "ret"], :supers ["norn.core/StandardObject"]}
+ "ForeignFunction" {:kind :class, :slots ["cell" "lib" "mode" "name" "params" "prep" "ret"], :supers ["norn.core/StandardObject"]}
+ "Library" {:kind :class, :slots ["cell" "path"], :supers ["norn.core/StandardObject"]}
+ "alignof" {:arglists ["[t]"], :kind :function, :signature [{:result "Integer", :args ["Keyword or Map or Vector"]}]}
+ "alloc" {:arglists ["[n]"], :kind :function, :signature [{:result "Integer", :args ["Integer or Keyword or Map or Vector"]}]}
+ "alloc-string" {:arglists ["[s]"], :kind :function, :signature [{:result "Integer", :args ["String"]}]}
+ "bytes-at" {:arglists ["[addr n]"], :kind :function, :signature [{:result "Bytes", :args ["Integer" "Integer"]}]}
+ "call" {:arglists ["[ff & args]"], :kind :function}
+ "callback" {:arglists ["[params ret f]"], :kind :function, :signature [{:result "Callback", :args ["Sequential" "Keyword or Map" "Any"]}]}
+ "callback-address" {:arglists ["[cb]"], :kind :function, :signature [{:result "Integer", :args ["Callback"]}]}
+ "callback?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "defcfun" {:arglists ["[fname lib cname params ret & opts]"], :kind :macro}
+ "defcstruct" {:arglists ["[sname fields]"], :kind :macro}
+ "defcunion" {:arglists ["[uname fields]"], :kind :macro}
+ "field" {:arglists ["[addr layout k]"], :kind :function, :signature [{:result "Any", :args ["Integer" "Map" "Keyword or Vector"]}]}
+ "free!" {:arglists ["[addr]"], :kind :function, :signature [{:result "Any", :args ["nil or Integer"]}]}
+ "free-callback!" {:arglists ["[cb]"], :kind :function, :signature [{:result "Any", :args ["Callback"]}]}
+ "function" {:arglists ["[lib name params ret & {:keys [blocking main-thread]}]"], :kind :function, :signature [{:result "ForeignFunction", :args ["Library" "String" "Sequential" "Keyword or Map"], :rest "Any"}]}
+ "function-at" {:arglists ["[addr params ret & {:keys [blocking main-thread]}]"], :kind :function, :signature [{:result "ForeignFunction", :args ["Integer" "Sequential" "Keyword or Map"], :rest "Any"}]}
+ "layout?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "library" {:arglists ["[name]"], :kind :function, :signature [{:result "Library", :args ["String or Keyword"]}]}
+ "main-thread-available?" {:arglists ["[]"], :kind :function, :signature [{:result "Boolean", :args []}]}
+ "mem-get" {:arglists ["[addr t]" "[addr t offset]"], :kind :function, :signature [{:result "Any", :args ["Integer" "Keyword or Map or Vector"]} {:result "Any", :args ["Integer" "Keyword or Map or Vector" "Integer"]}]}
+ "mem-set!" {:arglists ["[addr t v]" "[addr t offset v]"], :kind :function, :signature [{:result "Any", :args ["Integer" "Keyword or Map or Vector" "Any"]} {:result "Any", :args ["Integer" "Keyword or Map or Vector" "Integer" "Any"]}]}
+ "new-struct" {:arglists ["[layout m]"], :kind :function, :signature [{:result "Integer", :args ["Map" "Map"]}]}
+ "offset-of" {:arglists ["[layout k]"], :kind :function, :signature [{:result "Integer", :args ["Map" "Keyword or Vector"]}]}
+ "set-field!" {:arglists ["[addr layout k v]"], :kind :function, :signature [{:result "Any", :args ["Integer" "Map" "Keyword or Vector" "Any"]}]}
+ "sizeof" {:arglists ["[t]"], :kind :function, :signature [{:result "Integer", :args ["Keyword or Map or Vector"]}]}
+ "string-at" {:arglists ["[addr]"], :kind :function, :signature [{:result "nil or String", :args ["nil or Integer"]}]}
+ "struct-get" {:arglists ["[addr layout]"], :kind :function, :signature [{:result "Map", :args ["Integer" "Map"]}]}
+ "struct-layout" {:arglists ["[sname fields]"], :kind :function, :signature [{:result "Map", :args ["Any" "Sequential"]}]}
+ "struct-set!" {:arglists ["[addr layout m]"], :kind :function, :signature [{:result "Integer", :args ["Integer" "Map" "Map"]}]}
+ "union-layout" {:arglists ["[uname fields]"], :kind :function, :signature [{:result "Map", :args ["Any" "Sequential"]}]}
+ "with-alloc" {:arglists ["[[n t init] & body]"], :kind :macro}
+ "write-bytes!" {:arglists ["[addr b]"], :kind :function, :signature [{:result "Integer", :args ["Integer" "String or Bytes"]}]}
+}

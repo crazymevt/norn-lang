@@ -1,0 +1,19 @@
+;; norn.buffer's public interface, recorded by norn api-diff --record.
+{
+ "Buffer" {:kind :class, :slots ["data" "element-type" "order"], :supers ["norn.core/StandardObject"]}
+ "MutableBuffer" {:kind :class, :slots ["data" "element-type" "length" "order"], :supers ["norn.core/StandardObject"]}
+ "copy!" {:arglists ["[mb at src]"], :kind :function, :signature [{:result "MutableBuffer", :args ["MutableBuffer" "Integer" "Any"]}]}
+ "count" {:arglists ["[buf]"], :kind :function, :signature [{:result "Integer", :args ["Buffer or MutableBuffer"]}]}
+ "fill!" {:arglists ["[mb value]"], :kind :function, :signature [{:result "MutableBuffer", :args ["MutableBuffer" "Number"]}]}
+ "freeze!" {:arglists ["[mb]"], :kind :function, :signature [{:result "Buffer", :args ["MutableBuffer"]}]}
+ "from-bytes" {:arglists ["[type data & {:or {order :le}, :keys [order]}]"], :kind :function, :signature [{:result "Buffer", :args ["Keyword" "Bytes"], :rest "Any"}]}
+ "mutable" {:arglists ["[type n & {:or {order :le}, :keys [order]}]"], :kind :function, :signature [{:result "MutableBuffer", :args ["Keyword" "Integer"], :rest "Any"}]}
+ "mutable-buffer?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "mutable-copy" {:arglists ["[buf]"], :kind :function, :signature [{:result "MutableBuffer", :args ["Buffer or MutableBuffer"]}]}
+ "nth" {:arglists ["[buf i]"], :kind :function, :signature [{:result "Number", :args ["Buffer or MutableBuffer" "Integer"]}]}
+ "pack" {:arglists ["[type values & {:or {order :le}, :keys [order]}]"], :kind :function, :signature [{:result "Buffer", :args ["Keyword" "Any"], :rest "Any"}]}
+ "set!" {:arglists ["[mb i value]"], :kind :function, :signature [{:result "MutableBuffer", :args ["MutableBuffer" "Integer" "Number"]}]}
+ "snapshot" {:arglists ["[mb]"], :kind :function, :signature [{:result "Buffer", :args ["MutableBuffer"]}]}
+ "to-bytes" {:arglists ["[buf]"], :kind :function, :signature [{:result "Bytes", :args ["Buffer"]}]}
+ "values" {:arglists ["[buf]"], :kind :function, :signature [{:result "Vector", :args ["Buffer or MutableBuffer"]}]}
+}

@@ -1,0 +1,572 @@
+;; norn.core's public interface, recorded by norn api-diff --record.
+{
+ "*" {:arglists ["[]" "[x & more]"], :kind :function}
+ "*check-contracts*" {:kind :var, :dynamic true}
+ "*debugger*" {:kind :var}
+ "*default-tag-reader*" {:kind :var, :dynamic true}
+ "*defined*" {:kind :var}
+ "*handlers*" {:kind :var}
+ "*inspecting*" {:kind :var}
+ "*load-shift*" {:kind :var}
+ "*macro-place*" {:kind :var}
+ "*out*" {:kind :var}
+ "*print-readably*" {:kind :var, :dynamic true}
+ "*tag-readers*" {:kind :var, :dynamic true}
+ "+" {:arglists ["[]" "[x & more]"], :kind :function}
+ "-" {:arglists ["[x]" "[x y & more]"], :kind :function}
+ "->" {:arglists ["[x & forms]"], :kind :macro}
+ "->>" {:arglists ["[x & forms]"], :kind :macro}
+ "->contract" {:arglists ["[x]"], :kind :function}
+ "/" {:arglists ["[x]" "[x y & more]"], :kind :function}
+ "<" {:arglists ["[x]" "[x y & more]"], :kind :function}
+ "<!" {:arglists nil, :kind :function}
+ "<=" {:arglists ["[x]" "[x y & more]"], :kind :function}
+ "=" {:arglists ["[x]" "[x y & more]"], :kind :function}
+ "==" {:arglists ["[x]" "[x y & more]"], :kind :function}
+ ">" {:arglists ["[x]" "[x y & more]"], :kind :function}
+ ">!" {:arglists nil, :kind :function}
+ ">=" {:arglists ["[x]" "[x y & more]"], :kind :function}
+ "ArithmeticError" {:kind :class, :slots ["location" "message" "trace"], :supers ["norn.core/RuntimeError"]}
+ "ArityError" {:kind :class, :slots ["function" "given" "location" "message" "trace"], :supers ["norn.core/RuntimeError"]}
+ "Atom" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Boolean" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Bytes" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Channel" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Character" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Class" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Collection" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Condition" {:kind :class, :slots ["location" "message" "trace"], :supers ["norn.core/StandardObject"]}
+ "ConnectionError" {:kind :class, :slots ["address" "location" "message" "path" "reason" "trace"], :supers ["norn.core/IOError"]}
+ "Contract" {:kind :class, :slots ["blamed" "check" "name" "parts" "test"], :supers ["norn.core/StandardObject"]}
+ "ContractError" {:kind :class, :slots ["blame" "expected" "function" "location" "message" "position" "trace" "value"], :supers ["norn.core/TypeError"]}
+ "Delay" {:kind :class, :slots ["claimed" "result" "thunk"], :supers ["norn.core/StandardObject"]}
+ "Error" {:kind :class, :slots ["location" "message" "trace"], :supers ["norn.core/SeriousCondition"]}
+ "ExInfo" {:kind :class, :slots ["cause" "data" "location" "message" "trace"], :supers ["norn.core/Error"]}
+ "Fiber" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "FileExists" {:kind :class, :slots ["address" "location" "message" "path" "reason" "trace"], :supers ["norn.core/IOError"]}
+ "FileNotFound" {:kind :class, :slots ["address" "location" "message" "path" "reason" "trace"], :supers ["norn.core/IOError"]}
+ "Float" {:kind :class, :slots [], :supers ["norn.core/Number"]}
+ "Function" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Future" {:kind :class, :slots ["done" "fiber"], :supers ["norn.core/StandardObject"]}
+ "GenericFunction" {:kind :class, :slots [], :supers ["norn.core/Function"]}
+ "Handle" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "IOError" {:kind :class, :slots ["address" "location" "message" "path" "reason" "trace"], :supers ["norn.core/Error"]}
+ "IndexError" {:kind :class, :slots ["index" "location" "message" "trace"], :supers ["norn.core/RuntimeError"]}
+ "Integer" {:kind :class, :slots [], :supers ["norn.core/Number"]}
+ "Keyword" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "List" {:kind :class, :slots [], :supers ["norn.core/Sequential"]}
+ "Map" {:kind :class, :slots [], :supers ["norn.core/Collection"]}
+ "MatchError" {:kind :class, :slots ["location" "message" "trace" "value"], :supers ["norn.core/Error"]}
+ "NaN?" {:arglists ["[x]"], :kind :function}
+ "Null" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Number" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Object" {:kind :class, :slots [], :supers []}
+ "OwnershipError" {:kind :class, :slots ["location" "message" "trace"], :supers ["norn.core/RuntimeError"]}
+ "ParseError" {:kind :class, :slots ["column" "line" "location" "message" "source" "trace"], :supers ["norn.core/Error"]}
+ "PermissionDenied" {:kind :class, :slots ["address" "location" "message" "path" "reason" "trace"], :supers ["norn.core/IOError"]}
+ "Promise" {:kind :class, :slots ["done" "state"], :supers ["norn.core/StandardObject"]}
+ "Queue" {:kind :class, :slots [], :supers ["norn.core/Sequential"]}
+ "Ratio" {:kind :class, :slots [], :supers ["norn.core/Number"]}
+ "Regex" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "ResourceLost" {:kind :class, :slots ["location" "message" "resource" "trace"], :supers ["norn.core/Error"]}
+ "RuntimeError" {:kind :class, :slots ["location" "message" "trace"], :supers ["norn.core/Error"]}
+ "Scope" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Seq" {:kind :class, :slots [], :supers ["norn.core/Sequential"]}
+ "Sequential" {:kind :class, :slots [], :supers ["norn.core/Collection"]}
+ "SeriousCondition" {:kind :class, :slots ["location" "message" "trace"], :supers ["norn.core/Condition"]}
+ "Set" {:kind :class, :slots [], :supers ["norn.core/Collection"]}
+ "SimpleError" {:kind :class, :slots ["location" "message" "trace"], :supers ["norn.core/Error"]}
+ "StandardClass" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "StandardGenericFunction" {:kind :class, :slots [], :supers ["norn.core/Function"]}
+ "StandardObject" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "String" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Symbol" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "TimeoutError" {:kind :class, :slots ["address" "after" "location" "message" "reason" "trace"], :supers ["norn.core/Error"]}
+ "TlsError" {:kind :class, :slots ["address" "location" "message" "path" "reason" "trace"], :supers ["norn.core/ConnectionError"]}
+ "TypeError" {:kind :class, :slots ["expected" "location" "message" "trace" "value"], :supers ["norn.core/RuntimeError"]}
+ "UnboundVarError" {:kind :class, :slots ["location" "message" "trace" "var"], :supers ["norn.core/RuntimeError"]}
+ "Var" {:kind :class, :slots [], :supers ["norn.core/Object"]}
+ "Vector" {:kind :class, :slots [], :supers ["norn.core/Sequential"]}
+ "Warning" {:kind :class, :slots ["location" "message" "trace"], :supers ["norn.core/Condition"]}
+ "abs" {:arglists ["[n]"], :kind :function}
+ "add-after-eval-hook!" {:arglists ["[key f]"], :kind :function}
+ "add-cleanup!" {:arglists ["[x f]"], :kind :function}
+ "add-lib-path!" {:arglists ["[dir]"], :kind :function}
+ "add-watch" {:arglists ["[a key f]"], :kind :function}
+ "all-ns" {:arglists ["[]"], :kind :function}
+ "all-of" {:arglists ["[& cs]"], :kind :function}
+ "alter-var-root" {:arglists ["[v f & args]"], :kind :function}
+ "alts!" {:arglists ["[ops & options]"], :kind :function}
+ "and" {:arglists ["[& xs]"], :kind :macro}
+ "any-of" {:arglists ["[& cs]"], :kind :function}
+ "any?" {:arglists ["[_]"], :kind :function}
+ "apply" {:arglists ["[f args]" "[f x & more]"], :kind :function}
+ "apropos" {:arglists ["[s]"], :kind :function}
+ "as->" {:arglists ["[e name & forms]"], :kind :macro}
+ "assert" {:arglists ["[x & msg]"], :kind :macro}
+ "assoc" {:arglists ["[coll k v]" "[coll k v & kvs]"], :kind :function}
+ "assoc!" {:arglists ["[t k v]"], :kind :function}
+ "assoc-in" {:arglists ["[m ks v]"], :kind :function}
+ "atom" {:arglists ["[x]"], :kind :function}
+ "await" {:arglists ["[f]"], :kind :function}
+ "backtrace" {:arglists ["[id]"], :kind :function}
+ "begin-for-syntax" {:arglists ["[& forms]"], :kind :macro}
+ "binding" {:arglists ["[bindings & body]"], :kind :macro}
+ "bit-and" {:arglists ["[x y]" "[x y & more]"], :kind :function}
+ "bit-not" {:arglists ["[x]"], :kind :function}
+ "bit-or" {:arglists ["[x y]" "[x y & more]"], :kind :function}
+ "bit-shift-left" {:arglists ["[x n]"], :kind :function}
+ "bit-shift-right" {:arglists ["[x n]"], :kind :function}
+ "bit-xor" {:arglists ["[x y]" "[x y & more]"], :kind :function}
+ "boolean" {:arglists ["[x]"], :kind :function}
+ "boolean?" {:arglists ["[x]"], :kind :function}
+ "bound?" {:arglists ["[& vs]"], :kind :function}
+ "butlast" {:arglists ["[coll]"], :kind :function}
+ "bytes" {:arglists ["[x]"], :kind :function}
+ "bytes->string" {:arglists ["[b]" "[b lossy?]"], :kind :function}
+ "bytes-concat" {:arglists ["[& bs]"], :kind :function}
+ "bytes?" {:arglists ["[x]"], :kind :function}
+ "cancel!" {:arglists ["[f]"], :kind :function}
+ "cancel-cleanup!" {:arglists ["[w]"], :kind :function}
+ "carrier-count" {:arglists ["[]"], :kind :function}
+ "case" {:arglists ["[e & clauses]"], :kind :macro}
+ "cat" {:arglists ["[rf]"], :kind :function}
+ "catch-tag" {:arglists ["[tag & body]"], :kind :macro}
+ "chan" {:arglists ["[]" "[n]" "[n policy]"], :kind :function}
+ "char" {:arglists ["[n]"], :kind :function}
+ "char?" {:arglists ["[x]"], :kind :function}
+ "class-direct-subclasses" {:arglists ["[c]"], :kind :function}
+ "class-direct-superclasses" {:arglists ["[c]"], :kind :function}
+ "class-name" {:arglists ["[c]"], :kind :function}
+ "class-of" {:arglists ["[x]"], :kind :function}
+ "class-precedence-list" {:arglists ["[c]"], :kind :function}
+ "class-slots" {:arglists ["[c]"], :kind :function}
+ "class?" {:arglists ["[x]"], :kind :function}
+ "close!" {:arglists ["[c]"], :kind :function}
+ "closed?" {:arglists ["[c]"], :kind :function}
+ "coll?" {:arglists ["[x]"], :kind :function}
+ "collection-count" {:arglists ["[coll]"], :kind :generic}
+ "collection-nth" {:arglists ["[coll index]"], :kind :generic}
+ "collection-seq" {:arglists ["[coll]"], :kind :generic}
+ "comment" {:arglists ["[& _]"], :kind :macro}
+ "comp" {:arglists ["[]" "[f]" "[f g]" "[f g & fs]"], :kind :function}
+ "compare" {:arglists ["[x y]"], :kind :function}
+ "compare-and-set!" {:arglists ["[a old new]"], :kind :function}
+ "complement" {:arglists ["[f]"], :kind :function}
+ "completing" {:arglists ["[f]" "[f cf]"], :kind :function}
+ "compute-applicable-methods" {:arglists ["[gf args]"], :kind :generic}
+ "compute-effective-method" {:arglists ["[gf methods cpls]"], :kind :generic}
+ "compute-restarts" {:arglists ["[]"], :kind :function}
+ "concat" {:arglists ["[& colls]"], :kind :function}
+ "cond" {:arglists ["[& clauses]"], :kind :macro}
+ "cond->" {:arglists ["[e & clauses]"], :kind :macro}
+ "cond->>" {:arglists ["[e & clauses]"], :kind :macro}
+ "condition-message" {:arglists ["[c]"], :kind :function}
+ "condition-text" {:arglists ["[c]"], :kind :function}
+ "condp" {:arglists ["[pred e & clauses]"], :kind :macro}
+ "conj" {:arglists ["[]" "[coll]" "[coll x & xs]"], :kind :function}
+ "conj!" {:arglists ["[t x]"], :kind :function}
+ "cons" {:arglists ["[x coll]"], :kind :function}
+ "constantly" {:arglists ["[x]"], :kind :function}
+ "contains?" {:arglists ["[coll key]"], :kind :function}
+ "contract-name" {:arglists ["[c]"], :kind :function}
+ "contract?" {:arglists ["[x]"], :kind :function}
+ "count" {:arglists ["[coll]"], :kind :function}
+ "current-fiber" {:arglists ["[]"], :kind :function}
+ "current-ns" {:arglists ["[]"], :kind :function}
+ "cycle" {:arglists ["[coll]"], :kind :function}
+ "debug-abort" {:arglists ["[id]"], :kind :function}
+ "debug-restart" {:arglists ["[id i & args]"], :kind :function}
+ "debug-restart-frame" {:arglists ["[id i]"], :kind :function}
+ "debugging" {:arglists ["[]"], :kind :function}
+ "dec" {:arglists ["[x]"], :kind :function}
+ "declare" {:arglists ["[& xs]"], :kind :macro}
+ "dedupe" {:arglists ["[]" "[coll]"], :kind :function}
+ "defclass" {:arglists ["[cname supers slots & options]"], :kind :macro}
+ "defcontract" {:arglists ["[fname c]"], :kind :macro}
+ "defgeneric" {:arglists ["[gname params & options]"], :kind :macro}
+ "define-method-combination" {:arglists ["[cname & {:keys [operator]}]"], :kind :macro}
+ "definition" {:arglists ["[sym]"], :kind :function}
+ "defmacro" {:arglists ["[mname & body]"], :kind :macro}
+ "defmethod" {:arglists ["[gname & more]"], :kind :macro}
+ "defn" {:arglists ["[fname & body]"], :kind :macro}
+ "defn-" {:arglists ["[name & body]"], :kind :macro}
+ "defonce" {:arglists ["[nm & more]"], :kind :macro}
+ "defprotocol" {:arglists ["[pname & specs]"], :kind :macro}
+ "delay" {:arglists ["[& body]"], :kind :macro}
+ "delay?" {:arglists ["[x]"], :kind :function}
+ "deliver" {:arglists ["[p x]"], :kind :function}
+ "denominator" {:arglists ["[x]"], :kind :function}
+ "deref" {:arglists ["[ref]" "[ref timeout-ms timeout-val]"], :kind :function}
+ "deref-object" {:arglists ["[x ms timeout-value]"], :kind :generic}
+ "destructure" {:arglists ["[bindings]"], :kind :function}
+ "disassemble" {:arglists ["[f]"], :kind :function}
+ "disj" {:arglists ["[s]" "[s x & xs]"], :kind :function}
+ "disj!" {:arglists ["[t x]"], :kind :function}
+ "dissoc" {:arglists ["[m]" "[m k & ks]"], :kind :function}
+ "dissoc!" {:arglists ["[t k]"], :kind :function}
+ "distinct" {:arglists ["[]" "[coll]"], :kind :function}
+ "distinct?" {:arglists ["[& xs]"], :kind :function}
+ "doall" {:arglists ["[s]"], :kind :function}
+ "doc" {:arglists ["[sym]"], :kind :macro}
+ "done?" {:arglists ["[f]"], :kind :function}
+ "dorun" {:arglists ["[coll]"], :kind :function}
+ "doseq" {:arglists ["[bindings & body]"], :kind :macro}
+ "dotimes" {:arglists ["[bindings & body]"], :kind :macro}
+ "doto" {:arglists ["[x & forms]"], :kind :macro}
+ "double" {:arglists ["[x]"], :kind :function}
+ "double?" {:arglists ["[x]"], :kind :function}
+ "drop" {:arglists ["[n]" "[n coll]"], :kind :function}
+ "drop-last" {:arglists ["[coll]" "[n coll]"], :kind :function}
+ "drop-while" {:arglists ["[pred]" "[pred coll]"], :kind :function}
+ "eduction" {:arglists ["[xform coll]"], :kind :function}
+ "empty" {:arglists ["[coll]"], :kind :function}
+ "empty?" {:arglists ["[coll]"], :kind :function}
+ "ensure-live" {:arglists ["[r]"], :kind :function}
+ "ensure-reduced" {:arglists ["[x]"], :kind :function}
+ "error" {:arglists ["[x & args]"], :kind :function}
+ "eval" {:arglists ["[form]"], :kind :function}
+ "eval-in-frame" {:arglists ["[id i form]"], :kind :function}
+ "even?" {:arglists ["[n]"], :kind :function}
+ "every-pred" {:arglists ["[& preds]"], :kind :function}
+ "every?" {:arglists ["[pred coll]"], :kind :function}
+ "ex-cause" {:arglists ["[c]"], :kind :function}
+ "ex-data" {:arglists ["[c]"], :kind :function}
+ "ex-info" {:arglists ["[msg data]" "[msg data cause]"], :kind :function}
+ "ex-message" {:arglists ["[c]"], :kind :function}
+ "exit" {:arglists ["[]" "[code]"], :kind :function}
+ "extend-protocol" {:arglists ["[_protocol & forms]"], :kind :macro}
+ "extend-type" {:arglists ["[cls & forms]"], :kind :macro}
+ "false?" {:arglists ["[x]"], :kind :function}
+ "ffirst" {:arglists ["[coll]"], :kind :function}
+ "fiber-dump" {:arglists ["[]"], :kind :function}
+ "fiber-error" {:arglists ["[f]"], :kind :function}
+ "fiber-id" {:arglists ["[f]"], :kind :function}
+ "fiber-stats" {:arglists ["[]"], :kind :function}
+ "fiber?" {:arglists ["[x]"], :kind :function}
+ "filter" {:arglists ["[pred]" "[pred coll]"], :kind :function}
+ "filterv" {:arglists ["[pred coll]"], :kind :function}
+ "find" {:arglists ["[m k]"], :kind :function}
+ "find-doc" {:arglists ["[s]"], :kind :function}
+ "find-restart" {:arglists ["[rname]"], :kind :function}
+ "first" {:arglists ["[coll]"], :kind :function}
+ "flatten" {:arglists ["[x]"], :kind :function}
+ "float" {:arglists ["[x]"], :kind :function}
+ "float?" {:arglists ["[x]"], :kind :function}
+ "flush" {:arglists ["[]"], :kind :function}
+ "fn" {:arglists ["[& sigs]"], :kind :macro}
+ "fn-of" {:arglists ["[arg-cs result-c & {:keys [rest]}]"], :kind :function}
+ "fn?" {:arglists ["[x]"], :kind :function}
+ "fnext" {:arglists ["[x]"], :kind :function}
+ "fnil" {:arglists ["[f a]" "[f a b]" "[f a b c]"], :kind :function}
+ "for" {:arglists ["[bindings & body]"], :kind :macro}
+ "for-syntax" {:arglists nil, :kind :macro}
+ "force" {:arglists ["[x]"], :kind :function}
+ "format" {:arglists ["[fmt & args]"], :kind :function}
+ "frequencies" {:arglists ["[coll]"], :kind :function}
+ "future" {:arglists ["[& body]"], :kind :macro}
+ "future-cancel" {:arglists ["[f]"], :kind :function}
+ "future-cancelled?" {:arglists ["[f]"], :kind :function}
+ "future-done?" {:arglists ["[f]"], :kind :function}
+ "future?" {:arglists ["[x]"], :kind :function}
+ "gc" {:arglists ["[]"], :kind :function}
+ "gc-count" {:arglists ["[]"], :kind :function}
+ "generic-methods" {:arglists ["[gf]"], :kind :function}
+ "generic?" {:arglists ["[x]"], :kind :function}
+ "gensym" {:arglists ["[]" "[prefix]"], :kind :function}
+ "get" {:arglists ["[coll key]" "[coll key not-found]"], :kind :function}
+ "get-in" {:arglists ["[m ks]" "[m ks not-found]"], :kind :function}
+ "group-by" {:arglists ["[f coll]"], :kind :function}
+ "handle-info" {:arglists ["[h]"], :kind :function}
+ "handle-kind" {:arglists ["[h]"], :kind :function}
+ "handle?" {:arglists ["[x]"], :kind :function}
+ "handler-bind" {:arglists ["[bindings & body]"], :kind :macro}
+ "handler-case" {:arglists ["[form & clauses]"], :kind :macro}
+ "hash" {:arglists ["[x]"], :kind :function}
+ "hash-map" {:arglists ["[& kvs]"], :kind :function}
+ "hash-set" {:arglists ["[& items]"], :kind :function}
+ "heap-bytes" {:arglists ["[]"], :kind :function}
+ "ident?" {:arglists ["[x]"], :kind :function}
+ "identical?" {:arglists ["[x y]"], :kind :function}
+ "identity" {:arglists ["[x]"], :kind :function}
+ "if-let" {:arglists ["[binding then & else]"], :kind :macro}
+ "if-not" {:arglists ["[test then & else]"], :kind :macro}
+ "if-some" {:arglists ["[binding then & else]"], :kind :macro}
+ "ifn?" {:arglists ["[x]"], :kind :function}
+ "ignore-errors" {:arglists ["[& body]"], :kind :macro}
+ "image-info" {:arglists ["[]"], :kind :function}
+ "in-ns" {:arglists ["[sym]"], :kind :function}
+ "inc" {:arglists ["[x]"], :kind :function}
+ "infinite?" {:arglists ["[x]"], :kind :function}
+ "initialize-instance" {:arglists ["[obj initargs]"], :kind :generic}
+ "inspect" {:arglists ["[x]" "[x limit]"], :kind :function}
+ "instance->map" {:arglists ["[o]"], :kind :function}
+ "instance?" {:arglists ["[c x]"], :kind :function}
+ "int" {:arglists ["[x]"], :kind :function}
+ "int?" {:arglists ["[x]"], :kind :function}
+ "integer?" {:arglists ["[x]"], :kind :function}
+ "interleave" {:arglists ["[& colls]"], :kind :function}
+ "interpose" {:arglists ["[sep]" "[sep coll]"], :kind :function}
+ "into" {:arglists ["[]" "[to]" "[to from]" "[to xf from]"], :kind :function}
+ "invoke-debugger" {:arglists ["[c]"], :kind :function}
+ "invoke-restart" {:arglists ["[r & args]"], :kind :function}
+ "iterate" {:arglists ["[f x]"], :kind :function}
+ "jit-stats" {:arglists ["[]"], :kind :function}
+ "juxt" {:arglists ["[& fs]"], :kind :function}
+ "keep" {:arglists ["[f]" "[f coll]"], :kind :function}
+ "keep-indexed" {:arglists ["[f coll]"], :kind :function}
+ "key" {:arglists ["[e]"], :kind :function}
+ "keys" {:arglists ["[m]"], :kind :function}
+ "keyword" {:arglists ["[name]" "[ns name]"], :kind :function}
+ "keyword?" {:arglists ["[x]"], :kind :function}
+ "last" {:arglists ["[coll]"], :kind :function}
+ "lazy" {:arglists ["[coll]"], :kind :function}
+ "lazy-seq" {:arglists ["[& body]"], :kind :macro}
+ "let" {:arglists ["[bindings & body]"], :kind :macro}
+ "letfn" {:arglists ["[fnspecs & body]"], :kind :macro}
+ "list" {:arglists ["[& items]"], :kind :function}
+ "list*" {:arglists ["[& args]"], :kind :function}
+ "list?" {:arglists ["[x]"], :kind :function}
+ "load-file" {:arglists ["[path]"], :kind :function}
+ "load-string" {:arglists ["[s]"], :kind :function}
+ "locking" {:arglists ["[o & body]"], :kind :macro}
+ "long" {:arglists ["[x]"], :kind :function}
+ "loop" {:arglists ["[bindings & body]"], :kind :macro}
+ "macro-steps" {:arglists ["[form]"], :kind :function}
+ "macro?" {:arglists ["[x]"], :kind :function}
+ "macroexpand" {:arglists ["[form]"], :kind :function}
+ "macroexpand-1" {:arglists ["[form]"], :kind :function}
+ "make" {:arglists ["[c & initargs]"], :kind :function}
+ "make-instance" {:arglists ["[c & initargs]"], :kind :generic}
+ "map" {:arglists ["[f]" "[f coll]" "[f c1 c2]" "[f c1 c2 c3]" "[f c1 c2 c3 & more]"], :kind :function}
+ "map-indexed" {:arglists ["[f]" "[f coll]"], :kind :function}
+ "map-of" {:arglists ["[kc vc]"], :kind :function}
+ "map?" {:arglists ["[x]"], :kind :function}
+ "mapcat" {:arglists ["[f]" "[f coll]" "[f c1 c2]" "[f c1 c2 & more]"], :kind :function}
+ "mapv" {:arglists ["[f coll]" "[f c1 c2]" "[f c1 c2 & more]"], :kind :function}
+ "match" {:arglists ["[x & clauses]"], :kind :macro}
+ "max" {:arglists ["[x]" "[x y]" "[x y & more]"], :kind :function}
+ "max-key" {:arglists ["[k x & xs]"], :kind :function}
+ "memoize" {:arglists ["[f]"], :kind :function}
+ "merge" {:arglists ["[& maps]"], :kind :function}
+ "merge-with" {:arglists ["[f & maps]"], :kind :function}
+ "meta" {:arglists ["[x]"], :kind :function}
+ "min" {:arglists ["[x]" "[x y]" "[x y & more]"], :kind :function}
+ "min-key" {:arglists ["[k x & xs]"], :kind :function}
+ "mod" {:arglists ["[x y]"], :kind :function}
+ "muffle-warning" {:arglists ["[]" "[c]"], :kind :function}
+ "mutable?" {:arglists ["[x]"], :kind :function}
+ "name" {:arglists ["[x]"], :kind :function}
+ "namespace" {:arglists ["[x]"], :kind :function}
+ "nano-time" {:arglists ["[]"], :kind :function}
+ "nat-int?" {:arglists ["[x]"], :kind :function}
+ "neg-int?" {:arglists ["[x]"], :kind :function}
+ "neg?" {:arglists ["[n]"], :kind :function}
+ "next" {:arglists ["[coll]"], :kind :function}
+ "nfirst" {:arglists ["[x]"], :kind :function}
+ "nil?" {:arglists ["[x]"], :kind :function}
+ "nilable" {:arglists ["[c]"], :kind :function}
+ "nnext" {:arglists ["[coll]"], :kind :function}
+ "not" {:arglists ["[x]"], :kind :function}
+ "not-any?" {:arglists ["[pred coll]"], :kind :function}
+ "not-empty" {:arglists ["[coll]"], :kind :function}
+ "not-every?" {:arglists ["[pred coll]"], :kind :function}
+ "not=" {:arglists ["[x]" "[x y & more]"], :kind :function}
+ "ns" {:arglists ["[name & clauses]"], :kind :macro}
+ "ns-aliases" {:arglists ["[ns]"], :kind :function}
+ "ns-interns" {:arglists ["[ns]"], :kind :function}
+ "ns-publics" {:arglists ["[ns]"], :kind :function}
+ "nth" {:arglists ["[coll i]" "[coll i not-found]"], :kind :function}
+ "nthnext" {:arglists ["[coll n]"], :kind :function}
+ "nthrest" {:arglists ["[coll n]"], :kind :function}
+ "num" {:arglists ["[x]"], :kind :function}
+ "number?" {:arglists ["[x]"], :kind :function}
+ "numerator" {:arglists ["[x]"], :kind :function}
+ "odd?" {:arglists ["[n]"], :kind :function}
+ "offer!" {:arglists ["[c v]"], :kind :function}
+ "on-image-restore" {:arglists ["[resource]"], :kind :generic}
+ "or" {:arglists ["[& xs]"], :kind :macro}
+ "owner" {:arglists ["[o]"], :kind :function}
+ "parse-boolean" {:arglists ["[s]"], :kind :function}
+ "parse-double" {:arglists ["[s]"], :kind :function}
+ "parse-long" {:arglists ["[s]"], :kind :function}
+ "partial" {:arglists ["[f & bound]"], :kind :function}
+ "partition" {:arglists ["[n coll]"], :kind :function}
+ "partition-all" {:arglists ["[n]" "[n coll]"], :kind :function}
+ "partition-by" {:arglists ["[f coll]"], :kind :function}
+ "peek" {:arglists ["[coll]"], :kind :function}
+ "persistent!" {:arglists ["[t]"], :kind :function}
+ "pmap" {:arglists ["[f coll]"], :kind :function}
+ "poll!" {:arglists ["[c]"], :kind :function}
+ "pop" {:arglists ["[coll]"], :kind :function}
+ "pop!" {:arglists ["[t]"], :kind :function}
+ "pos-int?" {:arglists ["[x]"], :kind :function}
+ "pos?" {:arglists ["[n]"], :kind :function}
+ "pr" {:arglists ["[& xs]"], :kind :function}
+ "pr-str" {:arglists ["[& xs]"], :kind :function}
+ "preduce" {:arglists ["[f init coll]"], :kind :function}
+ "print" {:arglists ["[& xs]"], :kind :function}
+ "print-object" {:arglists ["[obj]"], :kind :generic}
+ "print-str" {:arglists ["[& xs]"], :kind :function}
+ "printf" {:arglists ["[fmt & args]"], :kind :function}
+ "println" {:arglists ["[& xs]"], :kind :function}
+ "private?" {:arglists ["[x]"], :kind :function}
+ "prn" {:arglists ["[& xs]"], :kind :function}
+ "prn-str" {:arglists ["[& xs]"], :kind :function}
+ "promise" {:arglists ["[]"], :kind :function}
+ "put!" {:arglists ["[c v]"], :kind :function}
+ "queue" {:arglists ["[& xs]"], :kind :function}
+ "queue?" {:arglists ["[x]"], :kind :function}
+ "quot" {:arglists ["[x y]"], :kind :function}
+ "rand" {:arglists ["[]" "[n]"], :kind :function}
+ "rand-int" {:arglists ["[n]"], :kind :function}
+ "rand-nth" {:arglists ["[coll]"], :kind :function}
+ "range" {:arglists ["[]" "[end]" "[start end]" "[start end step]"], :kind :function}
+ "ratio?" {:arglists ["[x]"], :kind :function}
+ "rational?" {:arglists ["[x]"], :kind :function}
+ "re-find" {:arglists ["[re s]"], :kind :function}
+ "re-matches" {:arglists ["[re s]"], :kind :function}
+ "re-pattern" {:arglists ["[s]"], :kind :function}
+ "re-quote" {:arglists ["[s]"], :kind :function}
+ "re-seq" {:arglists ["[re s]"], :kind :function}
+ "read-string" {:arglists ["[s]"], :kind :function}
+ "realize" {:arglists ["[x]"], :kind :function}
+ "realized?" {:arglists ["[x]"], :kind :function}
+ "realized?-object" {:arglists ["[x]"], :kind :generic}
+ "reconnect" {:arglists ["[resource]"], :kind :generic}
+ "reduce" {:arglists ["[f coll]" "[f init coll]"], :kind :function}
+ "reduce-kv" {:arglists ["[f init m]"], :kind :function}
+ "reduced" {:arglists ["[x]"], :kind :function}
+ "reduced?" {:arglists ["[x]"], :kind :function}
+ "reductions" {:arglists ["[f coll]" "[f init coll]"], :kind :function}
+ "regex?" {:arglists ["[x]"], :kind :function}
+ "register-resource!" {:arglists ["[r]"], :kind :function}
+ "release!" {:arglists ["[o]"], :kind :function}
+ "rem" {:arglists ["[x y]"], :kind :function}
+ "remove" {:arglists ["[pred]" "[pred coll]"], :kind :function}
+ "remove-after-eval-hook!" {:arglists ["[key]"], :kind :function}
+ "remove-watch" {:arglists ["[a key]"], :kind :function}
+ "repeat" {:arglists ["[x]" "[n x]"], :kind :function}
+ "repeatedly" {:arglists ["[f]" "[n f]"], :kind :function}
+ "require" {:arglists ["[& specs]"], :kind :function}
+ "require-for-syntax" {:arglists ["[& specs]"], :kind :function}
+ "reset!" {:arglists ["[a v]"], :kind :function}
+ "reset-vals!" {:arglists ["[a v]"], :kind :function}
+ "resolve" {:arglists ["[sym]"], :kind :function}
+ "resource-live?" {:arglists ["[r]"], :kind :function}
+ "rest" {:arglists ["[coll]"], :kind :function}
+ "restart-case" {:arglists ["[form & clauses]"], :kind :macro}
+ "reverse" {:arglists ["[coll]"], :kind :function}
+ "rseq" {:arglists ["[v]"], :kind :function}
+ "rsubseq" {:arglists ["[sc test key]" "[sc start-test start-key end-test end-key]"], :kind :function}
+ "run!" {:arglists ["[f coll]"], :kind :function}
+ "satisfies?" {:arglists ["[p x]"], :kind :function}
+ "save-image" {:arglists ["[path & {:keys [entry fibers layered]}]"], :kind :function}
+ "seal!" {:arglists ["[ns]"], :kind :function}
+ "sealed?" {:arglists ["[ns]"], :kind :function}
+ "second" {:arglists ["[coll]"], :kind :function}
+ "select-keys" {:arglists ["[m ks]"], :kind :function}
+ "seq" {:arglists ["[coll]"], :kind :function}
+ "seq?" {:arglists ["[x]"], :kind :function}
+ "seqable?" {:arglists ["[x]"], :kind :function}
+ "sequence" {:arglists ["[xf coll]"], :kind :function}
+ "sequential?" {:arglists ["[x]"], :kind :function}
+ "set" {:arglists ["[coll]"], :kind :function}
+ "set-slot!" {:arglists ["[o k v]"], :kind :function}
+ "set?" {:arglists ["[x]"], :kind :function}
+ "settle" {:arglists ["[f]"], :kind :function}
+ "share" {:arglists ["[o]"], :kind :function}
+ "shuffle" {:arglists ["[coll]"], :kind :function}
+ "signal" {:arglists ["[c]"], :kind :function}
+ "sleep" {:arglists ["[ms]"], :kind :function}
+ "slot-value" {:arglists ["[obj k]"], :kind :function}
+ "slot-value-using-class" {:arglists ["[c obj slot]"], :kind :generic}
+ "slurp" {:arglists ["[path]"], :kind :function}
+ "some" {:arglists ["[pred coll]"], :kind :function}
+ "some->" {:arglists ["[e & forms]"], :kind :macro}
+ "some->>" {:arglists ["[e & forms]"], :kind :macro}
+ "some-fn" {:arglists ["[& preds]"], :kind :function}
+ "some?" {:arglists ["[x]"], :kind :function}
+ "sort" {:arglists ["[coll]" "[cmp coll]"], :kind :function}
+ "sort-by" {:arglists ["[keyfn coll]" "[keyfn cmp coll]"], :kind :function}
+ "sorted-map" {:arglists ["[& kvs]"], :kind :function}
+ "sorted-set" {:arglists ["[& items]"], :kind :function}
+ "sorted?" {:arglists ["[x]"], :kind :function}
+ "source" {:arglists ["[sym]"], :kind :macro}
+ "source-text" {:arglists ["[sym]"], :kind :function}
+ "spawn" {:arglists ["[s & body]"], :kind :macro}
+ "spawn-detached" {:arglists ["[& body]"], :kind :macro}
+ "spit" {:arglists ["[path x]"], :kind :function}
+ "split-at" {:arglists ["[n coll]"], :kind :function}
+ "split-with" {:arglists ["[pred coll]"], :kind :function}
+ "str" {:arglists ["[& xs]"], :kind :function}
+ "stream?" {:arglists ["[x]"], :kind :function}
+ "string?" {:arglists ["[x]"], :kind :function}
+ "subbytes" {:arglists ["[b start]" "[b start end]"], :kind :function}
+ "subclass?" {:arglists ["[c super]"], :kind :function}
+ "subs" {:arglists ["[s start]" "[s start end]"], :kind :function}
+ "subseq" {:arglists ["[sc test key]" "[sc start-test start-key end-test end-key]"], :kind :function}
+ "subvec" {:arglists ["[v start]" "[v start end]"], :kind :function}
+ "swap!" {:arglists ["[a f & args]"], :kind :function}
+ "swap-vals!" {:arglists ["[a f & args]"], :kind :function}
+ "symbol" {:arglists ["[name]" "[ns name]"], :kind :function}
+ "symbol?" {:arglists ["[x]"], :kind :function}
+ "tagged-form" {:arglists ["[x]"], :kind :generic}
+ "tagged-text" {:arglists ["[x]"], :kind :function}
+ "take" {:arglists ["[n]" "[n coll]"], :kind :function}
+ "take!" {:arglists ["[c]"], :kind :function}
+ "take-last" {:arglists ["[n coll]"], :kind :function}
+ "take-while" {:arglists ["[pred]" "[pred coll]"], :kind :function}
+ "throw" {:arglists ["[c]"], :kind :function}
+ "throw-tag" {:arglists ["[tag value]"], :kind :function}
+ "time" {:arglists ["[expr]"], :kind :macro}
+ "timeout" {:arglists ["[ms]"], :kind :function}
+ "trace" {:arglists ["[& syms]"], :kind :macro}
+ "trace-var!" {:arglists ["[v]"], :kind :function}
+ "trampoline" {:arglists ["[f & args]"], :kind :function}
+ "transduce" {:arglists ["[xf f coll]" "[xf f init coll]"], :kind :function}
+ "transient" {:arglists ["[coll]"], :kind :function}
+ "transient?" {:arglists ["[x]"], :kind :function}
+ "tree-seq" {:arglists ["[branch? children root]"], :kind :function}
+ "true?" {:arglists ["[x]"], :kind :function}
+ "try" {:arglists ["[& forms]"], :kind :macro}
+ "type" {:arglists ["[x]"], :kind :function}
+ "unreduced" {:arglists ["[x]"], :kind :function}
+ "unseal!" {:arglists ["[ns]"], :kind :function}
+ "untrace" {:arglists ["[& syms]"], :kind :macro}
+ "untrace-all!" {:arglists ["[]"], :kind :function}
+ "untrace-var!" {:arglists ["[v]"], :kind :function}
+ "unwind-protect" {:arglists ["[form & cleanup]"], :kind :macro}
+ "update" {:arglists ["[m k f & args]"], :kind :function}
+ "update-in" {:arglists ["[m ks f & args]"], :kind :function}
+ "update-keys" {:arglists ["[m f]"], :kind :function}
+ "update-slot!" {:arglists ["[o k f & args]"], :kind :function}
+ "update-vals" {:arglists ["[m f]"], :kind :function}
+ "val" {:arglists ["[e]"], :kind :function}
+ "vals" {:arglists ["[m]"], :kind :function}
+ "var-get" {:arglists ["[v]"], :kind :function}
+ "var?" {:arglists ["[x]"], :kind :function}
+ "vec" {:arglists ["[coll]"], :kind :function}
+ "vec-of" {:arglists ["[c]"], :kind :function}
+ "vector" {:arglists ["[& items]"], :kind :function}
+ "vector?" {:arglists ["[x]"], :kind :function}
+ "volatile!" {:arglists ["[x]"], :kind :function}
+ "vreset!" {:arglists ["[v x]"], :kind :function}
+ "vswap!" {:arglists ["[v f & args]"], :kind :function}
+ "warn" {:arglists ["[x & args]"], :kind :function}
+ "weak-get" {:arglists ["[w]"], :kind :function}
+ "weak-ref" {:arglists ["[x]"], :kind :function}
+ "when" {:arglists ["[test & body]"], :kind :macro}
+ "when-first" {:arglists ["[binding & body]"], :kind :macro}
+ "when-let" {:arglists ["[binding & body]"], :kind :macro}
+ "when-not" {:arglists ["[test & body]"], :kind :macro}
+ "when-some" {:arglists ["[binding & body]"], :kind :macro}
+ "while" {:arglists ["[test & body]"], :kind :macro}
+ "with" {:arglists ["[obj & kvs]"], :kind :function}
+ "with-out-str" {:arglists ["[& body]"], :kind :macro}
+ "with-scope" {:arglists ["[binding & body]"], :kind :macro}
+ "with-simple-restart" {:arglists ["[rname report & body]"], :kind :macro}
+ "yield" {:arglists ["[]"], :kind :function}
+ "zero?" {:arglists ["[n]"], :kind :function}
+ "zipmap" {:arglists ["[ks vs]"], :kind :function}
+}

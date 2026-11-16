@@ -1,0 +1,19 @@
+;; norn.bytes's public interface, recorded by norn api-diff --record.
+{
+ "base64" {:arglists ["[b]" "[b alphabet]"], :kind :function}
+ "concat-bytes" {:arglists ["[& bs]"], :kind :function}
+ "decode-chunk" {:arglists ["[state chunk]"], :kind :function}
+ "decode-text" {:arglists ["[data encoding]"], :kind :function}
+ "decoder" {:arglists ["[encoding]"], :kind :function}
+ "finish-decoder" {:arglists ["[{:keys [encoding pending offset]}]"], :kind :function}
+ "float-bytes" {:arglists ["[n width order]"], :kind :function}
+ "hex" {:arglists ["[b]"], :kind :function}
+ "read-float" {:arglists ["[b offset width order]"], :kind :function}
+ "read-uint" {:arglists ["[b offset width order]"], :kind :function}
+ "slice" {:arglists ["[b start]" "[b start end]"], :kind :function}
+ "uint-bytes" {:arglists ["[n width order]"], :kind :function}
+ "unbase64" {:arglists ["[s]"], :kind :function}
+ "unhex" {:arglists ["[s]"], :kind :function}
+ "utf8" {:arglists ["[s]"], :kind :function}
+ "utf8-string" {:arglists ["[b]" "[b lossy?]"], :kind :function}
+}
