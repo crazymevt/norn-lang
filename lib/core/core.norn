@@ -4268,18 +4268,60 @@
                    (cond (nil? c) r
                          (:test c) (if ((:test c) r) r (%contract-fail c r n "its result" module))
                          :else (%check-blaming c r (fn [] (%contract-fail c r n "its result" module)) module caller))))]
-    ;; (the usual arities check their arguments in place: no argument list,
-    ;; vector or apply)
-    (fn
-      ([] (if-let [p (parts-for 0)] (result p ((var-get v))) ((var-get v))))
-      ([a] (if-let [p (parts-for 1)] (result p ((var-get v) (arg p a 0))) ((var-get v) a)))
-      ([a b] (if-let [p (parts-for 2)] (result p ((var-get v) (arg p a 0) (arg p b 1))) ((var-get v) a b)))
-      ([a b c] (if-let [p (parts-for 3)] (result p ((var-get v) (arg p a 0) (arg p b 1) (arg p c 2))) ((var-get v) a b c)))
-      ([a b c & more]
-       (let [args (list* a b c more)]
-         (if-let [p (parts-for (count args))]
-           (%check-call (var-get v) args p n caller module)
-           (apply (var-get v) args)))))))
+    ;; (the usual arities check in place: no argument list, vector or apply.
+    ;; Each keeps a plan for the contract it last saw: a vector of the
+    ;; arguments' tests and the result's (nil where there's none), or :slow
+    ;; when a contract has no plain test (fn-of: the old path). A new
+    ;; contract, after a redefinition, makes a new plan.)
+    (let [plan (fn [cache k]
+                 (when (%contracted? v)
+                   (let [c (if contract-var (var-get contract-var) (%bound-value contract-sym))
+                         seen @cache]
+                     (if (identical? c (nth seen 0 nil))
+                       (nth seen 1)
+                       (let [p (%arity-parts c k)
+                             test-of (fn [ct] (when ct (or (:test ct) :slow)))
+                             tests (when p
+                                     (conj (mapv (fn [i] (test-of (if (< i (count (:args p))) (nth (:args p) i) (:rest p))))
+                                                 (range k))
+                                           (test-of (:result p))))
+                             pl (cond (nil? p) nil (some (fn [t] (identical? t :slow)) tests) :slow :else tests)]
+                         (vreset! cache [c pl])
+                         pl)))))
+          ok? (fn [t x] (or (nil? t) (t x)))
+          c0 (volatile! nil) c1 (volatile! nil) c2 (volatile! nil) c3 (volatile! nil)]
+      (fn
+        ([] (let [pl (plan c0 0)]
+              (cond (nil? pl) ((var-get v))
+                    (identical? pl :slow) (result (parts-for 0) ((var-get v)))
+                    :else (let [r ((var-get v))] (if (ok? (nth pl 0) r) r (result (parts-for 0) r))))))
+        ([a] (let [pl (plan c1 1)]
+               (cond (nil? pl) ((var-get v) a)
+                     (identical? pl :slow) (let [p (parts-for 1)] (result p ((var-get v) (arg p a 0))))
+                     :else (let [p? (ok? (nth pl 0) a)
+                                 r (if p? ((var-get v) a) (arg (parts-for 1) a 0))]
+                             (if (ok? (nth pl 1) r) r (result (parts-for 1) r))))))
+        ([a b] (let [pl (plan c2 2)]
+                 (cond (nil? pl) ((var-get v) a b)
+                       (identical? pl :slow) (let [p (parts-for 2)] (result p ((var-get v) (arg p a 0) (arg p b 1))))
+                       :else (do (when-not (ok? (nth pl 0) a) (arg (parts-for 2) a 0))
+                                 (when-not (ok? (nth pl 1) b) (arg (parts-for 2) b 1))
+                                 (let [r ((var-get v) a b)]
+                                   (if (ok? (nth pl 2) r) r (result (parts-for 2) r)))))))
+        ([a b c] (let [pl (plan c3 3)]
+                   (cond (nil? pl) ((var-get v) a b c)
+                         (identical? pl :slow)
+                         (let [p (parts-for 3)] (result p ((var-get v) (arg p a 0) (arg p b 1) (arg p c 2))))
+                         :else (do (when-not (ok? (nth pl 0) a) (arg (parts-for 3) a 0))
+                                   (when-not (ok? (nth pl 1) b) (arg (parts-for 3) b 1))
+                                   (when-not (ok? (nth pl 2) c) (arg (parts-for 3) c 2))
+                                   (let [r ((var-get v) a b c)]
+                                     (if (ok? (nth pl 3) r) r (result (parts-for 3) r)))))))
+        ([a b c & more]
+         (let [args (list* a b c more)]
+           (if-let [p (parts-for (count args))]
+             (%check-call (var-get v) args p n caller module)
+             (apply (var-get v) args))))))))
 
 (defn %drop-contract! "Function var v has no contract now." [v] (%set-contracted! v false) nil)
 
