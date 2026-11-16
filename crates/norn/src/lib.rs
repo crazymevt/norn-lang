@@ -6,8 +6,10 @@
 //! norn -e EXPR         evaluate EXPR and print the result
 //! norn --server [PORT]  REPL plus the editor protocol on 127.0.0.1:PORT (default 7888)
 //! norn --image IMG …   start from a saved image instead of booting from source;
-//!                      an image with an entry function runs it with the
-//!                      remaining arguments (unless they are -e EXPR)
+//!                      an image with an entry function runs it with every
+//!                      remaining argument (-e too)
+//! norn -e EXPR --image IMG
+//!                      evaluate EXPR in the image, entry function or not
 //! norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]
 //!                      load the files into a fresh runtime and save an image
 //! ```
@@ -25,11 +27,12 @@
 use norn_vm::{RootTask, start_with};
 use std::io::{self, BufRead, Write};
 use std::process::exit;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
 const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --server [PORT] | ARGS…]
+       norn -e EXPR --image IMG.nimg   (EXPR in the image, though it has an entry)
        norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]
                   (in a project, with no files: its :main)
        norn test [--only REGEX] [--serial] [--tap] [--junit FILE] [PATH…]
@@ -45,6 +48,13 @@ const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --ser
 
 /// Ticket of the root fiber the REPL is waiting on (0 = none), for Ctrl-C.
 static CURRENT: AtomicU64 = AtomicU64::new(0);
+
+/// Set when the REPL's input ends at a debugger prompt: the evaluation is
+/// aborted and the REPL ends once it has.
+static INPUT_ENDED: AtomicBool = AtomicBool::new(false);
+
+/// Set by Ctrl-C (the debugger prompt then checks its fiber is still there).
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 /// Run `f` on the process's first thread once the runtime has started, and
 /// the command line (`run`) on another thread. The process ends when either
@@ -185,37 +195,46 @@ pub fn run() {
     if args.first().map(String::as_str) == Some("image") {
         exit(image_tool(&args[1..]));
     }
-    let image = match args.as_slice() {
+    // `norn --image IMG ARGS…`: an image with an entry function gets every
+    // argument after it, -e too. `norn -e EXPR --image IMG` evaluates EXPR
+    // in the image instead, entry or not.
+    let (image, eval_in_image) = match args.as_slice() {
         [flag, path, ..] if flag == "--image" => {
             let p = std::path::PathBuf::from(path);
             args.drain(..2);
-            Some(p)
+            (Some(p), false)
         }
-        _ => None,
+        [e, _, flag, path] if e == "-e" && flag == "--image" => {
+            let p = std::path::PathBuf::from(path);
+            args.truncate(2);
+            (Some(p), true)
+        }
+        _ => (None, false),
     };
     // (norn.sys/program-args): an image's entry gets everything after the
     // image; a script or tool, everything after its name; -e and the REPL,
-    // nothing.
-    norn_vm::sys::set_program_args(match args.first() {
-        Some(f) if image.is_some() && f != "-e" => args.clone(),
-        Some(f) if !f.starts_with('-') => args[1..].to_vec(),
-        _ => Vec::new(),
-    });
+    // nothing. (Whether -e after an image goes to an entry is known once the
+    // image is loaded: then they're set.)
+    match args.first() {
+        Some(f) if image.is_some() && f == "-e" => {}
+        Some(_) if image.is_some() => norn_vm::sys::set_program_args(args.clone()),
+        Some(f) if !f.starts_with('-') => norn_vm::sys::set_program_args(args[1..].to_vec()),
+        _ => norn_vm::sys::set_program_args(Vec::new()),
+    }
     let norn = start_with(image.as_deref()).unwrap_or_else(|e| {
         eprintln!("{e}");
         exit(1)
     });
     let _ = ctrlc::set_handler(move || {
+        INTERRUPTED.store(true, Ordering::Release);
         let t = CURRENT.load(Ordering::Acquire);
         if t != 0 {
             norn.interrupt(t);
         }
     });
 
-    if image.is_some()
-        && args.first().map(String::as_str) != Some("-e")
-        && eval_raw(norn, "(if norn.core/%image-entry true false)", "user") == "true"
-    {
+    if image.is_some() && !eval_in_image && eval_raw(norn, "(if norn.core/%image-entry true false)", "user") == "true" {
+        norn_vm::sys::set_program_args(args.clone());
         run_entry(norn, &args);
     }
 
@@ -287,11 +306,12 @@ pub fn run() {
     exit(if done { 0 } else { 1 })
 }
 
-/// Run `norn --image img -e code` as a child process; its stdout's first
-/// line (the code prints what it wants and the value line follows).
+/// Run `norn -e code --image img` as a child process (code runs in the
+/// image even when it has an entry function); its stdout (the code prints
+/// what it wants and the value line follows).
 fn in_image(img: &str, code: &str) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let out = std::process::Command::new(exe).args(["--image", img, "-e", code]).output().map_err(|e| e.to_string())?;
+    let out = std::process::Command::new(exe).args(["-e", code, "--image", img]).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!("{img}: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
@@ -514,17 +534,27 @@ fn repl(norn: &'static norn_vm::Norn) {
     let mut ns = "user".to_owned();
     let mut line_editor = LineEditor::new(norn);
     loop {
+        announce_debugging(norn, &events, &ns);
         let src = match line_editor.as_mut() {
             Some(ed) => ed.read(&ns),
             None => read_form(&format!("{ns}=> "), ns.len()),
         };
         let Some(src) = src else { return };
+        if src.trim().is_empty() {
+            continue;
+        }
+        // (a fiber that entered the debugger before this input is announced;
+        // one that does while the REPL waits for it gets the prompt)
+        announce_debugging(norn, &events, &ns);
         let t = norn.submit(RootTask::Repl(src), &ns);
         let done = wait_root(norn, &events, t, &ns);
         if let Err(e) = done.result {
             eprintln!("Error: {e}");
         }
         ns = done.ns;
+        if INPUT_ENDED.load(Ordering::Acquire) {
+            return;
+        }
     }
 }
 
@@ -615,7 +645,8 @@ impl LineEditor {
     }
 }
 
-/// Read lines until they form complete input. None at end of input.
+/// Read lines until they form complete input (or a blank line). None at
+/// end of input.
 fn read_form(prompt: &str, indent: usize) -> Option<String> {
     let stdin = io::stdin();
     let mut buf = String::new();
@@ -638,22 +669,10 @@ fn read_form(prompt: &str, indent: usize) -> Option<String> {
             Ok(_) => buf.push_str(&line),
         }
         if !needs_more(&buf) {
-            if buf.trim().is_empty() {
-                buf.clear();
-                continue;
-            }
+            // (blank input too: the caller may have something to check)
             return Some(buf);
         }
     }
-}
-
-/// The fiber id in a `{:event :debug :fiber N …}` line.
-fn debug_event_fiber(line: &str) -> Option<u64> {
-    if !line.contains(":event :debug") {
-        return None;
-    }
-    let rest = &line[line.find(":fiber ")? + 7..];
-    rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
 }
 
 /// The project (M8 part 8.10) a run in folder `start` belongs to: the
@@ -691,8 +710,9 @@ fn eval_raw(norn: &norn_vm::Norn, src: &str, ns: &str) -> String {
     }
 }
 
-/// Wait for root fiber `t`, handling the debugger meanwhile: if `t` (or a
-/// fiber it spawned) waits in the debugger, show it and take commands.
+/// Wait for root fiber `t`, handling the debugger meanwhile: if `t`, or
+/// another fiber (one `t` spawned, often, which it may be waiting for),
+/// waits in the debugger, show it and take commands.
 fn wait_root(norn: &norn_vm::Norn, events: &mpsc::Receiver<String>, t: u64, ns: &str) -> norn_vm::RootDone {
     CURRENT.store(t, Ordering::Release);
     loop {
@@ -702,25 +722,102 @@ fn wait_root(norn: &norn_vm::Norn, events: &mpsc::Receiver<String>, t: u64, ns: 
             return done;
         }
         while let Ok(ev) = events.try_recv() {
-            let Some(id) = debug_event_fiber(&ev) else { continue };
-            print!("{}", eval_raw(norn, &format!("(%debugger-banner {id})"), ns));
-            if id == t {
-                debugger(norn, events, id, ns);
-            } else {
-                println!("  (it keeps waiting; use (debug-restart {id} n), (debug-restart-frame {id} i) or (debug-abort {id}))");
+            let Some(id) = note_event(&ev) else { continue };
+            // (None: it isn't waiting any more)
+            let Some(banner) = banner(norn, id, ns) else { continue };
+            print!("{banner}");
+            if id != t {
+                println!("  (the evaluation goes on meanwhile)");
+            }
+            debugger(norn, events, id, ns);
+            if INPUT_ENDED.load(Ordering::Acquire) && id != t {
+                norn.interrupt(t);
             }
         }
     }
 }
 
-/// The debugger prompt for fiber `id` (the evaluation the REPL is waiting on).
+/// Before the next input: say which fibers that entered the debugger since
+/// the last evaluation are still waiting there (they keep waiting).
+fn announce_debugging(norn: &norn_vm::Norn, events: &mpsc::Receiver<String>, ns: &str) {
+    while let Ok(ev) = events.try_recv() {
+        let Some(id) = note_event(&ev) else { continue };
+        if let Some(banner) = banner(norn, id, ns) {
+            print!("{banner}");
+            println!("  (it keeps waiting; use (debug-restart {id} n), (debug-restart-frame {id} i) or (debug-abort {id}))");
+        }
+    }
+}
+
+/// Fiber `id`'s debugger banner, or None if it isn't in the debugger.
+fn banner(norn: &norn_vm::Norn, id: u64, ns: &str) -> Option<String> {
+    let b = eval_raw(norn, &format!("(%debugger-banner {id})"), ns);
+    if b.starts_with("Error") { None } else { Some(b) }
+}
+
+/// The fibers that have left the debugger (`:resumed` events), as far as
+/// the REPL has seen.
+static RESUMED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// Note an event line: the fiber of a `{:event :debug :fiber N …}`, which
+/// has entered the debugger. (A `:resumed` one goes in RESUMED.)
+fn note_event(line: &str) -> Option<u64> {
+    let fiber = || -> Option<u64> {
+        let rest = &line[line.find(":fiber ")? + 7..];
+        rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+    };
+    let mut resumed = RESUMED.lock().unwrap_or_else(|e| e.into_inner());
+    if line.contains(":event :resumed") {
+        resumed.extend(fiber());
+        None
+    } else if line.contains(":event :debug") {
+        let id = fiber()?;
+        resumed.retain(|&r| r != id);
+        Some(id)
+    } else {
+        None
+    }
+}
+
+/// Has fiber `id` left the debugger, as the events say?
+fn resumed(id: u64) -> bool {
+    RESUMED.lock().unwrap_or_else(|e| e.into_inner()).contains(&id)
+}
+
+/// Is fiber `id` still waiting in the debugger? (Asks the runtime: a fiber
+/// cancelled while it waited is noticed only when someone asks.)
+fn parked(norn: &norn_vm::Norn, id: u64) -> bool {
+    eval_raw(norn, &format!("(norn.core/%in-debugger? {id})"), "user") == "true"
+}
+
+/// The debugger prompt for fiber `id`, which waits in the debugger: the
+/// evaluation the REPL is waiting on, or another fiber.
 fn debugger(norn: &norn_vm::Norn, events: &mpsc::Receiver<String>, id: u64, ns: &str) {
     println!("  :r N [args…]  invoke restart N    :f N  restart frame N (newest definition)");
     println!("  :bt  frames again    :a  abort    anything else is evaluated (e.g. redefine a function)");
+    let current = CURRENT.load(Ordering::Acquire);
+    // (the end of input leaves the debugger: the fiber is aborted, and the
+    // REPL ends once the evaluation has)
+    let end = || {
+        INPUT_ENDED.store(true, Ordering::Release);
+        let _ = eval_raw(norn, &format!("(debug-abort {id})"), ns);
+    };
     loop {
+        if INPUT_ENDED.load(Ordering::Acquire) {
+            return end();
+        }
+        // (resumed by something evaluated here, as (debug-abort id) does, or
+        // cancelled by Ctrl-C, with the evaluation and its scope)
+        if resumed(id) || (INTERRUPTED.swap(false, Ordering::AcqRel) && !parked(norn, id)) {
+            println!("  (fiber {id} is no longer in the debugger)");
+            return;
+        }
         let prompt = format!("debug[{id}]> ");
-        let Some(line) = read_form(&prompt, prompt.len() - 3) else { return };
+        let Some(line) = read_form(&prompt, prompt.len() - 3) else { return end() };
         let cmd = line.trim();
+        if cmd.is_empty() {
+            continue;
+        }
         let mut words = cmd.split_whitespace();
         let code = match words.next() {
             Some(":r") => format!("(debug-restart {id} {})", words.collect::<Vec<_>>().join(" ")),
@@ -736,14 +833,19 @@ fn debugger(norn: &norn_vm::Norn, events: &mpsc::Receiver<String>, id: u64, ns: 
                 if let Err(e) = wait_root(norn, events, t, ns).result {
                     eprintln!("Error: {e}");
                 }
-                CURRENT.store(id, Ordering::Release);
+                CURRENT.store(current, Ordering::Release);
+                // (what it caused: a :resumed event for this fiber, say)
+                announce_debugging(norn, events, ns);
                 continue;
             }
         };
         let reply = eval_raw(norn, &code, ns);
         if reply.starts_with("Error") {
             println!("{reply}");
-            continue;
+            if parked(norn, id) {
+                continue;
+            }
+            return;
         }
         return; // resumed: go back to waiting for the evaluation
     }

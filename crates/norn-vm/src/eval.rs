@@ -289,6 +289,22 @@ pub(crate) fn form_at(vm: &mut Vm, src: &str, line: usize) -> Result<Value> {
     }
 }
 
+/// `(%next-form-text reader)`: the text of the form reader will read next,
+/// as written (comments and line breaks kept), without reading it; nil at
+/// the end or if it doesn't read.
+pub(crate) fn next_form_text(vm: &mut Vm, r: Value) -> Result<Value> {
+    let src = r.field(0).as_str();
+    let mut rd = Reader::new_at(src, r.word(1) as usize);
+    if rd.at_end() {
+        return Ok(Value::NIL);
+    }
+    let start = rd.pos();
+    match rd.read(vm) {
+        Ok(_) => Ok(norn_rt::string::str_new(&mut vm.m, &src[start..rd.pos()])),
+        Err(_) => Ok(Value::NIL),
+    }
+}
+
 /// `(%read-syntax reader)`: the next form and where its parts came from,
 /// `[form location-tree]` (reader.rs), or the EOF marker.
 pub(crate) fn read_syntax_next(vm: &mut Vm, r: Value) -> Result<Value> {

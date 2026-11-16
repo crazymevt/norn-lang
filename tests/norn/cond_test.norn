@@ -142,5 +142,24 @@
   (debug-abort id)
   (is (= {:error "give up"} (settle f)))
   (is (= [:cleanup] @log)))
+;; A fiber cancelled while it waits in the debugger (Ctrl-C at the REPL, or
+;; its scope failing) leaves it: it isn't listed, and debug-abort on it is
+;; an error, not a wait.
+(let [f (binding [*debugger* :park] (spawn-detached (/ 1 0)))
+      id (fiber-id f)]
+  (wait-until (fn [] (seq (debugging))))
+  (cancel! f)
+  (is (= {:error "Cancelled"} (settle f)))
+  (is (= [] (debugging)))
+  (is (thrown? Error (debug-abort id))))
+;;; warn and muffle-warning
+(is (= "WARNING: careful 1\n" (with-out-str (warn "careful" 1))))
+(is (= "" (with-out-str (handler-bind [Warning (fn [_] (muffle-warning))] (warn "careful")))))
+(let [seen (atom nil)]
+  (is (= "" (with-out-str (handler-bind [Warning (fn [w] (reset! seen (condition-message w)) (muffle-warning w))]
+                            (is (nil? (warn "hush")))))))
+  (is (= "hush" @seen)))
+(is (= "WARNING: declined\n" (with-out-str (handler-bind [Warning (fn [_] nil)] (warn "declined")))))
+(is (thrown? Error (muffle-warning)) "no warning is being signalled")
 ;; Without *debugger* bound, an unhandled error ends the fiber.
 (is (= {:error "plain"} (settle (spawn-detached (error "plain")))))

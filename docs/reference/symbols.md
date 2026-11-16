@@ -13,7 +13,7 @@ beginning with `%` are runtime internals.
 ## Punctuation
 
 - [`*`](collections.md#numbers-and-equality) · `*check-contracts*` · `*debugger*` · `*handlers*` · `*inspecting*` · `*load-shift*`
-- `*loading*` · `*out*` · `*restarts*` · `*trace-depth*` · [`+`](collections.md#numbers-and-equality) · [`-`](collections.md#numbers-and-equality)
+- `*loading*` · `*macro-place*` · `*out*` · `*restarts*` · `*trace-depth*` · [`+`](collections.md#numbers-and-equality) · [`-`](collections.md#numbers-and-equality)
 - [`->`](syntax.md#branching-and-sequencing) · [`->>`](syntax.md#branching-and-sequencing) · `->contract` · [`/`](collections.md#numbers-and-equality) · [`<`](collections.md#numbers-and-equality) · [`<!`](concurrency.md#channels)
 - [`<=`](collections.md#numbers-and-equality) · [`=`](collections.md#numbers-and-equality) · [`==`](collections.md#numbers-and-equality) · [`>`](collections.md#numbers-and-equality) · [`>!`](concurrency.md#channels) · [`>=`](collections.md#numbers-and-equality)
 
@@ -109,7 +109,7 @@ beginning with `%` are runtime internals.
 - `macro-steps` · `macro?` · [`macroexpand`](syntax.md#macros-and-expansion) · [`macroexpand-1`](syntax.md#macros-and-expansion) · [`make`](objects.md#construction-and-access) · [`make-instance`](objects.md#protocols-and-object-customization)
 - `Map` · [`map`](collections.md#eager-transforms) · `map-indexed` · [`map-of`](syntax.md#function-contracts) · `map?` · `mapcat`
 - [`mapv`](collections.md#eager-transforms) · [`match`](syntax.md#pattern-matching) · [`MatchError`](syntax.md#pattern-matching) · `max` · `max-key` · `memoize`
-- `merge` · `merge-with` · `min` · `min-key` · `mod` · `mutable?`
+- `merge` · `merge-with` · `min` · `min-key` · `mod` · [`muffle-warning`](conditions.md#signaling-conditions) · `mutable?`
 
 ## N
 

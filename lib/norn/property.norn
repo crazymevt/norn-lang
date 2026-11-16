@@ -328,5 +328,5 @@
                          {:type :pass}
                          {:type :fail :form '~(cons 'for-all (cons bindings body))
                           :expected "the property to hold" :actual (norn.property/%describe r#)
-                          :message nil :location (test/%loc)}))
+                          :message nil :location ~(%macro-location)}))
          r#))))

@@ -226,6 +226,22 @@
 (is (= :error (fails (sig/listen :kill))))
 (is (= :error (fails (sig/listen :segv))) "the runtime keeps it")
 (let [l (sig/listen :abrt)] (sig/stop l))
+;; The norn command, for the checks that run one (none when this file runs
+;; elsewhere, as in the Rust test harness: that would run the harness).
+(def norn-exe (let [e (:executable (sys/info))] (when (and e (= "norn" (io/file-name e))) e)))
+
+;; Once the last listener stops, a signal does what it did before: SIGTERM
+;; ends the process again (it used to be ignored from then on).
+(when norn-exe
+  (let [code "(do (require '[norn.signal :as sig])
+                (let [a (sig/listen :term) b (sig/listen :term)]
+                  (sig/stop a) (sig/raise :term)
+                  (prn (first (alts! [(:signals b) (timeout 5000)])))
+                  (sig/stop b))
+                (sig/raise :term) (sleep 2000) (prn :alive))"
+        r (proc/sh norn-exe "-e" code)]
+    (is (= ":term\n" (:out r)) "one listener left still gets it")
+    (is (= :term (:signal r)))))
 
 ;;; ---- norn.net ----
 ;; This file's directory, for the test certificates (runners use different
@@ -739,6 +755,24 @@
 (is (str/starts-with? (source-text 'documented) "(defn documented\n  \"Adds one.\""))
 (is (str/starts-with? (source-text 'rope/insert) "(defn insert"))
 (is (str/starts-with? (source-text 'juxt) "(defn juxt"))
+;; Definitions typed in (the REPL, -e, the editor) keep their text as typed.
+(load-string "(defn typed-in\n  \"Typed.\"\n  [x] ; a comment\n  x)")
+(is (= "(defn typed-in\n  \"Typed.\"\n  [x] ; a comment\n  x)" (source-text 'typed-in)))
+;; The terminal REPL (input from a pipe): definitions are recorded, and the
+;; end of input at a debugger prompt aborts the evaluation and ends it.
+(when norn-exe
+  (let [repl (fn [in] (proc/sh norn-exe :in in))
+        r (repl "(defn f\n  \"Adds one.\"\n  [x] ; one more\n  (inc x))\n(doc f)\n(source f)\n(def a 1) (def b 2)\n(source b)\n")]
+    (is (str/includes? (:out r) "  Adds one.\n"))
+    (is (str/includes? (:out r) "(defn f\n  \"Adds one.\"\n  [x] ; one more\n  (inc x))\n"))
+    (is (str/includes? (:out r) "(def b 2)\n"))
+    (let [r (repl "(/ 1 0)\n")]
+      (is (= 0 (:exit r)))
+      (is (str/includes? (:out r) "debug[")))
+    (let [r (repl "(with-scope [s] (spawn s (/ 1 0)) (await (spawn s 5)))\n:r 0 7\n(+ 1 2)\n")]
+      (is (str/includes? (:out r) "debug[") "a fiber the evaluation spawned gets the prompt")
+      (is (str/includes? (:out r) "> 5\n"))
+      (is (str/includes? (:out r) "> 3\n")))))
 (let [t (%doc-text 'documented)]
   (is (str/includes? t "lib-test/documented"))
   (is (str/includes? t "DEPRECATED: use inc"))
@@ -771,6 +805,15 @@
 (is (= "~ a/x\n- a/y\n+ a/z\n+ namespace b (1 vars)\n"
        (image/diff-text {"a" {"x" 1 "y" 2}} {"a" {"x" 3 "z" 4} "b" {"q" 1}})))
 (is (contains? (image/summary) "norn.core"))
+;; The runtime's bookkeeping (atoms such as the definitions index, which any
+;; evaluation changes) and modules' phase instances (norn.io$1) aren't
+;; differences: a new definition is.
+(let [core ["norn.core" "norn.compiler" "norn.expander" "norn.syntax" "lib-test"]
+      before (select-keys (image/summary) core)]
+  (eval '(defmacro image-probe-macro [x] `(inc ~x)))
+  (eval '(defn image-probe [] (image-probe-macro 1)))
+  (is (= "+ lib-test/image-probe\n+ lib-test/image-probe-macro\n" (image/diff-text before (select-keys (image/summary) core))))
+  (is (= "no differences\n" (image/diff-text {"a" {"x" 1}} {"a" {"x" 1} "norn.io$1" {}}))))
 
 ;;; ---- norn.log ----
 (let [events (atom [])]

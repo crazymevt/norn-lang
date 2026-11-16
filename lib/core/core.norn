@@ -1222,10 +1222,19 @@
 
 (defn throw [c] (error c))
 
-(defn warn [x & args]
+(declare %restart-case)
+
+(defn warn
+  "Signal a warning: (warn \"message\" args…) makes a Warning, (warn
+  condition) signals that one. If no handler takes it, print it as
+  WARNING: …. A handler can stop the printing with (muffle-warning), which
+  invokes the muffle-warning restart warn establishes. nil."
+  [x & args]
   (let [c (if (instance? Condition x) x (make Warning :message (apply %message x args)))]
-    (signal c)
-    (println "WARNING:" (condition-text c))
+    (%restart-case (fn* []
+                     (signal c)
+                     (println "WARNING:" (condition-text c)))
+                   [{:name 'muffle-warning :report "Don't print this warning" :fn (fn* [] nil)}])
     nil))
 
 (defn %with-handlers [entries thunk]
@@ -1318,6 +1327,14 @@
   (let [r (if (map? r) r (or (find-restart r) (error "No active restart named" (pr-str r))))]
     (throw-tag (:tag r) [(:index r) args])))
 
+(defn muffle-warning
+  "Invoke the muffle-warning restart: called from a handler for a warning
+  signalled by warn, it stops warn from printing it. (c, the warning, may
+  be passed, as in Common Lisp; it isn't needed.) An error when no warning
+  is being signalled."
+  ([] (invoke-restart 'muffle-warning))
+  ([c] (invoke-restart 'muffle-warning)))
+
 (defmacro with-simple-restart [rname report & body]
   `(restart-case (do ~@body) (~rname [] :report ~report nil)))
 
@@ -1355,22 +1372,45 @@
 
 (defn- %describe-restart [r] {:name (str (:name r)) :report (or (:report r) "")})
 
+(defn- %leave-debugger!
+  "Fiber id has left the debugger: forget it, and say so to the editors."
+  [id]
+  (swap! %debugging dissoc id)
+  (%post-event (pr-str {:event :resumed :fiber id})))
+
+(defn- %prune-debugging!
+  "Forget the fibers that ended while they waited in the debugger
+  (cancelled, by Ctrl-C at the REPL or with their scope: they never took
+  a command)."
+  []
+  (doseq [kv @%debugging]
+    (when (done? (:fiber (second kv))) (%leave-debugger! (first kv)))))
+
+(defn %in-debugger?
+  "Is fiber id (a number) waiting in the debugger?"
+  [id]
+  (%prune-debugging!)
+  (contains? @%debugging id))
+
 (defn- %debug-entry [id]
+  (%prune-debugging!)
   (or (get @%debugging id) (error "Fiber" id "is not in the debugger")))
 
 (defn %debug-park [c]
   (let [f (current-fiber)
         id (fiber-id f)
-        ch (chan)
+        ;; (room for the one command, so debug-restart and debug-abort
+        ;; never wait, even on a fiber that ends meanwhile)
+        ch (chan 1)
         rs (compute-restarts)]
     (swap! %debugging assoc id {:fiber f :condition c :restarts rs :chan ch})
     (%post-event (pr-str {:event :debug :fiber id :condition (condition-text c)
                           :class (str (class-name (class-of c)))
                           :restarts (mapv %describe-restart rs)}))
-    ;; (in a finally: a fiber cancelled while it waits here leaves too)
-    (let [cmd (try (take! ch)
-                   (finally (swap! %debugging dissoc id)
-                            (%post-event (pr-str {:event :resumed :fiber id}))))]
+    ;; (one cancelled while it waits here is forgotten by
+    ;; %prune-debugging!: a cleanup here would add frames to its backtrace)
+    (let [cmd (take! ch)]
+      (%leave-debugger! id)
       (cond (= (first cmd) :restart) (apply invoke-restart (nth rs (nth cmd 1)) (nth cmd 2))
             (= (first cmd) :frame) (%restart-frame (nth cmd 1) (nth cmd 2))
             :else (%abort c)))))
@@ -1378,6 +1418,7 @@
 (defn debugging
   "Fibers waiting in the debugger."
   []
+  (%prune-debugging!)
   (mapv (fn [kv]
           (let [e (second kv)]
             {:fiber (first kv) :condition (condition-text (:condition e))
@@ -1434,26 +1475,29 @@
 
 (defn %note-definition!
   "Record top-level form f, read from file at line, if it defines something
-  (its head starts with def and a name follows)."
-  [f file line]
-  (when (and (seq? f) (symbol? (first f)) (symbol? (second f)))
-    (let [head (name (first f))]
-      (when (and (>= (count head) 3) (= "def" (subs head 0 3)))
-        (let [nm (second f)
-              more (nnext f)
-              doc (when (and (string? (first more)) (next more)) (first more))
-              more (if doc (rest more) more)
-              attrs (when (map? (first more)) (first more))
-              more (if attrs (rest more) more)
-              params (first more)
-              arglists (cond (contains? #{"defn" "defn-" "defmacro"} head)
-                             (cond (vector? params) (list params)
-                                   (and (seq? params) (vector? (first params))) (map first more))
-                             (= head "defgeneric") (when (or (seq? params) (vector? params)) (list (vec params))))
-              typed? (contains? #{"<repl>" "<string>" "<editor>"} file)]
-          (swap! %definitions assoc (str (current-ns) "/" nm)
-                 (merge attrs {:name nm :ns (str (current-ns)) :kind (first f) :doc doc :arglists arglists
-                               :file file :line line :form (when typed? f)})))))))
+  (its head starts with def and a name follows). text, when given, is the
+  form as it was typed (kept for source when file is typed input, not a
+  file that can be read again)."
+  ([f file line] (%note-definition! f file line nil))
+  ([f file line text]
+   (when (and (seq? f) (symbol? (first f)) (symbol? (second f)))
+     (let [head (name (first f))]
+       (when (and (>= (count head) 3) (= "def" (subs head 0 3)))
+         (let [nm (second f)
+               more (nnext f)
+               doc (when (and (string? (first more)) (next more)) (first more))
+               more (if doc (rest more) more)
+               attrs (when (map? (first more)) (first more))
+               more (if attrs (rest more) more)
+               params (first more)
+               arglists (cond (contains? #{"defn" "defn-" "defmacro"} head)
+                              (cond (vector? params) (list params)
+                                    (and (seq? params) (vector? (first params))) (map first more))
+                              (= head "defgeneric") (when (or (seq? params) (vector? params)) (list (vec params))))
+               typed? (contains? #{"<repl>" "<string>" "<editor>"} file)]
+           (swap! %definitions assoc (str (current-ns) "/" nm)
+                  (merge attrs {:name nm :ns (str (current-ns)) :kind (first f) :doc doc :arglists arglists
+                                :file file :line line :form (when typed? f) :text (when typed? text)}))))))))
 
 (defn %eval-reader [r]
   (let [src (%reader-name r)
@@ -1468,11 +1512,23 @@
 
 (declare %run-after-eval-hooks)
 
-(defn %repl-eval [s]
+(defn- %repl-read
+  "The next form typed at the terminal REPL (from reader r), noted if it's
+  a definition (file \"<repl>\"), with its text as typed, for doc and
+  source."
+  [r]
+  (let [text (%next-form-text r)
+        f (%read r)]
+    (when-not (%eof? f) (%note-definition! f "<repl>" (%reader-line r) text))
+    f))
+
+(defn %repl-eval
+  "Evaluate each form of s, typed at the terminal REPL, printing its value."
+  [s]
   (binding [*debugger* :park]
     (let [r (%reader s "<repl>")]
       (loop []
-        (let [f (%read r)]
+        (let [f (%repl-read r)]
           (when-not (%eof? f)
             (prn (eval f))
             (%run-after-eval-hooks)
@@ -1993,6 +2049,21 @@
   (if (or (zero? s) (contains? %shared-nss (str lib))) lib (symbol (str lib "$" s))))
 
 (def *load-shift* "The phase shift of the library being loaded." 0)
+
+(def *macro-place*
+  "While a macro runs, where the call it is expanding came from, when known:
+  [source line column position span] (the expander binds it)."
+  nil)
+
+(defn %macro-location
+  "Where the macro call being expanded is, as \"source:line\" (for a macro
+  that wants to report where it was used, as norn.test's is does), or,
+  when that isn't known, the top-level form being evaluated (%location)."
+  []
+  (let [loc *macro-place*]
+    (if (and loc (nth loc 0 nil) (nth loc 1 nil))
+      (str (nth loc 0) ":" (nth loc 1))
+      (%location))))
 ;;;
 ;;; (require 'norn.io) loads a library once: embedded in the binary
 ;;; (lib/norn/*.norn) or found as a/b.norn under NORN_PATH or the current
@@ -2800,6 +2871,7 @@
   [sym]
   (let [d (definition sym)]
     (cond (nil? d) nil
+          (:text d) (:text d)
           (:form d) (pr-str (:form d))
           :else (when-let [src (%source-of (:file d))] (%form-at src (:line d))))))
 

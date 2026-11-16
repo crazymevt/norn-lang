@@ -14,7 +14,8 @@ how to continue.
 | `(signal condition)` | Offer a condition to matching dynamic handlers, innermost first. Return `nil` if they all decline by returning normally. |
 | `(error x args…)` | Signal an existing condition, construct one from a condition class and initargs, or create a `SimpleError` from a message. An unhandled error enters the debugger or ends the fiber, according to the current debugger setting. |
 | `(throw condition)` | Signal through `error`. |
-| `(warn x args…)` | Signal a condition, constructing a `Warning` for message arguments, then print a warning if control returns. |
+| `(warn x args…)` | Signal a condition, constructing a `Warning` for message arguments, then print a warning if control returns. While it signals, a `muffle-warning` restart is active: invoking it skips the printing, and `warn` returns `nil`. |
+| `(muffle-warning)`, `(muffle-warning c)` | From a handler for a warning, invoke the `muffle-warning` restart so that `warn` doesn't print it. Signal an error when no such restart is active. |
 | `(condition-message c)`, `(condition-text c)` | Read the message or format it with the source location when available. |
 | `(ex-info msg data)`, `(ex-info msg data cause)` | Construct an `ExInfo` condition containing a data map and optional cause. `ex-data`, `ex-message`, and `ex-cause` retrieve details. |
 
@@ -63,6 +64,9 @@ to check availability before choosing a recovery.
 ```clojure
 (handler-bind [ArithmeticError (fn [_] (invoke-restart 'use-value 41))]
   (+ 1 (/ 1 0))) ; => 42
+
+(handler-bind [Warning (fn [_] (muffle-warning))]
+  (warn "Disk almost full")) ; => nil, and nothing is printed
 ```
 
 See the [reading recovery example](../examples/restarts.norn) for a

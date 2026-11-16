@@ -57,6 +57,40 @@
   (is (= [1 0 0] (outcome "signal-alone")))
   (is (= [0 1 0] (outcome "in-fibers"))))
 
+;;; a failure says where its is is: the line it's written on, captured when
+;;; it expands (not where the test happens to run)
+(let [r (t/run-file (sample "where_test.norn" "(ns where-test (:require [norn.test :refer [is deftest are]]))
+(deftest here
+  (is (= 1 1))
+  (is (= 1 2)))
+(deftest templated (are [x] (= 1 x)
+                     1 2))
+"))
+      [e1 e2] (events r)]
+  (is (str/ends-with? (:location e1) "where_test.norn:4"))
+  (is (str/ends-with? (:location e2) "where_test.norn:5") "are's checks are where the are is")
+  (is (str/includes? (t/%human {:files [r] :totals {:tests 2 :pass 1 :fail 2 :error 0}}) "where_test.norn:4)")))
+(let [loc (:location (first (:events (first (:tests (t/run-file (io/path dir "where_test.norn") :only #"here"))))))]
+  (is (str/ends-with? loc "where_test.norn:4") "the same when run again"))
+
+;;; a handler-case around the run doesn't take a test's errors: they're the test's
+(def outer
+  (do (t/run-file (sample "outer_test.norn" "(ns outer-test (:require [norn.test :refer [is deftest]]))
+(deftest dies (error \"inside\") (is (= 1 1)))
+(deftest bad-is (is (= 1 (/ 1 0))) (is (= 2 2)))
+(deftest handled (is (= :mine (handler-case (error \"x\") (Error [] :mine)))))
+"))
+      (handler-case (t/run-ns 'outer-test) (Error [] :escaped))))
+(is (vector? outer))
+(is (= [[0 0 1] [1 0 1] [1 0 0]] (mapv (fn [x] (mapv x [:pass :fail :error])) outer)))
+(is (= "inside" (:error (first (:events (first outer))))))
+
+;;; the report counts in words: one check, one test, one error
+(let [one (t/run-file (sample "one_test.norn" "(ns one-test (:require [norn.test :refer [is deftest]]))\n(deftest a (is (= 1 (/ 1 0))))\n"))
+      human (t/%human {:files [one] :totals {:tests 1 :pass 0 :fail 0 :error 1}})]
+  (is (str/includes? human " 1 check   0 failed, 1 error\n"))
+  (is (str/ends-with? human "1 test, 1 check: 0 passed, 0 failed, 1 error\n")))
+
 ;;; fixtures and --only
 (def fx
   (t/run-file
