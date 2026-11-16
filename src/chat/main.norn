@@ -13,7 +13,7 @@
     (println (str "chat: listening on " (:host options) ":" (:port s) (when (:cert options) " (TLS)")))
     (<! (:signals sigs))
     ((:stop s))
-    (signal/stop sigs)
+    (signal/stop! sigs)
     0))
 
 (defn- talk [{:keys [options args]}]
