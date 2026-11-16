@@ -13,7 +13,7 @@
     :in :out :err     :pipe (default), :inherit or :null
   Returns {:process h :pid n :in stream :out stream :err stream}; a stream is
   nil unless piped."
-  [cmd & {:keys [args dir env clear-env in out err]}]
+  ^Map [^String cmd & {:keys [args dir env clear-env in out err]}]
   (%process-start (str cmd) (mapv str (or args [])) (when dir (str dir)) (or env {})
                   (if clear-env true false) [(or in :pipe) (or out :pipe) (or err :pipe)]))
 
@@ -28,7 +28,7 @@
   Read :out as the program runs, as a terminal emulator does: a program
   whose terminal output nobody reads waits for it, and on macOS even its
   exit does (wait won't return until its last output is read)."
-  [cmd & {:keys [args dir env clear-env rows cols]}]
+  ^Map [^String cmd & {:keys [args dir env clear-env rows cols]}]
   (assoc (%pty-start (str cmd) (mapv str (or args [])) (when dir (str dir)) (merge {"TERM" "xterm-256color"} env)
                      (if clear-env true false) [(or rows 24) (or cols 80)])
          :pty true))
@@ -36,19 +36,23 @@
 (defn resize
   "Tell the terminal of p (from start-pty) its new size: the program gets
   SIGWINCH."
-  [p rows cols]
+  [^Map p ^Integer rows ^Integer cols]
   (when-not (:pty p) (error "resize: not a process on a pseudo-terminal (start-pty)"))
   (%pty-resize (:in p) rows cols))
 
 (defn wait
-  "Wait for process p to end: {:exit code :signal n} (one of them nil)."
-  [p]
+  "Wait for process p to end: {:exit code :signal sig} (one of them nil).
+  sig names the signal that ended it (:term, :kill, :int, :segv…), or is
+  its number when Norn has no name for it."
+  ^Map [^Map p]
   (%process-wait (:process p)))
 
 (defn kill
-  "Send p a signal: :term (default), :kill, :int, :hup, … or a number."
-  ([p] (kill p :term))
-  ([p sig] (%process-kill (:process p) sig)))
+  "Send p a signal: :term (default), :kill, :int, :hup, … or a number. A
+  signal this OS doesn't have is an error; on Windows, :term and :kill
+  end the process and the others aren't there."
+  ([^Map p] (kill p :term))
+  ([^Map p ^(U Keyword Integer) sig] (%process-kill (:process p) sig)))
 
 (defn- split-opts [xs]
   (loop [args [] xs (seq xs)]
@@ -60,7 +64,7 @@
   "Run cmd with arguments and wait for it: {:exit :signal :out :err}, with
   output as text. Options may follow the arguments: :in (a string or bytes
   to send), :dir, :env. E.g. (sh \"ls\" \"-l\" :dir \"/tmp\")."
-  [cmd & args]
+  ^Map [^String cmd & args]
   (let [[args opts] (split-opts args)
         p (start cmd :args args :dir (:dir opts) :env (:env opts))
         out (spawn-detached (bytes->string (io/read-all (:out p)) true))

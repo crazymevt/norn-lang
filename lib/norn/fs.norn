@@ -10,7 +10,8 @@
 
 (defn glob
   "Paths matching pattern, sorted: * matches within a path segment, ** any
-  number of segments, ? one character. E.g. (glob \"src/**/*.norn\")."
+  number of segments, ? one character. E.g. (glob \"src/**/*.norn\"). A
+  pattern's segments are divided by / on every OS."
   [pattern]
   (let [base (%glob-base pattern)
         rel (fn [p] (if (= base ".") (subs p 2) p))]

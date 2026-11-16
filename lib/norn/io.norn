@@ -11,12 +11,12 @@
 
 ;;; ---- whole files ----
 
-(defn read-text "The contents of a file, as UTF-8 text." [path] (%fs-read (str path) true))
+(defn read-text "The contents of a file, as UTF-8 text (line endings as they are, on every OS)." [path] (%fs-read (str path) true))
 (defn read-bytes "The contents of a file, as bytes." [path] (%fs-read (str path) false))
 (defn write-text "Replace a file's contents with s (a string, as UTF-8)." [path s] (%fs-write (str path) (str s) false))
 (defn write-bytes "Replace a file's contents with bytes b." [path b] (%fs-write (str path) b false))
 (defn append-text "Add s to the end of a file (creating it)." [path s] (%fs-write (str path) (str s) true))
-(defn lines "The lines of a text file, as a vector." [path] (%split-lines (read-text path)))
+(defn lines "The lines of a text file, as a vector (split at \\n or \\r\\n)." [path] (%split-lines (read-text path)))
 
 ;;; ---- the file system ----
 

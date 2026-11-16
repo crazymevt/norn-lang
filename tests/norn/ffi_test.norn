@@ -308,3 +308,14 @@
       ;; (the norn-vm test harness serves no main thread)
       (is (str/includes? (message on-main?) "No thread serves main-thread calls"))))
   (is (str/includes? (message (fn [] (ffi/function libc "abs" [:int] :int :blocking true :main-thread true))) "both")))
+
+(ffi/defcfun labs libc "labs" [n :long] :long)
+
+(deftest long-is-cs-long
+  ;; (64 bits, but 32 on Windows; :i64 is 64 everywhere)
+  (let [windows? (= :windows (sys/family))]
+    (is (= (if windows? [4 4] [8 8]) [(ffi/sizeof :long) (ffi/sizeof :ulong)]))
+    (is (= [8 8] [(ffi/sizeof :i64) (ffi/sizeof :u64)]))
+    (is (= 5 (labs -5)))
+    (when-not windows?
+      (is (= 5000000000 (labs -5000000000)) "wider than 32 bits"))))

@@ -39,6 +39,16 @@ The [survey](perf-survey.md) (2026-11-15) found two items that change what calle
 
 - [x] **Give the new libraries checked signatures.** Every public function of the twenty libraries M9a and the stdlib batch added has one, as wide as what it accepts; `contracts_test.norn` checks it and lists the exceptions. `(U …)` and `(? …)` of classes or predicates check with a plain test now, and `ffi/call` has no signature (each `defcfun` function checks its C signature first): SQLite inserts went from 3 times slower to 17% slower. A held-crash test shows a supervisor restarting a child while the crash waits in the debugger. `norn fmt` no longer indents a body under its parameters when a result type comes first. [M9a done-check](plan-m9.md)
 
+### Windows, before sealing
+
+Reviewed on 2026-11-15 for interfaces whose meaning is POSIX-only. Windows itself is M12; adding Windows-only functions or options later is a minor change, so only these needed settling now.
+
+- [x] **Make the FFI's `:long` and `:ulong` mean C's `long`.** They were aliases of `:i64` and `:u64`, but C's `long` is 32 bits on Windows (LLP64), so a C `long` declared `:long` would have been passed wrongly there. Now they follow the platform; `:i64` and `:u64` stay 64 bits everywhere. Nothing changes on macOS or Linux. Tested with `labs` in `ffi_test.norn`. [FFI types](../lib/norn/ffi.norn)
+- [x] **Report a child's signal by name.** `process/wait` gave `:signal` as the raw number, which differs between platforms (`SIGUSR1` is 30 on macOS and 10 on Linux), while `kill` and `signal/listen` take keywords. It now gives `:term`, `:kill`, `:int`, `:segv` and so on, from one table that `kill` and `listen` share, and a number only for a signal without a name. `listen` refuses `:segv`, `:bus`, `:ill`, `:fpe` and `:trap` by name, as it did `:kill` and `:stop`. [Processes](../lib/norn/process.norn)
+- [x] **Say what the OS doesn't have.** `signal/listen`, `raise` and `process/kill`: a signal the OS lacks is an error (on Windows only `:int` is there to listen for, and `kill` with `:term` or `:kill` ends the process). `fs/glob` patterns divide segments with `/` on every OS. `read-text` leaves line endings as they are; `lines` splits at `\n` or `\r\n`.
+
+Fine as they are, for M12's implementation: `io/info` reports `:readonly`, not mode bits; paths are joined by the runtime; zones need bundled zone files and the registry's zone on Windows (`zone-directories` can name them); the terminal uses the console's VT mode, and `suspend!` already doesn't stop where nothing can resume it; a pty is ConPTY; `norn package` gains a target.
+
 ### Other review items
 
 - [ ] **Find two rare failures in the parallel suite run.** In 29 runs of `norn test tests/norn` (2026-11-15), two runs failed: once `cache_test`'s `the-contract-mode-is-part-of-the-key` (a call from a module expanded under `:boundaries` wasn't checked: `TypeError`, not `ContractError`), once two checks that weren't captured. Neither fails alone or with its neighbours, so it's likely an interaction between files running in parallel in one process.

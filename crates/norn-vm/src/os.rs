@@ -214,7 +214,12 @@ pub(crate) fn wait(vm: &mut Vm, h: Value) -> Result<Value> {
         Box::new(move |m: &mut Mutator| {
             let st = r?;
             let code = st.code().map_or(Value::NIL, |c| Value::fix(c as i64));
-            let sig = st.signal().map_or(Value::NIL, |s| Value::fix(s as i64));
+            // (by name: the numbers differ between systems; a number only for
+            // one without a name)
+            let sig = st.signal().map_or(Value::NIL, |s| match signal_name(s) {
+                Some(n) => kw(m, n),
+                None => Value::fix(s as i64),
+            });
             Ok(map_of(m, &[("exit", code), ("signal", sig)]))
         }) as crate::blocking::Finish
     })
@@ -230,40 +235,37 @@ pub(crate) fn kill(vm: &mut Vm, h: Value, sig: i32) -> Result<Value> {
     if r == 0 { Ok(Value::NIL) } else { Err(Error::new(format!("kill failed: {}", std::io::Error::last_os_error()))) }
 }
 
+/// The signals Norn names, both ways (a keyword's name, its number).
+const SIGNALS: &[(&str, i32)] = &[
+    ("int", libc::SIGINT),
+    ("term", libc::SIGTERM),
+    ("hup", libc::SIGHUP),
+    ("kill", libc::SIGKILL),
+    ("quit", libc::SIGQUIT),
+    ("usr1", libc::SIGUSR1),
+    ("usr2", libc::SIGUSR2),
+    ("winch", libc::SIGWINCH),
+    ("pipe", libc::SIGPIPE),
+    ("alrm", libc::SIGALRM),
+    ("cont", libc::SIGCONT),
+    ("stop", libc::SIGSTOP),
+    ("tstp", libc::SIGTSTP),
+    ("ttin", libc::SIGTTIN),
+    ("ttou", libc::SIGTTOU),
+    ("abrt", libc::SIGABRT),
+    ("segv", libc::SIGSEGV),
+    ("bus", libc::SIGBUS),
+    ("fpe", libc::SIGFPE),
+    ("ill", libc::SIGILL),
+    ("trap", libc::SIGTRAP),
+];
+
 pub(crate) fn signal_number(name: &str) -> Option<i32> {
-    Some(match name {
-        "int" => libc::SIGINT,
-        "term" => libc::SIGTERM,
-        "hup" => libc::SIGHUP,
-        "kill" => libc::SIGKILL,
-        "quit" => libc::SIGQUIT,
-        "usr1" => libc::SIGUSR1,
-        "usr2" => libc::SIGUSR2,
-        "winch" => libc::SIGWINCH,
-        "pipe" => libc::SIGPIPE,
-        "alrm" => libc::SIGALRM,
-        "cont" => libc::SIGCONT,
-        "stop" => libc::SIGSTOP,
-        "tstp" => libc::SIGTSTP,
-        _ => return None,
-    })
+    SIGNALS.iter().find(|(k, _)| *k == name).map(|(_, n)| *n)
 }
 
-fn signal_name(n: i32) -> &'static str {
-    match n {
-        libc::SIGINT => "int",
-        libc::SIGTERM => "term",
-        libc::SIGHUP => "hup",
-        libc::SIGQUIT => "quit",
-        libc::SIGUSR1 => "usr1",
-        libc::SIGUSR2 => "usr2",
-        libc::SIGWINCH => "winch",
-        libc::SIGPIPE => "pipe",
-        libc::SIGALRM => "alrm",
-        libc::SIGCONT => "cont",
-        libc::SIGTSTP => "tstp",
-        _ => "other",
-    }
+fn signal_name(n: i32) -> Option<&'static str> {
+    SIGNALS.iter().find(|(_, v)| *v == n).map(|(k, _)| *k)
 }
 
 // ---- signals --------------------------------------------------------------------------------------
@@ -287,7 +289,11 @@ pub(crate) fn listen(vm: &mut Vm, names: &[String]) -> Result<Value> {
     let mut nums = Vec::new();
     for n in names {
         match signal_number(n) {
-            Some(libc::SIGKILL) | Some(libc::SIGSTOP) => return Err(Error::new(format!(":{n} can't be caught"))),
+            // (these stop or end the process, or mean it went wrong: they
+            // can't be caught, or the runtime keeps them)
+            Some(libc::SIGKILL | libc::SIGSTOP | libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGFPE | libc::SIGTRAP) => {
+                return Err(Error::new(format!(":{n} can't be listened for")));
+            }
             Some(x) => nums.push(x),
             None => return Err(Error::new(format!("Unknown signal :{n}"))),
         }
@@ -300,7 +306,7 @@ pub(crate) fn listen(vm: &mut Vm, names: &[String]) -> Result<Value> {
         .name("norn-signals".into())
         .spawn(move || {
             for s in signals.forever() {
-                crate::sys::feed(c, |m| kw(m, signal_name(s)));
+                crate::sys::feed(c, |m| kw(m, signal_name(s).unwrap_or("other")));
             }
         })
         .map_err(|e| Error::new(e.to_string()))?;

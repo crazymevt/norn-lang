@@ -9,9 +9,9 @@
 ;;;; address can crash the process, and the expander refuses this library's
 ;;;; unsafe functions anywhere else (the REPL's user namespace may).
 ;;;;
-;;;; Types: :void :i8 :u8 :i16 :u16 :i32/:int :u32/:uint :i64/:long
-;;;; :u64/:ulong/:usize :f32/:float :f64/:double :pointer (an address, as an
-;;;; integer; nil is NULL). Parameters also take
+;;;; Types: :void :i8 :u8 :i16 :u16 :i32/:int :u32/:uint :i64 :u64/:usize
+;;;; :long :ulong (C's long: 64 bits, but 32 on Windows) :f32/:float
+;;;; :f64/:double :pointer (an address, as an integer; nil is NULL). Parameters also take
 ;;;; - :bytes (a pointer to a Bytes value's data), :string (a NUL-terminated
 ;;;;   copy), :out (pass a size: C fills a fresh buffer, returned as Bytes
 ;;;;   after the result);
@@ -71,10 +71,13 @@
 
 ;; ---- types and struct layouts ----
 
+(def ^:private c-long-size "C's long: 8 bytes, but 4 on Windows." (if (= :windows (:family (%sys-info))) 4 8))
+
 (def ^:private prim-sizes
   {:i8 1 :char 1 :u8 1 :uchar 1 :bool 1 :i16 2 :short 2 :u16 2 :ushort 2
    :i32 4 :int 4 :u32 4 :uint 4 :f32 4 :float 4
-   :i64 8 :long 8 :isize 8 :ssize 8 :u64 8 :ulong 8 :usize 8 :size 8 :f64 8 :double 8 :pointer 8
+   :i64 8 :isize 8 :ssize 8 :u64 8 :usize 8 :size 8 :f64 8 :double 8 :pointer 8
+   :long c-long-size :ulong c-long-size
    :string 8})
 
 (defn layout? "Is x a struct layout (from defcstruct)?" ^Boolean [x] (and (map? x) (contains? x ::fields)))
@@ -84,7 +87,7 @@
 (defn- bits-type? [t] (and (vector? t) (= :bits (first t))))
 
 (def ^:private unsigned-of
-  {:i8 :u8 :char :u8 :i16 :u16 :short :u16 :i32 :u32 :int :u32 :i64 :u64 :long :u64 :isize :u64 :ssize :u64})
+  {:i8 :u8 :char :u8 :i16 :u16 :short :u16 :i32 :u32 :int :u32 :i64 :u64 :long :ulong :isize :u64 :ssize :u64})
 
 (defn- signed? [t] (contains? unsigned-of t))
 

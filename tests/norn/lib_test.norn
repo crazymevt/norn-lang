@@ -155,7 +155,7 @@
       r (io/line-reader (:out p))]
   (is (= ["one" "two"] [(io/read-line r) (io/read-line r)]))
   (proc/kill p)
-  (is (= {:exit nil :signal 15} (proc/wait p)))
+  (is (= {:exit nil :signal :term} (proc/wait p)) "by name")
   (doseq [k [:in :out :err :process]] (io/close (k p))))
 (is (= :error (fails (proc/sh "/no/such/program"))))
 
@@ -188,6 +188,8 @@
   (is (= :usr2 (first (alts! [(:signals l) (timeout 5000)]))))
   (sig/stop l))
 (is (= :error (fails (sig/listen :kill))))
+(is (= :error (fails (sig/listen :segv))) "the runtime keeps it")
+(let [l (sig/listen :abrt)] (sig/stop l))
 
 ;;; ---- norn.net ----
 ;; This file's directory, for the test certificates (runners use different

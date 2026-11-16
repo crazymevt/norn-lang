@@ -4,8 +4,10 @@
 
 (defn listen
   "Listen for signals (:int :term :hup :usr1 :usr2 :winch :quit :pipe
-  :alrm :cont :tstp): {:handle h :signals ch}, where ch receives each signal's
-  keyword as it arrives. Stop with stop."
+  :alrm :cont :tstp :ttin :ttou :abrt): {:handle h :signals ch}, where ch
+  receives each signal's keyword as it arrives. Stop with stop. A signal
+  this OS doesn't have, or one that can't be caught (:kill :stop :segv
+  …), is an error; on Windows only :int (Ctrl-C) is there."
   [& sigs]
   (let [[h ch] (%signal-listen (vec sigs))]
     {:handle h :signals ch}))
@@ -14,4 +16,4 @@
   (%io-close (:handle l))
   (close! (:signals l)))
 
-(defn raise "Send a signal to this process." [sig] (%raise-signal sig))
+(defn raise "Send a signal to this process (one this OS has: else an error)." [sig] (%raise-signal sig))
