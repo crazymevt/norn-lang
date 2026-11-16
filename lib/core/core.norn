@@ -1482,11 +1482,18 @@
   ([f file line text]
    (when (and (seq? f) (symbol? (first f)) (symbol? (second f)))
      (let [head (name (first f))]
-       (when (and (>= (count head) 3) (= "def" (subs head 0 3)))
+       ;; (a defmethod names its generic function, which it doesn't define)
+       (when (and (>= (count head) 3) (= "def" (subs head 0 3)) (not= head "defmethod"))
          (let [nm (second f)
                more (nnext f)
-               doc (when (and (string? (first more)) (next more)) (first more))
-               more (if doc (rest more) more)
+               doc (cond (and (string? (first more)) (next more)) (first more)
+                         ;; (defgeneric name (params) "doc" …)
+                         (= head "defgeneric") (when (string? (second more)) (second more))
+                         ;; (defclass Name (supers) (slots) (:doc "…") …)
+                         (= head "defclass")
+                         (some (fn [o] (when (and (seq? o) (= :doc (first o)) (string? (second o))) (second o)))
+                               (drop 2 more)))
+               more (if (and doc (= doc (first more))) (rest more) more)
                attrs (when (map? (first more)) (first more))
                more (if attrs (rest more) more)
                params (first more)
@@ -1497,7 +1504,14 @@
                typed? (contains? #{"<repl>" "<string>" "<editor>"} file)]
            (swap! %definitions assoc (str (current-ns) "/" nm)
                   (merge attrs {:name nm :ns (str (current-ns)) :kind (first f) :doc doc :arglists arglists
-                                :file file :line line :form (when typed? f) :text (when typed? text)}))))))))
+                                :file file :line line :form (when typed? f) :text (when typed? text)}))
+           ;; (a protocol's functions, each (name [params] "doc"?))
+           (when (= head "defprotocol")
+             (doseq [m more :when (and (seq? m) (symbol? (first m)) (vector? (second m)))]
+               (swap! %definitions assoc (str (current-ns) "/" (first m))
+                      {:name (first m) :ns (str (current-ns)) :kind 'defprotocol
+                       :doc (when (string? (nth m 2 nil)) (nth m 2)) :arglists (list (second m))
+                       :file file :line line})))))))))
 
 (defn %eval-reader [r]
   (let [src (%reader-name r)
@@ -2831,6 +2845,15 @@
 
 (defn %var-name "\"ns/name\" of var v." [v] (subs (pr-str v) 2))
 
+(defn- %primitive-definition
+  "What norn.core-docs says about norn.core's primitive nm (written in
+  Rust: no Norn definition), or nil."
+  [ns-name nm]
+  (when (= ns-name "norn.core")
+    (require 'norn.core-docs)
+    (when-let [d (get @(%bound-value 'norn.core-docs/docs) nm)]
+      (assoc d :name nm :ns "norn.core" :kind 'primitive))))
+
 (defn definition
   "What is known about sym's definition (a symbol resolved in the current
   namespace, or a var): :name :ns :doc :arglists :kind :file :line and any
@@ -2841,7 +2864,23 @@
     (when v
       (let [n (%var-name v) i (%str-index n "/" nil true)]
         (or (get (deref %definitions) n)
+            (%primitive-definition (subs n 0 i) (symbol (subs n (inc i))))
             {:name (symbol (subs n (inc i))) :ns (subs n 0 i)})))))
+
+(declare %contract-of)
+
+(defn- %signature-text
+  "The checked signature of function var v, a line per arity, as doc
+  shows it: \"  Checked: (String, Integer) -> String\"; nil without one."
+  [v]
+  (when-let [c (and v (%contract-of v))]
+    (let [name-of (fn [x] (if x (:name x) "Any"))]
+      (apply str (map (fn [p]
+                        (str "  Checked: ("
+                             (apply str (interpose ", " (concat (map name-of (:args p))
+                                                                (when (:variadic p) [(str "& " (name-of (:rest p)))]))))
+                             ") -> " (name-of (:result p)) "\n"))
+                      (if (map? c) [c] c))))))
 
 (defn %doc-text
   "sym's documentation as text, as doc prints it."
@@ -2854,6 +2893,7 @@
            (when (= 'defmacro (:kind d)) "  (macro)")
            "\n"
            (when (:arglists d) (str (pr-str (apply list (:arglists d))) "\n"))
+           (%signature-text (resolve (symbol (:ns d) (str (:name d)))))
            (when (:deprecated d) (str "  DEPRECATED: " (:deprecated d) "\n"))
            (when (:since d) (str "  Since " (:since d) "\n"))
            (if (:doc d)

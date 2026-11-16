@@ -1,0 +1,28 @@
+;;;; norn.core-docs — the docstrings of norn.core's primitives, the
+;;;; functions written in Rust, which have no Norn definition to carry one.
+;;;; `doc`, `definition` and `norn doc` read them from here, loading this
+;;;; module the first time they're asked about one.
+;;;;
+;;;; Each entry is (primitive name "docstring" [params]…), one parameter
+;;;; vector per arity, as a defn's would be.
+
+(ns norn.core-docs)
+
+(def docs "Primitive name (a symbol) → {:doc :arglists}." (atom {}))
+
+(defmacro primitive
+  "(primitive name \"docstring\" [params]…): document primitive name."
+  [nm doc & arglists]
+  `(swap! docs assoc '~nm {:doc ~doc :arglists '~(apply list arglists)}))
+
+;; ---- arithmetic ----
+
+(primitive inc "x plus one." [x])
+
+;; ---- collections ----
+
+;; ---- strings, characters and printing ----
+
+;; ---- fibers, channels and time ----
+
+;; ---- the runtime ----
