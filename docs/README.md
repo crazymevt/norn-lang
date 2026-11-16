@@ -7,6 +7,7 @@ language and tools in this checkout.
 | Start here | What you'll find |
 | --- | --- |
 | [Getting started](getting-started.md) | Build Norn, use the REPL, and write a module. |
+| [The Norn Book](book/README.md) | Learn the language and its libraries, chapter by chapter, from the REPL to a packaged app. |
 | [Examples](examples/README.md) | Run complete programs for data transformation, generic functions, recovery, and concurrency. |
 | [Language reference](reference/README.md) | Browse syntax and behavior by topic. |
 | [Symbol index](reference/symbols.md) | Look up a core name or special form. |
