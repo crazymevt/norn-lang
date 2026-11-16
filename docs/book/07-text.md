@@ -558,7 +558,7 @@ person.
 (fmt/number 1234567) ; => "1,234,567"
 (fmt/number 1234.5 :decimals 1) ; => "1,234.5"
 (fmt/percent 0.256) ; => "26%"
-(fmt/percent 0.2561 1) ; => "25.6%"
+(fmt/percent 0.2561 :decimals 1) ; => "25.6%"
 (fmt/bytes-size 1536) ; => "1.5 KB"
 (fmt/bytes-size 512) ; => "512 B"
 (fmt/duration 1500) ; => "1.5s"

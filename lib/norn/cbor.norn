@@ -1,7 +1,16 @@
 ;;;; CBOR data interchange, RFC 8949.
+;;;;
+;;;; encode takes what CBOR represents faithfully, and nothing it would
+;;;; have to convert: keywords and symbols are a TypeError (use string
+;;;; keys). Where CBOR has a registered tag for a Norn value, it's written
+;;;; with it and read back as it was: bignums (tags 2 and 3), decimals (4),
+;;;; ratios (30), sets (258), instants (0, RFC 3339 text; tag 1, seconds
+;;;; since the epoch, is read too) and dates (1004, RFC 8943). Other tags
+;;;; read as Tagged.
 
 (ns norn.cbor
-  (:require [norn.bytes :as b] [norn.decimal :as decimal] [norn.io :as io] [norn.math :as math]))
+  (:require [norn.bytes :as b] [norn.decimal :as decimal] [norn.io :as io] [norn.math :as math]
+            [norn.time :as t]))
 
 (defclass Tagged () ((tag :required true) (value :required true))
   (:doc "A CBOR tagged value, a tag number and the value it tags, when the tag
@@ -13,7 +22,7 @@
 (def ^:private max-uint 18446744073709551615)
 (def ^:private max-depth 256)
 
-(defn tagged "A tagged CBOR item. Tags 2, 3 and 4 have native Norn representations." ^Tagged [^Integer tag value]
+(defn tagged "A tagged CBOR item, for a tag Norn has no reading of (see the namespace doc for those it has)." ^Tagged [^Integer tag value]
   (when-not (and (integer? tag) (<= 0 tag max-uint)) (error "Invalid CBOR tag" tag))
   (Tagged :tag tag :value value))
 
@@ -111,6 +120,22 @@
       (do (when-not (and (vector? value) (= 2 (count value)) (every? integer? value))
             (fail! st "decimal tag requires an integer exponent and mantissa"))
           (decimal/decimal (second value) (- (first value))))
+      (= tag 30)
+      (do (when-not (and (vector? value) (= 2 (count value)) (every? integer? value) (pos? (second value)))
+            (fail! st "rational tag requires an integer numerator and a positive denominator"))
+          (/ (first value) (second value)))
+      (= tag 258)
+      (do (when-not (vector? value) (fail! st "set tag requires an array"))
+          (set value))
+      (= tag 0)
+      (do (when-not (string? value) (fail! st "date/time tag requires text"))
+          (try (t/parse value) (catch Error e (fail! st (condition-message e)))))
+      (= tag 1)
+      (do (when-not (number? value) (fail! st "epoch time tag requires a number"))
+          (t/instant (long (* value 1000000000))))
+      (= tag 1004)
+      (do (when-not (string? value) (fail! st "full-date tag requires text"))
+          (try (t/parse-local-date value) (catch Error e (fail! st (condition-message e)))))
       :else (tagged tag value))))
 
 (defn- item! [st depth]
@@ -163,6 +188,10 @@
       (false? x) (conj! out (bytes [244]))
       (integer? x) (encode-integer! out x)
       (float? x) (do (conj! out (bytes [251])) (conj! out (b/float-bytes x 8 :be)))
+      (ratio? x) (do (conj! out (header 6 30)) (emit! out [(numerator x) (denominator x)] deeper))
+      (set? x) (do (conj! out (header 6 258)) (emit! out (vec x) deeper))
+      (t/instant? x) (do (conj! out (header 6 0)) (emit! out (t/format x) deeper))
+      (t/local-date? x) (do (conj! out (header 6 1004)) (emit! out (t/format-local x) deeper))
       (or (string? x) (bytes? x))
       (let [text? (string? x) data (if text? (bytes x) x)]
         (conj! out (header (if text? 3 2) (count data)))
@@ -180,9 +209,10 @@
                    :message (str "CBOR can't encode " (pr-str x))))))
 
 (defn encode
-  "Encode one CBOR item as Bytes. Maps may have any encodable key. Floats
-  use binary64. The output does not impose deterministic map ordering. A
-  value CBOR has no form for signals TypeError."
+  "Encode one CBOR item as Bytes (see the namespace doc for how Norn's
+  values are written). Maps may have any encodable key. Floats use
+  binary64. The output does not impose deterministic map ordering. A value
+  CBOR has no form for signals TypeError."
   ^Bytes [x]
   (let [out (transient [])]
     (emit! out x 0)

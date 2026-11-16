@@ -395,6 +395,8 @@ float.
 (math/expt 2/3 2) ; => 4/9
 (math/sqrt 16) ; => 4.0
 (math/round 2.5) ; => 3
+(math/median [3 1 2]) ; => 2
+(math/percentile [12 20 31 40 55] 95) ; => 52
 ```
 
 Run `norn doc norn.math` for the full list.

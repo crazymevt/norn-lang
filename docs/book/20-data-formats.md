@@ -592,16 +592,17 @@ want floats in their binary form, or need to embed raw bytes.
 ```
 
 CBOR has no keywords, so `encode` only takes the types it can represent
-faithfully. A keyword, a set, or a symbol is a `TypeError`, not a silent
-conversion; use string keys, as above. Integers of any size work (big ones
-travel as CBOR bignum tags), and CBOR's decimal fraction tag reads as a
-`norn.decimal` value. Other tags come back as `Tagged` values holding the
-tag number and its contents, so nothing is lost.
+faithfully. A keyword or a symbol is a `TypeError`, not a silent
+conversion; use string keys, as above. Where CBOR has a registered tag for
+a Norn value, the value travels as it: integers of any size (bignum tags),
+decimals (the decimal fraction tag), ratios, sets, instants (RFC 3339
+text) and dates. Other tags come back as `Tagged` values holding the tag
+number and its contents, so nothing is lost.
 
 ```clojure
 (cbor/encode {:id 7}) ; !! TypeError
-(cbor/decode (cbor/encode [1 nil 2.5 (* 100000000000 100000000000)]))
-; => [1 nil 2.5 10000000000000000000000]
+(cbor/decode (cbor/encode [1 nil 2.5 (* 100000000000 100000000000) 1/3 #{"a"}]))
+; => [1 nil 2.5 10000000000000000000000 1/3 #{"a"}]
 ```
 
 ### norn.bin: Norn values as bytes
@@ -677,6 +678,18 @@ your program expects:
 
 ```clojure
 (z/decompress packed :max-size 1000) ; !! Error
+```
+
+A large compressed file needn't be decompressed all at once.
+`decompress-stream` wraps any stream and decompresses as it's read, so a
+gzip'd log read a line at a time holds only the line in memory. Closing
+it closes the stream it reads (unless `:close-source false`):
+
+```clojure
+(io/with-open [f (io/open "report.csv.gz" :read)]
+  (let [r (io/line-reader (z/decompress-stream f :close-source false))]
+    (io/read-line r)))
+; => "A-100,Notebook,4.95,3"
 ```
 
 `crc32` computes the checksum gzip and zip use, for formats that need it.

@@ -98,6 +98,23 @@
   (let [v (vec (sort xs)) n (count v)]
     (when (pos? n)
       (if (odd? n) (nth v (quot n 2)) (/ (+ (nth v (dec (quot n 2))) (nth v (quot n 2))) 2)))))
+(defn percentile
+  "The p-th percentile of xs (p from 0 to 100): the value p% of them are at
+  or below, interpolated linearly between the two nearest when it falls
+  between them (as numpy and spreadsheets do). (percentile xs 50) is the
+  median; nil for no xs, as median gives."
+  ^(? Number) [^(? Collection) xs ^Number p]
+  (when-not (<= 0 p 100) (error "percentile: p is from 0 to 100, not" p))
+  (let [v (vec (sort xs)) n (count v)]
+    (when (pos? n)
+      (let [rank (* (/ p 100) (dec n))
+            lo (long (floor rank))
+            hi (min (dec n) (inc lo))
+            frac (- rank lo)]
+        (if (zero? frac)
+          (nth v lo)
+          (+ (nth v lo) (* frac (- (nth v hi) (nth v lo)))))))))
+
 (defn variance "Population variance of xs." [xs]
   (let [v (vec xs) m (mean v)] (when m (mean (map (fn [x] (let [d (- x m)] (* d d))) v)))))
 (defn std-dev "Population standard deviation of xs." [xs] (when-let [var (variance xs)] (sqrt var)))

@@ -34,6 +34,36 @@
         (is (= s (:out (proc/sh "gzip" "-dc" path)))))))
   (is (= 0xcbf43926 (z/crc32 "123456789")) "the standard check value"))
 
+;; Decompressing as it's read, and a stream of bytes in hand (loglens
+;; finding: a big .gz log had to be decompressed whole).
+(deftest decompressing-as-it-is-read
+  (let [lines (vec (for [i (range 20000)] (str "line " i)))
+        text (str (str/join "\n" lines) "\n")]
+    (doseq [f [:gzip :zlib :raw]]
+      (let [r (io/line-reader (z/decompress-stream (io/bytes-stream (z/compress text :format f)) :format f))]
+        (is (= lines (loop [out []] (if-let [l (io/read-line r)] (recur (conj out l)) out))) (str f))))
+    (testing "two gzip members, one after the other, as gunzip reads them"
+      (is (= "ab" (bytes->string (io/read-all (z/decompress-stream (io/bytes-stream (bytes-concat (z/gzip "a") (z/gzip "b")))))))))
+    (testing "from a file, the file closed with it"
+      (let [path (io/path dir "lines.gz")]
+        (io/write-bytes path (z/gzip text))
+        (let [f (io/open path :read) s (z/decompress-stream f)]
+          (is (= "line 0" (io/read-line (io/line-reader s))))
+          (io/close s)
+          (is (thrown? Error (io/read f 10)) "closed"))))
+    (testing "a limit, bad data, and a stream closed early"
+      (is (thrown-with-msg? Error #"larger than :max-size" (io/read-all (z/decompress-stream (io/bytes-stream (z/gzip text)) :max-size 1000))))
+      (is (thrown? ParseError (io/read-all (z/decompress-stream (io/bytes-stream "not gzip at all")))))
+      (let [s (z/decompress-stream (io/bytes-stream (z/gzip text)))]
+        (io/read s 10)
+        (io/close s)
+        (is (thrown-with-msg? Error #"ended or been closed" (io/read s 10)))))))
+
+(deftest a-stream-of-bytes-in-hand
+  (is (= ["a" "b" ""] (let [r (io/line-reader (io/bytes-stream "a\nb\n\n"))] [(io/read-line r) (io/read-line r) (io/read-line r)])))
+  (is (= (bytes [1 2 3]) (io/read-all (io/bytes-stream (bytes [1 2 3])))))
+  (is (nil? (io/read (io/bytes-stream "") 10)) "empty: the end at once"))
+
 (deftest cryptography
   (testing "digests (FIPS 180's examples)"
     (is (= "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" (c/hex (c/sha256 "abc"))))

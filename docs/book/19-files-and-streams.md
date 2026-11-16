@@ -450,6 +450,14 @@ in an atom because instances are values ([Chapter 9](09-classes-and-generic-func
 and a stream has state that changes. `with-open` worked with no
 `stream-close` method: the default does nothing.
 
+For text or bytes you already have, `bytes-stream` makes a stream of them,
+so code written for streams can take them too:
+
+```clojure
+(let [r (io/line-reader (io/bytes-stream "first\nsecond\n"))]
+  [(io/read-line r) (io/read-line r)]) ; => ["first" "second"]
+```
+
 ## Temporary files
 
 A program often needs a scratch file: somewhere to download to before

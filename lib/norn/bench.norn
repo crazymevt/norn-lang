@@ -40,8 +40,14 @@
         (< ns 1e9) (format "%.1f ms" (/ ns 1e6))
         :else (format "%.2f s" (/ ns 1e9))))
 
-(defn report "One line describing result r of run, labelled label." [label r]
-  (format "%s: %s ± %s (%,d runs, %d GCs)" label (show-time (:mean-ns r)) (show-time (:stddev-ns r)) (:runs r) (:gcs r)))
+(defn report
+  "One line describing result r of run, labelled label. With one batch
+  there's no spread to give, so none is (a run longer than the time budget
+  is one batch: give run more :ms to measure it)."
+  [label r]
+  (str label ": " (show-time (:mean-ns r))
+       (when (> (:batches r) 1) (str " ± " (show-time (:stddev-ns r))))
+       (format " (%,d %s, %d %s)" (:runs r) (if (= 1 (:runs r)) "run" "runs") (:gcs r) (if (= 1 (:gcs r)) "GC" "GCs"))))
 
 (defmacro bench
   "Time expr (see run for the options) and print one line; returns the

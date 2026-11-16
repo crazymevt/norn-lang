@@ -215,27 +215,29 @@ pub(crate) fn parse_number(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 
 // ---- regexes --------------------------------------------------------------------------------
 
+// (shared, not cloned: a cloned regex::Regex starts a pool of search caches
+// of its own, so every match paid for building one, ~2 µs)
 thread_local! {
-    static REGEXES: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
+    static REGEXES: RefCell<HashMap<String, std::rc::Rc<regex::Regex>>> = RefCell::new(HashMap::new());
 }
 
-fn compile(pat: &str) -> Result<regex::Regex> {
+fn compile(pat: &str) -> Result<std::rc::Rc<regex::Regex>> {
     REGEXES.with(|c| {
         let mut c = c.borrow_mut();
         if let Some(r) = c.get(pat) {
-            return Ok(r.clone());
+            return Ok(std::rc::Rc::clone(r));
         }
-        let r = regex::Regex::new(pat).map_err(|e| Error::new(format!("Invalid regex: {e}")))?;
+        let r = std::rc::Rc::new(regex::Regex::new(pat).map_err(|e| Error::new(format!("Invalid regex: {e}")))?);
         if c.len() >= 512 {
             c.clear();
         }
-        c.insert(pat.to_string(), r.clone());
+        c.insert(pat.to_string(), std::rc::Rc::clone(&r));
         Ok(r)
     })
 }
 
 /// A regex value or a pattern string, compiled.
-fn regex_arg(v: Value, op: &str) -> Result<regex::Regex> {
+fn regex_arg(v: Value, op: &str) -> Result<std::rc::Rc<regex::Regex>> {
     if v.is(Kind::Regex) {
         compile(v.field(0).as_str())
     } else if v.is(Kind::String) {
@@ -279,8 +281,10 @@ fn match_value(vm: &mut Vm, re: &regex::Regex, sv: Value, c: &regex::Captures, n
     vec_from_slice(&mut vm.m, &[start, end, groups, names])
 }
 
+/// The groups' names, as keywords (nil for an unnamed group): norn.regex's
+/// :named map's keys.
 fn group_names(vm: &mut Vm, re: &regex::Regex) -> Value {
-    let names: Vec<Value> = re.capture_names().map(|n| n.map(|n| str_new(&mut vm.m, n)).unwrap_or(Value::NIL)).collect();
+    let names: Vec<Value> = re.capture_names().map(|n| n.map(|n| rt().keyword(&mut vm.m, None, n)).unwrap_or(Value::NIL)).collect();
     vec_from_slice(&mut vm.m, &names)
 }
 

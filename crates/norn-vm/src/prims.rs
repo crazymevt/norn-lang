@@ -449,6 +449,9 @@ prims! {
     "%process-start" 6 Some(6) => |vm, a| process_start(vm, a);
     "%deflate" 3 Some(3) => |vm, a| crate::pack::deflate(&mut vm.m, a);
     "%inflate" 3 Some(3) => |vm, a| crate::pack::inflate(&mut vm.m, a);
+    "%inflater" 2 Some(2) => |_, a| crate::pack::inflater(a);
+    "%inflate-chunk" 2 Some(2) => |vm, a| crate::pack::inflate_chunk(&mut vm.m, a);
+    "%inflater-free" 1 Some(1) => |_, a| crate::pack::inflater_free(a);
     "%crc32" 1 Some(1) => |_, a| crate::pack::crc32(a);
     "%digest" 2 Some(2) => |vm, a| crate::pack::digest(&mut vm.m, a);
     "%hmac" 3 Some(3) => |vm, a| crate::pack::hmac(&mut vm.m, a);

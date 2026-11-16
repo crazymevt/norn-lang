@@ -19,7 +19,7 @@ norn doc norn.json/read-string norn.io/with-open norn.sqlite/query
 | `norn.string` | Split, join, trim, and transform strings. |
 | `norn.regex` | Compile patterns and find, replace, or split on matches. |
 | `norn.rope` | Edit large texts with persistent ropes. |
-| `norn.format` | Format numbers and quantities for display. |
+| `norn.format` | Format numbers and quantities for display: `number` and `percent` take `:decimals`; `duration` rounds. |
 | `norn.pprint` | Pretty-print nested data within a width. |
 | `norn.markdown` | Read and render Markdown. |
 | `norn.json` | Read and write JSON, including file helpers. |
@@ -33,7 +33,7 @@ norn doc norn.json/read-string norn.io/with-open norn.sqlite/query
 | `norn.bin` | Encode and decode supported Norn data in a binary format. |
 | [`norn.bytes`](#bytes-and-packed-buffers) | Work with byte strings, text encodings, hexadecimal, and Base64. |
 | [`norn.buffer`](#bytes-and-packed-buffers) | Store and read packed integer and floating-point values. |
-| `norn.compress` | Compress or decompress deflate, zlib, and gzip data. |
+| `norn.compress` | Compress or decompress deflate, zlib, and gzip data, whole or (`decompress-stream`) as a stream is read. |
 | `norn.zip` | Read and write ZIP archives. |
 | `norn.data` | Compare nested values and report what differs. |
 | `norn.set` | Set operations and relational operations on sets of maps. |
@@ -165,9 +165,11 @@ The merge key `<<` is an ordinary key.
 
 `norn.cbor/encode` and `decode` convert one item to and from `Bytes`. File
 helpers are `read-file` and `write-file`. The codec handles integers, floats,
-bytes, text, vectors, maps, null, and booleans. Bignum tags become integers,
-decimal fraction tags become `norn.decimal` values, and other tags retain
-their tag number and payload in `Tagged` instances. The reader accepts
+bytes, text, vectors, maps, null, and booleans; keywords and symbols are a
+`TypeError` (use string keys). Values with a registered tag travel through
+it and read back as they were: bignums (tags 2 and 3), decimals (4), ratios
+(30), sets (258), instants (0, and 1 when read) and dates (1004). Other tags
+retain their tag number and payload in `Tagged` instances. The reader accepts
 indefinite-length arrays, maps, byte strings, and text strings. The writer
 uses definite lengths and binary64 floats and makes no canonical ordering
 guarantee. Both enforce a nesting limit of 256.
@@ -235,7 +237,7 @@ instead, and writing carries on.
 
 | Namespace | Use |
 | --- | --- |
-| `norn.io` | Read and write whole files or streams, and work with paths. |
+| `norn.io` | Read and write whole files or streams, and work with paths. `bytes-stream` makes a stream of bytes or text in hand. |
 | `norn.fs` | Walk directories, apply glob patterns, and watch for changes. |
 | `norn.sys` | Read process arguments, environment variables, and system information. |
 | `norn.cli` | Parse command lines: typed options, arguments, subcommands, and generated help. |

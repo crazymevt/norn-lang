@@ -535,10 +535,14 @@
 (is (= "1,234.57" (fmt/number 1234.567)))
 (is (= "1,234" (fmt/number 1234)))
 (is (= "26%" (fmt/percent 0.256)))
+(is (= "25.6%" (fmt/percent 0.2561 :decimals 1)) ":decimals, as number takes it (loglens finding)")
 (is (= "1.5 KB" (fmt/bytes-size 1536)))
 (is (= "512 B" (fmt/bytes-size 512)))
 (is (= "1h 2m" (fmt/duration 3725000)))
 (is (= "1.5s" (fmt/duration 1500)))
+;; rounded, not cut short, and a minute that rounds up is one (loglens finding)
+(is (= ["0.4ms" "9.5ms" "20ms" "999ms" "1.0s" "59.9s" "1m 0s" "1m 0s" "2d 3h"]
+       (mapv fmt/duration [0.4 9.5 19.6 999.4 999.7 59940 59960 60000 (* 1000 60 60 51)])))
 (is (= ["1st" "2nd" "3rd" "11th" "22nd" "113th"] (mapv fmt/ordinal [1 2 3 11 22 113])))
 (is (= "2 files" (fmt/plural 2 "file")))
 ;;; ---- norn.pprint ----
@@ -553,6 +557,13 @@
 
 ;;; ---- norn.math ----
 (is (= 1.5 (math/sqrt 2.25)))
+;; percentiles, interpolated as numpy and spreadsheets do (loglens finding)
+(is (= [12 52 55 31 20] [(math/percentile [12 20 31 40 55] 0) (math/percentile [12 20 31 40 55] 95)
+                         (math/percentile [55 40 31 20 12] 100) (math/percentile [12 20 31 40 55] 50)
+                         (math/percentile [12 20 31 40 55] 25)]))
+(is (= 98/5 (math/percentile [20 12] 95)) "exact for exact numbers")
+(is (nil? (math/percentile [] 50)) "nothing: nil, as median gives")
+(is (thrown? Error (math/percentile [1 2] 101)))
 (is (= 3.0 (math/cbrt 27)))
 (is (= true (math/approx= 1.0 (math/exp 0))))
 (is (= 3.0 (math/log 2 8)))
@@ -598,6 +609,13 @@
 (def people #{{:name "ann" :city 1} {:name "bo" :city 2}})
 (def cities #{{:city 1 :cname "Oslo"} {:city 2 :cname "Rome"}})
 (is (= #{{:name "ann" :city 1 :cname "Oslo"} {:name "bo" :city 2 :cname "Rome"}} (set/join people cities)))
+;; the smaller relation is the one indexed, whichever comes first; the
+;; result is the same (loglens finding: 95,000 rows indexed to walk 25)
+(let [big (set (for [i (range 200)] {:id (mod i 5) :n i})) small #{{:id 1 :p "a"} {:id 2 :p "b"} {:id 9 :p "z"}}]
+  (is (= 80 (count (set/join big small))))
+  (is (= (set/join big small) (set/join small big)))
+  (is (= (set/join big (set/rename small {:id :k}) {:id :k})
+         (set (map (fn [r] (assoc r :k (:id r))) (set/join big small))))))
 (is (= #{{:name "ann"} {:name "bo"}} (set/project people [:name])))
 (is (= {{:city 1} #{{:name "ann" :city 1}}} (select-keys (set/index people [:city]) [{:city 1}])))
 ;;; ---- norn.walk ----
@@ -862,8 +880,10 @@
   (is (pos? (:runs r)))
   (is (<= (:min-ns r) (:mean-ns r)))
   (is (str/includes? (bench/report "x" r) " runs, ")))
+;; one batch: no spread to give, and one run is "1 run" (loglens finding)
+(is (= "slow: 3.00 s (1 run, 1 GC)" (bench/report "slow" {:mean-ns 3e9 :stddev-ns 0.0 :runs 1 :batches 1 :gcs 1})))
 (is (= "no differences\n" (image/diff-text {"a" {"x" 1}} {"a" {"x" 1}})))
-(is (= "~ a/x\n- a/y\n+ a/z\n+ namespace b (1 vars)\n"
+(is (= "~ a/x\n- a/y\n+ a/z\n+ namespace b (1 var)\n"
        (image/diff-text {"a" {"x" 1 "y" 2}} {"a" {"x" 3 "z" 4} "b" {"q" 1}})))
 (is (contains? (image/summary) "norn.core"))
 ;; The runtime's bookkeeping (atoms such as the definitions index, which any

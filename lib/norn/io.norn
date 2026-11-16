@@ -114,6 +114,24 @@
 
 (defmethod stream-close ((s Object)) nil)
 
+;; ---- a stream of bytes already in hand ----
+
+(defclass BytesStream () ((data :required true) (at :required true))
+  (:doc "A stream reading bytes already in memory (from bytes-stream)."))
+
+(defn bytes-stream
+  "A stream reading data (bytes, or a string as its UTF-8) from the
+  start: for code that takes a stream, a line reader over text in hand."
+  ^BytesStream [^(U String Bytes) data]
+  (BytesStream :data (if (string? data) (bytes data) data) :at (atom 0)))
+
+(defmethod stream-read ((s BytesStream) n)
+  (let [d (:data s) at @(:at s)]
+    (when (< at (count d))
+      (let [end (min (count d) (+ at n))]
+        (reset! (:at s) end)
+        (subbytes d at end)))))
+
 (defn read
   "Up to n bytes from a stream (file, pipe or socket, or an instance with
   a stream-read method), or nil at the end."

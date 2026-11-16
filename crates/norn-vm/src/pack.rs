@@ -71,6 +71,94 @@ pub(crate) fn inflate(m: &mut Mutator, a: &[Value]) -> Result<Value> {
     Ok(bytes_new(m, &out))
 }
 
+// ---- decompressing as it's read (norn.compress/decompress-stream) ----
+
+enum Decoder {
+    Raw(flate2::write::DeflateDecoder<Vec<u8>>),
+    Zlib(flate2::write::ZlibDecoder<Vec<u8>>),
+    Gzip(flate2::write::MultiGzDecoder<Vec<u8>>),
+}
+
+impl Decoder {
+    fn write_all(&mut self, b: &[u8]) -> std::io::Result<()> {
+        match self {
+            Decoder::Raw(d) => d.write_all(b),
+            Decoder::Zlib(d) => d.write_all(b),
+            Decoder::Gzip(d) => d.write_all(b),
+        }
+    }
+    fn finish(&mut self) -> std::io::Result<()> {
+        match self {
+            Decoder::Raw(d) => d.try_finish(),
+            Decoder::Zlib(d) => d.try_finish(),
+            Decoder::Gzip(d) => d.try_finish(),
+        }
+    }
+    /// What it has decoded so far, taken.
+    fn take(&mut self) -> Vec<u8> {
+        std::mem::take(match self {
+            Decoder::Raw(d) => d.get_mut(),
+            Decoder::Zlib(d) => d.get_mut(),
+            Decoder::Gzip(d) => d.get_mut(),
+        })
+    }
+}
+
+/// Decoders in use, by id: (decoder, bytes out so far, the most allowed, format).
+type Decoders = std::collections::HashMap<u64, (Decoder, u64, u64, String)>;
+static DECODERS: std::sync::Mutex<Option<Decoders>> = std::sync::Mutex::new(None);
+static NEXT_DECODER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// `(%inflater format max)`: a new decoder's id.
+pub(crate) fn inflater(a: &[Value]) -> Result<Value> {
+    let fmt = kw(a[0]);
+    let max = if a[1].is_fixnum() { a[1].as_fixnum().max(0) as u64 } else { u64::MAX };
+    let d = match fmt.as_str() {
+        "raw" => Decoder::Raw(flate2::write::DeflateDecoder::new(Vec::new())),
+        "zlib" => Decoder::Zlib(flate2::write::ZlibDecoder::new(Vec::new())),
+        "gzip" => Decoder::Gzip(flate2::write::MultiGzDecoder::new(Vec::new())),
+        f => return Err(Error::new(format!("decompress-stream: no format :{f} (:raw, :zlib or :gzip)"))),
+    };
+    let id = NEXT_DECODER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    DECODERS.lock().unwrap().get_or_insert_with(Default::default).insert(id, (d, 0, max, fmt));
+    Ok(Value::fix(id as i64))
+}
+
+/// `(%inflate-chunk id data)`: what decoder id makes of data (bytes) so far;
+/// data nil: the input has ended, so the rest, and the decoder is freed.
+pub(crate) fn inflate_chunk(m: &mut Mutator, a: &[Value]) -> Result<Value> {
+    let id = if a[0].is_fixnum() { a[0].as_fixnum() as u64 } else { 0 };
+    let mut all = DECODERS.lock().unwrap();
+    let decs = all.get_or_insert_with(Default::default);
+    let Some((d, out, max, fmt)) = decs.get_mut(&id) else {
+        return Err(Error::new("decompress-stream: that stream has ended or been closed"));
+    };
+    let fmt = fmt.clone();
+    let r = if a[1].is_nil() { d.finish() } else { d.write_all(&data(a[1], "decompress-stream")?) };
+    let bytes = d.take();
+    *out += bytes.len() as u64;
+    let over = *out > *max;
+    let max = *max;
+    if a[1].is_nil() || r.is_err() || over {
+        decs.remove(&id);
+    }
+    r.map_err(|e| bad_data(&fmt, e))?;
+    if over {
+        return Err(Error::new(format!("decompress-stream: the result is larger than :max-size ({max} bytes)")));
+    }
+    Ok(bytes_new(m, &bytes))
+}
+
+/// `(%inflater-free id)`: forget decoder id (a stream closed early).
+pub(crate) fn inflater_free(a: &[Value]) -> Result<Value> {
+    if a[0].is_fixnum()
+        && let Some(decs) = DECODERS.lock().unwrap().as_mut()
+    {
+        decs.remove(&(a[0].as_fixnum() as u64));
+    }
+    Ok(Value::NIL)
+}
+
 /// `(%crc32 data)`: the CRC-32 (IEEE, as zip and gzip use).
 pub(crate) fn crc32(a: &[Value]) -> Result<Value> {
     let mut h = flate2::Crc::new();

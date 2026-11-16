@@ -21,12 +21,16 @@
 
 (defn- details [m]
   (when m
-    (let [[start end groups names] m]
-      {:match (first groups)
-       :start start
-       :end end
-       :groups (vec (rest groups))
-       :named (into {} (keep (fn [[n g]] (when n [(keyword n) g]))) (map vector names groups))})))
+    (let [groups (nth m 2) names (nth m 3)]
+      {:match (nth groups 0)
+       :start (nth m 0)
+       :end (nth m 1)
+       :groups (subvec groups 1)
+       ;; (names are keywords already, nil for an unnamed group)
+       :named (loop [i 1 out {}]
+                (if (< i (count names))
+                  (recur (inc i) (if-let [n (nth names i)] (assoc out n (nth groups i)) out))
+                  out))})))
 
 (defn pattern "A regex from string s (an error if s isn't a valid pattern)." [s] (re-pattern s))
 
