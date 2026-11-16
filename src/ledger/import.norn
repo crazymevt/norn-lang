@@ -6,7 +6,7 @@
     date = \"Date\"            # the column of each part
     description = \"Description\"
     amount = \"Amount\"        # or debit = \"…\" and credit = \"…\"
-    date-format = \"us\"       # iso, us, eu or text"
+    date-format = \"us\"       # iso, us, eu, text, or a pattern: \"%d.%m.%y\""
   (:require [ledger.dates :as dates]
             [ledger.money :as money]
             [norn.csv :as csv]
@@ -35,7 +35,8 @@
   names the line of a row it can't read."
   [text account profile]
   (let [rows (csv/read-maps text :keys identity :strict false)
-        format (keyword (or (:date-format profile) "iso"))]
+        f (or (:date-format profile) "iso")
+        format (if (contains? dates/formats (keyword f)) (keyword f) f)]
     (vec (map-indexed
           (fn [i row]
             (try

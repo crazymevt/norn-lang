@@ -1,6 +1,6 @@
 (ns ledger.store
   "The ledger: transactions in an EDN file, written atomically. Amounts and
-  dates are kept as text, since EDN has no form for decimals or dates."
+  dates are EDN's tagged literals, #norn/decimal and #norn/date."
   (:require [norn.crypto :as crypto]
             [norn.decimal :as d]
             [norn.edn :as edn]
@@ -13,21 +13,18 @@
   [{:keys [date description amount account]}]
   (subs (crypto/hex (crypto/sha256 (str (t/format-local date) "|" description "|" (d/text amount) "|" account))) 0 16))
 
-(defn- to-edn [tx] (-> tx (update :date t/format-local) (update :amount d/text)))
-(defn- from-edn [tx] (-> tx (update :date t/parse-local-date) (update :amount d/parse)))
-
 (defn load-ledger
   "The ledger in file path: {:transactions [tx…]} by date, an empty one if
   there's no file."
   [path]
   (if (io/exists? path)
-    (update (edn/read-string (io/read-text path)) :transactions (fn [txs] (mapv from-edn txs)))
+    (edn/read-string (io/read-text path))
     {:transactions []}))
 
 (defn save-ledger!
   "Write ledger to file path, all at once."
   [path ledger]
-  (io/write-atomic! path (str (edn/write-string (update ledger :transactions (fn [txs] (mapv to-edn txs))) :pretty true) "\n")))
+  (io/write-atomic! path (str (edn/write-string ledger :pretty true) "\n")))
 
 (defn add-transactions
   "ledger with txs added, those already in it left out, kept by date:

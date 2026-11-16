@@ -1,28 +1,18 @@
 (ns ledger.dates
   "Dates as banks write them in their exports."
-  (:require [norn.string :as str]
-            [norn.time :as t]))
+  (:require [norn.time :as t]))
 
-(def ^:private months
-  {"jan" 1 "feb" 2 "mar" 3 "apr" 4 "may" 5 "jun" 6 "jul" 7 "aug" 8 "sep" 9 "oct" 10 "nov" 11 "dec" 12})
+(def formats
+  "Names for the patterns exports use most; a profile's date-format may
+  also be a pattern of its own (norn.time's, as strftime's)."
+  {:iso "%Y-%m-%d" :us "%m/%d/%Y" :eu "%d/%m/%Y" :text "%d %b %Y"})
 
 (defn parse-date
-  "The date in text s, written as format says: :iso (2026-11-03), :us
-  (11/03/2026), :eu (03/11/2026) or :text (3 Nov 2026). A ParseError
-  otherwise."
+  "The date in text s, written as format says: one of formats' names
+  (:iso :us :eu :text) or a pattern (\"%d.%m.%y\"). A ParseError otherwise."
   [s format]
-  (let [s (str/trim s)
-        bad (fn [] (error ParseError :message (str "Not a " (name format) " date: " (pr-str s)) :source "date"))
-        num (fn [x] (or (parse-long x) (bad)))]
-    (case format
-      :iso (t/parse-local-date s)
-      (:us :eu) (let [[a b y] (str/split s #"/")]
-                  (when-not y (bad))
-                  (let [[m d] (if (= format :us) [a b] [b a])
-                        y (num y)]
-                    (t/local-date (if (< y 100) (+ 2000 y) y) (num m) (num d))))
-      :text (let [[d m y] (str/split s #"\s+")]
-              (t/local-date (num y) (or (get months (str/lower-case (subs (or m "") 0 (min 3 (count (or m "")))))) (bad)) (num d)))
-      (error (str "Unknown date format " (pr-str format))))))
+  (t/parse-local-date s (if (keyword? format)
+                          (or (get formats format) (throw (str "Unknown date format " format)))
+                          format)))
 
-(defn month-of "Date d's month as text: 2026-11." [d] (subs (t/format-local d) 0 7))
+(defn month-of "Date d's month as text: 2026-11." [d] (t/format-local d "%Y-%m"))
