@@ -214,6 +214,15 @@ chapter.
 (edn/write-string {:count (atom 0)}) ; !! TypeError
 ```
 
+For a file people will read too, such as a config or a small database,
+`:pretty true` lays the value out over lines, as `norn.pprint` does:
+
+```clojure
+(println (edn/write-string (sorted-map :name "ada" :langs ["norn" "c"]) :pretty true :width 20))
+; prints: {:langs ["norn" "c"],
+; prints:  :name "ada"}
+```
+
 ## Interchange
 
 Interchange formats carry data between programs written in different

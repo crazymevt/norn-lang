@@ -8,7 +8,8 @@
 ;;;; a Decimal or a time) signals TypeError. pr-str prints anything.
 
 (ns norn.edn
-  (:refer-core :exclude [read-string]))
+  (:refer-core :exclude [read-string])
+  (:require [norn.pprint]))
 
 (defn read-string
   "The first value in s; nil (or :eof's value) when s holds none."
@@ -40,7 +41,11 @@
 (defn write-string
   "Text that read-string reads back as an equal value: x, made of the
   values read-string makes. Anything else in it (an atom, a function, an
-  instance) signals TypeError naming it; pr-str prints those."
-  ^String [x]
+  instance) signals TypeError naming it; pr-str prints those. :pretty
+  true lays it out over lines, as norn.pprint does (to :width columns,
+  default 80)."
+  ^String [x & {:keys [pretty width]}]
   (check x)
-  (pr-str x))
+  (if pretty
+    (norn.pprint/pprint-str x (or width 80))
+    (pr-str x)))

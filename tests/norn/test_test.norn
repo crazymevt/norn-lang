@@ -20,6 +20,10 @@
 ;;; a file of plain top-level checks counts as "<load>"
 (def plain (t/run-file (sample "plain_test.norn" "(ns plain-test (:require [norn.test :refer [is]]))\n(is (= 1 1))\n(is (= 2 (+ 1 2)))\n(is (odd? 2))\n")))
 (is (= [1 2 0] (totals plain)))
+;; an is says whether it passed, as clojure.test's does (ledger finding: a
+;; property's body that was an is always failed)
+(def returned (t/run-file (sample "returned_test.norn" "(ns returned-test (:require [norn.test :refer [is]]))\n(def results [(is (= 1 1)) (is (= 1 2)) (is (thrown? Error (error \"x\"))) (is (/ 1 0))])\n")))
+(is (= [true false true false] (var-get (resolve 'returned-test/results))))
 (is (= ["<load>"] (mapv :name (:tests plain))))
 (let [[e1 e2] (events plain)]
   (is (= :fail (:type e1)))

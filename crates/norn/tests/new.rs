@@ -52,6 +52,31 @@ fn a_new_project_runs_tests_and_packages_as_it_is() {
 }
 
 #[test]
+fn a_new_library_tests_and_is_used_as_a_package() {
+    let dir = temp("lib");
+    let (code, text) = run(norn().args(["new", "text-kit", "--lib", "--no-git"]).current_dir(&dir));
+    assert_eq!(0, code, "{text}");
+    let lib = dir.join("text-kit");
+    for f in ["norn.edn", "src/text-kit.norn", "tests/text_kit_test.norn", "README.md", ".gitignore"] {
+        assert!(lib.join(f).is_file(), "{f} is made");
+    }
+    assert!(!std::fs::read_to_string(lib.join("norn.edn")).unwrap().contains(":main"), "no :main");
+    let (code, text) = run(norn().arg("test").current_dir(&lib));
+    assert_eq!(0, code, "its test passes:\n{text}");
+    let (code, text) = run(norn().args(["lint", "src", "tests"]).current_dir(&lib));
+    assert_eq!((0, String::new()), (code, text), "lint-clean");
+    // an app that uses it
+    run(norn().args(["new", "user", "--no-git"]).current_dir(&dir));
+    let app = dir.join("user");
+    std::fs::write(app.join("norn.edn"), "{:name user :main user.main/main :deps {text-kit {:path \"../text-kit\"}}}\n").unwrap();
+    std::fs::write(app.join("src/user/main.norn"), "(ns user.main (:require [text-kit :as k]))\n(defn main [& args] (println (k/greeting \"Ada\")) 0)\n").unwrap();
+    assert_eq!((0, "Hello, Ada!\n".to_string()), run(norn().arg("run").current_dir(&app)));
+    let (code, text) = run(norn().args(["new", "both", "--lib", "--app", "--no-git"]).current_dir(&dir));
+    assert!(code != 0 && text.contains("don't go together"), "{text}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn run_gives_mains_integer_as_the_exit_status() {
     let dir = temp("status");
     run(norn().args(["new", "four", "--no-git"]).current_dir(&dir));

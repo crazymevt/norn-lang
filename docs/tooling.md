@@ -17,7 +17,7 @@ also substitute `./target/release/norn` after [building it](getting-started.md#b
 | `norn lint [PATH…]` | Report source diagnostics, including unresolved names and unused imports. |
 | `norn test [PATH…]` | Discover and run tests. Options include `--only REGEX`, `--serial`, `--tap`, and `--junit FILE`. |
 | `norn check [PATH…]` | Run formatting checks, lint, tests, and examples registered in the metadata of loaded definitions. |
-| `norn new NAME [--dir DIR] [--app] [--no-git]` | Make a new project, ready to run, test and package. See [Projects and dependencies](#projects-and-dependencies). |
+| `norn new NAME [--dir DIR] [--app \| --lib] [--no-git]` | Make a new project, ready to run, test and package. See [Projects and dependencies](#projects-and-dependencies). |
 | `norn run [ARGS…]` | Call the project's `:main` with the arguments. Its integer result is the exit status. |
 | `norn dev [ARGS…]` | Run the project's `:main`, and reload each module that's saved while it runs. See [Live reloading](#live-reloading). |
 | `norn api-diff [--record] [MODULE…]` | Compare each sealed module's public interface with the one recorded under `api/`: breaking changes, and compatible ones. `--record` records them. See [Sealed modules](#sealed-modules). |
@@ -105,7 +105,9 @@ README and a `.gitignore`, and a Git repository unless the folder is
 already in one (`--no-git` skips it). `--app` sets the project up to
 package as a macOS app as well as a command-line archive. In the folder,
 `norn run` calls `main`, `norn test` runs the test, and `norn package`
-packages it. The name is lower-case words joined by hyphens.
+packages it. The name is lower-case words joined by hyphens. `--lib`
+makes a library for other projects to use instead: no `:main`, the module
+`NAME` in `src/NAME.norn`, and its test in `tests/NAME_test.norn`.
 
 Put `norn.edn` at the project root. `:paths` defaults to `["src"]`, and
 `:main` names the entry function for `norn build` when no source files are
@@ -169,6 +171,9 @@ the modules it loaded before saving the image. The REPL, `norn run` and
   signature's types changed, a slot or superclass removed are breaking,
   and make it exit with status 1. `api_diff_test.norn` runs the check on
   the standard library once `api/` exists.
+- In a project, the modules are the project's own (every module under its
+  `:paths`) unless you name some; in the Norn checkout, the standard
+  library's.
 
 ## Images
 

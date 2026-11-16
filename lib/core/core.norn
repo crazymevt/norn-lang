@@ -2911,9 +2911,19 @@
    (loop [a (seq c1) b (seq c2) c (seq c3) acc []]
      (if (and a b c)
        (recur (next a) (next b) (next c) (conj acc (f (first a) (first b) (first c))))
+       (%like-made c1 acc))))
+  ([f c1 c2 c3 & more]
+   ;; ((apply map vector rows) transposes any number of rows)
+   (loop [ss (into [(seq c1) (seq c2) (seq c3)] (%eager (map seq) more)) acc []]
+     (if (every? some? ss)
+       (recur (mapv next ss) (conj acc (apply f (mapv first ss))))
        (%like-made c1 acc)))))
 
-(defn mapv "map, always giving a vector." ([f coll] (%eager (map f) coll)) ([f c1 c2] (vec (map f c1 c2))))
+(defn mapv
+  "map, always giving a vector."
+  ([f coll] (%eager (map f) coll))
+  ([f c1 c2] (vec (map f c1 c2)))
+  ([f c1 c2 & more] (vec (apply map f c1 c2 more))))
 
 (defn filter
   "The items for which (pred x) is true, as the same kind of collection
@@ -3019,7 +3029,8 @@
    (if (stream? coll)
      (lazy-seq (when-let [s (seq coll)] (seq (concat (f (first s)) (mapcat f (rest s))))))
      (%like-made coll (%eager (mapcat f) coll))))
-  ([f c1 c2] (%eager cat (map f c1 c2))))
+  ([f c1 c2] (%eager cat (map f c1 c2)))
+  ([f c1 c2 & more] (%eager cat (apply map f c1 c2 more))))
 
 (defn distinct
   "Items without repeats, first occurrences kept. A transducer with no collection."
@@ -3194,7 +3205,8 @@
 (defn fnil
   "f with nil first arguments replaced by the defaults."
   ([f a] (fn [x & more] (apply f (if (nil? x) a x) more)))
-  ([f a b] (fn [x y & more] (apply f (if (nil? x) a x) (if (nil? y) b y) more))))
+  ([f a b] (fn [x y & more] (apply f (if (nil? x) a x) (if (nil? y) b y) more)))
+  ([f a b c] (fn [x y z & more] (apply f (if (nil? x) a x) (if (nil? y) b y) (if (nil? z) c z) more))))
 
 (defn repeatedly
   "n results of calling f (a vector), or with no n an endless stream."
@@ -3412,6 +3424,12 @@
     (apply str (deref buf))))
 
 (defmacro with-out-str "What body prints, as a string." [& body] `(%with-out-str (fn [] ~@body)))
+
+(defn flush
+  "Nothing: print and its kin write their output at once. Here for code
+  written as Clojure's must be, which flushes after print. nil."
+  []
+  nil)
 
 (def ^:dynamic *trace-depth* 0) ; (how deep trace-var!'s calls are)
 (%set-private! (var *trace-depth*))

@@ -491,11 +491,15 @@
 (is (= :none (edn/read-string "  " :eof :none)))
 (is (= [1 :b "c"] (edn/read-all "1 :b \"c\"")))
 (let [v {:x '(a b) :y #bytes "00ff" :z [1.5 nil true] :q (conj (queue) 1) :r 1/3 :s #{\a 'b/c}}]
-  (is (= v (edn/read-string (edn/write-string v)))))
+  (is (= v (edn/read-string (edn/write-string v))))
+  ;; (:pretty, as norn.json has: ledger finding)
+  (is (= v (edn/read-string (edn/write-string v :pretty true)))))
+(is (= "{:a [1 2 3],\n :b \"x\"}" (edn/write-string (sorted-map :a [1 2 3] :b "x") :pretty true :width 12)))
 (defclass EdnPoint () (x))
 (doseq [bad [(atom 1) [1 {:f inc}] (sorted-map :v #'inc) (list (EdnPoint :x 1))]]
   (let [e (try (edn/write-string bad) nil (catch TypeError e e))]
-    (is (some? e) (str "no EDN form: " (pr-str bad)))))
+    (is (some? e) (str "no EDN form: " (pr-str bad))))
+  (is (thrown? TypeError (edn/write-string bad :pretty true)) "checked when pretty too"))
 ;;; ---- format ----
 (is (= "x=42 y=hi" (format "x=%d y=%s" 42 "hi")))
 (is (= "  42|42  |00042|+42" (format "%4d|%-4d|%05d|%+d" 42 42 42 42)))
@@ -738,7 +742,7 @@
             [(io/path here "../../lib/core/core.norn") (io/path here "../../lib/norn/fmt.norn") (io/path here "lib_test.norn")]))
 
 ;;; ---- norn.lint ----
-(def lint-sample "(ns lint-sample (:require [norn.string :as str]))\n(defn helper [a b] (+ a b))\n(defn uses [x]\n  (let [unused 1 _fine 2 y (helper x)]\n    (def inner 3)\n    (try (str/upper-case (missing y)) (catch Error e :x))))\n(defn shadowy [when] (when when 1))\n(defgeneric area (shape))\n(defmethod area ((s String) extra) 1)\n(map inc [1] [2] [3] [4] [5] [6])\n(defn ok [] (let [{:keys [a]} {:a 1}] a))\n")
+(def lint-sample "(ns lint-sample (:require [norn.string :as str]))\n(defn helper [a b] (+ a b))\n(defn uses [x]\n  (let [unused 1 _fine 2 y (helper x)]\n    (def inner 3)\n    (try (str/upper-case (missing y)) (catch Error e :x))))\n(defn shadowy [when] (when when 1))\n(defgeneric area (shape))\n(defmethod area ((s String) extra) 1)\n(filter odd? [1] [2])\n(defn ok [] (let [{:keys [a]} {:a 1}] a))\n")
 (def lint-found (set (map (juxt :line :kind :message) (lint/lint-string lint-sample "sample.norn"))))
 (is (= #{[3 :arity "helper called with 1 argument; it takes 2"]
          [3 :def-in-fn "def of inner inside a function"]
@@ -746,9 +750,12 @@
          [3 :unused "unused local unused"]
          [7 :shadow "local when shadows norn.core's when"]
          [9 :method-shape "method for area takes 2 arguments; the generic takes 1"]
-         [10 :arity "map called with 7 arguments; it takes 1 or 2 or 3 or 4"]}
+         [10 :arity "filter called with 3 arguments; it takes 1 or 2"]}
        lint-found))
 (is (= [] (lint/lint-string "(ns lint-clean)\n(defn f [x] (let [y (inc x)] (* y 2)))\n(f 1)\n")))
+;; (a module named as one of Norn's own is never loaded: ledger finding)
+(is (= [:shadowed] (mapv :kind (lint/lint-string "(ns norn.csv)\n(defn f [] 1)\n" "csv.norn"))))
+(is (= [] (lint/lint-string (first (%find-lib "norn.csv")) "lib/norn/csv.norn")) "the library itself isn't")
 ;; (a Java habit says what Norn has instead: pulse finding)
 (is (= ["unresolved symbol Math/round (Norn has no Java classes: try norn.math/round)"
         "unresolved symbol Thread/sleep (Norn has no Java classes: use sleep)"
@@ -771,7 +778,7 @@
   (is (= "lib-test" (:ns d)))
   (is (str/ends-with? (:file d) "lib_test.norn")))
 (is (= "norn.core" (:ns (definition 'map))))
-(is (= '([f] [f coll] [f c1 c2] [f c1 c2 c3]) (:arglists (definition 'map))))
+(is (= '([f] [f coll] [f c1 c2] [f c1 c2 c3] [f c1 c2 c3 & more]) (:arglists (definition 'map))))
 (is (= '([test & body]) (:arglists (definition 'when))))
 (is (nil? (definition 'no-such-thing-anywhere)))
 (is (str/starts-with? (source-text 'documented) "(defn documented\n  \"Adds one.\""))

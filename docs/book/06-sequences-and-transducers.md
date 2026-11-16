@@ -98,6 +98,13 @@ always return one.
 (mapv inc '(1 2)) ; => [2 3]
 ```
 
+It takes any number of collections, so `(apply map vector rows)` turns
+rows into columns:
+
+```clojure
+(apply map vector [[1 2] [3 4] [5 6] [7 8]]) ; => [[1 3 5 7] [2 4 6 8]]
+```
+
 This is a deliberate difference from Clojure, where these functions return
 lazy sequences. Lazy results are convenient, but the work they defer runs
 whenever someone eventually reads the result, which may be outside the

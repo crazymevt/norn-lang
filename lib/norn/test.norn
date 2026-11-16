@@ -130,20 +130,22 @@
 
 (defn %check
   "Run an assertion's thunk (a map with :pass, :expected and :actual) and
-  report the outcome."
+  report the outcome: whether it passed."
   [thunk form msg location]
   (let [[k r] (%guard thunk)]
     (cond (not= k :ok)
-          (%report {:type :error :form form :message msg :error (message-of r) :location location})
-          (:pass r) (%report {:type :pass})
-          :else (%report {:type :fail :form form :expected (:expected r) :actual (:actual r)
-                          :message msg :location location}))))
+          (do (%report {:type :error :form form :message msg :error (message-of r) :location location}) false)
+          (:pass r) (do (%report {:type :pass}) true)
+          :else (do (%report {:type :fail :form form :expected (:expected r) :actual (:actual r)
+                              :message msg :location location})
+                    false))))
 
 (defmacro is
   "Check form: (= expected actual …) compares, showing both on failure;
   (thrown? Class body…) and (thrown-with-msg? Class regex body…) expect a
   condition; anything else must be truthy. msg is added to the report. A
-  failure says where the is is, as source:line."
+  failure says where the is is, as source:line. Whether it passed, true or
+  false (so a property's body can be an is)."
   ([form] `(is ~form nil))
   ([form msg]
    (let [head (when (seq? form) (first form))

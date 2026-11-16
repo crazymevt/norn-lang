@@ -151,6 +151,9 @@ and it exits 1 when it finds anything. The kinds include:
   name from a namespace the module doesn't require.
 - `deprecated` and `private`: a use of a definition marked deprecated, or of
   another module's private var.
+- `shadowed`: a module named as one that comes with Norn, such as a
+  package's `norn.csv`. `require` finds Norn's own first, so the file is
+  never loaded.
 - `shadow`, `def-in-fn`, `method-shape`, `macro`, `macro-order`, `sealed`
   and `phase`, for definitions that hide special forms, `def` inside a
   function, a `defmethod` that doesn't fit its generic function, a macro
@@ -275,7 +278,10 @@ norn api-diff: 1 module, 1 breaking, 1 compatible change
 
 The standard library is checked this way, so a breaking change to it can't
 slip in unnoticed. Use it for your own library too: record its interface
-when you release a version, and compare before the next one.
+when you release a version, and compare before the next one. In a
+project, `norn api-diff` with no module names takes the project's own
+modules, every one under its `:paths`, so a library keeps its `api/` folder
+beside its `norn.edn`.
 
 ## Measuring
 

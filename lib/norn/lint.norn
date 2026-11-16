@@ -522,7 +522,13 @@
                   (let [macro-def? (and *module* (contains? #{'defmacro 'defsyntax} (first form)))]
                     (when (and (contains? #{'ns 'in-ns} (first form)) (nil? @*home-ns*))
                       (let [n (second form) n (if (and (seq? n) (= 'quote (first n))) (second n) n)]
-                        (reset! *home-ns* (str n))))
+                        (reset! *home-ns* (str n))
+                        ;; (a module named as one that comes with Norn is never
+                        ;; what require loads: Norn's own is found first)
+                        (when-let [[src origin] (when (= 'ns (first form)) (%find-lib (str n)))]
+                          (when (and (str/starts-with? origin "<") (not= src s))
+                            (warn :shadowed n " is also a library that comes with Norn, which require finds first:"
+                                  " this file is never loaded. Name the module otherwise.")))))
                     (when macro-def? (swap! *later-macros* disj (second form)))
                     (when-not (and (= 'defmacro (first form))
                                    (when-let [v (resolve (second form))] (macro? v)))

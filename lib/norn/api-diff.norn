@@ -12,9 +12,12 @@
 ;;;;                            anything breaks)
 ;;;;   norn api-diff --record   write api/ from the modules as they are
 ;;;;   norn api-diff MODULE…    just those (with --record too)
+;;;;
+;;;; In a project, the modules are the project's own (every module under its
+;;;; :paths); in the Norn checkout, the standard library's.
 
 (ns norn.api-diff
-  (:require [norn.io :as io] [norn.string :as str] [norn.edn :as edn]))
+  (:require [norn.deps :as deps] [norn.io :as io] [norn.string :as str] [norn.edn :as edn]))
 
 (def internal
   "The libraries that come with Norn but aren't its interface: the
@@ -26,6 +29,17 @@
   that comes with Norn, but the internal ones, sorted."
   ^Vector []
   (vec (sort (remove internal (cons "norn.core" (keep (fn [n] (when (%find-lib n) n)) (%embedded-libs)))))))
+
+(defn project-modules
+  "The modules of the project in folder dir (every .norn file under its
+  :paths, by the name it's required as), sorted."
+  ^Vector [^String dir]
+  (vec (sort (for [p (:paths (deps/read-project dir))
+                   :let [root (io/path dir p)]
+                   :when (io/directory? root)
+                   f (%fs-walk root)
+                   :when (str/ends-with? f ".norn")]
+               (-> (subs f (inc (count root)) (- (count f) 5)) (str/replace "/" ".") (str/replace "\\" "."))))))
 
 (defn- contract-text [c] (if c (:name c) "Any"))
 
@@ -153,12 +167,15 @@
                        (str/starts-with? a "-") (assoc o :bad a)
                        :else (recur (next args) (update o :modules conj a)))
                  o))
-        modules (if (seq (:modules opts)) (:modules opts) (standard-modules))
+        project (deps/find-project ".")
+        modules (cond (seq (:modules opts)) (:modules opts)
+                      project (project-modules project)
+                      :else (standard-modules))
         dir (:dir opts)]
     (cond
       (:bad opts) (do (println "norn api-diff: unknown option" (:bad opts)) 2)
       (:record opts) (do (doseq [m modules] (record! dir m))
-                         (println "norn api-diff: recorded" (count modules) "modules in" dir)
+                         (println "norn api-diff: recorded" (count modules) (if (= 1 (count modules)) "module in" "modules in") dir)
                          0)
       (not (io/directory? dir))
       (do (println (str "norn api-diff: no " dir "/ yet: norn api-diff --record takes the baseline")) 0)

@@ -217,13 +217,16 @@
   (is (= "Things for the test.\n\n  More about them." (get @%ns-docs 'mt.nd)))
   (require 'norn.doc)
   (is (= "mt.nd\n  Things for the test.\n\n  More about them.\n\n  f  F.\n" ((resolve 'norn.doc/ns-summary) "mt.nd")))
-  (is (thrown-with-msg? Error #"expected an ns clause" (eval '(ns mt.nd2 "Doc." (:requir [x]))))))
+  (is (thrown-with-msg? Error #"expected an ns clause" (eval '(ns mt.nd2 "Doc." (:requir [x])))))
+  ;; (a library whose file starts with a ;;;; comment instead: that, as the
+  ;; standard library's say what they're for)
+  (is (str/starts-with? ((resolve 'norn.doc/ns-summary) "norn.csv") "norn.csv\n  norn.csv — comma-separated values")))
 
 (deftest meta-of-a-var
   (let [m (meta #'map)]
     (is (= ['map "norn.core"] [(:name m) (:ns m)]))
     (is (string? (:doc m)))
-    (is (= '([f] [f coll] [f c1 c2] [f c1 c2 c3]) (:arglists m))))
+    (is (= '([f] [f coll] [f c1 c2] [f c1 c2 c3] [f c1 c2 c3 & more]) (:arglists m))))
   (is (:macro (meta #'when)))
   (is (:dynamic (meta #'*check-contracts*)))
   (is (nil? (meta [1 2])) "values carry none yet"))

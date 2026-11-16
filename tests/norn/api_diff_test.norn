@@ -62,6 +62,17 @@
            (set (map (juxt :name :breaking) (get (api/diff dir ["norn.csv"]) "norn.csv")))))
     (io/delete! dir :recursive true)))
 
+(deftest a-projects-own-modules
+  ;; (ledger finding: in a project, norn api-diff compared the standard
+  ;; library, not the project)
+  (let [dir (io/path (sys/temp-dir) (str "norn-api-project-" (sys/pid) "-" (nano-time)))]
+    (io/mkdirs! (io/path dir "src" "shop" "util"))
+    (io/write-text (io/path dir "norn.edn") "{:name shop :paths [\"src\"]}")
+    (doseq [[f ns] [["src/shop/core.norn" "shop.core"] ["src/shop/util/money-text.norn" "shop.util.money-text"]]]
+      (io/write-text (io/path dir f) (str "(ns " ns ")\n(defn f [] 1)\n")))
+    (is (= ["shop.core" "shop.util.money-text"] (api/project-modules dir)))
+    (io/delete! dir :recursive true)))
+
 ;; The standard library against its recorded interfaces (api/ at the root
 ;; of the checkout), once there are some.
 (def root

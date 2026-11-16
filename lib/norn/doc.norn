@@ -16,6 +16,15 @@
         n (reduce min 0x7fffffff (map indent (remove str/blank? more)))]
     (cons first-line (map (fn [l] (if (str/blank? l) "" (subs l n))) more))))
 
+(defn- header-doc
+  "The ;;;; comment a library's file starts with, as text (the standard
+  library's modules say what they are for there), or nil."
+  [ns-name]
+  (when-let [[src _] (%find-lib ns-name)]
+    (let [lines (take-while (fn [l] (str/starts-with? l ";;;;")) (str/split-lines src))]
+      (when (seq lines)
+        (str/join "\n" (map (fn [l] (str/replace (subs l 4) #"^ " "")) lines))))))
+
 (defn ns-summary
   "One line per public definition of namespace ns-name: name and the first
   line of its docstring."
@@ -25,7 +34,7 @@
                           (keys (or (ns-publics (symbol ns-name)) {}))))
         width (reduce max 0 (map count names))]
     (str ns-name "\n"
-         (when-let [d (get @%ns-docs (symbol ns-name))]
+         (when-let [d (or (get @%ns-docs (symbol ns-name)) (header-doc ns-name))]
            (str (apply str (map (fn [l] (if (str/blank? l) "\n" (str "  " l "\n"))) (dedent d))) "\n"))
          (apply str (map (fn [n]
                            (let [d (definition (symbol ns-name n))]

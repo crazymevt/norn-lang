@@ -451,7 +451,9 @@ to `user` before going on.
 ## Dependencies
 
 A project lists the packages it uses under `:deps`. A *package* is
-another project used as a dependency. Its own `norn.edn` gives its source
+another project used as a dependency. `norn new textkit --lib` starts
+one: a `norn.edn` with no `:main`, the module `textkit` in
+`src/textkit.norn`, and a test of it. Its own `norn.edn` gives its source
 paths and its own dependencies. (A folder without a `norn.edn` counts as a
 package whose source is in `src`.) Each dependency is either a folder or a
 Git repository:

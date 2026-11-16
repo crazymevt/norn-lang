@@ -145,8 +145,9 @@ parameters, and the values that follow fill them in, two at a time here:
     750  {:qty 3 :price 250}))
 ```
 
-Unlike Clojure's `is`, Norn's returns `nil`. Don't build logic on its
-result. Its job is to report.
+As Clojure's does, `is` returns whether the check passed, `true` or
+`false`. Its job is still to report, so you rarely need the value, but
+code such as `(when (is (some? x)) …)` works as you'd expect.
 
 ## Reading a failure
 
