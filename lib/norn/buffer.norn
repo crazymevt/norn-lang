@@ -20,7 +20,7 @@
 
 (defn from-bytes
   "View a Bytes value as typed elements without copying. :order defaults to :le."
-  [type data & {:keys [order] :or {order :le}}]
+  ^Buffer [^Keyword type ^Bytes data & {:keys [order] :or {order :le}}]
   (Buffer :element-type type :order order :data data))
 
 (defn- encode-element [value type width order]
@@ -37,11 +37,11 @@
 (defn pack
   "Pack values as :u8, :i8, :u16, :i16, :u32, :i32, :u64, :i64, :f32 or :f64.
   :order defaults to :le. Integer values must fit the selected type."
-  [type values & {:keys [order] :or {order :le}}]
+  ^Buffer [^Keyword type values & {:keys [order] :or {order :le}}]
   (let [width (width-of type)]
     (from-bytes type (apply b/concat-bytes (map #(encode-element % type width order) values)) :order order)))
 
-(defn to-bytes "The underlying packed Bytes." [buf] (:data buf))
+(defn to-bytes "The underlying packed Bytes." ^Bytes [^Buffer buf] (:data buf))
 
 ;;; ---- mutable buffers ----
 ;;;
@@ -59,7 +59,7 @@
 
 (def ^:private codes {:u8 0 :i8 1 :u16 2 :i16 3 :u32 4 :i32 5 :u64 6 :i64 7 :f32 8 :f64 9})
 
-(defn mutable-buffer? "Is x a MutableBuffer?" [x] (instance? MutableBuffer x))
+(defn mutable-buffer? "Is x a MutableBuffer?" ^Boolean [x] (instance? MutableBuffer x))
 
 (defn- check-order [order]
   (when-not (contains? #{:be :le} order) (error "Buffer byte order must be :be or :le" order)))
@@ -67,7 +67,7 @@
 (defn mutable
   "A mutable buffer of n elements of type (as for pack), all zero, owned by
   the fiber that makes it. :order defaults to :le."
-  [type n & {:keys [order] :or {order :le}}]
+  ^MutableBuffer [^Keyword type ^Integer n & {:keys [order] :or {order :le}}]
   (check-order order)
   (when-not (and (integer? n) (<= 0 n)) (error "A mutable buffer's length is a count of elements" n))
   (MutableBuffer :element-type type :order order :length n :data (%byte-array (* n (width-of type)))))
@@ -77,7 +77,7 @@
 (defn mutable-copy
   "A mutable buffer holding a copy of buf's elements (a Buffer or a
   MutableBuffer), owned by the fiber that makes it."
-  [buf]
+  ^MutableBuffer [^(U Buffer MutableBuffer) buf]
   (let [data (if (mutable-buffer? buf) (:data (snapshot buf)) (:data buf))
         width (width-of (:element-type buf))]
     (MutableBuffer :element-type (:element-type buf) :order (:order buf)
@@ -94,17 +94,17 @@
 (defn set!
   "Set element i of mutable buffer mb to value, which must fit its element
   type. mb."
-  [mb i value]
+  ^MutableBuffer [^MutableBuffer mb ^Integer i ^Number value]
   (%mbuf-store! mb (offset-of mb i) (code-of mb) (le? mb) value))
 
-(defn fill! "Set every element of mutable buffer mb to value. mb." [mb value]
+(defn fill! "Set every element of mutable buffer mb to value. mb." ^MutableBuffer [^MutableBuffer mb ^Number value]
   (%mbuf-fill! mb (code-of mb) (le? mb) value))
 
 (defn copy!
   "Copy src into mutable buffer mb from element at on: a Buffer or
   MutableBuffer of the same element type and order (as one block), or a
   collection of values. mb."
-  [mb at src]
+  ^MutableBuffer [^MutableBuffer mb ^Integer at src]
   (cond
     (and (or (instance? Buffer src) (mutable-buffer? src))
          (= (:element-type src) (:element-type mb)) (= (:order src) (:order mb)))
@@ -119,24 +119,24 @@
 (defn freeze!
   "An immutable Buffer of mutable buffer mb's elements, made from its
   storage without copying. mb is finished: using it again is an error."
-  [mb]
+  ^Buffer [^MutableBuffer mb]
   (let [type (:element-type mb) order (:order mb)]
     (Buffer :element-type type :order order :data (%mbuf-freeze! mb))))
 
 (defn snapshot
   "An immutable Buffer of a copy of mutable buffer mb's elements as they are
   now. mb stays writable."
-  [mb]
+  ^Buffer [^MutableBuffer mb]
   (Buffer :element-type (:element-type mb) :order (:order mb) :data (%mbuf-snapshot mb)))
 
 ;;; ---- reading either kind ----
 
-(defn count "Number of elements in buf (a Buffer or MutableBuffer)." [buf]
+(defn count "Number of elements in buf (a Buffer or MutableBuffer)." ^Integer [^(U Buffer MutableBuffer) buf]
   (if (mutable-buffer? buf)
     (:length buf)
     (quot (norn.core/count (:data buf)) (width-of (:element-type buf)))))
 
-(defn nth "Read the element at a zero-based index (of a Buffer or MutableBuffer)." [buf i]
+(defn nth "Read the element at a zero-based index (of a Buffer or MutableBuffer)." ^Number [^(U Buffer MutableBuffer) buf ^Integer i]
   (if (mutable-buffer? buf)
     (%mbuf-load buf (offset-of buf i) (code-of buf) (le? buf))
     (do
@@ -149,7 +149,7 @@
           (let [n (b/read-uint data offset width order) sign (bit-shift-left 1 (dec (* 8 width)))]
             (if (and (contains? signed-types element-type) (>= n sign)) (- n (* 2 sign)) n)))))))
 
-(defn values "Read all buffer elements as a vector." [buf]
+(defn values "Read all buffer elements as a vector." ^Vector [^(U Buffer MutableBuffer) buf]
   (mapv #(nth buf %) (range (count buf))))
 
 ;; Both kinds are collections to count, nth, seq and everything built on them.
