@@ -20,9 +20,9 @@
 (defn postwalk "f applied to every subform, children first." [f form] (walk (fn [x] (postwalk f x)) f form))
 (defn prewalk "f applied to every subform, parents first." [f form] (walk (fn [x] (prewalk f x)) identity (f form)))
 
-(defn postwalk-replace "form with every subform that is a key of smap replaced by its value (children first)." [smap form]
+(defn postwalk-replace "form with every subform that is a key of smap replaced by its value (children first)." [^Map smap form]
   (postwalk (fn [x] (if (contains? smap x) (get smap x) x)) form))
-(defn prewalk-replace "As postwalk-replace, parents first." [smap form]
+(defn prewalk-replace "As postwalk-replace, parents first." [^Map smap form]
   (prewalk (fn [x] (if (contains? smap x) (get smap x) x)) form))
 
 (defn keywordize-keys "Every string key in nested maps made a keyword." [m]
@@ -34,5 +34,5 @@
 (defn macroexpand-all "form with every macro call expanded, at every level (quoted forms left alone)." [form]
   (prewalk (fn [x] (if (and (seq? x) (not= 'quote (first x))) (macroexpand x) x)) form))
 
-(defn leaves "The values of form that aren't collections, depth first." [form]
+(defn leaves "The values of form that aren't collections, depth first." ^Vector [form]
   (if (coll? form) (vec (mapcat leaves (if (map? form) (mapcat identity form) form))) [form]))
