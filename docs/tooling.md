@@ -196,6 +196,19 @@ norn build app.nimg src/app/main.norn --entry app.main/main
 norn --image app.nimg arg1 arg2
 ```
 
+`--shake` leaves out what the entry function can't reach: the sealed
+modules' other definitions, generic functions' methods for classes nothing
+reachable makes, and the compiler when nothing evaluates code. It prints
+how much smaller the image is, and warns about code that looks definitions
+up by a computed name (`resolve`, `require`…); `--keep NAME` (a var, or a
+namespace's every var, repeatable) keeps what such code needs. `(save-image
+path :entry #'main :shake true :keep [...])` does it from a running process.
+`norn image info` and `diff` work on shaken images too.
+
+```sh
+norn build app.nimg --shake --keep app.plugins/csv
+```
+
 An entry function receives one string argument per command-line argument after
 the image path, including a leading `-e`. An integer return value supplies the
 process exit status, clamped to 0–255. Other successful return values give
@@ -235,7 +248,9 @@ renderer.
            :display-name "Mandelbrot"     ; its name in Finder and the Dock
            :icon "icon.png"               ; a PNG (made into .icns), or .icns
            :resources ["assets"]          ; files and folders to include
-           :targets [:app :cli]}}         ; what to make (default [:cli])
+           :targets [:app :cli]           ; what to make (default [:cli])
+           :shake true                    ; norn build --shake (see Images)
+           :keep []}}                     ; …and --keep each of these
 ```
 
 `--cli` and `--app` choose what to make instead of `:targets`, and `--out`

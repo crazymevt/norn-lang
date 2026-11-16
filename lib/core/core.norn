@@ -1236,60 +1236,124 @@
     final))
 
 (def ^:private %combination-ops
-  "Method combination name → the operator its primary methods' results are
-  combined with (define-method-combination adds to them)."
-  (atom {:+ 'norn.core/+ :and 'norn.core/and :or 'norn.core/or :list 'norn.core/list
-         :progn 'do :max 'norn.core/max :min 'norn.core/min :vector 'norn.core/vector}))
+  "Method combination name → how its primary methods' results combine: a
+  function (or a function's var) applied to them all; :and, :or and :progn,
+  which call them in turn as and, or and do do; or a macro's name (an
+  operator define-method-combination was given), which evaluating combines
+  them with."
+  (atom {:+ + :list list :max max :min min :vector vector :and :and :or :or :progn :progn}))
 
 (defn- %no-applicable [gf]
   (let [gname (%gf-get gf :name)]
     (fn* [& args] (error "No applicable method for" (pr-str gname) "with arguments" (pr-str args)))))
 
+(defn- %as-fn
+  "Method m as a function of the generic function's arguments alone, nxt
+  its next method (a method that doesn't call one takes them directly)."
+  [m nxt]
+  (let [f (:fn m)]
+    (if (:direct m)
+      f
+      (fn* effective-method
+        ([] (f nxt))
+        ([a] (f nxt a))
+        ([a b] (f nxt a b))
+        ([a b c] (f nxt a b c))
+        ([a b c & more] (apply f nxt a b c more))))))
+
+(defmacro ^:private %em-arities
+  "(%em-arities body): an effective method, a fn* with arities of 0, 1, 2
+  and 3 or more arguments, body in each, where (%call f) calls f with the
+  arguments (so the common calls are direct, as compiled code's would be)."
+  [body]
+  (let [a (gensym "a") b (gensym "b") c (gensym "c") more (gensym "more")
+        subst (fn subst [form call]
+                (cond (and (list? form) (= '%call (first form))) (call (second form))
+                      (list? form) (apply list (map (fn [x] (subst x call)) form))
+                      (vector? form) (mapv (fn [x] (subst x call)) form)
+                      :else form))]
+    `(fn* ~'effective-method
+       ([] ~(subst body (fn [f] (list f))))
+       ([~a] ~(subst body (fn [f] (list f a))))
+       ([~a ~b] ~(subst body (fn [f] (list f a b))))
+       ([~a ~b ~c & ~more] ~(subst body (fn [f] (list `apply f a b c more)))))))
+
+(defn- %combine
+  "The effective method of primary methods fs (functions of the arguments)
+  combined by op (a %combination-ops value)."
+  [op fs]
+  (let [n (count fs)]
+    (cond (= op :progn) (%em-arities (loop [i 0 r nil] (if (< i n) (recur (inc i) (%call (nth fs i))) r)))
+          (= op :and) (%em-arities (loop [i 0 r true]
+                                     (if (< i n) (let* [v (%call (nth fs i))] (if v (recur (inc i) v) v)) r)))
+          (= op :or) (%em-arities (loop [i 0 r nil]
+                                    (if (< i n) (let* [v (%call (nth fs i))] (if v v (recur (inc i) v))) r)))
+          ;; (up to three methods, called as compiled code would)
+          (= n 1) (let [f0 (nth fs 0)] (%em-arities (op (%call f0))))
+          (= n 2) (let [f0 (nth fs 0) f1 (nth fs 1)] (%em-arities (op (%call f0) (%call f1))))
+          (= n 3) (let [f0 (nth fs 0) f1 (nth fs 1) f2 (nth fs 2)] (%em-arities (op (%call f0) (%call f1) (%call f2))))
+          :else (%em-arities (loop [i 0 acc (transient [])]
+                               (if (< i n) (recur (inc i) (conj! acc (%call (nth fs i)))) (apply op (persistent! acc))))))))
+
+(defn- %eval-combined
+  "The effective method of primary methods fs combined by macro op: code
+  that evaluating makes (the one case that needs the compiler at run time)."
+  [op fs nreq rest?]
+  (let [ps (mapv (fn [_] (gensym "a")) (range nreq))
+        r (gensym "rest")
+        lam (if rest? (conj ps '& r) ps)
+        ;; (found by name, not referred to: dispatch alone doesn't make an
+        ;; image keep the compiler when it's shaken, save-image :shake)
+        compile (or (%bound-value 'norn.core/eval)
+                    (error "A method combination whose operator is a macro (" (str op) ") needs the compiler,"
+                           "which this image left out (shake it with :keep ['norn.core/eval])"))]
+    (compile `(fn* effective-method [~@lam]
+                (~op ~@(map (fn [f] (if rest? `(apply ~f ~@ps ~r) `(~f ~@ps))) fs))))))
+
 (defn %build-em
-  "Compile the effective method for `methods` (applicable, unsorted). cpls:
-  the class precedence lists to sort specificity by, one per dispatched position."
+  "The effective method for `methods` (applicable, unsorted), made of
+  closures over them (nothing compiled). cpls: the class precedence lists to
+  sort specificity by, one per dispatched position."
   [gf methods cpls]
-  (let [gname (%gf-get gf :name)
-        comb (%gf-get gf :combination)
+  (let [comb (%gf-get gf :combination)
         sorted (sort (%method-cmp cpls) methods)
         q (fn [k] (vec (filter (fn [m] (= (:qualifier m) k)) sorted)))
         arounds (q :around)
         prims (if (= comb :standard) (q nil) (into (q nil) (q comb)))
-        nreq (%gf-get gf :nreq)
-        rest? (%gf-get gf :rest)
-        ps (mapv (fn [_] (gensym "a")) (range nreq))
-        r (gensym "rest")
-        lam (if rest? (conj ps '& r) ps)
-        call (fn [m nxt]
-               (let [f (:fn m)]
-                 (cond (and (:direct m) rest?) `(apply ~f ~@ps ~r)
-                       (:direct m) `(~f ~@ps)
-                       rest? `(apply ~f ~nxt ~@ps ~r)
-                       :else `(~f ~nxt ~@ps))))
+        befores (q :before)
+        afters (reverse (q :after))
         main (cond
                (empty? prims) nil
                (= comb :standard)
-               (let [pcall (call (first prims) (%chain (rest prims) nil))
-                     befores (q :before)
-                     afters (reverse (q :after))]
+               (let [p (%as-fn (first prims) (%chain (rest prims) nil))]
                  (if (or (seq befores) (seq afters))
-                   `(do ~@(map (fn [f] (call f nil)) befores)
-                        (let* [result# ~pcall] ~@(map (fn [f] (call f nil)) afters) result#))
-                   pcall))
+                   (let [bs (mapv (fn [m] (%as-fn m nil)) befores)
+                         as (mapv (fn [m] (%as-fn m nil)) afters)
+                         nb (count bs)
+                         na (count as)
+                         b0 (first bs)
+                         a0 (first as)]
+                     ;; (one :before or one :after, the usual case, called
+                     ;; directly; more in a loop)
+                     (cond (and (= nb 1) (= na 0)) (%em-arities (do (%call b0) (%call p)))
+                           (and (= nb 0) (= na 1)) (%em-arities (let* [result (%call p)] (%call a0) result))
+                           (and (= nb 1) (= na 1)) (%em-arities (do (%call b0) (let* [result (%call p)] (%call a0) result)))
+                           :else
+                           (%em-arities (do (loop [i 0] (when (< i nb) (%call (nth bs i)) (recur (inc i))))
+                                            (let* [result (%call p)]
+                                              (loop [i 0] (when (< i na) (%call (nth as i)) (recur (inc i))))
+                                              result)))))
+                   p))
                :else
-               (let [op (or (get @%combination-ops comb) (error "Unknown method combination" comb))]
-                 `(~op ~@(map (fn [f] (call f nil)) prims))))
-        ename (symbol (str (name gname) "-effective"))]
+               (let [op (or (get @%combination-ops comb) (error "Unknown method combination" comb))
+                     fs (mapv (fn [m] (%as-fn m nil)) prims)]
+                 (if (symbol? op)
+                   (%eval-combined op fs (%gf-get gf :nreq) (%gf-get gf :rest))
+                   (%combine op fs))))]
     (cond
       (nil? main) (%no-applicable gf)
-      ;; (one primary method and nothing around it: the method itself)
-      (and (= comb :standard) (empty? arounds) (= 1 (count prims)) (:direct (first prims))
-           (empty? (q :before)) (empty? (q :after)))
-      (:fn (first prims))
-      (seq arounds)
-      (let [inner (eval `(fn* [~@lam] ~main))]
-        (eval `(fn* ~ename [~@lam] ~(call (first arounds) (%chain (rest arounds) inner)))))
-      :else (eval `(fn* ~ename [~@lam] ~main)))))
+      (seq arounds) (%as-fn (first arounds) (%chain (rest arounds) main))
+      :else main)))
 
 (declare compute-applicable-methods compute-effective-method)
 
@@ -1964,6 +2028,16 @@
   (in-ns (symbol (or (:ns req) "user")))
   (%printable-definition (definition (symbol (:sym req)))))
 
+(defn- %serve-xref
+  "The vars that refer to :sym (f is norn.xref/callers) or that it refers
+  to (callees), each as {:name :ns :kind :file :line}."
+  [req f]
+  (in-ns (symbol (or (:ns req) "user")))
+  (if-let [v (resolve (symbol (:sym req)))]
+    {:vars (mapv (fn [w] (select-keys (%printable-definition (definition w)) [:name :ns :kind :file :line]))
+                 (%tool-call 'norn.xref f v))}
+    {:error (str "No definition of " (:sym req))}))
+
 (defn- %serve-ns-vars
   "Namespace :ns's definitions: those read from source (with file and line)
   and the other public vars."
@@ -2023,6 +2097,8 @@
                                        {:value "false"})
                    (= op :doc) {:doc (%serve-definition req)}
                    (= op :definition) (or (%serve-definition req) {:error (str "No definition of " (:sym req))})
+                   (= op :who-calls) (%serve-xref req 'callers)
+                   (= op :calls) (%serve-xref req 'callees)
                    (= op :macroexpand) (do (in-ns (symbol (or (:ns req) "user")))
                                            (let [f (read-string (:code req))]
                                              {:value (pr-str (if (:all req) (macroexpand f) (macroexpand-1 f)))}))
@@ -2331,6 +2407,13 @@
                  (let [r2 (reconnect r)] (%mark-live! r) (if (some? r2) r2 r)))
       (abort [] :report "End this fiber" (%abort-fiber "Resource lost in an image restore" [])))))
 
+(declare %var-name)
+
+(def %dropped-namespaces
+  "In a shaken image, the modules it left out (names, strings): forgotten
+  when it starts, so requiring one loads it again."
+  (atom #{}))
+
 (defn save-image
   "Save the running image to path. Options:
     :entry   a var or function the image runs when started (with the
@@ -2339,12 +2422,47 @@
              :none saves them dead (they end with an error when restored)
     :layered true writes only what changed since the image this process
              started from (a delta that names it as its base)
-  Returns {:objects :patches :reused :bytes}."
-  [path & {:keys [entry fibers layered]}]
+    :shake   true leaves out what nothing kept reaches: the sealed
+             modules' definitions the entry (or, with none, the REPL)
+             doesn't, as norn.shake/shake-plan works out
+    :keep    with :shake, what to keep besides: vars, qualified symbols,
+             and namespace symbols (all of one)
+  Returns {:objects :patches :reused :bytes}, and with :shake :shaken
+  {:dropped-vars :dropped-namespaces :dropped-methods :kept :warnings}."
+  [path & {:keys [entry fibers layered shake keep]}]
   (when-not (or (nil? fibers) (= fibers :parked) (= fibers :none))
     (error "save-image: :fibers must be :parked or :none, not" (pr-str fibers)))
-  (%save-image path entry (not= fibers :none) (if layered true false))
-  (%save-image-outcome))
+  (when (and shake layered)
+    (error "save-image: :shake and :layered don't go together (a delta's base keeps everything)"))
+  (if shake
+    (let [plan (%tool-call 'norn.shake 'shake-plan entry (or keep []))]
+      (reset! %dropped-namespaces (set (map str (:drop-namespaces plan))))
+      ;; (the index of definitions without what's left out, for the save;
+      ;; afterwards, as it was, with anything defined meanwhile)
+      (let [names (set (map %var-name (:drop-vars plan)))
+            gone (fn [k] (or (contains? names k)
+                             (contains? @%dropped-namespaces (let [i (%str-index k "/" nil false)] (if i (subs k 0 i) k)))))
+            index @%definitions]
+        (swap! %definitions (fn [m] (into {} (remove (fn [e] (gone (first e))) m))))
+        (try (%save-image path entry (not= fibers :none) false
+                          [(:drop-vars plan) (:drop-namespaces plan)
+                           ;; (each generic function with a stand-in holding the methods it
+                           ;; keeps: the saver swaps them while every fiber is paused)
+                           (mapv (fn [[g kept]]
+                                   (let [nreq (%gf-get g :nreq)
+                                         t (%gf-new (%gf-get g :name) nreq (%gf-get g :rest) (%gf-get g :combination) nil)]
+                                     (%gf-cas-methods! t (%gf-get t :methods) kept (%spec-mask kept) (%eql-sets kept nreq))
+                                     [g t]))
+                                 (:drop-methods plan))])
+             (finally (reset! %dropped-namespaces #{})
+                      (swap! %definitions (fn [m] (merge index m))))))
+      (assoc (%save-image-outcome)
+             :shaken {:dropped-vars (count (:drop-vars plan)) :dropped-namespaces (:drop-namespaces plan)
+                      :dropped-methods (reduce + 0 (map (fn [[g kept]] (- (count (generic-methods g)) (count kept)))
+                                                        (:drop-methods plan)))
+                      :kept (:kept plan) :warnings (:warnings plan)}))
+    (do (%save-image path entry (not= fibers :none) (if layered true false))
+        (%save-image-outcome))))
 
 (def %restore-hooks
   "Functions run after an image is loaded, before its resources are
@@ -2352,11 +2470,20 @@
   folder does)."
   (atom []))
 
+(declare %libs %sealed %base-ns)
+
 (defn %image-restored
   "Run once after an image is loaded: the restore hooks run, resources
-  become dead, then each gets on-image-restore."
-  []
+  become dead, then each gets on-image-restore. (The runtime calls it
+  directly, with an unused string.)"
+  [& _]
   (alter-var-root (var %image-generation) inc)
+  (when-let [gone (seq @%dropped-namespaces)]
+    (let [gone (set gone)
+          kept (fn [k] (not (contains? gone (str (%base-ns k)))))]
+      (swap! %libs (fn [m] (into {} (filter (fn [e] (kept (first e))) m))))
+      (swap! %sealed (fn [s] (set (filter (fn [n] (not (contains? gone n))) s))))
+      (reset! %dropped-namespaces #{})))
   (doseq [f @%restore-hooks] (f))
   (doseq [e @%resources]
     (when-let [r (weak-get (first e))]
@@ -2369,6 +2496,48 @@
   [& args]
   (let [e %image-entry]
     (apply (if (var? e) (var-get e) e) args)))
+
+(defn %run-entry-with-args
+  "Call the image's entry function with the program's arguments (the
+  runtime calls it directly, with an unused string, compiling nothing)."
+  [_]
+  (apply %run-entry (%program-args)))
+
+(defn %has-entry?
+  "Has this image an entry function? (called as %run-entry-with-args is)"
+  [_]
+  (if %image-entry true false))
+
+(defn- %value-hash
+  "A hash that changes when a definition changes: for functions, their code
+  and constants; for an atom, nothing (what it holds is state, which
+  changes as a program runs: the runtime's own bookkeeping, such as the
+  index of definitions, would differ in any two images); for other values,
+  the value."
+  [v]
+  (cond (= :atom (type v)) (hash :atom)
+        (and (fn? v) (not= :primitive (type v)))
+        (try (hash (mapv (fn [p] (let [pp (%proto-parts p)] [(:code pp) (pr-str (:consts pp))]))
+                         (:arities (%template-parts (%closure-template v)))))
+             (catch Error _ (hash (pr-str v))))
+        ;; printed form: stable across processes, unlike identity hashes
+        :else (try (hash (pr-str v)) (catch Error _ 0))))
+
+(defn %image-summary
+  "This process's image as norn image info and diff see it: {:image :chain
+  (image-info's) :entry (its name, or nil) :namespaces {name {var-name
+  hash}}}, the hash changing when a definition does. The runtime calls it
+  (with an unused string) in a process started from the image, compiling
+  nothing: a shaken image may have no compiler."
+  [& _]
+  (assoc (or (image-info) {})
+         :entry (when %image-entry (pr-str %image-entry))
+         :namespaces (into (sorted-map)
+                           (map (fn [ns]
+                                  [(str ns) (into (sorted-map)
+                                                  (map (fn [[k v]] [(str k) (%value-hash (try (var-get v) (catch Error _ nil)))])
+                                                       (or (ns-publics ns) {})))])
+                                (all-ns)))))
 
 ;;; ---- libraries: require ----------------------------------------------------------------
 ;;;
@@ -3263,12 +3432,23 @@
 
 (defn %var-name "\"ns/name\" of var v." [v] (subs (pr-str v) 2))
 
+(defn %require-lazily
+  "Load library lib (a symbol) if it isn't loaded yet, finding require by
+  name: code that loads a library only when first needed doesn't refer to
+  the loader, so a shaken image needn't keep the compiler for it (norn.shake
+  loads lib beforehand when what calls this, with lib quoted, is kept)."
+  [lib]
+  (when-not (= :loaded (get @%libs lib))
+    ((or (%bound-value 'norn.core/require)
+         (error "Loading" (str lib) "needs the compiler, which this image left out (shake it with :keep ['" (str lib) "])"))
+     lib)))
+
 (defn- %primitive-definition
   "What norn.core-docs says about norn.core's primitive nm (written in
   Rust: no Norn definition), or nil."
   [ns-name nm]
   (when (= ns-name "norn.core")
-    (require 'norn.core-docs)
+    (%require-lazily 'norn.core-docs)
     (when-let [d (get @(%bound-value 'norn.core-docs/docs) nm)]
       (assoc d :name nm :ns "norn.core" :kind 'primitive))))
 
@@ -4573,7 +4753,15 @@
   "A tag's reader that calls library lib's function f (loaded the first
   time) on the form."
   [lib f]
-  (fn [form] (require lib) ((var-get (resolve (symbol (str lib) f))) form)))
+  (let [target (symbol (str lib) f)]
+    (fn [form]
+      ;; (require found by name, when the library isn't loaded yet: reading
+      ;; alone doesn't make a shaken image keep the compiler)
+      (when-not (%bound-value target)
+        ((or (%bound-value 'norn.core/require)
+             (error "Reading a tagged literal needs" (str lib) "loaded, and this image can't load libraries"))
+         lib))
+      ((%bound-value target) form))))
 
 (defn- %read-uuid [form]
   (if (and (string? form)
@@ -4707,8 +4895,12 @@
   [cname & {:keys [operator]}]
   (when-not (symbol? operator) (error "define-method-combination needs :operator, a function or macro name"))
   (let [v (resolve operator)
-        op (if v (symbol (%var-name v)) operator)] ; (a special form, as do, stays as it is)
-    `(do (swap! %combination-ops assoc ~(keyword (name cname)) '~op)
+        ;; (a function's var, called as it is then; a macro's name, or a
+        ;; special form's, as do, evaluated with the results' code)
+        op (cond (and v (not (macro? v))) (list 'var (symbol (%var-name v)))
+                 v (list 'quote (symbol (%var-name v)))
+                 :else (list 'quote operator))]
+    `(do (swap! %combination-ops assoc ~(keyword (name cname)) ~op)
          ~(keyword (name cname)))))
 
 ;; ---- protocols: sugar for generic functions ----

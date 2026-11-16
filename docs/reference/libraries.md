@@ -614,7 +614,9 @@ transaction example.
 | `norn.bench` | Measure code execution. |
 | `norn.fmt`, `norn.lint`, `norn.check` | Format, lint, and check source. |
 | `norn.doc`, `norn.expand` | Inspect documentation or trace macro expansion. |
+| `norn.xref` | Who refers to what, read from compiled code: `callers`, `callees`, `references` and `reachable`. |
 | `norn.deps` | Read project manifests and resolve dependencies. |
 | `norn.image` | Inspect and compare saved images. |
+| `norn.shake` | What shaking an image leaves out (`save-image :shake`, `norn build --shake`): `shake-plan`, `shake-report`. |
 
 See [command-line tools](../tooling.md) for the corresponding shell commands.

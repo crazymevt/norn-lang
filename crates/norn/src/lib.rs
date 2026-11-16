@@ -10,7 +10,7 @@
 //!                      remaining argument (-e too)
 //! norn -e EXPR --image IMG
 //!                      evaluate EXPR in the image, entry function or not
-//! norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]
+//! norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]] [--shake [--keep NAME]…]
 //!                      load the files into a fresh runtime and save an image
 //! ```
 //!
@@ -33,7 +33,7 @@ use std::time::Duration;
 
 const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --server [PORT] | ARGS…]
        norn -e EXPR --image IMG.nimg   (EXPR in the image, though it has an entry)
-       norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]]
+       norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]] [--shake [--keep NAME]…]
                   (in a project, with no files: its :main)
        norn test [--only REGEX] [--serial] [--tap] [--junit FILE] [PATH…]
        norn fmt [--check] [PATH…]
@@ -164,17 +164,23 @@ fn run_app(app: &App) -> ! {
             norn.interrupt(t);
         }
     });
-    if eval_raw(norn, "(if norn.core/%image-entry true false)", "user") != "true" {
+    if !has_entry(norn) {
         eprintln!("{}: its image has no entry function", app.name);
         exit(1)
     }
-    run_entry(norn, &args)
+    run_entry(norn)
 }
 
-/// Call the image's entry function with args, and exit with its status.
-fn run_entry(norn: &'static norn_vm::Norn, args: &[String]) -> ! {
-    let call = format!("(norn.core/%run-entry {})", args.iter().map(|a| norn_string(a)).collect::<Vec<_>>().join(" "));
-    let t = norn.submit(RootTask::Eval(call), "user");
+/// Does the image have an entry function? (Asked without compiling: a
+/// shaken image may have no compiler.)
+fn has_entry(norn: &norn_vm::Norn) -> bool {
+    matches!(norn.run(RootTask::Call("%has-entry?", String::new()), "user").result.as_deref(), Ok("true"))
+}
+
+/// Call the image's entry function with the program's arguments (set
+/// already), and exit with its status.
+fn run_entry(norn: &'static norn_vm::Norn) -> ! {
+    let t = norn.submit(RootTask::Call("%run-entry-with-args", String::new()), "user");
     CURRENT.store(t, Ordering::Release);
     let done = norn.wait(t);
     let _ = io::stdout().flush();
@@ -199,6 +205,11 @@ pub fn run() {
     }
     if args.first().map(String::as_str) == Some("image") {
         exit(image_tool(&args[1..]));
+    }
+    if let [flag, img] = args.as_slice()
+        && flag == "--image-summary"
+    {
+        exit(image_summary(img));
     }
     // `norn --image IMG ARGS…`: an image with an entry function gets every
     // argument after it, -e too. `norn -e EXPR --image IMG` evaluates EXPR
@@ -242,9 +253,9 @@ pub fn run() {
         }
     });
 
-    if image.is_some() && !eval_in_image && eval_raw(norn, "(if norn.core/%image-entry true false)", "user") == "true" {
+    if image.is_some() && !eval_in_image && has_entry(norn) {
         norn_vm::sys::set_program_args(args.clone());
-        run_entry(norn, &args);
+        run_entry(norn);
     }
 
     // The project this run belongs to (M8 part 8.10): its paths and its
@@ -320,42 +331,60 @@ pub fn run() {
 /// Run `norn -e code --image img` as a child process (code runs in the
 /// image even when it has an entry function); its stdout (the code prints
 /// what it wants and the value line follows).
-fn in_image(img: &str, code: &str) -> Result<String, String> {
+fn in_image(img: &str) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let out = std::process::Command::new(exe).args(["-e", code, "--image", img]).output().map_err(|e| e.to_string())?;
+    let out = std::process::Command::new(exe).args(["--image-summary", img]).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!("{img}: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// `norn image info IMG` and `norn image diff A B`.
-fn image_tool(args: &[String]) -> i32 {
-    let result = match args {
-        [op, img] if op == "info" => in_image(img, "(do (require 'norn.image) (print (norn.image/info-text)) nil)")
-            .map(|out| out.strip_suffix("nil\n").unwrap_or(&out).to_owned()),
-        [op, a, b] if op == "diff" => {
-            let summary = "(do (require 'norn.image) (prn (norn.image/summary)) nil)";
-            match (in_image(a, summary), in_image(b, summary)) {
-                (Ok(sa), Ok(sb)) => {
-                    let first = |s: &str| s.lines().next().unwrap_or("{}").to_owned();
-                    let norn = start_with(None).unwrap_or_else(|e| {
-                        eprintln!("{e}");
-                        exit(1)
-                    });
-                    let code = format!(
-                        "(do (require 'norn.image) (norn.image/diff-text (read-string {}) (read-string {})))",
-                        norn_string(&first(&sa)),
-                        norn_string(&first(&sb))
-                    );
-                    match norn.run(RootTask::Eval(code), "user").result {
-                        Ok(v) => Ok(v.trim_matches('"').replace("\\n", "\n")),
-                        Err(e) => Err(e.to_string()),
-                    }
-                }
-                (Err(e), _) | (_, Err(e)) => Err(e),
-            }
+/// `norn --image-summary IMG` (norn image's helper): start from the image
+/// and print its summary, calling core's `%image-summary` directly, so an
+/// image without a compiler (shaken) can say what's in it too.
+fn image_summary(img: &str) -> i32 {
+    let norn = start_with(Some(std::path::Path::new(img))).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        exit(1)
+    });
+    match norn.run(RootTask::Call("%image-summary", String::new()), "user").result {
+        Ok(v) => {
+            println!("{v}");
+            0
         }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// `norn image info IMG` and `norn image diff A B`: each image's summary from
+/// a process started from it, described by this one.
+fn image_tool(args: &[String]) -> i32 {
+    let describe = |code: String| {
+        let norn = start_with(None).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            exit(1)
+        });
+        match norn.run(RootTask::EvalRaw(code), "user").result {
+            Ok(v) => Ok(v),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    let result = match args {
+        [op, img] if op == "info" => in_image(img).and_then(|s| {
+            describe(format!("(do (require 'norn.image) (norn.image/info-text (read-string {})))", norn_string(&s)))
+        }),
+        [op, a, b] if op == "diff" => match (in_image(a), in_image(b)) {
+            (Ok(sa), Ok(sb)) => describe(format!(
+                "(do (require 'norn.image) (norn.image/diff-text (:namespaces (read-string {})) (:namespaces (read-string {}))))",
+                norn_string(&sa),
+                norn_string(&sb)
+            )),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
         _ => Err("usage: norn image info IMG.nimg | norn image diff A.nimg B.nimg".into()),
     };
     match result {
@@ -375,16 +404,21 @@ fn norn_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n"))
 }
 
-/// `norn build OUT.nimg [FILE…] [--entry NS/NAME] [--image BASE.nimg [--layered]]`.
-/// Saves without fibers, so the same sources give the same image.
+/// `norn build OUT.nimg [FILE…] [--entry NS/NAME] [--image BASE.nimg [--layered]] [--shake [--keep NAME]…]`.
+/// Saves without fibers, so the same sources give the same image. With
+/// --shake it leaves out what the entry doesn't reach (`save-image :shake`;
+/// --keep names a var, or a namespace, to keep besides).
 fn build(args: &[String]) -> i32 {
     let (mut out, mut files, mut entry, mut base, mut layered) = (None, Vec::new(), None, None, false);
+    let (mut shake, mut keeps) = (false, Vec::new());
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--entry" => entry = it.next().cloned(),
             "--image" => base = it.next().map(std::path::PathBuf::from),
             "--layered" => layered = true,
+            "--shake" => shake = true,
+            "--keep" => keeps.extend(it.next().cloned()),
             _ if out.is_none() => out = Some(a.clone()),
             _ => files.push(a.clone()),
         }
@@ -433,10 +467,27 @@ fn build(args: &[String]) -> i32 {
     // A release build seals what it loaded: the project's modules and its
     // packages' (design §8.1). The REPL, norn run and norn dev don't.
     norn.run(RootTask::EvalRaw("(norn.core/%seal-loaded!)".into()), "user");
-    let save = format!(
-        "(let [r (save-image {} :entry {entry} :fibers :none :layered {layered})] (str (:objects r) \" objects, \" (:bytes r) \" bytes\"))",
-        norn_string(&out)
-    );
+    let save = if shake {
+        if layered {
+            eprintln!("norn build: --shake and --layered don't go together");
+            return 2;
+        }
+        // (the unshaken size first, before the shaking tools load)
+        let keeps: Vec<String> = keeps.iter().map(|k| format!("'{k}")).collect();
+        let whole = format!("{out}.unshaken");
+        format!(
+            "(let [w (:bytes (save-image {} :entry {entry} :fibers :none))] (%fs-delete {} false) (require 'norn.shake) ((var-get (resolve 'norn.shake/shake-report)) {} {entry} [{}] w))",
+            norn_string(&whole),
+            norn_string(&whole),
+            norn_string(&out),
+            keeps.join(" ")
+        )
+    } else {
+        format!(
+            "(let [r (save-image {} :entry {entry} :fibers :none :layered {layered})] (str (:objects r) \" objects, \" (:bytes r) \" bytes\"))",
+            norn_string(&out)
+        )
+    };
     match norn.run(RootTask::EvalRaw(save), "user").result {
         Ok(s) => {
             println!("{out}: {s}");

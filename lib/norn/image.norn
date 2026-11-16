@@ -3,44 +3,27 @@
 (ns norn.image
   (:require [norn.string :as str] [norn.io :as io]))
 
-(defn- value-hash
-  "A hash that changes when a definition changes: for functions, their code
-  and constants; for an atom, nothing (what it holds is state, which
-  changes as a program runs: the runtime's own bookkeeping, such as the
-  index of definitions, would differ in any two images); for other values,
-  the value."
-  [v]
-  (cond (= :atom (type v)) (hash :atom)
-        (and (fn? v) (not= :primitive (type v)))
-        (try (hash (mapv (fn [p] (let [pp (%proto-parts p)] [(:code pp) (pr-str (:consts pp))]))
-                         (:arities (%template-parts (%closure-template v)))))
-             (catch Error _ (hash (pr-str v))))
-        ;; printed form: stable across processes, unlike identity hashes
-        :else (try (hash (pr-str v)) (catch Error _ 0))))
-
 (defn summary
   "The running image's namespaces, each a map of var name → value hash."
   []
-  (into (sorted-map)
-        (map (fn [ns]
-               [(str ns) (into (sorted-map)
-                               (map (fn [[k v]] [(str k) (value-hash (try (var-get v) (catch Error _ nil)))]))
-                               (or (ns-publics ns) {}))])
-             (all-ns))))
+  (:namespaces (%image-summary)))
 
 (defn info-text
-  "A description of the running image: its file(s), sizes and contents."
-  []
-  (let [info (image-info)
-        s (summary)]
-    (str "image:      " (:image info) "\n"
-         (when (> (count (:chain info)) 1)
-           (str "layers:     " (str/join " ← " (:chain info)) "\n"))
-         "size:       " (str/join " + " (map (fn [p] (str (:size (io/info p)) " bytes")) (:chain info))) "\n"
-         "entry:      " (if %image-entry (pr-str %image-entry) "none") "\n"
-         "namespaces: " (count s) "\n"
-         "vars:       " (reduce + 0 (map count (vals s))) "\n"
-         (apply str (map (fn [[n vs]] (format "  %-28s %5d vars%n" n (count vs))) s)))))
+  "A description of an image, its file(s), sizes and contents: the running
+  one's, or, given one, an image's summary (as a process started from it
+  gives: norn image info asks)."
+  ([] (info-text (%image-summary)))
+  ([summary]
+   (let [s (into (sorted-map) (:namespaces summary))
+         chain (:chain summary)]
+     (str "image:      " (:image summary) "\n"
+          (when (> (count chain) 1)
+            (str "layers:     " (str/join " ← " chain) "\n"))
+          "size:       " (str/join " + " (map (fn [p] (str (:size (io/info p)) " bytes")) chain)) "\n"
+          "entry:      " (or (:entry summary) "none") "\n"
+          "namespaces: " (count s) "\n"
+          "vars:       " (reduce + 0 (map count (vals s))) "\n"
+          (apply str (map (fn [[n vs]] (format "  %-28s %5d vars%n" n (count vs))) s))))))
 
 (defn diff-text
   "What changed from summary a to summary b: namespaces and vars added,

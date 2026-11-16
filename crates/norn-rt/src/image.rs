@@ -312,6 +312,33 @@ impl<'a> Writer<'a> {
     }
 }
 
+/// The addresses of every object a save of `spec` would write (base layers
+/// aside: as a whole image). The caller has stopped every fiber and holds
+/// off the GC. (A shaken save asks, to keep only the symbols and keywords
+/// something saved refers to.)
+pub fn reached(spec: &Save) -> HashSet<u64> {
+    let mut w = Writer {
+        spec,
+        ids: HashMap::new(),
+        reached: Vec::new(),
+        base: HashMap::new(),
+        base_count: 0,
+        next_new: 0,
+        taken_claims: HashSet::new(),
+        dead_fibers: HashSet::new(),
+        area: Vec::new(),
+        relocs: Vec::new(),
+        discovering: true,
+    };
+    w.discover();
+    w.ids.into_keys().collect()
+}
+
+/// Is `v` (a reference) among `reached`'s addresses?
+pub fn reached_contains(reached: &HashSet<u64>, v: Value) -> bool {
+    !is_ref(v.0) || reached.contains(&addr(v))
+}
+
 /// Write an image of everything reachable from `spec.roots`. The caller has
 /// stopped every fiber and holds off the GC.
 pub fn save(path: &Path, spec: &Save) -> Result<Saved, String> {

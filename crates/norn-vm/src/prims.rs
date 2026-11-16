@@ -91,6 +91,9 @@ prims! {
     "char?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_char()));
     "boolean?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_bool()));
     "fn?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Closure) || a[0].is(Kind::Primitive)));
+    "%fn-vars" 1 Some(1) => |vm, a| Ok(fn_vars(vm, a[0]));
+    "%fn-captured" 1 Some(1) => |vm, a| Ok(fn_captured(vm, a[0]));
+    "%fn-symbols" 1 Some(1) => |vm, a| Ok(fn_symbols(vm, a[0]));
     "list?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_cons() || a[0].is(Kind::EmptyList)));
     "vector?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Vector)));
     "map?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Map) || (a[0].is(Kind::Sorted) && !a[0].sorted_is_set())));
@@ -490,7 +493,7 @@ prims! {
     "%refer" 2 Some(2) => |vm, a| { expect(a[0], Kind::Symbol, "refer")?; expect(a[1], Kind::Var, "refer")?; vm.ns.refer(a[0], a[1]); Ok(Value::NIL) };
     "ns-aliases" 1 Some(1) => |vm, a| { expect(a[0], Kind::Symbol, "ns-aliases")?; let pairs: Vec<Value> = rt().find_ns(a[0]).map(|ns| ns.aliases().into_iter().flat_map(|(k, v)| [k, v]).collect()).unwrap_or_default(); hash_map(vm, &pairs) };
     // images
-    "%save-image" 4 Some(4) => |vm, a| { expect(a[0], Kind::String, "save-image")?; crate::image::save_image(vm, a[0], a[1], a[2].truthy(), a[3].truthy()) };
+    "%save-image" 4 Some(5) => |vm, a| { expect(a[0], Kind::String, "save-image")?; crate::image::save_image(vm, a[0], a[1], a[2].truthy(), a[3].truthy(), a.get(4).copied().unwrap_or(Value::NIL)) };
     "%save-image-outcome" 0 Some(0) => |vm, _| crate::image::save_outcome(vm);
     "image-info" 0 Some(0) => |vm, _| crate::image::info(vm);
     "jit-stats" 0 Some(0) => |vm, _| { use std::sync::atomic::Ordering::Relaxed; let k = |vm: &mut Vm, n: &str| rt().keyword(&mut vm.m, None, n); let kvs = [k(vm, "tier"), Value::fix(if crate::jit::enabled() { 1 } else { 0 }), k(vm, "compiled"), Value::fix(crate::jit::COMPILED.load(Relaxed) as i64), k(vm, "rejected"), Value::fix(crate::jit::REJECTED.load(Relaxed) as i64), k(vm, "code-bytes"), Value::fix(crate::jit::CODE_BYTES.load(Relaxed) as i64)]; hash_map(vm, &kvs) };
@@ -2140,4 +2143,67 @@ fn proto_parts(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         k(vm, "locals"), locals,
     ];
     hash_map(vm, &kvs)
+}
+
+/// `(%fn-vars f)`: the vars function f's code refers to (its constants,
+/// and its nested functions'), each once, in the order first met: what
+/// norn.xref's callees are made of. Anything but a closure has none.
+fn fn_vars(vm: &mut Vm, f: Value) -> Value {
+    fn_consts(vm, f, Kind::Var)
+}
+
+/// `(%fn-symbols f)`: the symbols function f's code has as constants (quoted
+/// names), nested functions' included, in the order first met, a vector.
+/// norn.shake reads the libraries code loads lazily from them.
+fn fn_symbols(vm: &mut Vm, f: Value) -> Value {
+    fn_consts(vm, f, Kind::Symbol)
+}
+
+/// The constants of kind `want` in function f's prototypes, nested ones'
+/// included, each once.
+fn fn_consts(vm: &mut Vm, f: Value, want: Kind) -> Value {
+    fn walk(x: Value, want: Kind, seen: &mut Vec<Value>, out: &mut Vec<Value>, depth: usize) {
+        if depth > 64 || seen.iter().any(|s| s.0 == x.0) {
+            return;
+        }
+        if x.is(Kind::Closure) {
+            seen.push(x);
+            walk(x.closure_template(), want, seen, out, depth + 1);
+        } else if x.is(Kind::FnTemplate) {
+            seen.push(x);
+            let ar = x.template_arities();
+            if ar.is(Kind::Array) {
+                for i in 0..ar.arr_len() {
+                    walk(ar.arr_get(i), want, seen, out, depth + 1);
+                }
+            }
+        } else if x.is(Kind::Proto) {
+            seen.push(x);
+            let k = x.proto_consts();
+            if k.is(Kind::Array) {
+                for i in 0..k.arr_len() {
+                    let c = k.arr_get(i);
+                    if c.is(want) {
+                        if !out.iter().any(|o| o.0 == c.0) {
+                            out.push(c);
+                        }
+                    } else {
+                        walk(c, want, seen, out, depth + 1);
+                    }
+                }
+            }
+        }
+    }
+    let mut seen = Vec::new();
+    let mut out = Vec::new();
+    walk(f, want, &mut seen, &mut out, 0);
+    vec_from_slice(&mut vm.m, &out)
+}
+
+/// `(%fn-captured f)`: the values closure f captured (its upvalues), a
+/// vector; empty for anything else. norn.xref looks in them for vars and
+/// functions, as a contract's checking wrapper holds the var it checks.
+fn fn_captured(vm: &mut Vm, f: Value) -> Value {
+    let ups: Vec<Value> = if f.is(Kind::Closure) { (0..f.closure_nups()).map(|i| f.closure_upval(i)).collect() } else { Vec::new() };
+    vec_from_slice(&mut vm.m, &ups)
 }

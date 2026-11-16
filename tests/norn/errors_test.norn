@@ -144,9 +144,9 @@
     norn.dev norn.doc norn.edn norn.expand norn.ffi norn.fmt norn.format norn.fs norn.http
     norn.image norn.io norn.json norn.lint norn.log norn.markdown norn.math norn.ndjson
     norn.net norn.new norn.package norn.pprint norn.process norn.property norn.random
-    norn.regex norn.rope norn.run norn.schedule norn.set norn.signal norn.sqlite norn.stm
+    norn.regex norn.rope norn.run norn.schedule norn.set norn.shake norn.signal norn.sqlite norn.stm
     norn.string norn.sync norn.syntax norn.sys norn.terminal norn.test norn.time norn.toml
-    norn.uri norn.uuid norn.validate norn.walk norn.xml norn.yaml norn.zip])
+    norn.uri norn.uuid norn.validate norn.walk norn.xml norn.xref norn.yaml norn.zip])
 
 (deftest every-public-library-name-has-a-docstring
   ;; (functions, macros, classes and vars alike: pulse found macros and

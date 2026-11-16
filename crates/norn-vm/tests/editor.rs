@@ -170,6 +170,17 @@ fn the_editor_finds_definitions_docs_and_vars() {
     assert!(m.contains("(if ok"), "{m}");
     let steps = ed.request(&format!(":op :expand-steps :ns \"user\" :code {}", quote("(when ok (go))")));
     assert!(steps.contains(":macro \"norn.core/when\"") && steps.contains(":expanded \"(if ok (do (go)))\""), "{steps}");
+    // Who calls area, and what does it call?
+    ed.request(&format!(
+        ":op :eval :ns \"user\" :file \"/tmp/where.norn\" :line 50 :code {}",
+        quote("(defn floor-area [rooms] (reduce + (map (fn [[w h]] (area w h)) rooms)))")
+    ));
+    let who = ed.request(":op :who-calls :ns \"user\" :sym \"area\"");
+    assert!(who.contains(":name \"floor-area\"") && who.contains(":line 50"), "{who}");
+    let calls = ed.request(":op :calls :ns \"user\" :sym \"floor-area\"");
+    assert!(calls.contains(":name \"area\"") && calls.contains(":name \"reduce\""), "{calls}");
+    let none = ed.request(":op :who-calls :ns \"user\" :sym \"nowhere\"");
+    assert!(none.contains(":error \"No definition of nowhere\""), "{none}");
 }
 
 #[test]

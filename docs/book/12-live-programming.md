@@ -579,6 +579,26 @@ Elapsed time: 8.193708 msecs
 4999950000
 ```
 
+Before you change a function, you'll want to know what calls it.
+`norn.xref` reads that from the compiled code: `callers` lists the loaded
+definitions that refer to a var, and `callees` what a definition refers to.
+
+```clojure
+(require '[norn.xref :as xref])
+
+(defn tax [amount] (* amount 1/5))
+(defn total [amounts] (reduce + (map (fn [a] (+ a (tax a))) amounts)))
+
+(xref/callers #'tax)   ; => [#'user/total]
+(xref/callees #'total) ; => [#'norn.core/+ #'norn.core/map #'norn.core/reduce #'user/tax]
+```
+
+Nested functions count as part of the one around them. A macro call counts
+as what it expanded to, since that's what was compiled, and a generic
+function refers to what its methods do. Nothing is cached, so after you
+redefine `total` the answer changes at once. `references` gives the whole
+table, and `reachable` everything a set of vars leads to.
+
 `macroexpand` and `macroexpand-1` show what a macro call becomes;
 [Chapter 14](14-macros.md) covers them, along with `norn expand`.
 [Chapter 26](26-tools-and-performance.md) covers `norn.bench` for
@@ -640,7 +660,9 @@ Some things to notice:
 The ops cover the rest of what an editor needs. Among them are `:eval` (with
 `:ns`, and `:file` and `:line` so errors and definitions point at the
 source), `:load-file`, `:interrupt`, `:complete`, `:doc`, `:definition`,
-`:macroexpand`, `:inspect`, `:ns-vars`, `:format`, `:lint` and `:test`, and
+`:who-calls` and `:calls` (`norn.xref`'s callers and callees, each with its
+file and line), `:macroexpand`, `:inspect`, `:ns-vars`, `:format`, `:lint`
+and `:test`, and
 for the debugger `:debugging`, `:backtrace`, `:eval-in-frame`, `:restart`
 (with `:restart`, a number, and `:args`, a string of arguments),
 `:restart-frame` and `:abort`. Since it's one map per line, you can try the
@@ -702,7 +724,8 @@ snapshot of a session you can return to.
 - Background fibers park too. Use `debugging`, `debug-restart`,
   `debug-restart-frame` and `debug-abort` with their fiber numbers.
 - `doc`, `source`, `apropos`, `find-doc`, `definition`, `inspect`, `trace`
-  and `time` answer questions about the running system.
+  and `time` answer questions about the running system, and `norn.xref`'s
+  `callers` and `callees` say what refers to what.
 - `norn --server` speaks the editor protocol, one Norn map per line, with
   pushed debugger events and a fiber per request.
 - `save-image` saves a session's heap, and `norn --image` resumes it.

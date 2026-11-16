@@ -21,7 +21,7 @@ use norn_rt::conc::{claim_new, fiber, try_claim, waiter, waiter_new};
 use norn_rt::image::{Save, Saved};
 use norn_rt::runtime::{Tables, rt};
 use norn_rt::{Kind, Mutator, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -88,7 +88,74 @@ fn fix(n: u64) -> Value {
     Value::fix(n as i64)
 }
 
-fn collect_roots(entry: Value, keep_fibers: bool, timers: &[SavedTimer]) -> Vec<Value> {
+/// What a shaken save leaves out of the namespace tables (design §7.1):
+/// these vars' names, and these namespaces whole. Code that's kept and
+/// refers to a dropped var still has it (the save follows references); only
+/// the name goes, and with it whatever only the name kept.
+///
+/// `generics` pairs a generic function with a stand-in holding the methods
+/// it keeps (those for classes nothing kept makes go) and their dispatch
+/// state: while every fiber is paused, the two swap methods and state for
+/// the save, and swap back after, so the running process never sees it.
+#[derive(Default)]
+struct Shake {
+    vars: HashSet<u64>,
+    namespaces: HashSet<u64>,
+    generics: Vec<(Value, Value)>,
+}
+
+impl Shake {
+    /// From `[drop-vars drop-namespace-names [[generic stand-in]…]]`, or nil.
+    fn from(v: Value) -> Shake {
+        let mut s = Shake::default();
+        if v.is(Kind::Vector) && v.vec_count() == 3 {
+            v.vec_nth(2).vec_for_each(|pair| {
+                if pair.is(Kind::Vector) && pair.vec_count() == 2 && pair.vec_nth(0).is(Kind::Generic) && pair.vec_nth(1).is(Kind::Generic) {
+                    s.generics.push((pair.vec_nth(0), pair.vec_nth(1)));
+                }
+                true
+            });
+        }
+        if v.is(Kind::Vector) && v.vec_count() >= 2 {
+            for (i, set) in [&mut s.vars, &mut s.namespaces].into_iter().enumerate() {
+                let xs = v.vec_nth(i);
+                if xs.is(Kind::Vector) {
+                    xs.vec_for_each(|x| {
+                        set.insert(x.0);
+                        true
+                    });
+                }
+            }
+        }
+        s
+    }
+
+    /// Swap each generic function's methods and dispatch state with its
+    /// stand-in's (done twice, it undoes itself). Only while paused.
+    fn swap_generics(&self) {
+        use norn_rt::clos::generic::{METHODS, STATE};
+        use std::sync::atomic::Ordering::AcqRel;
+        for &(gf, stand_in) in &self.generics {
+            for f in [METHODS, STATE] {
+                let mine = gf.atomic_word(f).load(std::sync::atomic::Ordering::Acquire);
+                let theirs = stand_in.atomic_word(f).swap(mine, AcqRel);
+                gf.atomic_word(f).store(theirs, std::sync::atomic::Ordering::Release);
+            }
+        }
+    }
+}
+
+/// Which interned symbols and keywords a save keeps: all of them, or (a
+/// shaken save, after a first walk without them) those something else
+/// saved refers to. One that isn't kept is made again when next interned:
+/// nothing saved holds the old one.
+enum Interned<'a> {
+    All,
+    None,
+    Reached(&'a HashSet<u64>),
+}
+
+fn collect_roots(entry: Value, keep_fibers: bool, timers: &[SavedTimer], shake: &Shake, interned: Interned) -> Vec<Value> {
     let t = rt().tables();
     let mut r = vec![Value::fix(ROOTS_VERSION)];
     r.push(fix(norn_rt::object::identity_hash_counter()));
@@ -105,19 +172,27 @@ fn collect_roots(entry: Value, keep_fibers: bool, timers: &[SavedTimer]) -> Vec<
     }
     r.push(entry);
     for list in [&t.symbols, &t.keywords] {
-        r.push(fix(list.len() as u64));
-        r.extend(list.iter().copied());
+        let kept: Vec<Value> = match interned {
+            Interned::All => list.clone(),
+            Interned::None => Vec::new(),
+            Interned::Reached(set) => list.iter().copied().filter(|&v| norn_rt::image::reached_contains(set, v)).collect(),
+        };
+        r.push(fix(kept.len() as u64));
+        r.extend(kept);
     }
-    r.push(fix(t.namespaces.len() as u64));
-    for (name, maps, aliases) in &t.namespaces {
+    let kept: Vec<_> = t.namespaces.iter().filter(|(name, _, _)| !shake.namespaces.contains(&name.0)).collect();
+    r.push(fix(kept.len() as u64));
+    for (name, maps, aliases) in kept {
         r.push(*name);
+        let maps: Vec<_> = maps.iter().filter(|(_, v)| !shake.vars.contains(&v.0)).collect();
         r.push(fix(maps.len() as u64));
-        for &(k, v) in maps {
+        for &&(k, v) in &maps {
             r.push(k);
             r.push(v);
         }
+        let aliases: Vec<_> = aliases.iter().filter(|(_, n)| !shake.namespaces.contains(&n.0)).collect();
         r.push(fix(aliases.len() as u64));
-        for &(k, v) in aliases {
+        for &&(k, v) in &aliases {
             r.push(k);
             r.push(v);
         }
@@ -314,7 +389,7 @@ static OUTCOMES: Mutex<Option<HashMap<u64, std::result::Result<Saved, String>>>>
 
 /// `(%save-image path entry keep-fibers? layered?)`: park this fiber while a
 /// helper thread saves; `(%save-image-outcome)` then reports.
-pub(crate) fn save_image(vm: &mut Vm, path: Value, entry: Value, keep_fibers: bool, layered: bool) -> Result<Value> {
+pub(crate) fn save_image(vm: &mut Vm, path: Value, entry: Value, keep_fibers: bool, layered: bool, shake: Value) -> Result<Value> {
     if !vm.can_park() {
         return Err(Vm::park_error());
     }
@@ -329,7 +404,7 @@ pub(crate) fn save_image(vm: &mut Vm, path: Value, entry: Value, keep_fibers: bo
     std::thread::Builder::new()
         .name("norn-image".into())
         .spawn(move || {
-            let outcome = save_paused(&path, me, entry, keep_fibers, layered);
+            let outcome = save_paused(&path, me, entry, keep_fibers, layered, shake);
             OUTCOMES.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, outcome);
             norn_rt::safepoint::while_running(|| {
                 if try_claim(claim) {
@@ -342,12 +417,13 @@ pub(crate) fn save_image(vm: &mut Vm, path: Value, entry: Value, keep_fibers: bo
     Ok(Value::NIL)
 }
 
-fn save_paused(path: &Path, saver: Value, entry: Value, keep: bool, layered: bool) -> std::result::Result<Saved, String> {
+fn save_paused(path: &Path, saver: Value, entry: Value, keep: bool, layered: bool, shake: Value) -> std::result::Result<Saved, String> {
     sched::pause_all(PAUSE_LIMIT)?;
     // As a running participant the GC can't start until we are done.
     let r = norn_rt::safepoint::while_running(|| {
         sched::with_timers_held(|timers| {
-            let roots = collect_roots(entry, keep, &timers);
+            let shake = Shake::from(shake);
+            let shaking = !shake.vars.is_empty() || !shake.namespaces.is_empty() || !shake.generics.is_empty();
             // Fibers waiting on I/O or the blocking pool wait on something
             // the restored process won't have.
             let io_waiting = |f: Value| {
@@ -355,7 +431,17 @@ fn save_paused(path: &Path, saver: Value, entry: Value, keep: bool, layered: boo
                 w.is(Kind::Waiter) && (crate::reactor::holds_waiter(w) || crate::blocking::holds_waiter(w) || crate::main_lane::holds_waiter(w))
             };
             let dead = |f: Value| !keep || f == saver || io_waiting(f);
-            norn_rt::image::save(path, &Save { roots: &roots, build: build_id(), layered, dead: &dead })
+            shake.swap_generics();
+            let roots = if shaking {
+                let first = collect_roots(entry, keep, &timers, &shake, Interned::None);
+                let reached = norn_rt::image::reached(&Save { roots: &first, build: build_id(), layered: false, dead: &dead });
+                collect_roots(entry, keep, &timers, &shake, Interned::Reached(&reached))
+            } else {
+                collect_roots(entry, keep, &timers, &shake, Interned::All)
+            };
+            let saved = norn_rt::image::save(path, &Save { roots: &roots, build: build_id(), layered, dead: &dead });
+            shake.swap_generics();
+            saved
         })
     });
     sched::resume_all();

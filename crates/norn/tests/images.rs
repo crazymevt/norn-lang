@@ -394,3 +394,89 @@ fn code_in_an_image_is_verified_before_it_runs() {
     let regs = damaged("regs", 3, 2);
     assert!(regs.contains("7 parameters in 2 registers"), "{regs}");
 }
+
+/// M9b part 1: `norn build --shake`.
+fn shake_sources(d: &std::path::Path) -> PathBuf {
+    std::fs::create_dir_all(d.join("shk")).unwrap();
+    std::fs::write(
+        d.join("shk/util.norn"),
+        r#"(ns shk.util)
+(defclass Used () ((n)))
+(defclass Unused () ((n)))
+(defmethod print-object ((u Used)) (str "<used " (:n u) ">"))
+(defmethod print-object ((u Unused)) (str "<unused " (:n u) ">"))
+(defgeneric size [x])
+(defmethod size ((u Used)) (:n u))
+(defmethod size :before ((u Used)) nil)
+(defn used [n] (Used :n n))
+(defn unused [n] (Unused :n n))
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("shk/app.norn"),
+        r#"(ns shk.app (:require [shk.util :as u] [norn.json :as json] [norn.edn :as edn]))
+(defn plugin [] "plugged in")
+(defn main [& args]
+  (println (u/used 3) (u/size (u/used 4)) (json/write-string {:a [1 2]}))
+  (println (edn/read-string "{:at #inst \"2026-01-01T00:00:00Z\"}"))
+  (when (seq args) (println ((var-get (resolve (symbol "shk.app" (first args)))))))
+  0)
+"#,
+    )
+    .unwrap();
+    std::fs::write(d.join("shk/evals.norn"), "(ns shk.evals)\n(defn main [& args] (println (eval (read-string (first args)))) 0)\n").unwrap();
+    d.to_path_buf()
+}
+
+#[test]
+fn a_shaken_image_leaves_out_what_its_entry_doesnt_reach() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
+    let d = shake_sources(&scratch("shake"));
+    let build = |img: &PathBuf, extra: &[&str]| {
+        let o = norn().arg("build").arg(img).arg(d.join("shk/util.norn")).arg(d.join("shk/app.norn")).args(["--entry", "shk.app/main"]).args(extra).output().unwrap();
+        assert!(o.status.success(), "norn build failed:\n{}", text(&o));
+        text(&o)
+    };
+    let (full, shaken, kept) = (d.join("full.nimg"), d.join("shaken.nimg"), d.join("kept.nimg"));
+    build(&full, &[]);
+    let report = build(&shaken, &["--shake"]);
+    assert!(report.contains("% smaller)") && report.contains("definitions left out"), "{report}");
+    assert!(!report.contains(" 0 methods"), "print-object's method for Unused, which nothing makes, goes: {report}");
+    assert!(report.contains("warning: shk.app/main calls norn.core/resolve"), "a lookup by name is pointed out: {report}");
+    let size = |p: &PathBuf| std::fs::metadata(p).unwrap().len();
+    assert!(size(&shaken) * 2 < size(&full), "{} against {}", size(&shaken), size(&full));
+    // It does what the whole image does: dispatch (a :before method too),
+    // printing its own classes, JSON, and #inst read from EDN.
+    let run = |img: &PathBuf, args: &[&str]| norn().arg("--image").arg(img).args(args).output().unwrap();
+    let want = "<used 3> 4 {\"a\":[1,2]}\n{:at 2026-01-01T00:00:00Z}";
+    assert_eq!(ok(run(&full, &[])), want);
+    assert_eq!(ok(run(&shaken, &[])), want);
+    // What's looked up by name is gone unless kept.
+    assert!(text(&run(&shaken, &["plugin"])).contains("var-get expects Var, got nil"));
+    build(&kept, &["--shake", "--keep", "shk.app/plugin"]);
+    assert_eq!(ok(run(&kept, &["plugin"])), format!("{want}\nplugged in"));
+    // No compiler: norn image info still works (it compiles nothing in the
+    // image), and evaluating in it says why it can't.
+    let info = ok(norn().args(["image", "info"]).arg(&shaken).output().unwrap());
+    assert!(info.contains("shk.app/main") && !info.contains("norn.compiler"), "{info}");
+    let o = norn().args(["-e", "(+ 1 2)", "--image"]).arg(&shaken).output().unwrap();
+    assert!(text(&o).contains("this image has no norn.core/%eval-root"), "{}", text(&o));
+}
+
+#[test]
+fn a_shaken_image_that_evaluates_keeps_the_language() {
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
+    let d = shake_sources(&scratch("shake-eval"));
+    let img = d.join("evals.nimg");
+    let o = norn().arg("build").arg(&img).arg(d.join("shk/evals.norn")).args(["--entry", "shk.evals/main", "--shake"]).output().unwrap();
+    assert!(text(&o).contains("warning: shk.evals/main calls norn.core/eval: the language is kept whole"), "{}", text(&o));
+    let o = norn().arg("--image").arg(&img).arg("(when true (str (+ 1 2) (norn.core/inc 4)))").output().unwrap();
+    assert_eq!(ok(o), "35");
+    // A REPL's image (no entry) keeps modules whole or not at all, and one
+    // left out loads again when required.
+    let repl = d.join("repl.nimg");
+    eval(None, &format!("(do (require 'norn.json) (:objects (save-image {:?} :shake true)))", repl.display().to_string()));
+    let got = eval(Some(&repl), "(do (require '[norn.json :as j]) [(j/write-string [1]) (some #{'norn.compiler} (all-ns))])");
+    assert_eq!(got, r#"["[1]" norn.compiler]"#);
+}

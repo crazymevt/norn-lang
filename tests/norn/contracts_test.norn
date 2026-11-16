@@ -50,7 +50,8 @@
                      "(defn adder [x] ((lib/give-adder) x))\n"
                      "(defn same [v] (lib/same v))\n"
                      "(defn same-map [m] (lib/same-map m))\n"
-                     "(defn fns [fs] (lib/fns fs))\n"))
+                     "(defn fns [fs] (lib/fns fs))\n"
+                     "(defn the-var [] #'lib/add)\n"))
 
 (run '(require 'ct2.user))
 
@@ -66,7 +67,9 @@
       (is (str/ends-with? (:blame c) "ct2/user.norn)"))
       (is (str/starts-with? (condition-message c) "ct2.lib/add: its 2nd argument should be Integer, got \"2\", blaming ct2.user"))))
   (testing "a bad result blames the function's module"
-    (is (= ["ContractError" "ct2.lib" "its result"] (blame '(ct2.user/bad-result))))))
+    (is (= ["ContractError" "ct2.lib" "its result"] (blame '(ct2.user/bad-result)))))
+  (is (= "#'ct2.lib/add" (str (run '(ct2.user/the-var))))
+      "#'f is f's var, not the wrapper that checks calls to it"))
 
 (deftest the-types
   (testing "(Vec T), and the rest of the arguments"

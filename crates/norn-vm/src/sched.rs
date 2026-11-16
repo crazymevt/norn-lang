@@ -79,6 +79,10 @@ pub enum RootTask {
     Request(String),
     /// Like Eval, but a string result is returned raw (not printed readably).
     EvalRaw(String),
+    /// Call core function `name` with one string argument, compiling
+    /// nothing (an image's start, which may have no compiler: shaken out);
+    /// the result is the printed value.
+    Call(&'static str, String),
 }
 
 pub struct RootDone {
@@ -1051,9 +1055,17 @@ pub fn process_external(vm: &mut Vm) {
                     RootTask::Load(path) => ("load-file", path),
                     RootTask::Request(line) => ("%serve-request", line),
                     RootTask::EvalRaw(src) => ("%eval-root", src),
+                    RootTask::Call(name, arg) => (name, arg),
                 };
                 let sym = rt().symbol(&mut vm.m, None, fname);
-                let var = vm.core.lookup(sym).expect("norn.core is missing its root functions");
+                // (a shaken image may lack one: that task ends with an error)
+                let Some(var) = vm.core.lookup(sym) else {
+                    if let Some((tx, _)) = s.notifies.lock().unwrap().remove(&ticket) {
+                        let msg = format!("this image has no norn.core/{fname} (left out when it was shaken?)");
+                        let _ = tx.send(RootDone { result: Err(Error::new(msg)), ns: ns.clone() });
+                    }
+                    continue;
+                };
                 let arg = str_new(&mut vm.m, &arg);
                 let spec = norn_rt::array::array_from(&mut vm.m, &[var, arg]);
                 let ns_sym = rt().symbol(&mut vm.m, None, &ns);
@@ -1348,7 +1360,7 @@ pub fn start_with(image: Option<&std::path::Path>) -> Result<&'static Norn, Erro
         // Tell the image it has been restored (on-image-restore hooks).
         static RESTORED: std::sync::Once = std::sync::Once::new();
         let mut r = Ok(());
-        RESTORED.call_once(|| r = norn.eval("(norn.core/%image-restored)", "user").map(|_| ()));
+        RESTORED.call_once(|| r = norn.run(RootTask::Call("%image-restored", String::new()), "user").result.map(|_| ()));
         r?;
     }
     Ok(norn)

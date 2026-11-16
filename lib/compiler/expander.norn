@@ -233,9 +233,10 @@
 (defn- global-ref
   "What the compiler should see for global identifier id: the symbol as
   written when its home is the current namespace, else the var's full
-  name (or, for a function with a contract, its checking wrapper)."
-  ([id] (global-ref id true))
-  ([id check?]
+  name (or, for a function with a contract, its checking wrapper, unless
+  wrap? is false: (var f) is f's var itself)."
+  ([id] (global-ref id true true))
+  ([id check? wrap?]
    (let [sym (syn/syntax-e id)
          home (phase-home id)]
      (when (and check? (namespace sym)) (check-access id sym home))
@@ -247,14 +248,14 @@
                  (when-let [v (%resolve-in home sym)]
                    (check-unsafe id v)
                    ;; (the flag first: most vars have no contract)
-                   (when (and (%contracted? v)
+                   (when (and wrap? (%contracted? v)
                               (or (not= (str (var-ns-of v)) (str home)) (= norn.core/*check-contracts* :all)))
                      (wrapper-for v))))
                sym)
            :else (if-let [v (lookup id sym)]
                    (do (when check? (check-access id sym home v))
                        (check-unsafe id v)
-                       (or (when (and (%contracted? v) (not= (str (var-ns-of v)) (str (ns-sym)))) (wrapper-for v))
+                       (or (when (and wrap? (%contracted? v) (not= (str (var-ns-of v)) (str (ns-sym)))) (wrapper-for v))
                            (symbol (%var-name v))))
                    (if (and *strict* (pos? *phase*))
                      (fail id (str sym) "isn't available at compile time here: define it inside"
@@ -435,7 +436,7 @@
     "var" (let [id (nth xs 1 nil)]
             (when-not (and id (syn/identifier? id)) (fail s "var takes a symbol"))
             ;; (#'other/private reaches a private var, as in Clojure: on purpose)
-            (list 'var (global-ref id false)))
+            (list 'var (global-ref id false false)))
     "fn*" (expand-fn xs)
     "let*" (expand-let 'let* xs)
     "loop*" (expand-let 'loop* xs)

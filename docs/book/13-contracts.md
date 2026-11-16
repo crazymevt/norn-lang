@@ -333,7 +333,8 @@ blames that module, and a bad argument blames the code that called it.
 Contracts on functions work the same way when a module hands a function
 out. A function you get from a module, such as `cat/total` passed as a
 value to `map`, is the checked wrapper, so its contract goes wherever it
-goes:
+goes. (The var is still the function's own: `#'cat/total` is
+`catalog`'s var, not the wrapper.)
 
 ```clojure
 (map cat/total [[1 2] [3 4]]) ; => [3 7]

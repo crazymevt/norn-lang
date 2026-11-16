@@ -612,7 +612,12 @@ Images work as described above, with these details and gaps (runtime.md §7.5):
   the image the process started from.
 - **`norn build`** writes images without fibers and byte-for-byte
   reproducibly.
-- **`:shake`** (tree shaking) is not built yet.
+- **`:shake`** (`norn build --shake`, `:keep`) leaves out what the entry
+  doesn't reach, read from compiled code (`norn.xref`): sealed modules'
+  names and what only they kept, generic functions' methods for classes
+  nothing kept makes, the symbols nothing saved refers to, and the
+  compiler when nothing kept evaluates. Lookups by computed names are
+  warned about (M9b part 1).
 
 ---
 

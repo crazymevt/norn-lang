@@ -323,7 +323,7 @@ norn --image wc.nimg sample.txt
 ```
 
 ```text
-wc.nimg: 28309 objects, 1577120 bytes
+wc.nimg: 34255 objects, 1920976 bytes
      2      5     24 sample.txt
 ```
 
@@ -371,6 +371,61 @@ it loads. Keep them together, since a missing or changed base stops the
 program from starting. `save-image` takes `:layered true` for the same
 thing from a running process that started from an image.
 
+### Shaking an image
+
+`wc.nimg` holds the whole of every module `wc` loaded, the compiler and
+expander, and the index of documentation, though `main` uses a few dozen
+functions. `--shake` leaves out what the entry function can't reach:
+
+```sh
+norn build wc.nimg --shake
+```
+
+```text
+wc.nimg: 7379 objects, 385.6 KB, shaken from 1.8 MB (79% smaller): 1331 definitions left out, 13 modules whole, and 2 methods
+```
+
+It starts from `main` and follows what each function's compiled code
+refers to (`norn.xref` reads it, as [Chapter 12](12-live-programming.md)
+shows). Anything reached stays. That includes what the runtime itself calls,
+such as `print-object`. The sealed modules' other names go, and with them
+the code and data only those names kept. A generic function also loses the
+methods for classes nothing kept can make. Your own modules are sealed by
+`norn build`, so they're shaken too. Code the program runs isn't changed,
+so a shaken `wc` gives the same output as the whole one.
+
+Here the compiler went, because nothing in `wc` evaluates code. Without it,
+the shaken image can't load a library that isn't in it, or run `-e`.
+Shaking works out three cases from what's reachable:
+
+- **The program evaluates code** (`eval`, `load-string`, `load-file`). The
+  language is kept whole, compiler included, and so is each module that
+  anything kept uses, since code evaluated later may refer to any of its
+  names. Modules nothing uses still go.
+- **The program reads text** (`read-string`, `norn.edn`). Tagged literals
+  such as `#inst` need their readers' libraries, so those are loaded and
+  kept.
+- **The program looks things up by a name it computes** (`resolve`,
+  `ns-resolve`, `ns-publics`, `require`). Shaking can't tell what the name
+  will be, so it warns, naming the function that does it:
+
+```text
+warning: app.plugins/load calls norn.core/resolve: what it looks up may be gone; name it in :keep
+```
+
+`--keep` keeps a var, or every var of a namespace, besides what's reached.
+Use it for what such code looks up:
+
+```sh
+norn build app.nimg --shake --keep app.plugins/csv --keep app.formats
+```
+
+`(save-image path :entry #'main :shake true :keep [...])` does the same
+from a running process. Shaking without an entry keeps a REPL's image
+usable: modules are kept whole or left out whole, and requiring one that
+was left out loads it again. `:shake` can't be combined with `:layered`,
+because a layer's base keeps everything anyway.
+
 ## Inspecting images
 
 `norn image info` describes an image file: its layers, its size, its entry,
@@ -382,22 +437,22 @@ norn image info wc.nimg
 
 ```text
 image:      /Users/you/wc/wc.nimg
-size:       1577120 bytes
+size:       1920976 bytes
 entry:      #'wc.main/main
 namespaces: 16
-vars:       1166
+vars:       1203
   norn.bytes                      16 vars
-  norn.compiler                   28 vars
-  norn.core                      898 vars
+  norn.compiler                   25 vars
+  norn.core                      943 vars
   norn.deps                       10 vars
-  norn.edn                         3 vars
-  norn.expander                   39 vars
-  norn.image                       3 vars
-  norn.io                         51 vars
+  norn.edn                         5 vars
+  norn.expander                   29 vars
+  norn.io                         55 vars
   norn.io$1                        0 vars
-  norn.process                     6 vars
+  norn.pprint                      3 vars
+  norn.process                     7 vars
   norn.string                     29 vars
-  norn.syntax                     57 vars
+  norn.syntax                     55 vars
   norn.sys                        23 vars
   norn.validate                    1 vars
   user                             0 vars
@@ -406,7 +461,10 @@ vars:       1166
 
 Only the libraries the program uses are in it. A namespace with `$1` in its
 name is the compile-time instance of a module, which macros use (see
-[Chapter 14](14-macros.md)).
+[Chapter 14](14-macros.md)). The shaken `wc.nimg` lists 5 namespaces and
+278 vars: `norn.core`'s 273 that `main` reaches, and 1 of `norn.io`'s.
+`norn image info` works on a shaken image too, since it asks the image for
+its contents without compiling anything in it.
 
 `norn image diff` compares two images, var by var. Suppose version 0.2 adds
 a longest-line count to `counts`:
@@ -456,6 +514,9 @@ Give the project a `:package` map in `norn.edn`:
 - `:id` and `:display-name` are the app's identifier and its name in Finder
   and the Dock. `:icon` names a PNG, which becomes an `.icns`, or an
   `.icns` file.
+- `:shake true` builds the image with `--shake`, and `:keep` lists names
+  for its `--keep`: `:keep [app.plugins/csv app.formats]`. `norn package`
+  prints the shaking report and its warnings.
 
 ```sh
 norn package
@@ -546,6 +607,10 @@ launcher points `NORN_UI_HOST` at the bundled renderer.
 - `norn build` makes a reproducible image from source, using `:main` in a
   project or `--entry` with files. `--image BASE --layered` makes a small
   image on a shared base.
+- `--shake` (`:shake true` for `save-image` and `norn package`) leaves out
+  what the entry can't reach, generic functions' methods for classes
+  nothing makes, and the compiler when nothing evaluates. It warns about
+  lookups by computed names, and `--keep` keeps what they need.
 - `norn image info` describes an image, and `norn image diff` lists the vars
   two images differ in.
 - `norn package` makes a command-line archive and, on macOS, an ad hoc

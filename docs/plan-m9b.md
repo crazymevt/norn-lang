@@ -80,4 +80,47 @@ shape and 4's op).
 
 ## Status
 
-Not started.
+- **0, references: done.** `norn.xref` (`callees`, `callers`,
+  `references`, `reachable`), read from compiled code each time rather
+  than kept as an index: the whole table takes about 3 ms for the ~800
+  loaded vars that refer to something, so nothing needs updating when a
+  definition changes. A `%fn-vars` primitive walks a function's
+  prototypes' constants (nested ones included), and `%fn-captured` a
+  closure's captured values; data counts through the functions in it, a
+  generic function through its methods, and a contract's checking wrapper
+  as the function it checks. The `:who-calls` and `:calls` editor ops,
+  `xref_test`, chapter 12 and the reference. Found on the way: `#'lib/f`
+  of a checked function gave its wrapper var (fixed: `var` never wraps).
+- **1, tree shaking: done.** `norn.shake` plans it, `save-image :shake
+  :keep` and `norn build --shake --keep` do it, and `norn package` takes
+  `:shake` and `:keep` in `:package`. What's dropped is names: the saver
+  leaves dropped vars and namespaces out of the namespace tables (and
+  aliases to them), and everything only those names kept goes with them,
+  as the save follows references. Generic functions keep only the methods
+  for classes something kept makes (a fixpoint: a method counts only once
+  its classes are live); the saver swaps each one's methods for a
+  stand-in's while every fiber is paused, so the running process never
+  sees it. Symbols and keywords nothing saved refers to are left out (a
+  first walk without the tables): that was most of what modules loaded
+  but unreached left behind. With nothing that evaluates, the compiler
+  goes and names are dropped by var; with something that does, the
+  language is kept and modules are kept or dropped whole (a module loaded
+  later may use any name). Lookups by computed name are warned about.
+  To make that possible, nothing the runtime does on its own path evaluates
+  any more: an image's start calls `%image-restored`, `%has-entry?` and
+  `%run-entry-with-args` directly (a `RootTask::Call`, no compiling);
+  `norn image info`/`diff` ask the image for `%image-summary` the same way
+  (so they work on shaken images, and no longer list `norn.image` itself);
+  effective methods are closures rather than eval'd code (as fast on
+  cache hits, about 30% faster on misses; `eval` only for a combination
+  whose operator is a macro); the tag readers and `definition`'s docs
+  load libraries through `%require-lazily`, which finds `require` by
+  name, and the shake loads those libraries beforehand. A missing root
+  function now ends its task with an error instead of panicking a
+  carrier. Results: the five `lang-tests` programs' images are 63–70%
+  smaller and behave identically (each one's commands run against both);
+  Studio's is 34% smaller (5.9 → 3.9 MB) and starts, with one warning
+  (its fallback signature help resolves any `norn.core` name; keeping
+  `norn.core` costs most of the saving: 6%). `crates/norn-vm/tests/
+  shake.rs` checks every name the Rust side looks up is kept;
+  `images.rs` builds and runs shaken images.

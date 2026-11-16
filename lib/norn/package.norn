@@ -19,7 +19,9 @@
 ;;;;             :display-name "App"     its name in Finder and the Dock
 ;;;;             :icon "icon.png"        a PNG (made into .icns) or .icns
 ;;;;             :resources ["assets"]   files and folders to include
-;;;;             :targets [:cli :app]}   what to make (default [:cli])
+;;;;             :targets [:cli :app]    what to make (default [:cli])
+;;;;             :shake true             leave out what :main doesn't reach
+;;;;             :keep [app.plugins/x]}  …but keep these (vars, namespaces)
 ;;;; and a package may declare native helpers its code runs, found in its
 ;;;; folder, the first candidate that exists ({os} and {arch} filled in):
 ;;;;   :helpers {"norn-ui-host" ["target/release/norn-ui-host"
@@ -50,8 +52,8 @@
 
 (defn package-info
   "What `norn package` makes of the project in folder dir: {:dir :name
-  :version :main :id :display-name :icon :resources :targets :helpers},
-  paths absolute. An error says what's missing."
+  :version :main :id :display-name :icon :resources :targets :helpers
+  :shake :keep}, paths absolute. An error says what's missing."
   [dir]
   (let [dir (io/canonical dir)
         project (deps/read-project dir)
@@ -62,6 +64,8 @@
       (fail "the :name " pname " can't name a program: letters, digits, . _ -"))
     (when-not (:main project) (fail (io/path dir "norn.edn") " needs a :main, the entry function (ns/name)"))
     (when-not (map? p) (fail ":package is a map"))
+    (when-not (every? symbol? (or (:keep p) []))
+      (fail ":package :keep is a vector of names: vars (ns/name) and namespaces"))
     (let [res (mapv (fn [r] (let [f (io/path dir r)]
                               (when-not (io/exists? f) (fail "the resource " r " isn't there"))
                               f))
@@ -83,7 +87,8 @@
                             [h found])))]
       {:dir dir :name (str pname) :version (or (:version project) "0.0.0") :main (:main project)
        :id (or (:id p) (str "dev.norn." pname)) :display-name (or (:display-name p) (default-display-name pname))
-       :icon icon :resources res :targets (vec (or (:targets p) [:cli])) :helpers helpers})))
+       :icon icon :resources res :targets (vec (or (:targets p) [:cli])) :helpers helpers
+       :shake (boolean (:shake p)) :keep (vec (or (:keep p) []))})))
 
 ;; ---- pieces ----
 
@@ -102,10 +107,13 @@
   d)
 
 (defn build-image!
-  "Build the project's image (its :main the entry) at out, with this norn."
+  "Build the project's image (its :main the entry) at out, with this norn:
+  shaken when info says :shake (norn build --shake, printing its report)."
   [info out]
   (io/mkdirs! (io/parent out))
-  (sh! (:executable (sys/info)) "build" out :dir (:dir info))
+  (let [args (concat ["build" out] (when (:shake info) (cons "--shake" (mapcat (fn [k] ["--keep" (str k)]) (:keep info)))))
+        said (apply sh! (:executable (sys/info)) (concat args [:dir (:dir info)]))]
+    (when (:shake info) (print said)))
   (when-not (io/file? out) (fail "norn build made no image"))
   out)
 
