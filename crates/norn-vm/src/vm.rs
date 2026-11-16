@@ -328,8 +328,14 @@ const NESTED_SEG_WORDS: usize = 16 * 1024;
 const MAX_SEG_WORDS: usize = 32 * 1024;
 /// Total stack depth limit per fiber (words) → `Stack overflow`.
 const MAX_STACK_WORDS: usize = 32 << 20;
-/// Reductions (calls + loop iterations) per time slice.
+/// Reductions (calls + loop iterations) between looks at whether the time
+/// slice is over.
 const BUDGET: i64 = 2000;
+/// A time slice's least length. Reductions alone would give fast code
+/// (tier 1's native calls: 2000 of them in about 100 µs) a smaller share of
+/// a busy carrier than slow code; so a fiber yields once its budget is
+/// spent *and* it has run this long.
+const MIN_SLICE: std::time::Duration = std::time::Duration::from_micros(500);
 
 /// Interpreter registers. Everything here is derivable from the frame chain.
 pub(crate) struct St {
@@ -367,6 +373,18 @@ impl St {
             self.code = p.proto_code().code_ptr();
             self.consts = p.proto_consts().arr_ptr();
             self.pc = self.slot(F_RESUME).as_fixnum() as usize;
+            self.native = 0;
+        }
+    }
+    /// Switch to the frame whose registers are at `regs` in this segment
+    /// (where native code stopped), keeping the pc to be set.
+    #[inline]
+    unsafe fn switch_to(&mut self, regs: *mut Value) {
+        unsafe {
+            self.fp = regs.offset_from(self.base) as usize - HDR;
+            let p = self.slot(F_PROTO);
+            self.code = p.proto_code().code_ptr();
+            self.consts = p.proto_consts().arr_ptr();
             self.native = 0;
         }
     }
@@ -420,6 +438,8 @@ pub struct Vm {
     scratch: Vec<Value>,
     key_buf: Vec<Value>,
     budget: i64,
+    /// When the running fiber's time slice began (sched::run_one).
+    pub(crate) slice_start: std::time::Instant,
     seen_attention: u64,
     /// The profiler's sample epoch this carrier last sampled at.
     prof_seen: u64,
@@ -427,6 +447,274 @@ pub struct Vm {
     /// The interpreter state of the innermost `run`, so a primitive can save
     /// the stack before a native region (null outside `run`).
     cur_st: *mut St,
+    /// What a primitive called from tier-1 code left for the interpreter:
+    /// its error, or its request to park (jit_call).
+    jit_pending: Option<JitPending>,
+}
+
+/// See Vm::jit_pending.
+pub(crate) enum JitPending {
+    Error(Error),
+    Suspend(Suspend),
+}
+
+/// The arity of closure f that takes argc arguments, as select_arity
+/// chooses it, when f is a closure and has one: the calls' fast path
+/// (jit_resolve does the rest, errors included).
+#[inline]
+fn closure_arity(f: Value, argc: usize) -> Option<Value> {
+    if !f.is(Kind::Closure) {
+        return None;
+    }
+    let ps = f.closure_template().template_arities();
+    let ps = ps.arr_slice();
+    ps.iter().copied().find(|p| !p.proto_variadic() && p.proto_nfixed() == argc).or_else(|| {
+        ps.iter().copied().find(|p| p.proto_variadic() && argc >= p.proto_nfixed())
+    })
+}
+
+/// Whether calling f means working out what it calls (jit_resolve): not
+/// for a primitive or a data function (a keyword, a map…), called as is.
+#[inline]
+fn needs_resolving(f: Value) -> bool {
+    f.is(Kind::Closure) || f.is(Kind::Var) || f.is(Kind::Generic) || f.is(Kind::Class)
+}
+
+/// What a call from tier-1 code reaches, worked out as Vm::invoke does
+/// (through vars, generic functions' dispatch and classes): a closure and
+/// the arity to push, or a primitive or data function to call; with the
+/// arguments when dispatch changed them. Nothing has happened yet, so the
+/// interpreter can still make the call instead.
+enum Callee {
+    Frame(Value, Value, Option<Vec<Value>>),
+    Value(Value, Option<Vec<Value>>),
+    Failed(Error),
+}
+
+#[inline(never)]
+fn jit_resolve(vm: &mut Vm, mut f: Value, args: &[Value]) -> Callee {
+    let mut owned: Option<Vec<Value>> = None;
+    loop {
+        if f.is(Kind::Closure) {
+            let n = owned.as_ref().map_or(args.len(), Vec::len);
+            return match select_arity(f, n) {
+                Ok(p) => Callee::Frame(f, p, owned),
+                Err(e) => Callee::Failed(e),
+            };
+        }
+        if f.is(Kind::Var) {
+            match Vm::deref_var(f) {
+                Ok(g) => f = g,
+                Err(e) => return Callee::Failed(e),
+            }
+            continue;
+        }
+        if f.is(Kind::Generic) || f.is(Kind::Class) {
+            match vm.redirect(f, owned.as_deref().unwrap_or(args)) {
+                Ok((g, None)) => f = g,
+                Ok((g, Some(v))) => {
+                    f = g;
+                    owned = Some(v);
+                }
+                Err(e) => return Callee::Failed(e),
+            }
+            continue;
+        }
+        return Callee::Value(f, owned);
+    }
+}
+
+/// The Vm and the interpreter state of the run tier-1 code was entered
+/// from. The helpers below keep that state right as they push and pop
+/// frames, so when native code stops the interpreter carries on from it.
+unsafe fn jit_vm<'a>(ctx: *mut crate::jit::JitCtx) -> (&'a mut Vm, &'a mut St) {
+    unsafe {
+        let vm = &mut *((*ctx).vm as *mut Vm);
+        let st = &mut *vm.cur_st;
+        (vm, st)
+    }
+}
+
+/// Where native code goes on in the frame st is now in.
+unsafe fn jit_next(ctx: *mut crate::jit::JitCtx, st: &St) {
+    unsafe {
+        (*ctx).next_regs = st.regs() as u64;
+        (*ctx).next_native = crate::jit::entry_for(st.slot(F_PROTO)) as u64;
+        (*ctx).next_consts = st.consts as u64;
+        (*ctx).next_pc = st.pc as u64;
+    }
+}
+
+/// CALL ra argc from tier-1 code (jit.rs): push a closure's frame (PUSHED),
+/// as Vm::push_frame does; or call a primitive or a data function (VALUE,
+/// ctx.value; PENDING when it failed or asked to park, or the call failed).
+/// Vars, generic functions and classes are followed to what they call.
+/// NOT_MINE: the interpreter makes the call (a primitive that needs the
+/// interpreter: apply, eval, throw…; a stack overflow to raise).
+///
+/// # Safety
+/// From native code only: ctx is the carrier's, regs the running frame's.
+pub(crate) unsafe extern "C" fn jit_call(ctx: *mut crate::jit::JitCtx, regs: *mut Value, ra: u64, argc: u64, resume: u64) -> u64 {
+    unsafe {
+        let (vm, st) = jit_vm(ctx);
+        let (ra, argc) = (ra as usize, argc as usize);
+        let args = std::slice::from_raw_parts(regs.add(ra + 1), argc);
+        let f = *regs.add(ra);
+        if let Some(proto) = closure_arity(f, argc) {
+            st.pc = resume as usize;
+            if !vm.native_push(st, f, proto, args) {
+                return crate::jit::NOT_MINE;
+            }
+            jit_next(ctx, st);
+            return crate::jit::PUSHED;
+        }
+        if !needs_resolving(f) {
+            return jit_call_value(ctx, f, args, resume as usize);
+        }
+        match jit_resolve(vm, f, args) {
+            Callee::Frame(f, proto, owned) => {
+                st.pc = resume as usize;
+                if !vm.native_push(st, f, proto, owned.as_deref().unwrap_or(args)) {
+                    return crate::jit::NOT_MINE;
+                }
+                jit_next(ctx, st);
+                crate::jit::PUSHED
+            }
+            Callee::Value(f, owned) => jit_call_value(ctx, f, owned.as_deref().unwrap_or(args), resume as usize),
+            Callee::Failed(e) => {
+                vm.jit_pending = Some(JitPending::Error(e));
+                crate::jit::PENDING
+            }
+        }
+    }
+}
+
+/// CLOSURE ra bx from tier-1 code: make the closure of template consts[bx]
+/// into register ra, as the interpreter does. The running function is in
+/// the frame header below regs.
+///
+/// # Safety
+/// As jit_call's.
+pub(crate) unsafe extern "C" fn jit_closure(ctx: *mut crate::jit::JitCtx, regs: *mut Value, ra: u64, bx: u64) -> u64 {
+    unsafe {
+        let (vm, _) = jit_vm(ctx);
+        let fr = regs.sub(HDR);
+        let tmpl = *(*fr.add(F_PROTO)).proto_consts().arr_ptr().add(bx as usize);
+        let c = closure_new(&mut vm.m, tmpl);
+        let cur = *fr.add(F_FN);
+        for (i, &cap) in tmpl.template_captures().arr_slice().iter().enumerate() {
+            let v = match Capture::decode(cap) {
+                Capture::Local(r) => *regs.add(r as usize),
+                Capture::Up(j) => cur.closure_upval(j as usize),
+                Capture::SelfRef => cur,
+            };
+            c.closure_set_upval(i, v);
+        }
+        *regs.add(ra as usize) = c;
+        0
+    }
+}
+
+/// TAILCALL ra argc from tier-1 code: as jit_call, the closure's frame in
+/// place of this one (Vm::tail_frame); a primitive's value is returned by
+/// the native code.
+///
+/// # Safety
+/// As jit_call's.
+pub(crate) unsafe extern "C" fn jit_tail(ctx: *mut crate::jit::JitCtx, regs: *mut Value, ra: u64, argc: u64, resume: u64) -> u64 {
+    unsafe {
+        let (vm, st) = jit_vm(ctx);
+        let (ra, argc) = (ra as usize, argc as usize);
+        let args = std::slice::from_raw_parts(regs.add(ra + 1), argc);
+        let f = *regs.add(ra);
+        let callee = match closure_arity(f, argc) {
+            Some(proto) => Callee::Frame(f, proto, None),
+            None if !needs_resolving(f) => Callee::Value(f, None),
+            None => jit_resolve(vm, f, args),
+        };
+        match callee {
+            Callee::Frame(f, proto, owned) => {
+                // (the arguments are in the frame being overwritten)
+                let mut scratch = std::mem::take(&mut vm.scratch);
+                scratch.clear();
+                scratch.extend_from_slice(owned.as_deref().unwrap_or(args));
+                let done = vm.native_tail(st, f, proto, &scratch);
+                vm.scratch = scratch;
+                if !done {
+                    return crate::jit::NOT_MINE;
+                }
+                jit_next(ctx, st);
+                crate::jit::PUSHED
+            }
+            Callee::Value(f, owned) => jit_call_value(ctx, f, owned.as_deref().unwrap_or(args), resume as usize),
+            Callee::Failed(e) => {
+                vm.jit_pending = Some(JitPending::Error(e));
+                crate::jit::PENDING
+            }
+        }
+    }
+}
+
+/// RETURN from tier-1 code: pop the frame and deliver v to its caller, as
+/// Vm::do_return does (back across a segment boundary too). The caller's
+/// registers (ctx says where to resume), or 0 when the interpreter must do
+/// it (the bottom of the run, or a retry).
+///
+/// # Safety
+/// As jit_call's.
+pub(crate) unsafe extern "C" fn jit_return(ctx: *mut crate::jit::JitCtx, _regs: *mut Value, v: u64) -> u64 {
+    unsafe {
+        let (vm, st) = jit_vm(ctx);
+        let v = Value(v);
+        if v == Value::RETRY {
+            return 0;
+        }
+        match st.slot(F_PREV).as_fixnum() {
+            PREV_BOUNDARY => return 0,
+            PREV_SEG_START => {
+                let old = st.seg;
+                st.seg = old.seg_prev();
+                st.base = st.seg.seg_data();
+                st.fp = old.seg_prev_fp();
+                vm.give_segment(old);
+            }
+            p => st.fp = p as usize,
+        }
+        st.enter();
+        let call = *st.code.add(st.pc - 1);
+        *st.regs().add(a(call)) = v;
+        jit_next(ctx, st);
+        st.regs() as u64
+    }
+}
+
+/// Call a primitive or a data function (a keyword, a map…) for tier-1 code,
+/// as Vm::invoke does (st is at this frame already, for a primitive that
+/// looks at the stack or saves it before a native region).
+unsafe fn jit_call_value(ctx: *mut crate::jit::JitCtx, f: Value, args: &[Value], pc: usize) -> u64 {
+    unsafe {
+        let (vm, st) = jit_vm(ctx);
+        let prim = f.is(Kind::Primitive);
+        if prim && matches!(f.prim_index(), APPLY | EVAL | THROW | RESTART_FRAME | ABORT_FIBER) {
+            return crate::jit::NOT_MINE;
+        }
+        st.pc = pc;
+        let r = if prim { vm.call_prim(f, args) } else { vm.call_data(f, args) };
+        match r {
+            Ok(v) => {
+                if let Some(s) = vm.suspend.take() {
+                    vm.jit_pending = Some(JitPending::Suspend(s));
+                    return crate::jit::PENDING;
+                }
+                (*ctx).value = v.0;
+                crate::jit::VALUE
+            }
+            Err(e) => {
+                vm.jit_pending = Some(JitPending::Error(e));
+                crate::jit::PENDING
+            }
+        }
+    }
 }
 
 fn arity_error(f: Value, n: usize) -> Error {
@@ -464,15 +752,12 @@ impl Vm {
             scratch: Vec::new(),
             key_buf: Vec::new(),
             budget: BUDGET,
+            slice_start: std::time::Instant::now(),
             seen_attention: 0,
             prof_seen: 0,
             cur_st: std::ptr::null_mut(),
-            jit: crate::jit::JitCtx {
-                budget: std::ptr::null_mut(),
-                attention: safepoint::attention_ptr(),
-                seen: std::ptr::null(),
-                prims: [0; crate::jit::NPRIMS],
-            },
+            jit_pending: None,
+            jit: crate::jit::JitCtx::new(),
         }
     }
 
@@ -607,6 +892,68 @@ impl Vm {
         }
     }
 
+    /// push_frame for tier-1 code (jit_call), without the poll: native code
+    /// checks the safepoint. (Allocating, a rest list or a segment, is
+    /// safe here: allocation never collects.) False, changing nothing, on a
+    /// stack overflow, which the interpreter raises.
+    unsafe fn native_push(&mut self, st: &mut St, f: Value, proto: Value, args: &[Value]) -> bool {
+        unsafe {
+            let need = HDR + proto.proto_nregs();
+            let cur_end = st.fp + HDR + st.slot(F_PROTO).proto_nregs();
+            if cur_end + need <= st.seg.seg_capacity() {
+                st.set_resume(st.pc);
+                self.write_frame(st.base, cur_end, f, proto, st.fp as i64, args);
+                st.fp = cur_end;
+            } else {
+                let depth = st.seg.seg_depth() + cur_end;
+                if depth > MAX_STACK_WORDS {
+                    return false;
+                }
+                st.set_resume(st.pc);
+                let s = self.take_segment(need, (st.seg.seg_capacity() * 2).min(MAX_SEG_WORDS));
+                st.seg.seg_set_top(st.fp as i64);
+                s.seg_link(st.seg, st.fp, depth);
+                self.write_frame(s.seg_data(), 0, f, proto, PREV_SEG_START, args);
+                st.seg = s;
+                st.base = s.seg_data();
+                st.fp = 0;
+            }
+            st.enter();
+            true
+        }
+    }
+
+    /// tail_frame for tier-1 code (jit_tail), as native_push is push_frame's.
+    unsafe fn native_tail(&mut self, st: &mut St, f: Value, proto: Value, args: &[Value]) -> bool {
+        unsafe {
+            let need = HDR + proto.proto_nregs();
+            let prev = st.slot(F_PREV).as_fixnum();
+            if st.fp + need <= st.seg.seg_capacity() {
+                self.write_frame(st.base, st.fp, f, proto, prev, args);
+            } else {
+                let s = self.take_segment(need, (st.seg.seg_capacity() * 2).min(MAX_SEG_WORDS));
+                let new_prev = match prev {
+                    PREV_BOUNDARY => PREV_BOUNDARY,
+                    PREV_SEG_START => {
+                        s.seg_link(st.seg.seg_prev(), st.seg.seg_prev_fp(), st.seg.seg_depth());
+                        PREV_SEG_START
+                    }
+                    p => {
+                        st.seg.seg_set_top(p);
+                        s.seg_link(st.seg, p as usize, st.seg.seg_depth() + st.fp);
+                        PREV_SEG_START
+                    }
+                };
+                self.write_frame(s.seg_data(), 0, f, proto, new_prev, args);
+                st.seg = s;
+                st.base = s.seg_data();
+                st.fp = 0;
+            }
+            st.enter();
+            true
+        }
+    }
+
     /// Pop the current frame and deliver `val` to the caller.
     #[inline]
     unsafe fn do_return(&mut self, st: &mut St, val: Value) -> Flow {
@@ -704,7 +1051,9 @@ impl Vm {
             if self.budget <= 0 {
                 self.budget = BUDGET;
             }
-            if self.can_park() && (pausing || crate::sched::has_other_work(self.carrier)) {
+            if self.can_park()
+                && (pausing || (crate::sched::has_other_work(self.carrier) && self.slice_start.elapsed() >= MIN_SLICE))
+            {
                 // Time slice over: continue exactly here later.
                 // SAFETY: st describes the current frame.
                 unsafe { st.set_resume(st.pc) };
@@ -1360,18 +1709,21 @@ impl Vm {
 
     /// The tier-1 entry for `proto`, compiling it on first use. 1 = none.
     fn native_for(&mut self, proto: Value) -> usize {
-        let n = proto.proto_native();
-        if n != 0 {
-            return n;
-        }
+        // (each carrier's own table of the fast primitives, for its native
+        // code: filled the first time, before any return, since the code
+        // may have been compiled on another carrier)
         if self.jit.prims[0] == 0 {
             for (i, name) in crate::jit::FAST_PRIMS.iter().enumerate() {
                 let sym = rt().symbol(&mut self.m, None, name);
                 self.jit.prims[i] = self.core.lookup(sym).map(|v| v.var_root().0).unwrap_or(u64::MAX);
             }
         }
-        let entry = crate::jit::compile(proto).unwrap_or(1);
-        if proto.proto_set_native(entry) { entry } else { proto.proto_native() }
+        // (below MIN_ENTRY, other than 1, the word counts entries: entry_for)
+        let n = proto.proto_native();
+        if n >= crate::jit::MIN_ENTRY || n == 1 {
+            return n;
+        }
+        crate::jit::entry_for(proto)
     }
 
     /// The interpreter loop. With tier 1 on, each step first runs the frame's
@@ -1418,8 +1770,47 @@ impl Vm {
                     if st.native > 1 {
                         self.jit.budget = &mut self.budget;
                         self.jit.seen = &self.seen_attention;
-                        let f: crate::jit::NativeFn = std::mem::transmute(st.native);
-                        st.pc = f(st.regs(), st.consts, &self.jit, st.pc as u64) as usize;
+                        self.jit.vm = self as *mut Vm as u64;
+                        let r = crate::jit::enter(st.native, st.regs(), st.consts, &mut self.jit, st.pc as u64);
+                        // (calls and returns made natively: the frame it stopped
+                        // in; a tail call's is where its caller's was)
+                        let now = self.jit.cur_regs as *mut Value;
+                        if now != st.regs() || (*now.sub(HDR).add(F_PROTO)).proto_code().code_ptr() != st.code {
+                            st.switch_to(now);
+                        }
+                        st.pc = (r & !(crate::jit::POLL_FLAG | crate::jit::PENDING_FLAG)) as usize;
+                        if r & crate::jit::PENDING_FLAG != 0 {
+                            // a primitive called natively at this instruction
+                            // failed or asked to park: as if the interpreter
+                            // had called it
+                            let ins = *st.code.add(st.pc);
+                            st.pc += 1;
+                            let ra = a(ins);
+                            let flow = match self.jit_pending.take() {
+                                Some(JitPending::Error(e)) => self.handle_error(st, e, Some(Some(ra)))?,
+                                Some(JitPending::Suspend(s)) => self.suspend_here(st, s, if op(ins) == CALL { Some(ra) } else { None }),
+                                None => return Err(Error::fatal("tier 1 stopped for a primitive's result that isn't there", vec![])),
+                            };
+                            match flow {
+                                Flow::Next => continue,
+                                Flow::Done(v) => return Ok(Exit::Done(v)),
+                                Flow::Park => return Ok(Exit::Park),
+                                Flow::Yield => return Ok(Exit::Yield),
+                            }
+                        }
+                        if r & crate::jit::POLL_FLAG != 0 {
+                            // a callee's entry safepoint, as push_frame's
+                            let flow = match self.poll_slow(st, true) {
+                                Err(e) => self.handle_error(st, e, None)?,
+                                Ok(f) => f,
+                            };
+                            match flow {
+                                Flow::Next => continue,
+                                Flow::Done(v) => return Ok(Exit::Done(v)),
+                                Flow::Park => return Ok(Exit::Park),
+                                Flow::Yield => return Ok(Exit::Yield),
+                            }
+                        }
                     }
                 }
                 let ins = *st.code.add(st.pc);
@@ -1517,6 +1908,10 @@ impl Vm {
                     }
                     LOOP => {
                         st.pc = (st.pc as isize + sbx(ins)) as usize;
+                        // (a loop's turns count towards compiling its proto)
+                        if tier1 && st.native == 1 {
+                            st.native = crate::jit::entry_for(st.slot(F_PROTO));
+                        }
                         self.poll(st, false)
                     }
                     CALL => {

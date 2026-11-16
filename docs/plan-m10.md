@@ -130,3 +130,36 @@ baseline compared.
   that need named intermediates (escape analysis) can name them on the
   tree. Its cost: compiling and loading `http.norn` takes 46 ms against
   the baseline's 43 (tier 0), about 7% more, for the tree it builds.
+- **2, tier 1's calling convention: done,** with one change from the plan:
+  no eager compiling of every `defn`. Native functions use Cranelift's
+  `tail` convention. A call is a helper that works out the callee as the
+  interpreter does (vars, generic dispatch, classes, any arity), pushes a
+  closure's frame in the heap as `push_frame` does and `return_call`s into
+  its code, or calls a primitive and goes on; a return pops and
+  `return_call`s back into the caller at its resume point. `CLOSURE` runs
+  natively. The interpreter's state stays the source of truth (the helpers
+  keep it), so native code can stop anywhere; a primitive that fails or
+  parks stops it at that instruction without being called again
+  (`PENDING_FLAG`), a due safepoint with `POLL_FLAG`. Instead of compiling
+  each `defn` when it's defined, a proto is compiled once it has been
+  entered 100 times (calls and loop turns; `NORN_JIT_THRESHOLD`):
+  compiling on first run, as before, made `norn -e` start in 1.07 s at
+  tier 1 (0.54 s at 100; tier 0: 0.11 s) and loading `http.norn` 0.65× the
+  baseline (1.34× at 100). **Measured** (tier 1 against the baseline): a
+  closure call 1.41×, another module's function 1.26×, `try` 1.15×,
+  `binding` 1.12×, making an instance 1.10×; the programs 1.04–1.17×
+  (Mandelbrot 293 → 249 ms; SBCL is 2.2 ms); no tier-0 change beyond noise.
+  A plain call is at par (18 ns): two helper calls cost what the
+  interpreter's call did. Getting under that means pushing frames inline
+  for callees known at compile time, which part 3's direct linking
+  provides. The empty loop reads 0.88× (4.8 against 4.3 ns a turn) since
+  the switch to the `tail` convention.
+  **Found on the way:** (1) a primitive tail-called at the bottom of a run
+  ran twice (its value sent native code back to the TAILCALL, which the
+  interpreter ran again): an `alts!` that had already handed its value
+  over then parked forever (conc_test hung about one run in fourteen under
+  load); now the value returns through the `RETURN` that follows, with a
+  regression check in conc_test. (2) Time slices were 2000 reductions
+  only, which gave fast native code a fraction of a loaded carrier's time
+  (prof_test missed its busy fiber about one run in four in the full
+  suite): a slice now also lasts at least 0.5 ms (runtime.md §5.1).

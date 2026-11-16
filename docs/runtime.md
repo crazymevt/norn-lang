@@ -347,7 +347,7 @@ saw. Anything that needs a busy carrier's attention bumps that counter:
 
 | Slow path taken because… | Action |
 |---|---|
-| reduction budget (2000) used up | yield, if other fibers are waiting |
+| reduction budget (2000) used up | yield, if other fibers are waiting and the slice has run 0.5 ms |
 | stop-the-world requested | save stack top, block until the GC finishes |
 | `(gc)` or `NORN_GC_STRESS` | save stack top, request a collection, block |
 | fiber cancelled / interrupted | raise `Cancelled` / `Interrupted` |
@@ -466,7 +466,11 @@ that is only the seed compiler holding forms while it calls a macro.
   delivers the wake-up. An `alts!` shares one claim across its channels.
 - **The reactor, the blocking pool and the monitor thread** were built in
   M6 (§5.5).
-- **Preemption** via the reduction budget (§4.2): 2000 reductions per slice.
+- **Preemption** via the reduction budget (§4.2): a fiber yields after
+  2000 reductions, if other fibers are waiting, once its slice has run at
+  least 0.5 ms. Reductions alone favoured slow code: with tier 1's native
+  calls (M10), 2000 of them take about 100 µs, so a busy fiber got a
+  fraction of the share of interpreted ones on a loaded carrier.
 
 ### 5.2 Dynamic bindings and conveyance **[decided]**
 
@@ -1068,8 +1072,12 @@ reused, and a later delta can recognise them by address.
   values.
 
 *Compilation.*
-- On a proto's first execution when `NORN_TIER=1`. Tier 0 stays the default
-  until tier 1 has seen more use.
+- When `NORN_TIER=1`, once a proto has been entered 100 times (calls and
+  loop turns, counted in its native word; `NORN_JIT_THRESHOLD` sets it, 1
+  to 4000). Until M10 it was on first execution, which compiled all the
+  code that runs once: `norn -e` started in 1.07 s at tier 1 against 0.11
+  s at tier 0, and 0.54 s at 100. Tier 0 stays the default until tier 1
+  has seen more use.
 - Code goes into `MAP_JIT` memory (§7.4) and is never freed.
 - No relocations: constants and runtime addresses arrive through the
   arguments.
@@ -1084,17 +1092,46 @@ reused, and a later delta can recognise them by address.
 
 The core test session compiled 627 protos (516 KB of code), none rejected.
 
-*Next.* Calls and returns still go through the interpreter (hence the
-smaller gain on call-heavy code). The full design below — the push-frame +
-`return_call` convention and inline caches — keeps the same frame layout, so
-it can replace this piece by piece.
+**Calls, as built in M10 part 2.** Native functions use Cranelift's
+`tail` convention, and the interpreter enters them through a trampoline.
+
+- **A call** is a helper (`vm::jit_call`) that works out the callee as
+  `Vm::invoke` does (through vars, generic functions' dispatch and
+  classes). For a closure it pushes the frame in the heap, exactly as
+  `push_frame` does, and native code `return_call`s into the callee's code
+  at pc 0, after checking the entry safepoint itself. A primitive or data
+  function is called there and native code goes on with its value.
+- **A return** is a helper that pops the frame and `return_call`s into the
+  caller's code at its resume point. Tail calls replace the frame in place.
+  The native stack doesn't grow, however deep the Norn stack.
+- **`CLOSURE`** is a helper too: helpers may allocate, since allocation
+  never collects (§4.3).
+- **What goes back to the interpreter:** the bottom of a run, a callee not
+  compiled yet, a safepoint that's due (POLL_FLAG), a primitive that
+  failed or parked (PENDING_FLAG: the interpreter handles the error or
+  park at that instruction, without calling it again), `apply`, `eval`,
+  `throw` and the other primitives that need the interpreter's state, and
+  a stack overflow. The interpreter's state (`St`) stays the source of
+  truth: the helpers update it as they push and pop, so native code can
+  stop anywhere.
+- **Measured** against M10's baseline (`bench/compare.norn`, tier 1): a call
+  to a closure 24 → 17 ns, to another module's function 38 → 30 ns; the
+  programs 4–17% faster (Mandelbrot 293 → 249 ms, the ledger 206 → 176
+  ms); compiling and loading `http.norn` 49 → 36 ms with the threshold.
+  A plain call costs about what it did through the interpreter (18 ns):
+  the two helper calls are most of it. Pushing frames inline, for callees
+  known at compile time, belongs with direct linking (M10 part 3).
+
+*Next.* The full design below (inline caches, frames pushed inline) keeps
+the same frame layout, so it can replace this piece by piece.
 
 **Full design:**
 
 - **Input:** the compiler's ANF IR (design §8.3), lowered with the
   push-frame + `return_call` convention (§3.2).
-- **When:** `defn` at the REPL compiles to tier 1 eagerly once tier 1
-  exists. Hot tier-0 code (via a call counter) gets promoted.
+- **When:** hot tier-0 code gets promoted by a counter of entries (built:
+  see above). Compiling every `defn` eagerly was the plan; it would compile
+  code that runs once, which the counter avoids.
 - **How:** `cranelift-codegen` emits position-independent code into our own
   loader (§7.4). The same bytes serve the JIT and image code segments.
 - **Inline caches** for generic function calls, slot access (keyed on

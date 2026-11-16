@@ -192,6 +192,14 @@
     (is (= [:put-done] @log))
     (is (= 2 (take! c)))))
 
+;; Regression (tier 1): a primitive tail-called at the bottom of a fiber
+;; runs once. Its value used to send tier 1 back to the TAILCALL, which
+;; the interpreter ran again (a second put here; an alts! that had already
+;; handed its value over parked forever).
+(let [c (chan 4)]
+  (await (spawn-detached (put! c 1)))
+  (is (= [1 nil] [(poll! c) (poll! c)])))
+
 ;;; alts!
 (let [c (chan)]
   (is (= [:none :default] (alts! [c] :default :none))))

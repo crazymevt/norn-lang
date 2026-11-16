@@ -1110,6 +1110,7 @@ fn run_one(vm: &mut Vm, f: Value) {
     s.currents[vm.carrier].store(f.0, Ordering::Release);
     f.fiber_state().store(fiber::RUNNING, Ordering::Release);
     vm.current = f;
+    vm.slice_start = Instant::now();
     // SAFETY: NS holds a leaked &'static Namespace.
     vm.ns = unsafe { &*(f.word(fiber::NS) as *const Namespace) };
     vm.dyn_env = f.field(fiber::DYN);

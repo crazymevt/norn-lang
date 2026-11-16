@@ -473,9 +473,12 @@ Norn compiles your code to bytecode, and runs it in one of two ways:
 - **Tier 0**, the default, is a bytecode interpreter. It starts running
   code at once, with nothing to compile, and it runs everywhere, including
   platforms that forbid generating code at run time.
-- **Tier 1** compiles each function to native code with Cranelift the first
-  time it runs. Turn it on with the environment variable `NORN_TIER=1`.
-  Tier 1 targets 64-bit ARM macOS and 64-bit ARM and x86 Linux.
+- **Tier 1** compiles a function to native code with Cranelift once it
+  has run 100 times (calls and loop turns together), so code that runs
+  once, such as start-up and loading a module, isn't worth the compile.
+  Turn it on with the environment variable `NORN_TIER=1`, and set the
+  count with `NORN_JIT_THRESHOLD` (1 compiles everything the first time
+  it runs). Tier 1 targets 64-bit ARM macOS and 64-bit ARM and x86 Linux.
 
 ```sh
 NORN_TIER=1 norn bench/workloads.norn
@@ -511,9 +514,13 @@ M4:
 | 10,000 messages through a channel | 1.6 | 0.6 |
 
 Tight loops and call-heavy code gain 3 to 10 times. Library-heavy work
-barely moves. When this chapter was written, the author measured
-`(fib 20)` at 2.2 ms at tier 0 and 0.9 ms at tier 1 on the same kind of
-machine, while other work was running. Floats are still boxed, which is why
+barely moves. Since this survey, calls and returns between compiled
+functions stay in native code: a call to a closure takes 17 ns instead of
+24, and whole programs (a log report, a ledger, a static site,
+Mandelbrot) run 4–17% faster at tier 1 than they did. When this chapter
+was written, the author measured `(fib 20)` at 2.2 ms at tier 0 and 0.9 ms at tier 1 on the same kind of
+machine, while other work was running; with native calls, on an idle
+machine, it takes 1.2 ms and 0.45 ms. Floats are still boxed, which is why
 float arithmetic gains less than fixnum arithmetic.
 
 Tier 0 stays the default until tier 1 has seen more use. Try tier 1 on your
