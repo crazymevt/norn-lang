@@ -1,0 +1,148 @@
+(ns pulse.web
+  "pulse's HTTP side: a status page, and a JSON API for the targets.
+
+    GET    /                            the status page
+    GET    /api/targets                 every target, with its last day
+    POST   /api/targets                 {\"name\" \"url\" \"every_s\"}: watch one
+    GET    /api/targets/NAME/checks     its checks, newest first (?limit=)
+    POST   /api/targets/NAME/check      check it now
+    DELETE /api/targets/NAME            stop watching it"
+  (:require [norn.http :as http]
+            [norn.json :as json]
+            [norn.log :as log]
+            [norn.math :as math]
+            [norn.sqlite :as sql]
+            [norn.string :as str]
+            [norn.time :as t]
+            [norn.uri :as uri]
+            [pulse.check :as check]
+            [pulse.store :as store]))
+
+(def day-ms "A day in milliseconds." (* 24 60 60 1000))
+
+(defn- now-ms [] (t/epoch-ms (t/now)))
+
+;; ---- responses ----
+
+(defn- json-response
+  ([body] (json-response 200 body))
+  ([status body]
+   {:status status :headers {"content-type" "application/json"} :body (json/write-string body)}))
+
+(defn- problem [status message] (json-response status {:error message}))
+
+(defn- html-escape [s]
+  (str/escape (str s) {\& "&amp;" \< "&lt;" \> "&gt;" \" "&quot;" \' "&#39;"}))
+
+(defn- ago [ms]
+  (let [s (quot (- (now-ms) ms) 1000)]
+    (cond (< s 60) (str s "s ago")
+          (< s 3600) (str (quot s 60) "m ago")
+          :else (str (quot s 3600) "h ago"))))
+
+(defn- percent [x] (if x (str (/ (math/round (* x 1000)) 10.0) "%") "–"))
+
+(defn status-page
+  "The status page's HTML for summary (store/summary)."
+  [summary]
+  (str "<!doctype html><html><head><meta charset=\"utf-8\"><title>pulse</title>"
+       "<meta http-equiv=\"refresh\" content=\"30\">"
+       "<style>body{font:15px system-ui;margin:2em}td,th{padding:.3em 1em;text-align:left}"
+       ".up{color:#187a3a}.down{color:#b3261e}</style></head><body><h1>pulse</h1>"
+       (if (empty? summary)
+         "<p>Nothing watched yet: <code>pulse add NAME URL</code>.</p>"
+         (str "<table><tr><th>target</th><th>status</th><th>last check</th><th>uptime (24h)</th><th>avg</th></tr>"
+              (apply str
+                     (for [{:keys [name url last uptime avg-ms]} summary]
+                       (str "<tr><td><a href=\"" (html-escape url) "\">" (html-escape name) "</a></td>"
+                            (cond (nil? last) "<td>–</td><td>not yet</td>"
+                                  (:ok last) (str "<td class=\"up\">up " (:status last) "</td><td>" (ago (:at-ms last)) "</td>")
+                                  :else (str "<td class=\"down\">down " (html-escape (or (:status last) (:error last)))
+                                             "</td><td>" (ago (:at-ms last)) "</td>"))
+                            "<td>" (percent uptime) "</td><td>" (if avg-ms (str avg-ms " ms") "–") "</td></tr>")))
+              "</table>"))
+       "</body></html>"))
+
+;; ---- routes ----
+
+(defn- read-target [req]
+  (let [b (try (json/read-string (http/body-text req) :keywords false) (catch Error _ nil))]
+    (when (map? b)
+      {:name (get b "name") :url (get b "url") :every-s (or (get b "every_s") 60)})))
+
+(defn- valid-target [{:keys [name url every-s]}]
+  (cond (not (and (string? name) (seq name))) "name: a string is needed"
+        (not (and (string? url) (re-find #"^https?://" url))) "url: an http:// or https:// URL is needed"
+        (not (and (integer? every-s) (pos? every-s))) "every_s: a positive number of seconds is needed"))
+
+(defn- add-target [{:keys [db sup timeout-ms]} req]
+  (let [tg (read-target req)]
+    (if-let [bad (if tg (valid-target tg) "a JSON object is needed")]
+      (problem 400 bad)
+      (try
+        (let [tg (store/add-target! db (:name tg) (:url tg) (:every-s tg))]
+          (check/watch! sup db tg timeout-ms)
+          (log/info "watching" :target (:name tg) :url (:url tg))
+          (json-response 201 tg))
+        (catch sql/ConstraintError _
+          (problem 409 (str (:name tg) " is watched already")))))))
+
+(defn- limit-of [req]
+  (let [n (some-> (get (:query-params req) "limit") parse-long)]
+    (if (and n (pos? n)) (min n 1000) 100)))
+
+(defn- route
+  [{:keys [db sup] :as app} req]
+  (let [parts (mapv uri/decode (remove empty? (str/split (:path req) #"/")))]
+    (case [(:method req) (count parts)]
+      [:get 0] {:status 200 :headers {"content-type" "text/html; charset=utf-8"}
+                :body (status-page (store/summary db (- (now-ms) day-ms)))}
+      (cond
+        (not= "api" (first parts)) (problem 404 "not found")
+        (not= "targets" (second parts)) (problem 404 "not found")
+        :else
+        (let [[_ _ name what] parts
+              known (when name (store/target db name))]
+          (cond
+            (and (= 2 (count parts)) (= :get (:method req)))
+            (json-response (store/summary db (- (now-ms) day-ms)))
+
+            (and (= 2 (count parts)) (= :post (:method req)))
+            (add-target app req)
+
+            (and name (nil? known)) (problem 404 (str "no target " name))
+
+            (and (= 3 (count parts)) (= :delete (:method req)))
+            (do (check/unwatch! sup name)
+                (store/remove-target! db name)
+                (log/info "no longer watching" :target name)
+                {:status 204})
+
+            (and (= "checks" what) (= :get (:method req)))
+            (json-response (store/checks db name 0 (limit-of req)))
+
+            (and (= "check" what) (= :post (:method req)))
+            (json-response (check/check-now! sup name))
+
+            :else (problem 405 "not a method this takes")))))))
+
+(defn- logged
+  "handler, logging each request it answers."
+  [handler]
+  (fn [req]
+    (let [start (nano-time)
+          resp (handler req)]
+      (log/debug "request" :method (:method req) :path (:path req) :status (:status resp)
+                 :ms (quot (- (nano-time) start) 1000000))
+      resp)))
+
+(defn handler
+  "The HTTP handler for app, {:db :sup :timeout-ms}."
+  [app]
+  (logged (fn [req] (route app req))))
+
+(defn serve
+  "Serve app on port (0: any free one): the server (norn.http/serve's)."
+  [app host port]
+  (http/serve (handler app) :host host :port port
+              :on-error (fn [e req] (log/error "the handler failed" :path (:path req) :error (condition-message e)))))

@@ -1,0 +1,52 @@
+(ns pulse.web-test
+  (:require [norn.actor :as a]
+            [norn.json :as json]
+            [norn.string :as str]
+            [norn.test :refer [deftest is testing]]
+            [pulse.check :as check]
+            [pulse.fake-site :as fake :refer [url]]
+            [pulse.store :as store]
+            [pulse.web :as web]))
+
+(defn- call [handler method path & [body]]
+  (let [[path query] (str/split path #"\?" 2)
+        r (handler {:method method :path path :query query
+                    :query-params (if query (into {} (map (fn [kv] (str/split kv #"=" 2)) (str/split query #"&"))) {})
+                    :headers {} :body body})]
+    (assoc r :json (when (= "application/json" (get-in r [:headers "content-type"]))
+                     (json/read-string (:body r))))))
+
+(deftest the-api
+  (let [site (fake/start)
+        db (store/open ":memory:")
+        sup (check/start db 2000)
+        h (web/handler {:db db :sup sup :timeout-ms 2000})]
+    (testing "adding"
+      (let [r (call h :post "/api/targets" (json/write-string {:name "ok" :url (url site "/ok") :every_s 60}))]
+        (is (= 201 (:status r)))
+        (is (= {:name "ok" :url (url site "/ok") :every-s 60} (:json r))))
+      (is (= 409 (:status (call h :post "/api/targets" (json/write-string {:name "ok" :url (url site "/ok")}))))
+          "a name once")
+      (is (= 400 (:status (call h :post "/api/targets" "{\"name\": \"x\"}"))))
+      (is (= 400 (:status (call h :post "/api/targets" "not json")))))
+    (testing "looking"
+      (is (= ["ok"] (mapv :name (:json (call h :get "/api/targets")))))
+      (is (= 200 (:status (call h :post "/api/targets/ok/check"))))
+      (is (= 1 (count (:json (call h :get "/api/targets/ok/checks?limit=1")))))
+      (is (= 404 (:status (call h :get "/api/targets/nope/checks"))))
+      (is (= 404 (:status (call h :get "/elsewhere"))))
+      (is (= 405 (:status (call h :put "/api/targets/ok")))))
+    (testing "the status page"
+      (let [r (call h :get "/")]
+        (is (str/includes? (:body r) ">ok</a>"))
+        (is (str/includes? (:body r) "up 200"))))
+    (testing "a name to escape"
+      (is (= 201 (:status (call h :post "/api/targets" (json/write-string {:name "<b>&" :url (url site "/down")})))))
+      (is (str/includes? (:body (call h :get "/")) "&lt;b&gt;&amp;"))
+      (is (= 200 (:status (call h :get "/api/targets/%3Cb%3E%26/checks"))) "a name in a path is percent-decoded"))
+    (testing "removing"
+      (is (= 204 (:status (call h :delete "/api/targets/ok"))))
+      (is (= ["<b>&"] (mapv :name (:json (call h :get "/api/targets")))))
+      (is (= [[:check "<b>&"]] (mapv first (a/which-children sup))) "and its checker stopped"))
+    (a/stop-supervisor! sup)
+    (fake/stop site)))
