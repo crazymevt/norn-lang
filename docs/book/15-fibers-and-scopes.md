@@ -476,8 +476,11 @@ awaited or settled:
 (settle side-job) ; => {:error "bad input"}
 ```
 
-When a detached fiber fails, the runtime prints a line such as `Fiber 57
-failed: bad input` on standard error, so the failure isn't lost entirely.
+When a detached fiber fails with nobody waiting for it, the runtime
+prints a line such as `Fiber 57 failed: bad input` on standard error, so
+the failure isn't lost entirely. (A future's fiber, and the one
+`norn.async/pipeline` returns, keep their failure for whoever awaits them
+instead.)
 And when your program's main code finishes, the process exits without
 waiting for detached fibers that are still running.
 

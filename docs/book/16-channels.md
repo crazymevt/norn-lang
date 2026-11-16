@@ -539,8 +539,8 @@ the results for the values before the failing one still reach `to`; then
 the pipeline stops. The calls still running are cancelled, nothing more is
 taken from `from`, and `to` is closed, so a consumer sees the results end
 early. Await the fiber to find out why: it raises the error `f` failed
-with. Like any detached fiber that fails, it also prints a line on
-standard error.
+with. The fiber is yours to await, so its failure is kept for you, as a
+future's is, not printed as a detached fiber's would be.
 
 ```clojure
 (let [out (chan)

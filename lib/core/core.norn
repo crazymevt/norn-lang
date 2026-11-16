@@ -3862,12 +3862,18 @@
   (:doc "The class of futures, as future makes: deref, future-cancel and
   future-done? work on one. Its slots are internal."))
 
+(defn %spawn-held
+  "A fiber running (thunk), detached from any scope, whose outcome is held
+  for whoever awaits it: a failure isn't reported when it happens, as a
+  detached fiber's is (future and norn.async's pipeline start theirs so)."
+  [thunk]
+  ;; (in a scope of its own, which nobody joins)
+  (%scope-spawn (%scope) thunk))
+
 (defn %future [thunk]
   (let [done (chan)]
-    ;; (in a scope of its own, which nobody joins: its failure is for its
-    ;; deref, not reported when it happens)
     (make Future :done done
-          :fiber (%scope-spawn (%scope) (fn* [] (try (thunk) (finally (close! done))))))))
+          :fiber (%spawn-held (fn* [] (try (thunk) (finally (close! done))))))))
 
 (defmacro future
   "(future body…): body, run in a fiber of its own; deref (or @) waits

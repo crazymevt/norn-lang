@@ -244,6 +244,14 @@
     (is (= ":term\n" (:out r)) "one listener left still gets it")
     (is (= :term (:signal r)))))
 
+;; A pipeline's fiber is its caller's to await: f's error reaches them, and
+;; isn't also printed as a detached fiber's failure would be (quire
+;; finding).
+(when norn-exe
+  (let [r (proc/sh norn-exe "-e" "(do (require '[norn.async :as a]) (let [to (chan 4) p (a/pipeline 2 to (fn [x] (if (= x 3) (/ 1 0) x)) (a/to-chan! [1 2 3 4]))] (prn (a/into [] to)) (sleep 100) (prn (try (await p) (catch ArithmeticError _ :raised)))))")]
+    (is (= "[1 2]\n:raised\nnil\n" (:out r)))
+    (is (not (str/includes? (:err r) "failed")) "nothing on standard error")))
+
 ;; An error nothing handles shows where it happened: error's condition
 ;; has no trace of its own, and the fiber's end used to take its stack
 ;; after unwinding (quire finding: every trace was %finish-unwind).

@@ -14,9 +14,10 @@
   Returns a fiber that finishes when done."
   (^Fiber [^Channel ch coll] (onto-chan! ch coll true))
   (^Fiber [^Channel ch coll close?]
-   (spawn-detached
-     (loop [xs (seq coll)]
-       (if (and xs (put! ch (first xs))) (recur (next xs)) (when close? (close! ch)))))))
+   ;; (a fiber for its caller to await: a failure is theirs, not printed)
+   (%spawn-held
+    (fn [] (loop [xs (seq coll)]
+             (if (and xs (put! ch (first xs))) (recur (next xs)) (when close? (close! ch))))))))
 
 (defn to-chan! "A channel holding coll's items, closed after the last." ^Channel [coll]
   (let [ch (chan (max 1 (min 1024 (count coll))))] (onto-chan! ch coll) ch))
@@ -112,29 +113,32 @@
    (let [jobs (chan n)
          slots (chan n)]
      (dotimes [_ n] (offer! slots true))
-     (spawn-detached
-       (try
-         ;; a reader starts each call in a fiber of the scope once a slot
-         ;; is free and queues the fiber; the body puts the results on to
-         ;; in order, freeing the slot as each call ends. A call's failure
-         ;; comes back as a value, so it's raised in its turn; the scope
-         ;; then cancels the rest.
-         (with-scope [s]
-           (spawn s (loop []
-                      (let [v (take! from)]
-                        (if (nil? v)
-                          (close! jobs)
-                          (do (take! slots)
-                              (put! jobs (spawn s (handler-case [::value (f v)] (Error [c] [::failed c]))))
-                              (recur))))))
-           (loop []
-             (when-some [job (take! jobs)]
-               (let [[how r] (await job)]
-                 (put! slots true)
-                 (when (= how ::failed) (error r))
-                 (put! to r)
-                 (recur)))))
-         (finally (when close? (close! to))))))))
+     ;; (a fiber for its caller to await: f's error is theirs, not printed
+     ;; when the pipeline stops, maybe before they await it)
+     (%spawn-held
+      (fn []
+        (try
+          ;; a reader starts each call in a fiber of the scope once a slot
+          ;; is free and queues the fiber; the body puts the results on to
+          ;; in order, freeing the slot as each call ends. A call's failure
+          ;; comes back as a value, so it's raised in its turn; the scope
+          ;; then cancels the rest.
+          (with-scope [s]
+            (spawn s (loop []
+                       (let [v (take! from)]
+                         (if (nil? v)
+                           (close! jobs)
+                           (do (take! slots)
+                               (put! jobs (spawn s (handler-case [::value (f v)] (Error [c] [::failed c]))))
+                               (recur))))))
+            (loop []
+              (when-some [job (take! jobs)]
+                (let [[how r] (await job)]
+                  (put! slots true)
+                  (when (= how ::failed) (error r))
+                  (put! to r)
+                  (recur)))))
+          (finally (when close? (close! to)))))))))
 
 ;; ---- mult: one source, many taps ------------------------------------------------------------
 
