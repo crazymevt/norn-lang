@@ -10,16 +10,16 @@
   (when-not (and (integer? (:coefficient x)) (integer? (:scale x)))
     (error "Decimal expects an integer coefficient and scale")))
 
-(defn decimal? "Is x a Decimal?" [x] (instance? Decimal x))
+(defn decimal? "Is x a Decimal?" ^Boolean [x] (instance? Decimal x))
 
 (defn decimal
   "coefficient × 10^(-scale). One argument constructs a scale-zero decimal."
-  ([coefficient] (decimal coefficient 0))
-  ([coefficient scale] (Decimal :coefficient coefficient :scale scale)))
+  (^Decimal [^Integer coefficient] (decimal coefficient 0))
+  (^Decimal [^Integer coefficient ^Integer scale] (Decimal :coefficient coefficient :scale scale)))
 
 (defn parse
   "Parse decimal text exactly, including optional sign and exponent."
-  [s]
+  ^Decimal [^String s]
   (if-let [[_ sign whole fraction only-fraction exponent]
            (re-matches #"([+-]?)(?:([0-9]+)(?:\.([0-9]*))?|\.([0-9]+))(?:[eE]([+-]?[0-9]+))?" s)]
     (let [fraction (or fraction only-fraction "")
@@ -30,7 +30,7 @@
 
 (defn text
   "Write decimal text preserving scale. Negative scales use exponent notation."
-  [x]
+  ^String [^Decimal x]
   (let [{:keys [coefficient scale]} (instance->map x)
         digits (str (abs coefficient))
         sign (if (neg? coefficient) "-" "")
@@ -58,9 +58,9 @@
     [(times-power (:coefficient a) (- scale (:scale a)))
      (times-power (:coefficient b) (- scale (:scale b))) scale]))
 
-(defn add "a + b, exactly: the scale is the larger of theirs." [a b] (let [[a b scale] (align a b)] (decimal (+ a b) scale)))
-(defn subtract "a - b, exactly: the scale is the larger of theirs." [a b] (let [[a b scale] (align a b)] (decimal (- a b) scale)))
-(defn multiply "a × b, exactly: the scale is the sum of theirs (1.5 × 2.25 is 3.375)." [a b] (decimal (* (:coefficient a) (:coefficient b)) (+ (:scale a) (:scale b))))
+(defn add "a + b, exactly: the scale is the larger of theirs." ^Decimal [^Decimal a ^Decimal b] (let [[a b scale] (align a b)] (decimal (+ a b) scale)))
+(defn subtract "a - b, exactly: the scale is the larger of theirs." ^Decimal [^Decimal a ^Decimal b] (let [[a b scale] (align a b)] (decimal (- a b) scale)))
+(defn multiply "a × b, exactly: the scale is the sum of theirs (1.5 × 2.25 is 3.375)." ^Decimal [^Decimal a ^Decimal b] (decimal (* (:coefficient a) (:coefficient b)) (+ (:scale a) (:scale b))))
 
 (defn- digit-count [n] (count (str (abs n))))
 
@@ -69,7 +69,7 @@
 (defn compare
   "Compare by numeric value, ignoring scale. Values of different magnitude
   compare without rescaling, so any two decimals can be compared."
-  [a b]
+  ^Integer [^Decimal a ^Decimal b]
   (let [ca (:coefficient a) cb (:coefficient b) sa (sign ca) sb (sign cb)]
     (cond (not= sa sb) (norn.core/compare sa sb)
           (zero? sa) 0
@@ -109,16 +109,16 @@
 (defn quantize
   "Change scale, rounding when necessary. Default :half-even. Other modes
   are :half-up, :toward-zero, :floor, :ceiling and :unnecessary."
-  ([x scale] (quantize x scale :half-even))
-  ([x scale mode] (let [shift (- scale (:scale x)) n (:coefficient x)]
-                    (decimal (if (neg? shift)
-                               (scale-down n 1 (- shift) mode)
-                               (times-power n shift)) scale))))
+  (^Decimal [^Decimal x ^Integer scale] (quantize x scale :half-even))
+  (^Decimal [^Decimal x ^Integer scale ^Keyword mode] (let [shift (- scale (:scale x)) n (:coefficient x)]
+                                                        (decimal (if (neg? shift)
+                                                                   (scale-down n 1 (- shift) mode)
+                                                                   (times-power n shift)) scale))))
 
 (defn divide
   "Divide to an explicit scale, rounding as in quantize."
-  ([a b scale] (divide a b scale :half-even))
-  ([a b scale mode]
+  (^Decimal [^Decimal a ^Decimal b ^Integer scale] (divide a b scale :half-even))
+  (^Decimal [^Decimal a ^Decimal b ^Integer scale ^Keyword mode]
    (let [shift (+ scale (:scale b) (- (:scale a))) a (:coefficient a) b (:coefficient b)]
      (decimal (if (neg? shift)
                 (scale-down a b (- shift) mode)

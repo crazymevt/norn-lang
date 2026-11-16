@@ -11,15 +11,15 @@
 
 (defclass Semaphore () ((permits) (tokens)))
 
-(defn semaphore "A semaphore with n permits." [n]
+(defn semaphore "A semaphore with n permits." ^Semaphore [^Integer n]
   (let [tokens (chan n)]
     (dotimes [_ n] (offer! tokens true))
     (Semaphore :permits n :tokens tokens)))
 
-(defn acquire! "Take a permit, parking until one is free." [s] (take! (:tokens s)) nil)
-(defn try-acquire! "Take a permit if one is free now: true if it did." [s] (some? (poll! (:tokens s))))
-(defn release! "Give a permit back." [s] (offer! (:tokens s) true) nil)
-(defn available "How many permits are free now." [s]
+(defn acquire! "Take a permit, parking until one is free." [^Semaphore s] (take! (:tokens s)) nil)
+(defn try-acquire! "Take a permit if one is free now: true if it did." ^Boolean [^Semaphore s] (some? (poll! (:tokens s))))
+(defn release! "Give a permit back." [^Semaphore s] (offer! (:tokens s) true) nil)
+(defn available "How many permits are free now." ^Integer [^Semaphore s]
   ;; counted by draining and refilling; a snapshot only
   (loop [n 0] (if (poll! (:tokens s)) (recur (inc n)) (do (dotimes [_ n] (offer! (:tokens s) true)) n))))
 
@@ -30,35 +30,35 @@
 
 (defclass Latch () ((count) (done)))
 
-(defn latch "A latch that opens after n count-down! calls." [n]
+(defn latch "A latch that opens after n count-down! calls." ^Latch [^Integer n]
   (let [l (Latch :count (atom n) :done (chan))]
     (when (<= n 0) (close! (:done l)))
     l))
 
-(defn count-down! "Count the latch down by one; at zero it opens." [l]
+(defn count-down! "Count the latch down by one; at zero it opens." [^Latch l]
   (when (zero? (swap! (:count l) (fn [c] (max 0 (dec c))))) (close! (:done l)))
   nil)
 
 (defn await-latch
   "Park until the latch opens; with timeout-ms, give up after that long.
   True if it opened."
-  ([l] (take! (:done l)) true)
-  ([l timeout-ms]
+  (^Boolean [^Latch l] (take! (:done l)) true)
+  (^Boolean [^Latch l ^Integer timeout-ms]
    (let [[_ ch] (alts! [(:done l) (timeout timeout-ms)])] (= ch (:done l)))))
 
-(defn latch-count "How many count-downs are left." [l] (deref (:count l)))
+(defn latch-count "How many count-downs are left." ^Integer [^Latch l] (deref (:count l)))
 
 ;; ---- barriers ------------------------------------------------------------------------------
 
 (defclass Barrier () ((parties) (state)))
 
-(defn barrier "A reusable barrier for n fibers: each arrive! parks until all n have arrived." [n]
+(defn barrier "A reusable barrier for n fibers: each arrive! parks until all n have arrived." ^Barrier [^Integer n]
   (Barrier :parties n :state (atom {:waiting 0 :gate (chan)})))
 
 (defn arrive!
   "Wait at the barrier until all its parties are here; then they all go
   on and the barrier resets. Returns this fiber's arrival index."
-  [b]
+  ^Integer [^Barrier b]
   (let [n (:parties b)
         [old _] (swap-vals! (:state b)
                             (fn [{:keys [waiting] :as st}]
@@ -75,16 +75,16 @@
 (defn rate-limiter
   "A token bucket: rate tokens a second, holding at most burst (default
   rate) at once."
-  ([rate] (rate-limiter rate rate))
-  ([rate burst] (RateLimiter :rate rate :burst burst :state (atom {:tokens (float burst) :at (nano-time)}))))
+  (^RateLimiter [^Number rate] (rate-limiter rate rate))
+  (^RateLimiter [^Number rate ^Number burst] (RateLimiter :rate rate :burst burst :state (atom {:tokens (float burst) :at (nano-time)}))))
 
 (defn- refill [{:keys [tokens at]} rate burst now]
   {:tokens (min (float burst) (+ tokens (* rate (/ (- now at) 1e9)))) :at now})
 
 (defn try-take!
   "Take n tokens (default 1) if they're available now: true if it did."
-  ([rl] (try-take! rl 1))
-  ([rl n]
+  (^Boolean [^RateLimiter rl] (try-take! rl 1))
+  (^Boolean [^RateLimiter rl ^Number n]
    (let [now (nano-time) took (atom false)]
      (swap! (:state rl)
             (fn [st]
@@ -96,8 +96,8 @@
 
 (defn take-token!
   "Take n tokens (default 1), sleeping until they're available."
-  ([rl] (take-token! rl 1))
-  ([rl n]
+  ([^RateLimiter rl] (take-token! rl 1))
+  ([^RateLimiter rl ^Number n]
    (loop []
      (when-not (try-take! rl n)
        (let [missing (- n (:tokens (deref (:state rl))))]
@@ -112,7 +112,7 @@
 (defn once
   "A function that runs f the first time it's called, and afterwards
   returns that result. Callers that arrive while f runs wait for it."
-  [f]
+  ^Function [f]
   (let [state (atom nil)]
     (fn []
       (let [mine (chan)

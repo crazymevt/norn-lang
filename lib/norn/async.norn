@@ -12,29 +12,29 @@
 (defn onto-chan!
   "Put coll's items on ch, then close ch (unless close? is false).
   Returns a fiber that finishes when done."
-  ([ch coll] (onto-chan! ch coll true))
-  ([ch coll close?]
+  (^Fiber [^Channel ch coll] (onto-chan! ch coll true))
+  (^Fiber [^Channel ch coll close?]
    (spawn-detached
      (loop [xs (seq coll)]
        (if (and xs (put! ch (first xs))) (recur (next xs)) (when close? (close! ch)))))))
 
-(defn to-chan! "A channel holding coll's items, closed after the last." [coll]
+(defn to-chan! "A channel holding coll's items, closed after the last." ^Channel [coll]
   (let [ch (chan (max 1 (min 1024 (count coll))))] (onto-chan! ch coll) ch))
 
 (defn reduce
   "f reduced over everything taken from ch until it closes (blocks the
   calling fiber)."
-  [f init ch]
+  [f init ^Channel ch]
   (loop [acc init]
     (let [v (take! ch)] (if (nil? v) acc (recur (f acc v))))))
 
-(defn into "coll with everything taken from ch until it closes." [coll ch] (reduce conj coll ch))
+(defn into "coll with everything taken from ch until it closes." [coll ^Channel ch] (reduce conj coll ch))
 
 (defn pipe
   "Take from from and put on to until from closes; then close to (unless
   close? is false). Returns to."
-  ([from to] (pipe from to true))
-  ([from to close?]
+  (^Channel [^Channel from ^Channel to] (pipe from to true))
+  (^Channel [^Channel from ^Channel to close?]
    (spawn-detached
      (loop []
        (let [v (take! from)]
@@ -43,13 +43,13 @@
 
 (defn map
   "A channel of (f v) for each v taken from ch (closed when ch closes)."
-  [f ch & {:keys [buffer] :or {buffer 0}}]
+  ^Channel [f ^Channel ch & {:keys [buffer] :or {buffer 0}}]
   (let [out (chan buffer)]
     (spawn-detached
       (loop [] (let [v (take! ch)] (if (nil? v) (close! out) (do (put! out (f v)) (recur))))))
     out))
 
-(defn filter "A channel of the values from ch for which pred is true." [pred ch & {:keys [buffer] :or {buffer 0}}]
+(defn filter "A channel of the values from ch for which pred is true." ^Channel [pred ^Channel ch & {:keys [buffer] :or {buffer 0}}]
   (let [out (chan buffer)]
     (spawn-detached
       (loop [] (let [v (take! ch)] (cond (nil? v) (close! out) (pred v) (do (put! out v) (recur)) :else (recur)))))
@@ -57,7 +57,7 @@
 
 (defn transduce-chan
   "A channel of what transducer xf makes of the values from ch."
-  [xf ch & {:keys [buffer] :or {buffer 0}}]
+  ^Channel [xf ^Channel ch & {:keys [buffer] :or {buffer 0}}]
   (let [out (chan buffer)
         rf (xf (fn ([o] o) ([o v] (if (put! o v) o (reduced o)))))]
     (spawn-detached
@@ -70,7 +70,7 @@
 
 (defn merge
   "One channel carrying the values of all chs, closed once they all close."
-  [chs & {:keys [buffer] :or {buffer 0}}]
+  ^Channel [^(? Collection) chs & {:keys [buffer] :or {buffer 0}}]
   (let [out (chan buffer) left (atom (count chs))]
     (doseq [ch chs]
       (spawn-detached
@@ -84,7 +84,7 @@
 
 (defn split
   "Two channels: the values from ch for which pred is true, and the rest."
-  [pred ch]
+  ^Vector [pred ^Channel ch]
   (let [yes (chan) no (chan)]
     (spawn-detached
       (loop []
@@ -104,8 +104,8 @@
   is false), and awaiting the returned fiber raises f's error. A consumer
   reading to sees it end early, so await the fiber after reading to
   learn why."
-  ([n to f from] (pipeline n to f from true))
-  ([n to f from close?]
+  (^Fiber [^Integer n ^Channel to f ^Channel from] (pipeline n to f from true))
+  (^Fiber [^Integer n ^Channel to f ^Channel from close?]
    (when-not (pos-int? n)
      (error TypeError :message (str "pipeline expects n to be a positive integer, got " (pr-str n))
             :expected "a positive integer" :value n))
@@ -143,7 +143,7 @@
 (defn mult
   "Copy every value from ch to each tap (see tap). A slow tap holds up the
   others; give it a buffer or a :dropping channel."
-  [ch]
+  ^Mult [^Channel ch]
   (let [m (Mult :source ch :taps (atom {}))]
     (spawn-detached
       (loop []
@@ -156,10 +156,10 @@
     m))
 
 (defn tap "Start copying m's values to ch (closing it when the source closes, unless close? is false). Returns ch."
-  ([m ch] (tap m ch true))
-  ([m ch close?] (swap! (:taps m) assoc ch close?) ch))
+  (^Channel [^Mult m ^Channel ch] (tap m ch true))
+  (^Channel [^Mult m ^Channel ch close?] (swap! (:taps m) assoc ch close?) ch))
 
-(defn untap "Stop copying to ch." [m ch] (swap! (:taps m) dissoc ch) nil)
+(defn untap "Stop copying to ch." [^Mult m ^Channel ch] (swap! (:taps m) dissoc ch) nil)
 
 ;; ---- pub/sub: values routed by topic --------------------------------------------------------
 
@@ -167,7 +167,7 @@
 
 (defn pub
   "Route each value v from ch to the channels subscribed to (topic-fn v)."
-  [ch topic-fn]
+  ^Pub [^Channel ch topic-fn]
   (let [p (Pub :source ch :topic-fn topic-fn :subs (atom {}))]
     (spawn-detached
       (loop []
@@ -180,7 +180,7 @@
     p))
 
 (defn sub "Subscribe ch to topic on p. Returns ch."
-  ([p topic ch] (sub p topic ch true))
-  ([p topic ch close?] (swap! (:subs p) update topic (fn [m] (assoc (or m {}) ch close?))) ch))
+  (^Channel [^Pub p topic ^Channel ch] (sub p topic ch true))
+  (^Channel [^Pub p topic ^Channel ch close?] (swap! (:subs p) update topic (fn [m] (assoc (or m {}) ch close?))) ch))
 
-(defn unsub "Unsubscribe ch from topic." [p topic ch] (swap! (:subs p) update topic dissoc ch) nil)
+(defn unsub "Unsubscribe ch from topic." [^Pub p topic ^Channel ch] (swap! (:subs p) update topic dissoc ch) nil)
