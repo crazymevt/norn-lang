@@ -99,7 +99,7 @@ prims! {
     "queue?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Queue)));
     "transient?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Transient)));
     "seq?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_cons() || (a[0].is_obj() && matches!(a[0].obj_kind(), Kind::EmptyList | Kind::VecSeq | Kind::Range))));
-    "sequential?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_cons() || (a[0].is_obj() && matches!(a[0].obj_kind(), Kind::EmptyList | Kind::VecSeq | Kind::Range | Kind::Vector | Kind::Stream))));
+    "sequential?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_cons() || (a[0].is_obj() && matches!(a[0].obj_kind(), Kind::EmptyList | Kind::VecSeq | Kind::Range | Kind::Vector | Kind::Stream | Kind::Queue))));
     "coll?" 1 Some(1) => |_, a| Ok(Value::bool(seq::is_seqable(a[0]) && !a[0].is_nil() && !a[0].is(Kind::String)));
     "seqable?" 1 Some(1) => |_, a| Ok(Value::bool(seq::is_seqable(a[0])));
     "var?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Var)));
@@ -121,7 +121,7 @@ prims! {
     "seq" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "seq", a); } Ok(seq::seq(&mut vm.m, a[0])?) };
     "count" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "count", a); } Ok(Value::fix(seq::count(a[0])? as i64)) };
     "nth" 2 Some(3) => nth;
-    "get" 2 Some(3) => |vm, a| { crate::owned::check(vm, a[0], false)?; if a[0].is(Kind::Sorted) { let r = if a[0].sorted_is_set() { crate::sorted::find(a[0].sorted_root(), a[1])?.map(|_| a[1]) } else { crate::sorted::get(a[0], a[1])? }; return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))); } Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) };
+    "get" 2 Some(3) => |vm, a| { crate::owned::check(vm, a[0], false)?; if a[0].is(Kind::Transient) { return transient_get(vm, a); } if a[0].is(Kind::Sorted) { let r = if a[0].sorted_is_set() { crate::sorted::find(a[0].sorted_root(), a[1])?.map(|n| n.field(0)) } else { crate::sorted::get(a[0], a[1])? }; return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))); } Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) };
     // sorted maps and sets, queues, transients (colls.rs, sorted.rs)
     "sorted-map" 0 VAR => |vm, a| { if a.len() % 2 != 0 { return Err(Error::new("sorted-map expects key/value pairs")); } let mut s = norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, false); for kv in a.chunks(2) { s = crate::sorted::assoc(&mut vm.m, s, kv[0], kv[1])?; } Ok(s) };
     "sorted-set" 0 VAR => |vm, a| { let mut s = norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, true); for &k in a { s = crate::sorted::assoc(&mut vm.m, s, k, k)?; } Ok(s) };
@@ -499,14 +499,21 @@ prims! {
     // (x printed as a record, whatever print-object says: its default)
     "%pr-plain" 1 Some(1) => |vm, a| { forced(a)?; Ok(str_new(&mut vm.m, &pr_str(a[0], true))) };
     "%class-hook!" 2 Some(2) => |_, a| { expect(a[0], Kind::Class, "%class-hook!")?; norn_rt::clos::class_hook(a[0], int(a[1], "%class-hook!")? as u64); Ok(a[0]) };
+    "%class-unhook!" 2 Some(2) => |_, a| { expect(a[0], Kind::Class, "%class-unhook!")?; norn_rt::clos::class_unhook(a[0], int(a[1], "%class-unhook!")? as u64); Ok(a[0]) };
+    "%class-flag?" 2 Some(2) => |_, a| Ok(Value::bool(norn_rt::clos::class_flag(a[0], int(a[1], "%class-flag?")? as u64)));
+    "%class-defaults" 1 Some(1) => |vm, a| { expect(a[0], Kind::Class, "%class-defaults")?; let l = a[0].class_field(norn_rt::clos::class::LAYOUT); Ok(vec_from_slice(&mut vm.m, norn_rt::clos::layout_defaults(l))) };
     "%class-hooked?" 2 Some(2) => |_, a| Ok(Value::bool(norn_rt::clos::class_hooked(a[0], int(a[1], "%class-hooked?")? as u64)));
     "slot-value" 2 Some(2) => |vm, a| slot_value_prim(vm, a[0], a[1]);
     // (slot-value without the MOP's hook: the standard method's)
     "%slot-value-basic" 2 Some(2) => |vm, a| slot_value(vm, a[0], a[1]);
     "%slot-ref" 2 Some(2) => |vm, a| slot_ref(vm, a[0], a[1]);
-    "with" 1 VAR => |vm, a| { expect(a[0], Kind::Instance, "with")?; if a.len() % 2 != 1 { return Err(Error::new("with expects an instance and slot/value pairs")); } crate::owned::check(vm, a[0], false)?; Ok(norn_rt::clos::instance_with(&mut vm.m, a[0], &a[1..], vm.current)?) };
+    "with" 1 VAR => |vm, a| { expect(a[0], Kind::Instance, "with")?; if typed(a[0]) { return Err(typed_call(vm, "%with-typed", &WITH_TYPED, a)); } with_raw(vm, a) };
+    // (with, not checking the slots' :type: %with-typed's, after it has)
+    "%with" 1 VAR => |vm, a| { expect(a[0], Kind::Instance, "with")?; with_raw(vm, a) };
     // owned mutable objects (owned.rs; design §4.2)
-    "%set-slot!" 3 Some(3) => |vm, a| crate::owned::set_slot(vm, a[0], a[1], a[2]);
+    "%set-slot!" 3 Some(3) => |vm, a| { if typed(a[0]) { return Err(typed_call(vm, "%set-slot-typed", &SET_SLOT_TYPED, a)); } crate::owned::set_slot(vm, a[0], a[1], a[2]) };
+    // (%set-slot!, not checking the slot's :type: %set-slot-typed's, after it has)
+    "%set-slot-unchecked!" 3 Some(3) => |vm, a| crate::owned::set_slot(vm, a[0], a[1], a[2]);
     "%release!" 1 Some(1) => |vm, a| crate::owned::release(vm, a[0]);
     "%share!" 2 Some(2) => |vm, a| crate::owned::share(vm, a[0], a[1]);
     "%owner" 1 Some(1) => |_, a| Ok(crate::owned::owner(a[0]));
@@ -1365,6 +1372,25 @@ fn transient_op(vm: &mut Vm, t: Value, op: TOp) -> Result<Value> {
     Ok(t)
 }
 
+/// `(get t k default?)` on a transient, which reads it as Clojure lets it
+/// (as nth, contains? and count do): its items so far.
+fn transient_get(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    use norn_rt::colls::*;
+    let t = a[0];
+    transient_check(vm, t)?;
+    let dflt = a.get(2).copied().unwrap_or(Value::NIL);
+    if t.word(T_KIND) == TV {
+        let n = t.word(T_COUNT) as usize;
+        return Ok(index_of(a[1]).filter(|&i| i < n).map(|i| t.field(T_DATA).arr_get(i)).unwrap_or(dflt));
+    }
+    let c = t.field(T_DATA);
+    if c.is(Kind::Sorted) {
+        let r = if c.sorted_is_set() { crate::sorted::find(c.sorted_root(), a[1])?.map(|n| n.field(0)) } else { crate::sorted::get(c, a[1])? };
+        return Ok(r.unwrap_or(dflt));
+    }
+    Ok(get(c, a[1]).unwrap_or(dflt))
+}
+
 /// `(persistent! t)`: the finished collection; t can't be used again.
 fn persistent(vm: &mut Vm, t: Value) -> Result<Value> {
     use norn_rt::colls::*;
@@ -1420,6 +1446,24 @@ fn nth(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     if a[0].is(Kind::Instance) {
         return collection_op(vm, "nth", a);
     }
+    if a[0].is(Kind::Transient) {
+        // (a transient vector reads its buffer; a map or set, as nth on one)
+        use norn_rt::colls::*;
+        let t = a[0];
+        transient_check(vm, t)?;
+        if t.word(T_KIND) != TV {
+            let mut b = a.to_vec();
+            b[0] = t.field(T_DATA);
+            return nth(vm, &b);
+        }
+        let i = int(a[1], "nth")?;
+        let n = t.word(T_COUNT) as i64;
+        return match (i >= 0 && i < n, a.get(2)) {
+            (true, _) => Ok(t.field(T_DATA).arr_get(i as usize)),
+            (false, Some(&d)) => Ok(d),
+            (false, None) => Err(Error::of("IndexError", format!("Index out of bounds: {i}")).with("index", crate::vm::ErrData::Int(i))),
+        };
+    }
     let i = int(a[1], "nth")?;
     let r = if i < 0 { None } else { seq::nth(a[0], i as usize)? };
     match (r, a.get(2)) {
@@ -1432,6 +1476,9 @@ fn nth(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 fn assoc(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     if a.len() % 2 != 1 {
         return Err(Error::new("assoc expects a collection and key/value pairs"));
+    }
+    if typed(a[0]) {
+        return Err(typed_call(vm, "%with-typed", &WITH_TYPED, a));
     }
     let mut c = a[0];
     if c.is_nil() {
@@ -1506,8 +1553,15 @@ fn conj(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     Ok(c)
 }
 
-fn contains(_: &mut Vm, a: &[Value]) -> Result<Value> {
+fn contains(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let (c, k) = (a[0], a[1]);
+    if c.is(Kind::Transient) {
+        transient_check(vm, c)?;
+        if c.word(norn_rt::colls::T_KIND) == norn_rt::colls::TV {
+            return Ok(Value::bool(index_of(k).is_some_and(|i| i < c.word(norn_rt::colls::T_COUNT) as usize)));
+        }
+        return contains(vm, &[c.field(norn_rt::colls::T_DATA), k]);
+    }
     Ok(Value::bool(if c.is_nil() {
         false
     } else if c.is(Kind::Map) {
@@ -1642,7 +1696,8 @@ fn subs(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         None => n as i64,
     };
     if start < 0 || end < start || end as usize > n {
-        return Err(Error::new(format!("String index out of range: {start}..{end} of {n}")));
+        let bad = if start < 0 || start as usize > n { start } else { end };
+        return Err(Error::of("IndexError", format!("String index out of range: {start}..{end} of {n}")).with("index", crate::vm::ErrData::Int(bad)));
     }
     if ascii {
         let out = &s[start as usize..end as usize];
@@ -1815,6 +1870,32 @@ fn slot_ref(vm: &mut Vm, inst: Value, i: Value) -> Result<Value> {
 }
 
 static SLOT_VALUE_USING_CLASS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+static WITH_TYPED: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+static SET_SLOT_TYPED: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+
+/// Is x an instance of a class with a slot :type to check?
+#[inline]
+fn typed(x: Value) -> bool {
+    x.is(Kind::Instance) && norn_rt::clos::class_flag(x.instance_class(), norn_rt::clos::class::FLAG_TYPED)
+}
+
+/// Core's function `name` called in the primitive's place with its
+/// arguments (to check slot types, in Norn, before doing what it does).
+fn typed_call(vm: &mut Vm, name: &str, cell: &'static std::sync::OnceLock<Value>, a: &[Value]) -> Error {
+    let var = vm.core_fn(name, cell);
+    let f = if var.is(Kind::Var) { var.var_root() } else { var };
+    let args = vec_from_slice(&mut vm.m, a);
+    Error::call(f, args)
+}
+
+/// `(with inst :k v …)`, the slots' types checked already (or none).
+fn with_raw(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    if a.len() % 2 != 1 {
+        return Err(Error::new("with expects an instance and slot/value pairs"));
+    }
+    crate::owned::check(vm, a[0], false)?;
+    Ok(norn_rt::clos::instance_with(&mut vm.m, a[0], &a[1..], vm.current)?)
+}
 
 /// `(slot-value inst k)`; for a class whose metaclass hooks it (M9 part
 /// 9.5), slot-value-using-class instead, called in this primitive's place.

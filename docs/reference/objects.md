@@ -8,7 +8,8 @@
 a class. An empty superclass list uses `StandardObject`. Multiple
 inheritance uses C3 linearization to determine the class precedence list.
 Redefining the class keeps its identity, and existing instances see the
-current slot layout.
+current slot layout. When a redefinition adds a slot and instances already
+exist, the slot's `:initform` runs once, then, to give them its value.
 
 A slot specification is a symbol or a list such as
 `(width :initform 1 :reader width)`. The slot options control initialization, access, and equality.
@@ -16,11 +17,12 @@ A slot specification is a symbol or a list such as
 | Option | Meaning |
 | --- | --- |
 | `:initarg :k` | Keyword accepted at construction. It defaults to a keyword made from the slot name. |
-| `:initform expr` | Default expression for a slot omitted at construction. |
+| `:initform expr` | Default expression for a slot omitted at construction. It runs each time an instance needs it, never when the class is defined. |
 | `:required true` | Require an argument if the slot has no default. |
 | `:reader name` | Define a generic function that reads the slot. |
 | `:compare false` | Exclude the slot from structural equality and hashing. |
 | `:mutable true` | Allow in-place slot updates on instances of a class declared with `(:mutable)`. |
+| `:type T` | Check the slot's value, as a signature's `^T` is checked, whenever an instance is made (by `make`, `with` or `assoc`) or the slot is set with `set-slot!` or `update-slot!`. `T` is a class, `Any`, `(? T)`, `(U A B…)`, `(Vec T)`, `(Map K V)` or `(-> A… R)`; a function type checks only that the value is a function. A mismatch signals `ContractError` naming the class, the slot, the type and the value. Its names are resolved when the first instance is made, so a slot may name its own class. A class without `:type` slots pays nothing for the check. |
 
 Instances compare by class and slot values by default.
 `(:equality :identity)` compares instances by identity. An instance

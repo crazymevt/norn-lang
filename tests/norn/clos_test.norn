@@ -208,6 +208,41 @@
 (is (= :mixin (who (derived))))
 (is (= 1 (:v (derived))))
 
+;; An initform runs when an instance needs it: not when the class is
+;; defined or redefined, but for a slot a redefinition adds, once, when
+;; instances made before it exist.
+(def initforms-run (atom 0))
+(defclass counted () ((a :initform (swap! initforms-run inc))))
+(defclass counted () ((a :initform (swap! initforms-run inc)) (b :initform 2)))
+(is (= 0 @initforms-run) "defining and redefining run none")
+(def counted-1 (counted))
+(is (= [1 1] [@initforms-run (:a counted-1)]))
+(defclass counted () ((a :initform (swap! initforms-run inc)) (b :initform 2) (c :initform (swap! initforms-run inc))))
+(is (= [2 2] [@initforms-run (:c counted-1)]) "a new slot's, for the instance made before")
+(defclass counted () ((a :initform (swap! initforms-run inc)) (b :initform 2) (c :initform (swap! initforms-run inc)) (d)))
+(is (= [2 2] [@initforms-run (:c counted-1)]) "once: a slot the old layout had keeps its value")
+
+;; A slot's :type is checked, as a signature's type is, when an instance is
+;; made, copied with changes, or has a slot set.
+(defn slot-violation [thunk]
+  (try (thunk) nil (catch ContractError e [(:function e) (:position e) (:expected e) (:value e)])))
+(defclass typed-node () ((n :type Integer) (label :type (? String)) (xs :type (Vec Integer) :initform [])
+                                           (next :type (? typed-node))))
+(is (= 2 (:n (:next (typed-node :n 1 :next (typed-node :n 2))))) "a slot may name its own class")
+(is (= ["clos-test/typed-node" "its slot :n" "Integer" "1"] (slot-violation (fn [] (typed-node :n "1")))))
+(is (= "a vector of Integer" (nth (slot-violation (fn [] (typed-node :n 1 :xs [1 :x]))) 2)))
+(is (= "nil or String" (nth (slot-violation (fn [] (with (typed-node :n 1) :label :x))) 2)))
+(is (= "Integer" (nth (slot-violation (fn [] (assoc (typed-node :n 1) :n 1.5))) 2)))
+(is (= "Integer" (nth (slot-violation (fn [] (make typed-node :n nil))) 2)))
+(defclass typed-box () ((v :type Integer :mutable true :initform 0)) (:mutable))
+(let [b (typed-box)]
+  (is (= ["its slot :v" "Integer" "x"] (subvec (slot-violation (fn [] (set-slot! b :v "x"))) 1 4)))
+  (is (= "Integer" (nth (slot-violation (fn [] (update-slot! b :v str))) 2)))
+  (set-slot! b :v 5)
+  (is (= 6 (update-slot! b :v inc))))
+(defclass typed-node () ((n)))
+(is (= "any" (:n (typed-node :n "any"))) "a redefinition without types checks nothing")
+
 ;;; dispatch is safe and live across fibers on all carriers
 (defgeneric work (x))
 (defmethod work ((x Integer)) :v1)

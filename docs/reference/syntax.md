@@ -189,3 +189,11 @@ Annotations can also express optional values `^(? T)`, unions
 `(defcontract name (fn-of [arg-contract…] result-contract))` to attach a
 contract built from classes, predicates, or combinators such as `nilable`,
 `any-of`, `all-of`, `vec-of`, and `map-of`.
+
+A collection contract, `^(Vec T)` or `^(Map K V)`, checks the collection in
+place and passes on the argument itself. Only a function type, `^(-> A R)`
+or `fn-of`, wraps the value, so that each later call is checked. Blame for
+such a call names a module too: a function passed in as an argument blames
+the module that passed it for a bad result, and the receiving function's
+module for a bad argument; a function given back as a result blames the
+giving module for a bad result, and the caller for a bad argument.

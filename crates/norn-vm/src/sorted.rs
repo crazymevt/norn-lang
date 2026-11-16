@@ -67,14 +67,15 @@ pub(crate) fn find(mut n: Value, key: Value) -> Result<Option<Value>> {
     Ok(None)
 }
 
-/// `n` with `key` → `val` (replacing an existing value). The flag says
-/// whether the key is new.
+/// `n` with `key` → `val` (replacing an existing value, but keeping the
+/// key already there, as Clojure does: `(sorted-set 1 1.0)` is `#{1}`,
+/// since `compare` finds them equal). The flag says whether the key is new.
 fn insert(m: &mut Mutator, n: Value, key: Value, val: Value) -> Result<(Value, bool)> {
     if n.is_nil() {
         return Ok((node_new(m, key, val, Value::NIL, Value::NIL), true));
     }
     Ok(match compare(key, n.field(N_KEY))? {
-        Ordering::Equal => (node_new(m, key, val, n.field(N_LEFT), n.field(N_RIGHT)), false),
+        Ordering::Equal => (node_new(m, n.field(N_KEY), val, n.field(N_LEFT), n.field(N_RIGHT)), false),
         Ordering::Less => {
             let (l, added) = insert(m, n.field(N_LEFT), key, val)?;
             let n2 = with_children(m, n, l, n.field(N_RIGHT));
@@ -141,6 +142,10 @@ pub(crate) fn get(s: Value, key: Value) -> Result<Option<Value>> {
 }
 
 pub(crate) fn assoc(m: &mut Mutator, s: Value, key: Value, val: Value) -> Result<Value> {
+    // (a set that has the key already is unchanged: the first one stays)
+    if s.sorted_is_set() && find(s.sorted_root(), key)?.is_some() {
+        return Ok(s);
+    }
     let (root, added) = insert(m, s.sorted_root(), key, val)?;
     Ok(sorted_new(m, s.sorted_count() + usize::from(added), root, s.sorted_is_set()))
 }

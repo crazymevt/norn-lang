@@ -241,6 +241,11 @@ impl From<&str> for Failure {
 
 impl From<String> for Error {
     fn from(msg: String) -> Error {
+        // (the runtime's sequence functions say a value isn't a collection
+        // in text: that's a TypeError, as (conj 1 2) is)
+        if msg.starts_with("Don't know how to create a seq from") || msg.contains(" not supported on ") {
+            return Error::of("TypeError", msg);
+        }
         Error::new(msg)
     }
 }
