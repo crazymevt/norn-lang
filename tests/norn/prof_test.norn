@@ -21,8 +21,8 @@
     (is (< 10 (:samples profile)) "about two a ms per busy carrier, fewer when the machine is busy")
     (is (= 500 (:interval-us profile)))
     (is (some (fn [[s _]] (= "prof-test/spin" (peek s))) (:stacks profile)) "spin was running")
-    (is (not-any? (fn [[s _]] (some #{"norn.prof/sample"} s)) (:stacks profile))
-        "its fiber's stacks start at f: what called sample is left out")
+    (is (not-any? (fn [[s _]] (and (some #{"norn.prof/sample"} s) (not= ["norn.prof/sample"] s))) (:stacks profile))
+        "its fiber's stacks start at f: what called sample is left out (a sample in sample is its own)")
     (is (= (:samples profile) (reduce + (vals (:stacks profile)))))
     (let [h (first (filter (fn [e] (= "prof-test/spin" (:name e))) (prof/hottest profile)))]
       (is (pos? (:self h)))

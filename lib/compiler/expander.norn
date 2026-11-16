@@ -274,7 +274,7 @@
 
 ;; ---- expansion ----
 
-(declare expand)
+(declare expand expand-plain)
 
 (defn- expand-body [ss] (doall (map expand ss)))
 
@@ -386,7 +386,7 @@
         [_ bv & body] (mapv (fn [x] (syn/add-scope x sc)) xs)
         pairs (binding-pairs bv "letrec*")
         us (mapv (fn [[id _]] (check-binder id "letrec*") (let [u (local-sym id)] (bind! id {:local u}) u)) pairs)
-        inits (mapv (fn [[_ init]] (expand init)) pairs)]
+        inits (mapv (fn [[_ init]] (expand-plain init)) pairs)]
     (apply list 'letrec* (vec (interleave us inits)) (expand-body body))))
 
 (defn- expand-core [form s xs]
@@ -400,7 +400,7 @@
     "def" (let [id (nth xs 1 nil)]
             (when-not (and id (syn/identifier? id)) (fail s "First argument to def must be a symbol"))
             (let [sig (atom ::none)
-                  value (fn [x] (binding [*fn-signature* (when (zero? *phase*) sig)] (expand x)))
+                  value (fn [x] (binding [*fn-signature* (when (zero? *phase*) sig)] (expand-plain x)))
                   init (case (count xs)
                          2 nil
                          3 [(value (nth xs 2))]
@@ -498,8 +498,8 @@
                  args)
        ;; the usual case: plain data with the call's scopes, in and out
        ;; (what the result keeps of the arguments keeps their places)
-       (syn/%raw-syntax-from (apply m (map syn/%raw-e args)) scopes (syn/syntax-loc s)
-                             (filterv syn/%raw? args))
+       ;; (and its constants, written once, theirs: syn/%atom-place)
+       (syn/%raw-syntax-from (apply m (map syn/%raw-e args)) scopes (syn/syntax-loc s) (vec args))
        (precise-step m s args))
      access)))
 
@@ -515,12 +515,16 @@
           ;; one set of scopes — a defsyntax template that hands a datum
           ;; macro the user's x and its own (let …) mustn't lose x's scopes)
           ids (atom {})
+          ;; (a constant, by value: given back when written once)
+          consts (atom {})
           record (fn record [x ops depth]
                    ;; x's data, noting which syntax (and which pending scope
                    ;; changes not yet made to it) it came from
                    (let [d (raw-datum x)]
                      (when (and (syn/syntax? x) (symbol? d) (not (syn/%raw? x)))
                        (swap! ids update d conj (if (seq ops) (syn/%change-scopes x ops) x)))
+                     (when (and (syn/syntax? x) (or (keyword? d) (string? d) (number? d)))
+                       (swap! consts update d conj x))
                      (when (and (syn/syntax? x) (compound? (syn/%raw-e x)))
                        (swap! seen update (%identity-hash d) conj [d x ops])
                        ;; (a raw object's parts have its scopes: nothing to note)
@@ -534,6 +538,7 @@
           result (apply m args)
           known @seen
           names @ids
+          written @consts
           back (fn back [x]
                  (cond (syn/syntax? x) x
                        (symbol? x)
@@ -547,7 +552,8 @@
                        (if-let [[_ stx ops] (some (fn [k] (when (identical? (first k) x) k)) (get known (%identity-hash x)))]
                          (if (seq ops) (syn/%change-scopes stx ops) stx)
                          (syn/datum->syntax s (rebuild x back)))
-                       :else (syn/datum->syntax s x)))]
+                       :else (let [cs (get written x)]
+                               (if (and (seq cs) (nil? (next cs))) (first cs) (syn/datum->syntax s x)))))]
       (back result))))
 
 ;; ---- checking core forms' shapes (8.3) ----
@@ -656,40 +662,96 @@
     (let [v (resolve-global h)]
       (when (and v (macro? v)) v))))
 
+(declare expand-list)
+
+;; ---- coverage (M9b part 3) ----
+;;
+;; With coverage on (norn test --coverage), each top-level form from a file
+;; coverage reports is expanded with *cover-file* naming it, and the first
+;; list form starting on each line (within the form around it) becomes
+;; (do (norn.core/%cover! id) form): that line's counter, made as it's
+;; compiled, counts each run. Lines no code comes from have none.
+
+(def ^:dynamic *cover-file*
+  "While coverage is on: the file (as coverage reports it) the form being
+  expanded is from, or nil: not counted."
+  nil)
+
+(def ^:dynamic ^:private *cover-line*
+  "The line the counted form around this one starts on."
+  nil)
+
+(def ^:dynamic ^:private *cover-plain*
+  "True while a def's value or a letrec* init is expanded: its own form
+  isn't wrapped, as they must stay fn* forms (a contract's, a letrec*'s)."
+  false)
+
+(defn- expand-counted
+  "List syntax s, expanded, counted (see above) when it starts a line."
+  [s x]
+  (let [l (syn/syntax-line s)
+        plain *cover-plain*]
+    (if (or (nil? l) (= l *cover-line*) (pos? *phase*))
+      (binding [*cover-plain* false] (expand-list s x))
+      (let [f (binding [*cover-line* l *cover-plain* false] (expand-list s x))
+            id (when-not plain (%cover-line! *cover-file* l))]
+        (if id (list 'do (list 'norn.core/%cover! id) f) f)))))
+
+(defn- expand-plain
+  "Syntax s expanded with its own form left as it is (not counted)."
+  [s]
+  (binding [*cover-plain* true] (expand s)))
+
+(defn- count-atom
+  "r, the expansion of syntax s (a name or a constant, in an expression's
+  place), counted when it starts a line (a branch's :else \"large\", a
+  loop's acc)."
+  [s r]
+  (let [l (syn/syntax-line s)]
+    (if (or (nil? l) (= l *cover-line*) (pos? *phase*) *cover-plain*)
+      r
+      (if-let [id (%cover-line! *cover-file* l)] (list 'do (list 'norn.core/%cover! id) r) r))))
+
 (defn expand
   "Syntax s, fully expanded: kernel forms and calls, for the compiler."
   [s]
   (let [x (syn/syntax-e s)]
-    (cond (symbol? x)
-          (if-let [b (resolve-local s)]
-            (:local b)
-            (global-ref s))
-          (seq? x)
-          (if (empty? x)
-            ()
-            (let [xs (vec x)
-                  h (first xs)
-                  hs (when (syn/identifier? h)
-                       ;; (syntax-quote qualifies kernel forms the reader doesn't
-                       ;; know as such: for-syntax, a core macro too, and
-                       ;; quote-syntax; ns/quote-syntax, naming no var, is the form)
-                       (let [e (syn/syntax-e h)]
-                         (cond (= e 'norn.core/for-syntax) 'for-syntax
-                               (and (namespace e) (contains? specials (symbol (name e))) (nil? (resolve-global h)))
-                               (symbol (name e))
-                               :else e)))]
-              (cond (nil? hs) (apply list (expand-body xs))
-                    (resolve-local h) (apply list (expand-body xs))
-                    (contains? specials hs) (expand-core (name hs) s xs)
-                    :else (let [v (resolve-global h)]
-                            (if (and v (macro? v))
-                              (expand (macro-step v s))
-                              (do (when v (check-not-later-macro h v))
-                                  (apply list (expand-body xs))))))))
+    (cond (seq? x)
+          (cond (empty? x) ()
+                *cover-file* (expand-counted s x)
+                :else (expand-list s x))
           (vector? x) (mapv expand x)
           (map? x) (into {} (map (fn [[k v]] [(expand k) (expand v)])) x)
           (set? x) (into #{} (map expand) x)
-          :else x)))
+          :else (let [r (if (symbol? x)
+                          (if-let [b (resolve-local s)]
+                            (:local b)
+                            (global-ref s))
+                          x)]
+                  (if *cover-file* (count-atom s r) r)))))
+
+(defn- expand-list
+  "List syntax s (x its parts), expanded."
+  [s x]
+  (let [xs (vec x)
+        h (first xs)
+        hs (when (syn/identifier? h)
+             ;; (syntax-quote qualifies kernel forms the reader doesn't
+             ;; know as such: for-syntax, a core macro too, and
+             ;; quote-syntax; ns/quote-syntax, naming no var, is the form)
+             (let [e (syn/syntax-e h)]
+               (cond (= e 'norn.core/for-syntax) 'for-syntax
+                     (and (namespace e) (contains? specials (symbol (name e))) (nil? (resolve-global h)))
+                     (symbol (name e))
+                     :else e)))]
+    (cond (nil? hs) (apply list (expand-body xs))
+          (resolve-local h) (apply list (expand-body xs))
+          (contains? specials hs) (expand-core (name hs) s xs)
+          :else (let [v (resolve-global h)]
+                  (if (and v (macro? v))
+                    (expand (macro-step v s))
+                    (do (when v (check-not-later-macro h v))
+                        (apply list (expand-body xs))))))))
 
 ;; ---- the top level ----
 
@@ -837,6 +899,32 @@
   [text src ns-form]
   (declare-module! text src ns-form))
 
+(def ^:private cover-files
+  "src → the file coverage reports it as (or false), as cover-file found."
+  (atom {}))
+
+(defn- cover-file
+  "The file coverage reports code from src as: a file under the current
+  folder, unless it's a test (name_test.norn); an embedded library's
+  source file, lib/…, when it's here (in the Norn checkout); else nil."
+  [src]
+  (let [known (get @cover-files src)]
+    (if (some? known)
+      (or known nil)
+      (let [n (count src)
+            cwd (str (:cwd (%sys-info)) "/")
+            f (cond (contains? #{"<string>" "<editor>" "<repl>"} src) nil
+                    (= "<" (subs src 0 (min 1 n)))
+                    (let [lib (subs src 1 (dec n))
+                          p (str "lib/" (apply str (map (fn [c] (if (= c \.) "/" (str c))) lib)) ".norn")]
+                      (when (%fs-info p) p))
+                    (and (> n 10) (= "_test.norn" (subs src (- n 10)))) nil
+                    (= "/" (subs src 0 (min 1 n))) (when (= cwd (subs src 0 (min n (count cwd)))) src)
+                    (= ".." (subs src 0 (min 2 n))) nil
+                    :else src)]
+        (swap! cover-files assoc src (or f false))
+        f))))
+
 (defn- eval-located
   "Evaluate syntax s read from src, noting where (for errors and the
   definitions index). text, when given, is the whole source text: a
@@ -849,7 +937,8 @@
          span (syn/syntax-span s)]
      (%set-location! (str src ":" line))
      (%note-definition! d src line (when (and text pos span) (subs text pos (+ pos span))))
-     (eval s))))
+     (binding [*cover-file* (when (%cover-on?) (cover-file src))]
+       (eval s)))))
 
 ;; ---- the compiled-module cache (8.6) ----
 ;;
@@ -1005,7 +1094,9 @@
         text (%reader-text r)
         key (module-key text src nsym d)
         _ (swap! modules assoc-in [nsym :key] key)
-        dir *cache-dir*
+        ;; (none for a module coverage counts: cached code has no counters,
+        ;; or another process's)
+        dir (when-not (and (%cover-on?) (cover-file src)) *cache-dir*)
         file (when dir (cache-file dir nsym src))
         cached (when file (read-cache file key))]
     (if cached

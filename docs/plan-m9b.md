@@ -145,3 +145,25 @@ shape and 4's op).
   speedscope reads (not opened in speedscope here). For M10, the same
   profile: contract wrappers (`%wrap-for/fn`) are about 10% self,
   `norn.regex/details` 7–10%.
+- **3, coverage: done,** a little differently from the plan: no `COUNT`
+  instruction. With coverage on, the expander puts `(norn.core/%cover!
+  id)` before the first form starting on each line (inside the form
+  around it; a name or constant alone on a line too, in an expression's
+  place), id a counter in Rust made as the line is compiled. So nothing
+  changed in the bytecode, the verifier or the JIT, and it runs at either
+  tier (the decision said tier 0 because a new instruction would have
+  needed tier 1's support). A `def`'s value and a `letrec*` init stay
+  bare `fn*` forms (contracts and letrec* need them). Counted: files
+  under the current folder but not `_test.norn` files, and in a Norn
+  checkout the standard library (`<norn.json>` is `lib/norn/json.norn`);
+  those skip the module cache. `norn test --coverage` turns it on first
+  thing (in the CLI, before the project loads); `--lcov FILE`; `norn.cover`
+  (`start!`, `counts`, `summary`, `report`, `lcov`). Found on the way: a
+  `defmacro`'s result gave its constants the call's place (an interned
+  `:else` can't be traced by identity), so a branch like `:else "large"`
+  had no line of its own; a constant written once among the arguments now
+  keeps its place (`syn/%atom-place`, and the same in the precise path).
+  Done-check: `norn test --coverage` on `tests/norn` reports the standard
+  library (68 modules, 6,723 of 7,485 lines, 89.8%), every check passing;
+  its lcov file is consistent (LF/LH match its DA lines). Not opened in
+  an editor's coverage view here (no lcov tools on this machine).

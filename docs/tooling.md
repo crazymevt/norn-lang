@@ -15,7 +15,7 @@ also substitute `./target/release/norn` after [building it](getting-started.md#b
 | `norn expand --steps -e 'EXPR'` | Show macro expansion steps. This command also accepts a source filename in place of `-e 'EXPR'`. |
 | `norn fmt [PATH…]` | Format source files. Add `--check` to report files that need changes. |
 | `norn lint [PATH…]` | Report source diagnostics, including unresolved names and unused imports. |
-| `norn test [PATH…]` | Discover and run tests. Options include `--only REGEX`, `--serial`, `--tap`, and `--junit FILE`. |
+| `norn test [PATH…]` | Discover and run tests. Options include `--only REGEX`, `--serial`, `--tap`, `--junit FILE`, `--coverage` (which lines of the code under the current folder the tests ran) and `--lcov FILE` (the same as an lcov tracefile). |
 | `norn check [PATH…]` | Run formatting checks, lint, tests, and examples registered in the metadata of loaded definitions. |
 | `norn new NAME [--dir DIR] [--app \| --lib] [--no-git]` | Make a new project, ready to run, test and package. See [Projects and dependencies](#projects-and-dependencies). |
 | `norn run [ARGS…]` | Call the project's `:main` with the arguments. Its integer result is the exit status. |

@@ -97,6 +97,11 @@ prims! {
     "%prof-start!" 1 Some(1) => |_, a| crate::prof::start(int(a[0], "%prof-start!")?);
     "%prof-stop!" 0 Some(0) => |vm, _| Ok(crate::prof::stop(&mut vm.m));
     "%prof-active?" 0 Some(0) => |_, _| Ok(Value::bool(crate::prof::active()));
+    "%cover-on!" 0 Some(0) => |_, _| { crate::cover::turn_on(); Ok(Value::NIL) };
+    "%cover-on?" 0 Some(0) => |_, _| Ok(Value::bool(crate::cover::on()));
+    "%cover-line!" 2 Some(2) => |_, a| { expect(a[0], Kind::String, "%cover-line!")?; Ok(crate::cover::line_id(a[0].as_str(), int(a[1], "%cover-line!")?.max(0) as u32)) };
+    "%cover!" 1 Some(1) => |_, a| { crate::cover::hit(a[0].as_fixnum()); Ok(Value::NIL) };
+    "%cover-counts" 0 Some(0) => |vm, _| Ok(crate::cover::counts(&mut vm.m));
     "list?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_cons() || a[0].is(Kind::EmptyList)));
     "vector?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Vector)));
     "map?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Map) || (a[0].is(Kind::Sorted) && !a[0].sorted_is_set())));

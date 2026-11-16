@@ -51,7 +51,8 @@
   place loc, like %raw-syntax, except that its parts that are the very
   data of one of the raw syntax objects in origins (a vector: the macro's
   arguments) keep that one's place, and so the places of their own parts:
-  an is in a deftest's body is where it was written."
+  an is in a deftest's body is where it was written. A constant written
+  once among them keeps its place too (%atom-place)."
   [d scopes loc origins]
   (%instance Syntax [d scopes loc nil (compound? d) nil (when (and (compound? d) (seq origins)) {:origins origins})]))
 
@@ -69,6 +70,16 @@
 ;; raw props tree)
 (defn %raw-e "Syntax s's datum, its parts as they are (pending scopes not passed on)." [s] (%slot-ref s 0))
 (defn %raw? "Is syntax s raw (plain data inside)?" [s] (%slot-ref s 4))
+
+(defn %atom-place
+  "Where constant x (a string, keyword or number in a macro's result) was
+  written, when one of the macro's arguments (raw syntax objects) is x and
+  no other is: an interned keyword can't be told apart by identity, but an
+  :else written once is that one. nil otherwise."
+  [x args]
+  (when (or (keyword? x) (string? x) (number? x))
+    (let [ms (filter (fn [a] (= x (%slot-ref a 0))) args)]
+      (when (and (seq ms) (nil? (next ms))) (%slot-ref (first ms) 2)))))
 
 (defn syntax-e
   "The datum of syntax s, with its parts still syntax objects."
@@ -89,7 +100,7 @@
                                                       (%instance Syntax [x scopes (%slot-ref a 2) nil true (%slot-ref a 5) (%slot-ref a 6)])))
                                             origins)
                                       (%instance Syntax [x scopes loc nil true nil tree]))
-                                  (%instance Syntax [x scopes loc nil false nil nil])))))
+                                  (%instance Syntax [x scopes (or (%atom-place x origins) loc) nil false nil nil])))))
               :else (wrap-parts e (fn [x] (%instance Syntax [x scopes loc nil (compound? x) nil nil])))))
       (let [p (%slot-ref s 3)]
         (if p (wrap-parts e (fn [x] (change-scopes x p))) e)))))

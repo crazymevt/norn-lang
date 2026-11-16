@@ -258,6 +258,12 @@ pub fn run() {
         run_entry(norn);
     }
 
+    // `norn test --coverage`: count lines from the start, before the project
+    // and the test runner load anything (norn.cover).
+    if args.first().map(String::as_str) == Some("test") && args.iter().any(|a| a == "--coverage") {
+        eval_raw(norn, "(%cover-on!)", "user");
+    }
+
     // The project this run belongs to (M8 part 8.10): its paths and its
     // packages' go on the library path. (norn deps resolves it itself.)
     if args.first().map(String::as_str) != Some("deps") {

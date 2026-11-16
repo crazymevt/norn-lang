@@ -10,6 +10,7 @@ pub mod math;
 pub mod cst;
 pub mod compiler;
 pub mod conc;
+pub mod cover;
 pub mod eval;
 pub mod ext;
 pub mod ffi;

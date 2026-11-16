@@ -398,6 +398,85 @@ ok 4 - shop.cart-test/adding
 and one `testcase` per test, while the usual report still goes to standard
 output. Most CI systems read one of these two formats.
 
+## Which lines ran: coverage
+
+Passing tests say the code they ran is right. Coverage says which code
+they ran. `norn test --coverage` counts each line of your project's code
+as the tests run it, and adds a report after the results. Here is a
+project with one module and one test:
+
+```clojure
+(ns geo.shapes)
+
+(defn area
+  "The area of a shape: :square or :circle, of side or radius x."
+  [kind x]
+  (case kind
+    :square (* x x)
+    :circle (* 3.14159 x x)
+    (throw (ex-info "No such shape" {:kind kind}))))
+
+(defn describe [kind x]
+  (let [a (area kind x)]
+    (cond (< a 1) "tiny"
+          (< a 100) "small"
+          :else "large")))
+```
+
+<!-- skip -->
+```clojure
+(ns geo.shapes-test
+  (:require [norn.test :refer [deftest is]]
+            [geo.shapes :as s]))
+
+(deftest areas
+  (is (= 25 (s/area :square 5)))
+  (is (= "small" (s/describe :square 5))))
+```
+
+```text
+$ norn test --coverage
+tests/shapes_test.norn                      2 checks  ok
+1 test, 2 checks: 2 passed, 0 failed, 0 errors
+
+coverage: 8 of 11 lines (72.7%) in 1 file
+  src/geo/shapes.norn      8/11     72.7%  missed: 8-9, 15
+```
+
+No test asks for a circle, an unknown shape or a large one, so lines 8, 9
+and 15 never ran. A line counts when code compiled from it runs. The
+`defn` lines count when the module loads, and the line with `case` counts
+each time `area` is called. A line with no code of its own has no count,
+and is neither hit nor missed. Comments, blank lines, docstrings and
+parameter vectors are like that.
+
+`--lcov FILE` also writes the counts as an lcov tracefile, the format
+`genhtml`, editors' coverage views and CI services read:
+
+```sh
+norn test --coverage --lcov coverage.info
+```
+
+```text
+TN:
+SF:/Users/you/geo/src/geo/shapes.norn
+DA:1,2
+DA:3,1
+DA:6,2
+…
+LF:11
+LH:8
+end_of_record
+```
+
+Coverage counts the files under the current folder, but not the test files
+themselves, and in a checkout of Norn, the standard library's modules.
+`norn test --coverage` turns counting on before anything loads, at either
+tier. Counted modules are compiled fresh rather than taken from the module
+cache. Counting makes code run more slowly, so use it when you want the
+report, not on every run. `norn.cover` has the same reports as functions:
+`counts`, `report` and `lcov`.
+
 ## Properties
 
 Example-based tests check the cases you thought of. Property-based tests
@@ -684,6 +763,8 @@ formatter and linter are covered in
 - `norn test` runs `tests/` in parallel by file, with `--only`, `--serial`,
   `--tap` and `--junit FILE`. Its exit status says whether everything
   passed.
+- `norn test --coverage` reports which lines of your code the tests ran,
+  and `--lcov FILE` writes the counts for other tools.
 - At the REPL, `run-tests` prints a report and `run-ns`, `run-file` and
   `run-files` return results as data.
 - `use-fixtures` wraps tests with `:each` and `:once` fixtures. Put cleanup

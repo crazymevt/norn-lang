@@ -27,7 +27,7 @@
 ;;;;   test --serial` runs everything one at a time.
 
 (ns norn.test
-  (:require [norn.io :as io] [norn.string :as str] [norn.walk])
+  (:require [norn.cover :as cover] [norn.io :as io] [norn.string :as str] [norn.walk])
   ;; (are's code uses postwalk-replace while it expands)
   (:require-for-syntax [norn.walk]))
 
@@ -356,9 +356,11 @@
 (defn main
   "`norn test [options] [paths…]`: run test files (default: every
   *_test.norn under tests/). Options: --only REGEX (test names), --serial,
-  --tap, --junit FILE. Exits 1 if anything failed. The folders given (or
-  tests/) are on the library path while they run, for helpers the test
-  files share (tests/my/helpers.norn is my.helpers)."
+  --tap, --junit FILE, --coverage (which lines ran: a report after the
+  results; see norn.cover) and --lcov FILE (the coverage as an lcov
+  tracefile; implies --coverage). Exits 1 if anything failed. The folders
+  given (or tests/) are on the library path while they run, for helpers
+  the test files share (tests/my/helpers.norn is my.helpers)."
   [& args]
   (loop [args args opts {:paths []}]
     (if-let [a (first args)]
@@ -366,11 +368,21 @@
             (= a "--serial") (recur (next args) (assoc opts :serial true))
             (= a "--tap") (recur (next args) (assoc opts :tap true))
             (= a "--junit") (recur (nnext args) (assoc opts :junit (second args)))
+            (= a "--coverage") (recur (next args) (assoc opts :coverage true))
+            (= a "--lcov") (recur (nnext args) (assoc opts :coverage true :lcov (second args)))
             :else (recur (next args) (update opts :paths conj a)))
-      (let [paths (if (seq (:paths opts)) (:paths opts) ["tests"])
-            _ (add-test-paths! paths)
-            result (run-files paths :only (:only opts) :serial (:serial opts))
-            t (:totals result)]
-        (print (if (:tap opts) (%tap result) (%human result)))
-        (when (:junit opts) (spit (:junit opts) (%junit result)))
-        (if (zero? (+ (:fail t) (:error t))) 0 1)))))
+      (do
+        ;; (norn test --coverage turns it on before anything loads; from
+        ;; here, only what loads after this counts)
+        (when (:coverage opts) (cover/start!))
+        (let [paths (if (seq (:paths opts)) (:paths opts) ["tests"])
+              _ (add-test-paths! paths)
+              result (run-files paths :only (:only opts) :serial (:serial opts))
+              t (:totals result)]
+          (print (if (:tap opts) (%tap result) (%human result)))
+          (when (:junit opts) (spit (:junit opts) (%junit result)))
+          (when (:coverage opts)
+            (let [cs (cover/counts)]
+              (when-not (:tap opts) (print (str "\n" (cover/report cs))))
+              (when (:lcov opts) (spit (:lcov opts) (cover/lcov cs)))))
+          (if (zero? (+ (:fail t) (:error t))) 0 1))))))
