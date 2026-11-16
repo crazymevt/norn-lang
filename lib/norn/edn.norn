@@ -1,27 +1,47 @@
 ;;;; norn.edn — Norn data as text: the reader's syntax without evaluation.
 ;;;;
-;;;; read-string reads one value and never runs code: it only builds data
-;;;; (lists, vectors, maps, sets, queues, strings, numbers, characters,
-;;;; keywords, symbols, nil and booleans; #bytes, regexes and ##Inf too).
-;;;; write-string writes those, and what it writes read-string reads back as
-;;;; an equal value; anything else (an atom, a function, an instance such as
-;;;; a Decimal or a time) signals TypeError. pr-str prints anything.
+;;;; read-string reads one value and never runs code from the text: it only
+;;;; builds data (lists, vectors, maps, sets, queues, strings, numbers,
+;;;; characters, keywords, symbols, nil and booleans; #bytes, regexes and
+;;;; ##Inf too), and tagged literals: #norn/decimal "12.30", #norn/date
+;;;; "2026-11-03" and Norn's other times, #inst and #uuid, and whatever the
+;;;; :readers given read. write-string writes those, and what it writes
+;;;; read-string reads back as an equal value; anything else (an atom, a
+;;;; function, an instance with no tagged literal) signals TypeError.
+;;;; pr-str prints anything.
 
 (ns norn.edn
   (:refer-core :exclude [read-string])
   (:require [norn.pprint]))
 
-(defn read-string
-  "The first value in s; nil (or :eof's value) when s holds none."
-  [^String s & {:keys [eof]}]
-  (let [r (%reader s "<edn>")
-        v (%read r)]
-    (if (%eof? v) eof v)))
+(defn- reading
+  "(f) with *tag-readers* and *default-tag-reader* as options say."
+  [{:keys [readers default]} f]
+  (binding [*tag-readers* (merge *tag-readers* readers)
+            *default-tag-reader* (or default *default-tag-reader*)]
+    (f)))
 
-(defn read-all "Every value in s, as a vector." ^Vector [^String s]
-  (let [r (%reader s "<edn>")]
-    (loop [out []]
-      (let [v (%read r)] (if (%eof? v) out (recur (conj out v)))))))
+(defn read-string
+  "The first value in s; nil (or :eof's value) when s holds none. A
+  tagged literal, #tag form, is read by *tag-readers* (Norn's decimals and
+  times, #inst, #uuid) and the :readers given ({tag fn}); :default, (fn
+  [tag form]), reads the others, which are otherwise a ParseError."
+  [^String s & {:keys [eof] :as opts}]
+  (reading opts
+           (fn []
+             (let [r (%reader s "<edn>")
+                   v (%read r)]
+               (if (%eof? v) eof v)))))
+
+(defn read-all
+  "Every value in s, as a vector. Options :readers and :default, as
+  read-string's."
+  ^Vector [^String s & {:as opts}]
+  (reading opts
+           (fn []
+             (let [r (%reader s "<edn>")]
+               (loop [out []]
+                 (let [v (%read r)] (if (%eof? v) out (recur (conj out v)))))))))
 
 (defn- check-failed [x]
   (error TypeError :expected "a value with an EDN form" :value x
@@ -32,7 +52,8 @@
   form."
   [x]
   (cond (or (nil? x) (boolean? x) (string? x) (keyword? x) (symbol? x) (char? x) (bytes? x) (regex? x)) nil
-        (%instance? x) (check-failed x)
+        ;; (an instance with a tagged literal writes as one)
+        (%instance? x) (if-let [[_ form] (tagged-form x)] (check form) (check-failed x))
         (number? x) nil
         (map? x) (doseq [[k v] x] (check k) (check v))
         (or (vector? x) (set? x) (list? x) (seq? x) (stream? x) (queue? x)) (doseq [v x] (check v))
@@ -40,8 +61,10 @@
 
 (defn write-string
   "Text that read-string reads back as an equal value: x, made of the
-  values read-string makes. Anything else in it (an atom, a function, an
-  instance) signals TypeError naming it; pr-str prints those. :pretty
+  values read-string makes, decimals and times among them (as tagged
+  literals: #norn/decimal \"12.30\", #inst …, see tagged-form). Anything else
+  in it (an atom, a function, an instance with no tagged literal) signals
+  TypeError naming it; pr-str prints those. :pretty
   true lays it out over lines, as norn.pprint does (to :width columns,
   default 80)."
   ^String [x & {:keys [pretty width]}]

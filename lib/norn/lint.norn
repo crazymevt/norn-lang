@@ -50,9 +50,32 @@
 
 (ns norn.lint
   (:refer-core :exclude [warn boolean])
-  (:require [norn.string :as str] [norn.fmt :as fmt] [norn.syntax :as syn]))
+  (:require [norn.string :as str] [norn.fmt :as fmt] [norn.io :as io] [norn.syntax :as syn]))
 
 (def ^:private specials #{'quote 'quote-syntax 'if 'do 'def 'var 'fn* 'let* 'letrec* 'loop* 'recur '&})
+
+(def first-party
+  "The norn.* names Norn's first-party packages have, each with the modules
+  under it: the standard library never takes them, so it never hides one
+  (api_diff_test checks), and any other module named norn.* is lint's
+  reserved warning. norn.* is the Norn project's: its standard library and
+  these packages."
+  #{"norn.ui" "norn.sdl3" "norn.raylib" "norn.html"})
+
+(defn first-party?
+  "Is module name m (a string) one of the first-party packages' (in
+  first-party, or under one)?"
+  ^Boolean [^String m]
+  (boolean (some (fn [r] (or (= m r) (str/starts-with? m (str r ".")))) first-party)))
+
+(defn- in-norn-checkout?
+  "Is file path one of a Norn checkout's own libraries (lib/… beside
+  lib/core/core.norn)?"
+  [path]
+  (loop [d (some-> path str io/absolute io/parent)]
+    (cond (nil? d) false
+          (and (= "lib" (io/file-name d)) (io/file? (io/path d "core" "core.norn"))) true
+          :else (let [p (io/parent d)] (if (and p (not= p d)) (recur p) false)))))
 
 (def ^:dynamic ^:private *warnings* nil)
 (def ^:dynamic ^:private *where* nil) ; {:file :line}
@@ -525,10 +548,20 @@
                         (reset! *home-ns* (str n))
                         ;; (a module named as one that comes with Norn is never
                         ;; what require loads: Norn's own is found first)
-                        (when-let [[src origin] (when (= 'ns (first form)) (%find-lib (str n)))]
-                          (when (and (str/starts-with? origin "<") (not= src s))
-                            (warn :shadowed n " is also a library that comes with Norn, which require finds first:"
-                                  " this file is never loaded. Name the module otherwise.")))))
+                        (when (= 'ns (first form))
+                          (let [found (%find-lib (str n))
+                                embedded (and found (str/starts-with? (second found) "<"))]
+                            (cond
+                              (and embedded (not= (first found) s) (not (in-norn-checkout? path)))
+                              (warn :shadowed n " is also a library that comes with Norn, which require finds first:"
+                                    " this file is never loaded. Name the module otherwise.")
+                              ;; (norn.* is the Norn project's; a Norn checkout's own
+                              ;; lib/ aside, as a library being written there isn't
+                              ;; embedded yet)
+                              (and (str/starts-with? (str n) "norn.") (not embedded) (not (first-party? (str n)))
+                                   (not (in-norn-checkout? path)))
+                              (warn :reserved n ": names under norn. are Norn's, its standard library's and its"
+                                    " first-party packages'. Name the module after your project."))))))
                     (when macro-def? (swap! *later-macros* disj (second form)))
                     (when-not (and (= 'defmacro (first form))
                                    (when-let [v (resolve (second form))] (macro? v)))

@@ -641,8 +641,34 @@ The method is used everywhere instances print: `print`, `println`, `prn`,
 `str`, `pr-str`, `format`, inside collections, and at the REPL. A subclass
 inherits it.
 
-Keep in mind that a custom printed form is still not readable by the reader.
-It's a display format, not a serialization.
+A printed form like this one is for people: the reader can't read it back.
+`*print-readably*` tells a method which printing it's doing: true for
+`pr`, `prn` and `pr-str` (and the REPL), false for `print`, `println`, `str`
+and `format`. To print in a form the reader reads back, give the class a
+*tagged literal*: a method on `tagged-form` returns `[tag form]`, and
+`tagged-text` writes `#tag form`. Binding `*tag-readers*` tells the reader
+how to make an instance from the form:
+
+```clojure
+(defmethod tagged-form ((m money)) ['shop/money [(:cents m) (:currency m)]])
+(defmethod print-object ((m money))
+  (if *print-readably*
+    (tagged-text m)
+    (let [c (:cents m)]
+      (str (quot c 100) "." (if (< (mod c 100) 10) "0" "") (mod c 100)
+           " " (name (:currency m))))))
+
+(pr-str price-tag) ; => "#shop/money [1205 :usd]"
+(str price-tag) ; => "12.05 usd"
+
+(binding [*tag-readers* (assoc *tag-readers* 'shop/money (fn [[c cur]] (money :cents c :currency cur)))]
+  (= price-tag (read-string (pr-str price-tag)))) ; => true
+```
+
+Norn's own decimals and times work this way: `#norn/decimal "12.30"`,
+`#norn/date "2026-11-03"`, `#inst "2026-11-13T07:05:00Z"`
+([Chapter 20](20-data-formats.md)). A tag without a namespace is reserved for
+Norn, as in Clojure, so name yours, as `shop/money` is.
 
 ## Initializing instances
 
@@ -688,12 +714,12 @@ next method:
     (error "Money can't be negative:" (:cents args)))
   (call-next-method))
 
-(money :cents 500) ; => 5.00 usd
+(str (money :cents 500)) ; => "5.00 usd"
 (money :cents -1)  ; !! Error
 ```
 
-The expected value above is the printed form, `5.00 usd`, from the
-`print-object` method in the previous section.
+`5.00 usd` is the text from the `print-object` method in the previous
+section.
 
 ## Summary
 

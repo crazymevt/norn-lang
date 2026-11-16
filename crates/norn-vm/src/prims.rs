@@ -149,7 +149,7 @@ prims! {
     "concat" 0 VAR => |vm, a| { let mut out = Vec::new(); for &x in a { out.extend(to_vec(vm, x)?); } Ok(if out.is_empty() { rt().empty_list } else { list_from(&mut vm.m, &out) }) };
     "range" 0 Some(3) => range;
     // strings, symbols, keywords
-    "str" 0 VAR => |vm, a| { let o = print_overrides(vm, a)?; let s = norn_rt::print::with_overrides(o, || { let mut s = String::new(); for &x in a { if !x.is_nil() { write_value(&mut s, x, false); } } s }); Ok(str_new(&mut vm.m, &s)) };
+    "str" 0 VAR => |vm, a| { let o = print_overrides(vm, a, false)?; let s = norn_rt::print::with_overrides(o, || { let mut s = String::new(); for &x in a { if !x.is_nil() { write_value(&mut s, x, false); } } s }); Ok(str_new(&mut vm.m, &s)) };
     "subs" 2 Some(3) => subs;
     "name" 1 Some(1) => name;
     "namespace" 1 Some(1) => |vm, a| { let x = a[0]; if !(x.is_symbol() || x.is_keyword()) { return Err(type_err("namespace", "a symbol or keyword", x)); } Ok(match x.sym_ns() { Some(ns) => str_new(&mut vm.m, ns), None => Value::NIL }) };
@@ -175,7 +175,7 @@ prims! {
     "unreduced" 1 Some(1) => |_, a| Ok(if a[0].is(Kind::Reduced) { a[0].field(0) } else { a[0] });
     "slurp" 1 Some(1) => |vm, a| crate::sys::read(vm, text(a[0]), true);
     // (Bytes are written as they are; anything else as str gives it)
-    "spit" 2 Some(2) => |vm, a| { let data = if a[1].is(Kind::Bytes) { a[1].as_bytes().to_vec() } else { let o = print_overrides(vm, &a[1..2])?; norn_rt::print::with_overrides(o, || text(a[1])).into_bytes() }; crate::sys::write(vm, text(a[0]), data, false) };
+    "spit" 2 Some(2) => |vm, a| { let data = if a[1].is(Kind::Bytes) { a[1].as_bytes().to_vec() } else { let o = print_overrides(vm, &a[1..2], false)?; norn_rt::print::with_overrides(o, || text(a[1])).into_bytes() }; crate::sys::write(vm, text(a[0]), data, false) };
     "read-string" 1 Some(1) => |vm, a| { let s = text(a[0]); let mut r = crate::reader::Reader::new(&s); match r.read(vm) { Ok(v) => Ok(v), Err(crate::reader::ReadError::Eof) => Ok(Value::NIL), Err(e) => Err(crate::eval::parse_error(e.to_string(), "<string>", r.line(), r.column())) } };
     // evaluation and namespaces
     "macroexpand-1" 1 Some(1) => |vm, a| Ok(vm.macroexpand_1(a[0])?.0);
@@ -395,7 +395,7 @@ prims! {
     "%json-read" 2 Some(2) => crate::text::json_read;
     "%json-write" 3 Some(3) => crate::text::json_write;
     // (%s and %S print instances as print-object says, as str and pr-str do)
-    "%format" 2 Some(2) => |vm, a| { let o = print_overrides(vm, &a[1..2])?; norn_rt::print::with_overrides(o, || crate::text::format(vm, a)) };
+    "%format" 2 Some(2) => |vm, a| { let o = print_overrides(vm, &a[1..2], false)?; norn_rt::print::with_overrides(o, || crate::text::format(vm, a)) };
     "%parse-number" 2 Some(2) => crate::text::parse_number;
     "%read-cst" 1 Some(1) => crate::cst::read_cst;
     "%form-at" 2 Some(2) => |vm, a| { expect(a[0], Kind::String, "%form-at")?; let line = int(a[1], "%form-at")?.max(1) as usize; crate::eval::form_at(vm, a[0].as_str(), line) };
@@ -748,12 +748,14 @@ fn text(v: Value) -> String {
 }
 
 static PRINT_OBJECT: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+static PRINT_READABLY: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
 
 /// The text print-object gives for each instance in a (at any depth in
 /// its collections and slots) whose class has a print-object method: the
 /// printer prints it in their place (M9 part 9.5). Nothing to do, and no
-/// walk, until some class has one.
-fn print_overrides(vm: &mut Vm, a: &[Value]) -> Result<Vec<(u64, String)>> {
+/// walk, until some class has one. `*print-readably*` is `readably` while
+/// the methods run: pr's printing (text to read back) or print's (for people).
+fn print_overrides(vm: &mut Vm, a: &[Value], readably: bool) -> Result<Vec<(u64, String)>> {
     use norn_rt::clos::{ANY_PRINT_HOOK, class::HOOK_PRINT, class_hooked, class_of};
     if !ANY_PRINT_HOOK.load(std::sync::atomic::Ordering::Acquire) {
         return Ok(Vec::new());
@@ -807,18 +809,36 @@ fn print_overrides(vm: &mut Vm, a: &[Value]) -> Result<Vec<(u64, String)>> {
     }
     let var = vm.core_fn("print-object", &PRINT_OBJECT);
     let f = if var.is(Kind::Var) { var.var_root() } else { var };
-    let mut out = Vec::with_capacity(found.len());
-    for inst in found {
-        let t = vm.apply(f, &[inst])?;
-        out.push((inst.0, if t.is(Kind::String) { t.as_str().to_owned() } else { pr_str(t, false) }));
+    let flag = vm.core_fn("*print-readably*", &PRINT_READABLY);
+    let old = vm.dyn_env;
+    if flag.is(Kind::Var) {
+        // (as binding does: a var is looked up in the bindings once marked)
+        flag.var_set_flag(norn_rt::func::VAR_DYNBOUND);
+        let base = if old.is_nil() { norn_rt::map::map_empty() } else { old };
+        vm.dyn_env = norn_rt::map::map_assoc(&mut vm.m, base, flag, Value::bool(readably));
     }
-    Ok(out)
+    let mut out = Vec::with_capacity(found.len());
+    let mut failed = None;
+    for inst in found {
+        match vm.apply(f, &[inst]) {
+            Ok(t) => out.push((inst.0, if t.is(Kind::String) { t.as_str().to_owned() } else { pr_str(t, false) })),
+            Err(e) => {
+                failed = Some(e);
+                break;
+            }
+        }
+    }
+    vm.dyn_env = old;
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
 }
 
 /// The arguments printed (readably or not) as a print primitive does, with
 /// print-object's text for instances that have it.
 fn printed(vm: &mut Vm, a: &[Value], readably: bool) -> Result<String> {
-    let o = print_overrides(vm, a)?;
+    let o = print_overrides(vm, a, readably)?;
     Ok(norn_rt::print::with_overrides(o, || join(a, readably)))
 }
 

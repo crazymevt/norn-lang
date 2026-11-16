@@ -293,6 +293,9 @@ pub(crate) fn load(path: &Path) -> std::result::Result<Restore, String> {
 
 /// Finish a restore on carrier 0 (in place of boot).
 pub(crate) fn restore(vm: &mut Vm, r: Restore) {
+    // (a class in the image may have a print-object method: the flag that
+    // says some class has is this process's, not the image's)
+    norn_rt::clos::ANY_PRINT_HOOK.store(true, std::sync::atomic::Ordering::Release);
     for &f in &r.queued {
         sched::schedule(f);
     }

@@ -756,6 +756,12 @@
 ;; (a module named as one of Norn's own is never loaded: ledger finding)
 (is (= [:shadowed] (mapv :kind (lint/lint-string "(ns norn.csv)\n(defn f [] 1)\n" "csv.norn"))))
 (is (= [] (lint/lint-string (first (%find-lib "norn.csv")) "lib/norn/csv.norn")) "the library itself isn't")
+;; (norn.* is Norn's: its library and first-party packages')
+(is (= [:reserved] (mapv :kind (lint/lint-string "(ns norn.mine)\n(defn f [] 1)\n" "src/norn/mine.norn"))))
+(is (= [] (lint/lint-string "(ns norn.ui.widgets)\n(defn f [] 1)\n" "lib/norn/ui/widgets.norn")) "a first-party package's")
+(is (= [] (lint/lint-string "(ns my.norn.thing)\n(defn f [] 1)\n" "src/my/norn/thing.norn")))
+(is (lint/first-party? "norn.html.writer"))
+(is (not (lint/first-party? "norn.htmlx")))
 ;; (a Java habit says what Norn has instead: pulse finding)
 (is (= ["unresolved symbol Math/round (Norn has no Java classes: try norn.math/round)"
         "unresolved symbol Thread/sleep (Norn has no Java classes: use sleep)"

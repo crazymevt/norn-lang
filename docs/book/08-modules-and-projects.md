@@ -364,6 +364,13 @@ finds `shop/money.norn` because you asked for `shop.money`, and the file
 should then define `shop.money`. Keep the two in step, or a `require`
 loads the file without defining the namespace you asked for.
 
+Norn's own libraries come first, so a module of yours named as one of
+them, say `norn.csv`, is never loaded. Names under `norn.` belong to the
+Norn project: its standard library and its first-party packages, such as
+`norn.ui` and `norn.html`. Name your modules after your project, as
+`shop.money` is. `norn lint` warns about a module named under `norn.`
+(`reserved`) or named as a library that comes with Norn (`shadowed`).
+
 ## Projects
 
 A project is a folder with a `norn.edn` file. The file is EDN, Norn's

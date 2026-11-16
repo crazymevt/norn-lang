@@ -140,3 +140,40 @@
       (let [i (t/instant (* secs 1000000000)) zd (t/in-zone i z)]
         (and (= i (t/to-instant (t/zoned (:local zd) z :offset (:offset zd))))
              (= zd (t/parse-zoned (t/format-zoned zd)))))))
+
+;; Patterns, as strftime has them (ledger finding: banks write 11/03/2026).
+(deftest patterns
+  (let [d (t/local-date 2026 11 3)]
+    (testing "writing"
+      (is (= "03 Nov 2026" (t/format-local d "%d %b %Y")))
+      (is (= "Tuesday, November  3, 2026 (day 307)" (t/format-local d "%A, %B %e, %Y (day %j)")))
+      (is (= "11/03/26 2026-11-03 100%" (t/format-local d "%m/%d/%y %F 100%%")))
+      (is (= "02:05:09.123456 PM" (t/format-local (t/local-time 14 5 9 123456789) "%I:%M:%S.%f %p")))
+      (is (= "12:30 AM" (t/format-local (t/local-time 0 30) "%I:%M %p")))
+      (is (= "Fri 13 Nov 2026 07:05 +0000" (t/format (t/parse "2026-11-13T07:05:00Z") :utc "%a %d %b %Y %H:%M %z")))
+      (is (= "2026-11-13 08:05:00 +0100 +01:00" (t/format (t/parse "2026-11-13T07:05:00Z") 3600 "%F %T %z %Z"))))
+    (testing "reading"
+      (is (= d (t/parse-local-date "11/3/2026" "%m/%d/%Y") (t/parse-local-date "3 november 2026" "%d %B %Y")
+             (t/parse-local-date "Tue, 03 Nov 26" "%a, %d %b %y") (t/parse-local-date "2026-307" "%Y-%j")
+             (t/parse-local-date "3   Nov\t2026" "%e %b %Y")))
+      (is (= (t/local-date 1999 1 2) (t/parse-local-date "02/01/99" "%d/%m/%y")) "69–99 is 1969–1999")
+      (is (= (t/local-time 14 5) (t/parse-local-time "2:05 pm" "%I:%M %p")))
+      (is (= (t/local-time 0 5) (t/parse-local-time "12:05 AM" "%I:%M %p")))
+      (is (= "2026-11-03T14:05:09.5" (t/format-local (t/parse-local-date-time "03/11/2026 14:05:09.5" "%d/%m/%Y %H:%M:%S.%f"))))
+      (is (= "2026-11-03T09:30:00-05:00[-05:00]" (t/format-zoned (t/parse-zoned "2026-11-03 09:30 -0500" "%Y-%m-%d %H:%M %z"))))
+      (is (= 0 (:offset (t/parse-zoned "2026-11-03T09:30Z" "%Y-%m-%dT%H:%M%z")))))
+    (testing "what doesn't fit"
+      (is (thrown-with-msg? ParseError #"it's a Tuesday, not a Wednesday" (t/parse-local-date "Wed, 03 Nov 2026" "%a, %d %b %Y")))
+      (is (thrown? ParseError (t/parse-local-date "31/02/2026" "%d/%m/%Y")))
+      (is (thrown-with-msg? ParseError #"no month \"Smarch\"" (t/parse-local-date "Smarch 3 2026" "%b %d %Y")))
+      (is (thrown-with-msg? ParseError #"no month and day" (t/parse-local-date "2026" "%Y")))
+      (is (thrown-with-msg? ParseError #"no offset" (t/parse-zoned "2026-11-03 09:30" "%F %H:%M")))
+      (is (thrown-with-msg? TypeError #"%H writes the hour" (t/format-local d "%H")))
+      (is (thrown-with-msg? TypeError #"%Q isn't a directive" (t/format-local d "%Q")))
+      (is (thrown-with-msg? TypeError #"%Z is written, not read" (t/parse-zoned "x" "%F %Z"))))))
+
+(p/defproperty patterns-read-what-they-write {:runs 200}
+  [day (p/integers :min 0 :max 36000) ; (to 2068: %y is 1969–2068)
+   pattern (p/elements ["%Y-%m-%d" "%m/%d/%Y" "%d %b %Y" "%A, %B %e, %Y" "%d.%m.%y" "%Y-%j" "%a %d %B %Y"])]
+  (let [d (t/from-epoch-day day)]
+    (= d (t/parse-local-date (t/format-local d pattern) pattern))))

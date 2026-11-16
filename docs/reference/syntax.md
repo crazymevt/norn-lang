@@ -20,6 +20,7 @@ meaning. Spaces, newlines, and commas separate forms.
 | `#(+ % 1)`, `#(vector %1 %2 %&)` | Anonymous function literals. `%` is the first argument and `%&` collects rest arguments. |
 | `#"\d+"` | A compiled regular expression. |
 | `#bytes "6869"`, `#queue [1 2]` | A byte sequence from hexadecimal text and a FIFO queue from literal data. |
+| `#norn/decimal "12.30"`, `#norn/date "2026-11-03"`, `#inst "…"`, `#uuid "…"` | Tagged literals: the value the tag's reader in `*tag-readers*` makes from the form. Norn's decimals and times print so with `pr-str`. |
 | `^:private name`, `^{:doc "Text"} name` | Metadata on the following form. |
 | `; text`, `#\| text \|#`, `#_ form`, `#; form` | A line comment, a nestable block comment, and two ways to skip the next form. |
 

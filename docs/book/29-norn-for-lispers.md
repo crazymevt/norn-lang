@@ -154,6 +154,16 @@ live in the `norn.stm` library. See Part III, starting with
 - **`defonce`** works as in Clojure, and takes a docstring: reloading a
   file keeps what a `defonce` holds. `bound?` tells you whether a var has
   a value.
+- **Tagged literals.** `#inst` and `#uuid` read as in Clojure (a UUID is
+  its text), and Norn's decimals and dates print and read as
+  `#norn/decimal "12.30"` and `#norn/date "2026-11-03"`. `*tag-readers*`
+  takes the place of `*data-readers*`, and `edn/read-string` takes
+  `:readers` and `:default`. `*print-readably*` tells a `print-object`
+  method whether it's printing for `pr` or for `print`.
+- **Maps don't keep their order.** There's no array map: even a small map
+  literal lists its keys in hash order, so `{:a 1 :b 2 :c 3}` may print
+  with `:c` before `:b`. Use a vector of pairs, or a sorted map, where
+  order matters.
 - **Numbers.** Integers promote to bignums automatically, there's no `+'`,
   and `(= 1 1.0)` is false while `(== 1 1.0)` is true. Mixed comparisons
   between floats and exact numbers are exact.

@@ -615,6 +615,28 @@ impl<'a> Reader<'a> {
                     }
                     return Ok(Some(q));
                 }
+                if tok == "inst" || tok == "uuid" || (tok.contains('/') && !tok.starts_with('/') && !tok.ends_with('/')) {
+                    // #tag form: a tagged literal, its value what the tag's
+                    // reader makes of form (norn.core/%read-tagged:
+                    // *tag-readers*, Norn's own tags and EDN's)
+                    let form = self.read_required(vm)?;
+                    static READ_TAGGED: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+                    let f = vm.core_fn("%read-tagged", &READ_TAGGED);
+                    let f = if f.is(Kind::Var) { f.var_root() } else { f };
+                    if f.is_nil() {
+                        return Err(ReadError::Syntax(format!("#{tok}: tagged literals are read once norn.core has loaded")));
+                    }
+                    let tag = match tok.split_once('/') {
+                        Some((ns, name)) => rt().symbol(&mut vm.m, Some(ns), name),
+                        None => rt().symbol(&mut vm.m, None, &tok),
+                    };
+                    // ([true value], or [false message]: an error is the
+                    // reader's to raise, not signalled from inside it)
+                    let r = vm.apply(f, &[tag, form]).map_err(|e| ReadError::Syntax(e.msg))?;
+                    let ok = r.is(Kind::Vector) && r.vec_count() == 2 && r.vec_nth(0) == Value::TRUE;
+                    let x = if r.is(Kind::Vector) && r.vec_count() == 2 { r.vec_nth(1) } else { Value::NIL };
+                    return if ok { Ok(Some(x)) } else { Err(ReadError::Syntax(if x.is(Kind::String) { x.as_str().to_owned() } else { format!("#{tok}: no value") })) };
+                }
                 if tok == "lang" {
                     Err(ReadError::Syntax("#lang isn't part of Norn (design.md §8.1): a file's language is Norn".into()))
                 } else {

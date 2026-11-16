@@ -72,9 +72,14 @@ An early `reduced` result leaves the reader positioned at the next record.
 ### EDN, CSV and TOML
 
 `norn.edn/write-string` writes text that `read-string` reads back as an
-equal value. A value with no such text, such as an atom, a function, or an
-instance (a decimal or a time, say), signals `TypeError` naming it. Use
-`pr-str` to print anything.
+equal value. Decimals and times are written as tagged literals
+(`#norn/decimal "12.30"`, `#norn/date "2026-11-03"`, `#inst "…"`), as `pr-str`
+prints them; `read-string` reads those, `#uuid`, and other tags through
+`:readers` (a map of tag to function) and `:default` (a function of tag and
+form). A value with no such text, such as an atom, a function, or an
+instance whose class has no `tagged-form` method, signals `TypeError` naming it.
+`:pretty true` lays the text out over lines. Use `pr-str` to print
+anything.
 
 `norn.csv/read-maps` reads a header row and makes a map of each row after it.
 A row with more or fewer fields than the header signals `ParseError` with
@@ -413,6 +418,16 @@ for time units. Other calendar helpers are `days-between`, `months-between`,
 
 `format-zoned` writes RFC 9557 text such as
 `2026-03-08T03:30:00-04:00[America/New_York]`, and `parse-zoned` reads it.
+
+`format-local`, `format-zoned` and `format` take a strftime pattern, and
+`parse-local-date`, `parse-local-time`, `parse-local-date-time` and
+`parse-zoned` read one: `%Y %y %m %d %e %j %b %B %a %A %H %I %p %M %S %f %z
+%Z %F %T %%`, with English names. Reading accepts fewer digits, either
+case, short or full month names and any whitespace; a weekday must match
+the date. `parse-zoned` with a pattern needs `%z`, and `%Z` is written
+only. `(t/format-local (t/local-date 2026 11 3) "%a %d %b %Y")` is
+`"Tue 03 Nov 2026"`, and `(t/parse-local-date "11/3/2026" "%m/%d/%Y")`
+reads it back from a US-style date.
 `before?`, `after?`, and `compare-time` compare dates, times, and zoned
 date-times.
 

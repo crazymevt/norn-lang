@@ -125,3 +125,8 @@
      (decimal (if (neg? shift)
                 (scale-down a b (- shift) mode)
                 (rounded-quotient (times-power a shift) b mode)) scale))))
+
+;; As text it reads back: #norn/decimal "12.30" (pr-str, EDN), or 12.30
+;; (str, print).
+(defmethod tagged-form ((d Decimal)) ['norn/decimal (text d)])
+(defmethod print-object ((d Decimal)) (if *print-readably* (tagged-text d) (text d)))

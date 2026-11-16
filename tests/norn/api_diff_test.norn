@@ -62,6 +62,12 @@
            (set (map (juxt :name :breaking) (get (api/diff dir ["norn.csv"]) "norn.csv")))))
     (io/delete! dir :recursive true)))
 
+(deftest the-standard-library-leaves-first-party-names-alone
+  ;; (a standard module named as a first-party package's would hide it:
+  ;; embedded libraries are found first)
+  (require 'norn.lint)
+  (is (= [] (filterv (resolve 'norn.lint/first-party?) (api/standard-modules)))))
+
 (deftest a-projects-own-modules
   ;; (ledger finding: in a project, norn api-diff compared the standard
   ;; library, not the project)

@@ -154,6 +154,9 @@ and it exits 1 when it finds anything. The kinds include:
 - `shadowed`: a module named as one that comes with Norn, such as a
   package's `norn.csv`. `require` finds Norn's own first, so the file is
   never loaded.
+- `reserved`: a module named under `norn.`, which is Norn's: its standard
+  library's and its first-party packages' (`norn.lint/first-party` lists
+  those).
 - `shadow`, `def-in-fn`, `method-shape`, `macro`, `macro-order`, `sealed`
   and `phase`, for definitions that hide special forms, `def` inside a
   function, a `defmethod` that doesn't fit its generic function, a macro

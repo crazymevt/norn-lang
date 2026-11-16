@@ -266,6 +266,11 @@ fn time_suite() {
 }
 
 #[test]
+fn tags_suite() {
+    suite("tags_test.norn");
+}
+
+#[test]
 fn terminal_suite() {
     suite("terminal_test.norn");
 }

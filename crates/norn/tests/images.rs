@@ -194,6 +194,25 @@ fn resources_are_dead_after_a_restore_until_reconnected() {
 }
 
 #[test]
+fn print_object_methods_still_print_after_a_restore() {
+    // (whether any class has one is this process's to know: an image's
+    // classes used to print as records)
+    let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
+    let d = scratch("print");
+    let img = d.join("print.nimg");
+    let setup = format!(
+        r#"(do (require '[norn.decimal :as dec])
+  (defclass Pt () ((x)))
+  (defmethod print-object ((p Pt)) "<a point>")
+  (def things [(Pt :x 1) (dec/parse "12.30")])
+  (:objects (save-image "{}")))"#,
+        img.display()
+    );
+    eval(None, &setup);
+    assert_eq!(eval(Some(&img), "(do (prn things) (println things))"), "[<a point> #norn/decimal \"12.30\"]\n[<a point> 12.30]\nnil");
+}
+
+#[test]
 fn damaged_images_are_refused() {
     let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("damaged");

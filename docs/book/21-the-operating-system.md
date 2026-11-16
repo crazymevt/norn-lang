@@ -471,8 +471,10 @@ it a zone, which can be a named IANA zone or an offset in seconds:
 (t/format launch -18000) ; => "2026-11-13T02:05:00-05:00"
 ```
 
-Instants are values. They compare with `=`, and they print as their class
-and nanoseconds. To compare them in time order, use `before?`, `after?`,
+Instants are values. They compare with `=`, and they print as tagged
+literals, `#inst "2026-11-13T07:05:00Z"`, which read back as the same
+instant ([Chapter 20](20-data-formats.md)); `str` gives their RFC 3339
+text. To compare them in time order, use `before?`, `after?`,
 and `compare-time`. `compare-time` works as a comparator for `sort`:
 
 ```clojure
@@ -566,6 +568,39 @@ that doesn't make a date or time is a `ParseError`:
 ```clojure
 (t/local-date 2026 2 30) ; !! TypeError
 (t/parse-local-date "2026-02-30") ; !! ParseError
+```
+
+They print as tagged literals, `#norn/date "2026-01-31"`, `#norn/time` and
+`#norn/date-time`, which read back as the same values.
+
+### Patterns
+
+Text from elsewhere rarely says `2026-01-31`. A bank export says
+`01/31/2026`, a letter `31 January 2026`. The format and parse functions
+take a pattern, as C's `strftime` and `strptime` do: `%Y` is the year, `%m`
+the month, `%d` the day, `%b` and `%B` the month's name, short and in full,
+`%a` and `%A` the weekday's, `%H`, `%M` and `%S` the time, `%I` and `%p` a
+12-hour clock, and `%z` the offset. `%F` is `%Y-%m-%d` and `%T` is
+`%H:%M:%S`.
+
+```clojure
+(t/format-local due "%d %B %Y") ; => "31 January 2026"
+(t/format-local due "%a %m/%d/%y") ; => "Sat 01/31/26"
+(t/format-local opening "%I:%M %p") ; => "09:00 AM"
+(t/format launch "Asia/Tokyo" "%F %H:%M %z") ; => "2026-11-13 16:05 +0900"
+
+(= due (t/parse-local-date "1/31/2026" "%m/%d/%Y")) ; => true
+(= due (t/parse-local-date "31 jan 2026" "%d %b %Y")) ; => true
+(t/format-local (t/parse-local-time "2:15 pm" "%I:%M %p")) ; => "14:15:00"
+```
+
+Reading is forgiving where it can be: a number may have fewer digits than
+`%m` or `%d` writes, case doesn't matter, a month's name may be short or
+full, and whitespace matches any whitespace. A weekday must be the date's,
+and a two-digit year is 1969 to 2068. Names are English.
+
+```clojure
+(t/parse-local-date "Mon, 31 Jan 2026" "%a, %d %b %Y") ; !! ParseError
 ```
 
 The calendar helpers work on dates, and on date-times through their dates:

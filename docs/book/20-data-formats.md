@@ -204,11 +204,42 @@ equal value.
 (= saved (edn/read-string (edn/write-string saved))) ; => true
 ```
 
-`write-string` keeps that promise by refusing what has no EDN form. Atoms,
-functions, and instances of classes, such as decimals and times, signal a
-`TypeError` naming the value. `pr-str` still prints them, but its text
-doesn't read back. To save instances, use `norn.bin`, later in this
-chapter.
+Decimals and times have EDN forms too, as *tagged literals*: a tag, then
+the form it reads from. `#norn/decimal "12.30"` is a decimal,
+`#norn/date "2026-11-03"`, `#norn/time`, `#norn/date-time` and `#norn/zoned`
+are dates and times, and `#inst "2026-11-13T07:05:00Z"` is an instant, as
+in Clojure's EDN. `#uuid "…"` reads as the UUID's text, since a UUID is a
+string in Norn. `pr-str` writes them so, and the reader reads them back,
+in code as well as in EDN:
+
+```clojure
+(require '[norn.decimal :as d] '[norn.time :as t])
+
+(def order {:total (d/parse "12.30") :placed (t/local-date 2026 11 3)})
+(edn/write-string [(:total order) (:placed order)])
+; => "[#norn/decimal \"12.30\" #norn/date \"2026-11-03\"]"
+(= order (edn/read-string (edn/write-string order))) ; => true
+(d/add #norn/decimal "0.10" #norn/decimal "0.25") ; => #norn/decimal "0.35"
+```
+
+`str` and `println` write them as plain text, `12.30` and `2026-11-03`,
+for people. Other tags take a reader: `:readers` maps a tag to a function
+of its form, and `:default` reads any tag nobody else does. Without one, an
+unknown tag is a `ParseError`:
+
+```clojure
+(edn/read-string "#geo/point [52.5 13.4]"
+                 :readers {'geo/point (fn [[lat lon]] {:lat lat :lon lon})})
+; => {:lat 52.5 :lon 13.4}
+(edn/read-string "#geo/point [52.5 13.4]") ; !! ParseError
+```
+
+`write-string` still refuses what has no EDN form. Atoms, functions, and
+instances of classes without a tagged literal signal a `TypeError` naming
+the value. `pr-str` still prints them, but its text doesn't read back. To
+give a class of your own a tagged literal, see
+[Chapter 9](09-classes-and-generic-functions.md); to save any instance,
+use `norn.bin`, later in this chapter.
 
 ```clojure
 (edn/write-string {:count (atom 0)}) ; !! TypeError
@@ -718,7 +749,9 @@ digits after the point. `4.95` is 495 with scale 2.
 ```
 
 `parse` reads decimal text exactly, without going through a float, and
-`text` writes it back, keeping the scale. `add` and `subtract` give the
+`text` writes it back, keeping the scale. A decimal prints as its tagged
+literal, `#norn/decimal "4.95"`, which you can also write in code; `str`
+gives its text. `add` and `subtract` give the
 larger of the two scales. `multiply` adds the scales, as you'd do by hand.
 `(decimal n)` makes a whole number, and `(decimal coefficient scale)` builds
 one directly.

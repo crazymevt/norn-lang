@@ -4541,9 +4541,73 @@
   "Slot slot of obj, an instance of class c: slot-value does this for a
   class with a metaclass, which may specialise it.")
 
+(def ^:dynamic *print-readably*
+  "True while pr, prn and pr-str print (and the REPL shows a value), false
+  while print, println, str, format and spit do: a print-object method can
+  write text that reads back, such as a tagged literal, or text for
+  people."
+  true)
+
 (defgeneric print-object (obj)
   "The text obj prints as. A method for a class makes its instances print
-  so, everywhere print, prn, str, pr-str, format and spit print them.")
+  so, everywhere print, prn, str, pr-str, format and spit print them;
+  *print-readably* says which kind of printing it is.")
+
+(defgeneric tagged-form (x)
+  "x as a tagged literal's [tag form]: #tag form, which the reader reads
+  back as x through *tag-readers*. nil (the default) for a value with
+  none. Norn's decimals and times have one, and EDN writes them so.")
+
+(defn tagged-text
+  "The tagged literal of x (which has one): #tag form."
+  ^String [x]
+  (let [[tag form] (tagged-form x)] (str "#" tag " " (pr-str form))))
+
+(defn- %lib-reader
+  "A tag's reader that calls library lib's function f (loaded the first
+  time) on the form."
+  [lib f]
+  (fn [form] (require lib) ((var-get (resolve (symbol (str lib) f))) form)))
+
+(defn- %read-uuid [form]
+  (if (and (string? form)
+           (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" form))
+    (%str-case form 1)
+    (error ParseError :message (str "#uuid takes a UUID's text, not " (pr-str form)) :source "#uuid")))
+
+(def ^:dynamic *tag-readers*
+  "Tag (a symbol) → the function that makes a tagged literal's value from
+  its form, for the reader and norn.edn. Norn's own: #norn/decimal
+  \"12.30\", #norn/date \"2026-11-03\", #norn/time \"14:05\",
+  #norn/date-time \"2026-11-03T14:05\", #norn/zoned (format-zoned's
+  text), and EDN's #inst (an instant, from RFC 3339 text) and #uuid (its
+  text, checked: a UUID is a string). Bind it, or pass edn/read-string
+  :readers, to read others."
+  {'inst (%lib-reader 'norn.time "parse")
+   'uuid %read-uuid
+   'norn/decimal (%lib-reader 'norn.decimal "parse")
+   'norn/date (%lib-reader 'norn.time "parse-local-date")
+   'norn/time (%lib-reader 'norn.time "parse-local-time")
+   'norn/date-time (%lib-reader 'norn.time "parse-local-date-time")
+   'norn/zoned (%lib-reader 'norn.time "parse-zoned")})
+
+(def ^:dynamic *default-tag-reader*
+  "(f tag form) for a tag *tag-readers* hasn't got: its value. nil (the
+  default): such a tag is a ParseError."
+  nil)
+
+(defn %read-tagged
+  "Tagged literal #tag form's value, for the reader: [true value], or
+  [false message] when there's no reader for tag or it fails (the reader
+  signals it, as a ParseError where the literal is)."
+  [tag form]
+  (try
+    (if-let [f (get *tag-readers* tag)]
+      [true (f form)]
+      (if *default-tag-reader*
+        [true (*default-tag-reader* tag form)]
+        [false (str "No reader for the tag #" tag " (see *tag-readers*)")]))
+    (catch Error e [false (str "#" tag " " (pr-str form) ": " (condition-message e))])))
 
 (defgeneric compute-applicable-methods (gf args)
   "The methods of generic function gf that apply to args.")
@@ -4566,6 +4630,8 @@
 (defmethod slot-value-using-class ((_c StandardClass) obj slot) (%slot-value-basic obj slot))
 
 (defmethod print-object ((o Object)) (%print-plain o))
+
+(defmethod tagged-form ((o Object)) nil)
 
 ;; Collections a library defines: seq, count and nth call these for
 ;; instances (built-in collections never reach them, so they keep their
