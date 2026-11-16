@@ -27,7 +27,7 @@ beginning with `%` are runtime internals.
 ## B
 
 - [`backtrace`](conditions.md#debugging-a-parked-fiber) · [`begin-for-syntax`](syntax.md#macros-and-expansion) · [`binding`](concurrency.md#atoms-and-dynamic-vars) · `bit-and` · `bit-not` · `bit-or`
-- `bit-shift-left` · `bit-shift-right` · `bit-xor` · `Boolean` · `boolean` · `boolean?`
+- `bit-shift-left` · `bit-shift-right` · `bit-xor` · `Boolean` · `boolean` · `boolean?` · `bound?`
 - `butlast` · `Bytes` · `bytes` · `bytes->string` · `bytes-concat` · `bytes?`
 
 ## C
@@ -47,7 +47,7 @@ beginning with `%` are runtime internals.
 
 - [`debug-abort`](conditions.md#debugging-a-parked-fiber) · [`debug-restart`](conditions.md#debugging-a-parked-fiber) · [`debug-restart-frame`](conditions.md#debugging-a-parked-fiber) · [`debugging`](conditions.md#debugging-a-parked-fiber) · `dec` · `declare`
 - `dedupe` · [`def`](syntax.md#binding-and-functions) · [`defclass`](objects.md#class-definition-and-slots) · [`defcontract`](syntax.md#function-contracts) · [`defgeneric`](objects.md#generic-functions-and-methods) · [`define-method-combination`](objects.md#method-combination)
-- `definition` · [`defmacro`](syntax.md#macros-and-expansion) · [`defmethod`](objects.md#generic-functions-and-methods) · [`defn`](syntax.md#binding-and-functions) · [`defn-`](syntax.md#binding-and-functions) · [`defprotocol`](objects.md#protocols-and-object-customization)
+- `definition` · [`defmacro`](syntax.md#macros-and-expansion) · [`defonce`](syntax.md#binding-and-functions) · [`defmethod`](objects.md#generic-functions-and-methods) · [`defn`](syntax.md#binding-and-functions) · [`defn-`](syntax.md#binding-and-functions) · [`defprotocol`](objects.md#protocols-and-object-customization)
 - `Delay` · `delay` · `delay?` · `deliver` · `denominator` · [`deref`](concurrency.md#atoms-and-dynamic-vars)
 - `deref-object` · `destructure` · `disassemble` · [`disj`](collections.md#lookup-and-update) · [`disj!`](collections.md#transients) · [`dissoc`](collections.md#lookup-and-update)
 - [`dissoc!`](collections.md#transients) · `distinct` · `distinct?` · [`do`](syntax.md#branching-and-sequencing) · `doall` · [`doc`](../getting-started.md#look-up-a-name)
@@ -109,7 +109,7 @@ beginning with `%` are runtime internals.
 - `macro-steps` · `macro?` · [`macroexpand`](syntax.md#macros-and-expansion) · [`macroexpand-1`](syntax.md#macros-and-expansion) · [`make`](objects.md#construction-and-access) · [`make-instance`](objects.md#protocols-and-object-customization)
 - `Map` · [`map`](collections.md#eager-transforms) · `map-indexed` · [`map-of`](syntax.md#function-contracts) · `map?` · `mapcat`
 - [`mapv`](collections.md#eager-transforms) · [`match`](syntax.md#pattern-matching) · [`MatchError`](syntax.md#pattern-matching) · `max` · `max-key` · `memoize`
-- `merge` · `merge-with` · `min` · `min-key` · `mod` · [`muffle-warning`](conditions.md#signaling-conditions) · `mutable?`
+- `merge` · `merge-with` · `meta` · `min` · `min-key` · `mod` · [`muffle-warning`](conditions.md#signaling-conditions) · `mutable?`
 
 ## N
 

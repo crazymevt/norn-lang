@@ -71,6 +71,7 @@ test membership when a set may contain `nil` or `false`.
 | `(fn [params…] body…)` | Make a function. The parameter vector may end with `& rest-name`. |
 | `(fn ([params…] body…) …)` | Make a multi-arity function. An optional name after `fn` is visible inside the function. |
 | `(def name expr)` | Set the root value of a namespace var and return the var. |
+| `(defonce name expr)` | Like `def`, but only when the var has no value yet, so reloading the file keeps it. A docstring can follow the name. |
 | `(defn name [params…] body…)` | Bind a function to a var. A docstring and attribute map can follow the name. Multi-arity syntax follows `fn`. |
 | `(defn- name [params…] body…)` | Define a private function in its module. |
 | `(letfn [(name [params…] body…) …] body…)` | Define mutually visible local functions. |
