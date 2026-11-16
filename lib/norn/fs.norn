@@ -11,11 +11,14 @@
 (defn glob
   "Paths matching pattern, sorted: * matches within a path segment, ** any
   number of segments, ? one character. E.g. (glob \"src/**/*.norn\"). A
-  pattern's segments are divided by / on every OS."
+  pattern's segments are divided by / on every OS. Nothing matches under
+  a folder that isn't there: [] then."
   [pattern]
   (let [base (%glob-base pattern)
         rel (fn [p] (if (= base ".") (subs p 2) p))]
-    (vec (filter (fn [p] (%glob-match pattern p)) (map rel (walk base))))))
+    (if (%fs-info base)
+      (vec (filter (fn [p] (%glob-match pattern p)) (map rel (walk base))))
+      [])))
 
 (defn watch
   "Watch a file or directory (with :recursive true, everything under it).

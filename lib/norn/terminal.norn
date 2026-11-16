@@ -161,7 +161,7 @@
 (defn width
   "The columns s takes on a terminal, its escape sequences aside."
   ^Integer [s]
-  (str/width (strip s)))
+  (str/width (str s)))
 
 ;;; ---- screen control ----
 ;;; Each is text to print.

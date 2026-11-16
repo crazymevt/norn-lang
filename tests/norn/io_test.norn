@@ -102,6 +102,26 @@
       (io/with-open [out (io/open f :write)] (is (= 10000 (io/copy-stream! s out))))
       (is (= 10000 (count (io/read-text f)))))))
 
+(defclass Logged () (name log))
+(defmethod io/stream-close ((s Logged)) (swap! (:log s) conj (:name s)))
+
+(deftest with-open-several
+  (let [log (atom [])]
+    (is (= [:a :b :c] (io/with-open [a (Logged :name :a :log log) b (Logged :name :b :log log) c (Logged :name (:name b) :log log)]
+                        (swap! log conj :body)
+                        [(:name a) (:name b) :c]))
+        "a later init sees the earlier names")
+    (is (= [:body :b :b :a] @log) "closed last first"))
+  (let [log (atom [])]
+    (is (= "boom" (try (io/with-open [a (Logged :name :a :log log) b (error "boom") c (Logged :name :c :log log)] :never)
+                       (catch Error e (condition-message e)))))
+    (is (= [:a] @log) "an init that fails closes what was opened before it"))
+  (let [log (atom [])]
+    (try (io/with-open [a (Logged :name :a :log log) b (Logged :name :b :log log)] (error "in body")) (catch Error _ nil))
+    (is (= [:b :a] @log) "a body that fails closes them all"))
+  (is (= :ok (io/with-open [] :ok)))
+  (is (try (eval '(norn.io/with-open [a] a)) false (catch Error _ true)) "an odd binding vector"))
+
 (deftest line-readers
   (io/with-temp-file [f]
     (let [long-line (apply str (repeat 200000 "x"))]

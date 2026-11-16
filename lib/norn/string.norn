@@ -4,7 +4,8 @@
 ;;;; subs and the indexes here all count characters. What a reader sees as
 ;;;; one character can be several code points (é as e plus an accent, a
 ;;;; flag, a family emoji); `graphemes` splits text into those, and `width`
-;;;; counts the columns text takes in a terminal or a monospace editor.
+;;;; counts the columns text takes in a terminal or a monospace editor (its
+;;;; ANSI escape sequences, colours and the like, taking none).
 ;;;;
 ;;;; Where a function takes a pattern, it can be a string or a character
 ;;;; (matched literally) or a regex (see norn.regex).
@@ -88,11 +89,18 @@
 (defn grapheme-count "How many user-perceived characters s has." [s] (%grapheme-count s))
 (defn reverse "s reversed, keeping each grapheme (a letter and its accents) intact." [s] (%str-reverse s))
 
+;; (as norn.terminal/strip removes them)
+(def ^:private ansi-re #"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+(def ^:private esc (char 27))
+
 (defn width
   "The columns s takes in a terminal or monospace font: wide East Asian
-  characters take two, combining marks none."
+  characters take two, combining marks and ANSI escape sequences (colours,
+  cursor movement) none."
   [s]
-  (%str-width s))
+  (if (and (string? s) (%str-index s esc nil false))
+    (%str-width (%re-replace ansi-re s "" true))
+    (%str-width s)))
 
 (defn truncate
   "The longest start of s at most cols columns wide; with ellipsis, a
@@ -105,11 +113,13 @@
 
 (defn- fill [n pad] (apply str (repeat (max 0 n) pad)))
 
-(defn pad-left "s right-aligned in cols columns (pad defaults to a space)."
+(defn pad-left
+  "s right-aligned in cols columns (pad defaults to a space), measured as
+  width does."
   ([s cols] (pad-left s cols " "))
   ([s cols pad] (let [s (str s)] (str (fill (- cols (width s)) pad) s))))
 
-(defn pad-right "s left-aligned in cols columns."
+(defn pad-right "s left-aligned in cols columns, measured as width does."
   ([s cols] (pad-right s cols " "))
   ([s cols pad] (let [s (str s)] (str s (fill (- cols (width s)) pad)))))
 

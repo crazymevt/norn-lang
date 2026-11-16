@@ -63,7 +63,7 @@
   (= x (cbor/decode (cbor/encode x))))
 
 (p/defproperty yaml-round-trips [x json-value]
-  (= x (yaml/read-string (yaml/write-string x))))
+  (= x (yaml/read-string (yaml/write-string x) :keys identity)))
 
 (p/defproperty decimal-text-round-trips [c (p/integers) scale (p/integers :min -20 :max 20)]
   (let [x (d/decimal c scale)] (= x (d/parse (d/text x)))))

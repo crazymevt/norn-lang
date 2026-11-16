@@ -122,8 +122,8 @@
       6 (tag! st (argument! st info) (inc depth))
       7 (read-simple! st info))))
 
-(defn decode "Decode exactly one CBOR item from Bytes." [data]
-  (when-not (bytes? data) (error "CBOR decode expects Bytes"))
+(defn decode "Decode exactly one CBOR item from Bytes (ParseError if they aren't CBOR)." [data]
+  (when-not (bytes? data) (error TypeError :expected "Bytes" :value data :message (str "CBOR decode expects Bytes, got " (pr-str data))))
   (let [st {:data data :pos (volatile! 0)} value (item! st 0)]
     (when (< @(:pos st) (count data)) (fail! st "trailing bytes"))
     value))
@@ -172,11 +172,13 @@
       (instance? Tagged x) (do (conj! out (header 6 (:tag x))) (emit! out (:value x) deeper))
       (instance? Simple x) (let [code (:code (simple (:code x)))]
                              (conj! out (bytes (if (< code 24) [(+ 224 code)] [248 code]))))
-      :else (error "Unsupported CBOR value" x))))
+      :else (error TypeError :expected "a value CBOR can encode" :value x
+                   :message (str "CBOR can't encode " (pr-str x))))))
 
 (defn encode
   "Encode one CBOR item as Bytes. Maps may have any encodable key. Floats
-  use binary64. The output does not impose deterministic map ordering."
+  use binary64. The output does not impose deterministic map ordering. A
+  value CBOR has no form for signals TypeError."
   [x]
   (let [out (transient [])]
     (emit! out x 0)

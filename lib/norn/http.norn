@@ -630,14 +630,15 @@
     :idle-timeout  ms a kept-alive connection may wait for its next
                    request (default 30000)
     :on-error      (fn [error request]), called when the handler fails;
-                   the client gets a 500 (default: print the error)"
+                   the client gets a 500 (default: print the error to
+                   standard error)"
   ^Map [handler & {:keys [host port tls cert-file key-file max-body idle-timeout on-error]}]
   (let [listener (net/listen (or host "127.0.0.1") (or port 0))
         server {:listener listener :connections (atom #{}) :running (atom true)
                 :address (net/local-address listener) :port (net/port (net/local-address listener))}
         opts {:max-body (or max-body (* 16 1024 1024)) :idle-timeout (or idle-timeout 30000)
               :scheme (if tls :https :http)
-              :on-error (or on-error (fn [e req] (println "norn.http: the handler failed on" (:method req) (:target req) "-" (condition-text e))))}]
+              :on-error (or on-error (fn [e req] (io/eprintln "norn.http: the handler failed on" (:method req) (:target req) "-" (condition-text e))))}]
     (spawn-detached
       (loop []
         (when @(:running server)

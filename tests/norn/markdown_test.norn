@@ -1,7 +1,7 @@
 ;;;; norn.markdown: Markdown to data and HTML.
 
 (ns markdown-test
-  (:require [norn.test :refer [is are deftest testing]] [norn.markdown :as md]))
+  (:require [norn.test :refer [is are deftest testing]] [norn.markdown :as md] [norn.string :as str]))
 
 (deftest blocks
   (are [src out] (= out (md/html src))
@@ -41,9 +41,13 @@
     "**bold *and em***" "<p><strong>bold <em>and em</em></strong></p>\n"))
 
 (deftest tables
-  (is (= (str "<table>\n<thead>\n<tr><th>Name</th><th>Size</th></tr>\n</thead>\n"
-              "<tbody>\n<tr><td>a</td><td><code>1</code></td></tr>\n<tr><td>b</td><td>2</td></tr>\n</tbody>\n</table>\n")
+  (is (= (str "<table>\n<thead>\n<tr><th>Name</th><th align=\"right\">Size</th></tr>\n</thead>\n"
+              "<tbody>\n<tr><td>a</td><td align=\"right\"><code>1</code></td></tr>\n"
+              "<tr><td>b</td><td align=\"right\">2</td></tr>\n</tbody>\n</table>\n")
          (md/html "| Name | Size |\n|------|-----:|\n| a | `1` |\n| b | 2 |")))
+  (testing "each column's alignment"
+    (is (str/includes? (md/html "a|b|c\n:--|:-:|---\n1|2|3")
+                       "<tr><th align=\"left\">a</th><th align=\"center\">b</th><th>c</th></tr>")))
   (is (= [:center :right nil] (:align (second (second (md/parse "a|b|c\n:-:|--:|---\n1|2|3")))))))
 
 (deftest data-and-text

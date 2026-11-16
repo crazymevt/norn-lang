@@ -4,7 +4,7 @@
 
 (ns http-test
   (:require [norn.test :refer [is deftest testing]] [norn.uri :as uri] [norn.http :as http]
-            [norn.net :as net] [norn.io :as io] [norn.sys :as sys] [norn.string :as str]))
+            [norn.net :as net] [norn.io :as io] [norn.sys :as sys] [norn.string :as str] [norn.process :as proc]))
 
 (defn- message [f] (try (f) nil (catch Error e (condition-message e))))
 
@@ -104,7 +104,13 @@
   (testing "statuses that aren't 2xx are responses"
     (is (= [404 "nope"] ((juxt :status :body) (http/get (url "/nothing")))))
     (is (= 500 (:status (http/get (url "/boom")))))
-    (is (= ["/boom" "kaboom"] (last @errors)) "the handler's error went to :on-error")))
+    (is (= ["/boom" "kaboom"] (last @errors)) "the handler's error went to :on-error"))
+  (testing "by default, a handler's error is printed to standard error"
+    (let [r (proc/sh (:executable (sys/info)) "-e"
+                     (str "(require '[norn.http :as http]) (let [s (http/serve (fn [_] (error \"kaboom\")))]"
+                          " (print (:status (http/get (str \"http://127.0.0.1:\" (:port s) \"/x\")))) (http/stop! s))"))]
+      (is (= "500nil\n" (:out r)) "(-e prints its value, nil)")
+      (is (str/includes? (:err r) "norn.http: the handler failed on :get /x - kaboom")))))
 
 (deftest redirects
   (let [r (http/get (url "/moved"))]

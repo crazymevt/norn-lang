@@ -66,6 +66,7 @@
 (is (= [(f "a.txt") (f "sub") (f "sub" "b.bin") (f "sub" "deeper") (f "sub" "deeper" "c.norn")] (fs/walk dir)))
 (is (= [(f "sub" "b.bin") (f "sub" "deeper" "c.norn")] (fs/glob (str dir "/sub/**/*.*"))))
 (is (= [(f "sub" "deeper" "c.norn")] (fs/glob (str dir "/**/*.norn"))))
+(is (= [] (fs/glob (str dir "/nope/**/*.norn"))) "a missing folder matches nothing")
 (is (= 3 (io/copy! (f "sub" "b.bin") (f "copy.bin"))))
 (io/rename! (f "copy.bin") (f "moved.bin"))
 (is (= [false true] [(io/exists? (f "copy.bin")) (io/exists? (f "moved.bin"))]))
@@ -77,6 +78,7 @@
 (is (= :error (fails (io/read-text (f "bad.txt")))))
 (is (= "y.norn" (io/file-name "x/y.norn")))
 (is (= ["x" "norn" "y"] [(io/parent "x/y.norn") (io/extension "x/y.norn") (io/stem "x/y.norn")]))
+(is (= [nil nil "/"] [(io/parent "c.txt") (io/parent "/") (io/parent "/c.txt")]) "a bare name has no parent")
 (is (= "a/b/c" (io/path "a" "b" "c")))
 (is (= nil (io/extension "README")))
 (is (= true (= (io/absolute "x") (io/path (sys/cwd) "x"))))
@@ -111,6 +113,25 @@
 (is (= "héllo\nworld\nagain" (io/with-open [h (io/open (f "s.txt") :read)] (bytes->string (io/read-all h)))))
 (is (= :file (handle-kind (io/with-open [h (io/open (f "s.txt") :read)] h))))
 (is (= :error (fails (io/open (f "s.txt") :sideways))))
+(io/with-open [a (io/open (f "w1.txt") :write) b (io/open (f "w2.txt") :write)]
+  (io/write a "one")
+  (io/write b "two"))
+(is (= ["one" "two"] [(io/read-text (f "w1.txt")) (io/read-text (f "w2.txt"))]) "with-open binds several")
+(is (= "one" (io/with-open [a (io/open (f "w1.txt") :read) r (io/line-reader a)] (io/read-line r))) "a later init sees the earlier")
+(io/close (io/open (f "rw.txt") :read-write))
+(is (= "" (io/read-text (f "rw.txt"))) ":read-write creates a missing file")
+(spit (f "b.bin") (bytes [1 2 255]))
+(is (= [1 2 255] (vec (seq (io/read-bytes (f "b.bin"))))) "spit writes bytes as they are")
+(defclass SpitPoint () (x))
+(defmethod print-object ((p SpitPoint)) (str "<" (:x p) ">"))
+(spit (f "b.txt") (SpitPoint :x 5))
+(is (= "<5>" (slurp (f "b.txt"))) "and anything else as str does")
+(is (= {:out "nil\n" :err "a :b <1>\nc"}
+       (select-keys (proc/sh (:executable (sys/info)) "-e"
+                             (str "(require '[norn.io :as io]) (defclass P () (x)) (defmethod print-object ((p P)) \"<1>\")"
+                                  " (io/eprintln \"a\" :b (P :x 1)) (io/eprint \"c\")"))
+                    [:out :err]))
+    "eprint and eprintln write to standard error")
 
 ;;; an unreachable stream is closed by its cleanup (observed through a
 ;;; cleanup of our own on the same stream, which runs in the same pass:
@@ -138,6 +159,7 @@
 (is (= true (pos? (sys/cores))))
 (is (= true (string? (sys/getenv "PATH"))))
 (is (= nil (sys/getenv "NORN_SURELY_UNSET_VARIABLE")))
+(is (= (sys/getenv "PATH") (sys/getenv :PATH) (sys/getenv 'PATH)) "a keyword or symbol names a variable")
 (is (= true (map? (sys/env))))
 (is (= true (pos? (count (sys/args)))))
 (is (= true (pos? (:carriers (sys/runtime)))))
@@ -158,6 +180,20 @@
   (is (= {:exit nil :signal :term} (proc/wait p)) "by name")
   (doseq [k [:in :out :err :process]] (io/close (k p))))
 (is (= :error (fails (proc/sh "/no/such/program"))))
+(let [e (try (proc/sh "/no/such/program") (catch Error e e))]
+  (is (instance? FileNotFound e) "a missing program is FileNotFound")
+  (is (= "/no/such/program" (:path e))))
+(is (instance? FileNotFound (try (proc/sh "true" :dir "/no/such/dir") (catch Error e e))) "and so is a missing :dir")
+(is (= "" (:out (proc/sh "sh" "-c" "printf %s \"$HOME\"" :clear-env true))) "sh takes :clear-env")
+(let [p (proc/start "cat")]
+  (io/write (:in p) "x")
+  (io/close (:in p))
+  (is (= "x" (bytes->string (io/read-all (:out p)))))
+  (proc/wait p)
+  (is (nil? (proc/close p)) "close closes everything start gave")
+  (is (every? (fn [k] (not (%handle-live? (k p)))) [:in :out :err :process]))
+  (proc/close p))
+(is (nil? (io/close nil)) "closing nil does nothing")
 
 ;;; ---- norn.time ----
 (is (= "1970-01-01T00:00:00Z" (t/format (t/of-epoch-ms 0))))
@@ -366,6 +402,11 @@
 (is (= "  日" (str/pad-left "日" 4)))
 (is (= "ab.." (str/pad-right "ab" 4 ".")))
 (is (= " ab " (str/center "ab" 4)))
+(let [red (str (char 27) "[31m" "日本" (char 27) "[0m")]
+  (is (= 4 (str/width red)) "escape sequences take no columns")
+  (is (= (str "  " red) (str/pad-left red 6)))
+  (is (= (str red "..") (str/pad-right red 6 ".")))
+  (is (= 3 (str/width (str (char 27) "]8;;http://x" (char 7) "abc" (char 27) "]8;;" (char 7)))) "a hyperlink's too"))
 (is (= "a&lt;b" (str/escape "a<b" {\< "&lt;"})))
 ;;; ---- regexes ----
 (is (= true (regex? #"a+")))
@@ -416,13 +457,20 @@
 (is (= nil (edn/read-string "")))
 (is (= :none (edn/read-string "  " :eof :none)))
 (is (= [1 :b "c"] (edn/read-all "1 :b \"c\"")))
-(let [v {:x '(a b) :y #bytes "00ff" :z [1.5 nil true]}]
+(let [v {:x '(a b) :y #bytes "00ff" :z [1.5 nil true] :q (conj (queue) 1) :r 1/3 :s #{\a 'b/c}}]
   (is (= v (edn/read-string (edn/write-string v)))))
+(defclass EdnPoint () (x))
+(doseq [bad [(atom 1) [1 {:f inc}] (sorted-map :v #'inc) (list (EdnPoint :x 1))]]
+  (let [e (try (edn/write-string bad) nil (catch TypeError e e))]
+    (is (some? e) (str "no EDN form: " (pr-str bad)))))
 ;;; ---- format ----
 (is (= "x=42 y=hi" (format "x=%d y=%s" 42 "hi")))
 (is (= "  42|42  |00042|+42" (format "%4d|%-4d|%05d|%+d" 42 42 42 42)))
 (is (= "3.14|3.142e+00|0.0001|1e+10" (format "%.2f|%.3e|%g|%g" 3.14159 3.14159 0.0001 1e10)))
 (is (= "ff|FF|17|101" (format "%x|%X|%o|%b" 255 255 15 5)))
+(defclass FmtPoint () (x))
+(defmethod print-object ((p FmtPoint)) (str "<" (:x p) ">"))
+(is (= "<1> [<2>] <3>" (format "%s %s %S" (FmtPoint :x 1) [(FmtPoint :x 2)] (FmtPoint :x 3))) "%s prints as str does")
 (is (= "1,234,567|-1,234.50" (format "%,d|%,.2f" 1234567 -1234.5)))
 (is (= "\"s\" s 100%" (format "%S %s 100%%" "s" "s")))
 (is (= "123456789012345678901234567890" (format "%d" 123456789012345678901234567890)))

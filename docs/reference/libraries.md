@@ -69,6 +69,20 @@ An early `reduced` result leaves the reader positioned at the next record.
 (ndjson/read-string "{\"id\":7}\nnull\n") ; => [{:id 7} nil]
 ```
 
+### EDN, CSV and TOML
+
+`norn.edn/write-string` writes text that `read-string` reads back as an
+equal value. A value with no such text, such as an atom, a function, or an
+instance (a decimal or a time, say), signals `TypeError` naming it. Use
+`pr-str` to print anything.
+
+`norn.csv/read-maps` reads a header row and makes a map of each row after it.
+A row with more or fewer fields than the header signals `ParseError` with
+the row's `:line`. Pass `:strict false` to drop extra fields and leave
+missing ones out. Malformed CSV text signals `ParseError` too.
+
+`norn.toml` has `read-file` and `write-file`, like the other formats.
+
 ### XML
 
 `(norn.xml/read-string text)` reads decoded XML text. `(norn.xml/read-file path)`
@@ -125,14 +139,15 @@ written back out.
 `norn.yaml/read-string` and `read-file` read a single configuration document
 with YAML 1.2 Core scalar resolution. They accept block and flow maps and
 sequences, quoted strings, literal and folded block strings, and aliases to
-completed anchors. String keys stay strings by default. Use `:keys keyword`
-to convert them. `write-string` and `write-file` emit flow collections.
+completed anchors. String keys become keywords by default, as in
+`norn.json`, `norn.toml`, and `norn.csv`. Use `:keys identity` to keep them
+as strings. `write-string` and `write-file` emit flow collections.
 Keyword values and keys are written as strings.
 
 ```clojure
 (require '[norn.yaml :as yaml])
 
-(yaml/read-string "server:\n  ports: [80, 443]\n  enabled: true\n" :keys keyword)
+(yaml/read-string "server:\n  ports: [80, 443]\n  enabled: true\n")
 ; => {:server {:ports [80 443] :enabled true}}
 ```
 
@@ -241,7 +256,15 @@ The default keeps returning strings. TOML writing accepts the typed values.
 For a file, `norn.io/read-text` reads UTF-8 text and
 `norn.io/read-bytes` reads bytes. For stream access,
 `(norn.io/with-open [h (norn.io/open path :read)] body…)` closes the
-handle when the body exits, including on failure.
+handle when the body exits, including on failure. It takes several
+bindings, `[in (open a :read) out (open b :write)]`, and closes them in
+reverse order. `close` does nothing given nil. `eprint` and `eprintln`
+print to standard error, as `print` and `println` print to standard output.
+
+`norn.process/start` returns the process handle and its piped streams.
+`norn.process/close` closes them all; call `wait` first. `sh` runs a program
+to completion and accepts `:in`, `:dir`, `:env`, and `:clear-env`. A program
+that doesn't exist signals `FileNotFound`.
 
 On streams, `read-exactly` reads a fixed number of bytes: it gives nil at the
 end, and signals `IOError` with `:reason :truncated` when the stream stops
@@ -249,7 +272,8 @@ partway. `copy-stream!` copies one stream to another, up to `:limit` bytes
 if given. `text-reader` and `read-chunk` decode UTF-8 or UTF-16 incrementally,
 keeping characters whole across reads.
 
-For files, `(open path :create-new)` creates a file only if none exists,
+For files, `(open path :read-write)` creates a missing file and keeps an
+existing file's contents. `(open path :create-new)` creates a file only if none exists,
 signalling `FileExists` otherwise, and `sync!` flushes a handle to storage.
 `temp-file` and `temp-directory` make new uniquely named paths, and
 `with-temp-file` and `with-temp-directory` delete them when the body ends.
@@ -397,6 +421,8 @@ functions are:
 converts a color to what the terminal can show and returns plain text when
 color is off. Bind `*color*` to override that decision. `strip` removes
 escape sequences, and `width` counts the columns that text takes on screen.
+`norn.string/width`, `pad-left`, `pad-right`, and `center` also ignore
+escape sequences, so styled text lines up.
 `cursor-to`, `clear`, `hide-cursor`, and `alternate-screen` produce control
 sequences for you to print.
 

@@ -1,4 +1,6 @@
 ;;;; YAML configuration documents, using YAML 1.2 Core scalar resolution.
+;;;; Maps' string keys read as keywords, as in norn.json and norn.toml
+;;;; (:keys identity keeps them strings).
 
 (ns norn.yaml
   (:refer-core :exclude [read-string])
@@ -346,12 +348,13 @@
 
 (defn read-string
   "Read one YAML configuration document. :keys transforms string map keys
-  (identity by default). Supports block and flow collections, Core scalars,
-  block strings, and aliases to previously completed nodes."
-  [s & {:keys [keys] :or {keys identity}}]
+  (keyword by default; identity keeps them strings). Supports block and
+  flow collections, Core scalars, block strings, and aliases to previously
+  completed nodes."
+  [s & {:keys [keys] :or {keys keyword}}]
   (document s "YAML" keys))
 
-(defn read-file "Read one UTF-8 YAML configuration document." [path & {:keys [keys] :or {keys identity}}]
+(defn read-file "Read one UTF-8 YAML configuration document (options as read-string's)." [path & {:keys [keys] :or {keys keyword}}]
   (document (io/read-text path) (str path) keys))
 
 (defn- write-node [x depth]

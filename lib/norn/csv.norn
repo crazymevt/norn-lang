@@ -11,47 +11,76 @@
 
 (ns norn.csv (:require [norn.string :as str]))
 
-(defn read-csv
-  "The rows of CSV text, each a vector of strings. Options: :separator
-  (\\,), :quote (\\\"). A quote left open is an error."
-  ^Vector [^String text & {:keys [separator quote] :or {separator \, quote \"}}]
-  (let [[state field row rows]
-        (reduce (fn [[state field row rows] c]
+(defn- fail [line why]
+  (error ParseError :source "CSV" :line line :message (str "CSV, line " line ": " why)))
+
+(defn- end-field [row field] (conj! row (str/join (persistent! field))))
+
+(defn- end-row
+  "The state after a row ends at a line break on line."
+  [field row rows starts line row-line]
+  [:start (transient []) (transient []) (conj! rows (persistent! (end-field row field))) (conj! starts row-line) (inc line) (inc line)])
+
+(defn- parse
+  "[rows lines]: the rows of CSV text, and the line each starts on."
+  [text separator quote]
+  (let [[state field row rows starts _ row-line]
+        (reduce (fn [[state field row rows starts line row-line] c]
                   (case state
                     ;; (:start: at a field's start; :plain: in an unquoted one;
                     ;; :quoted: inside quotes; :quote: a quote inside quotes,
                     ;; doubled or closing; :cr: after a \r)
-                    :quoted (if (= c quote) [:quote field row rows] [:quoted (conj! field c) row rows])
-                    :quote (cond (= c quote) [:quoted (conj! field c) row rows]
-                                 (= c separator) [:start (transient []) (conj! row (str/join (persistent! field))) rows]
-                                 (= c \newline) [:start (transient []) (transient []) (conj! rows (persistent! (conj! row (str/join (persistent! field)))))]
-                                 (= c \return) [:cr field row rows]
-                                 :else (error (str "CSV: text after a closing quote: " (pr-str c))))
+                    :quoted (cond (= c quote) [:quote field row rows starts line row-line]
+                                  (= c \newline) [:quoted (conj! field c) row rows starts (inc line) row-line]
+                                  :else [:quoted (conj! field c) row rows starts line row-line])
+                    :quote (cond (= c quote) [:quoted (conj! field c) row rows starts line row-line]
+                                 (= c separator) [:start (transient []) (end-field row field) rows starts line row-line]
+                                 (= c \newline) (end-row field row rows starts line row-line)
+                                 (= c \return) [:cr field row rows starts line row-line]
+                                 :else (fail line (str "text after a closing quote: " (pr-str c))))
                     :cr (if (= c \newline)
-                          [:start (transient []) (transient []) (conj! rows (persistent! (conj! row (str/join (persistent! field)))))]
-                          (error "CSV: a \\r without its \\n"))
-                    (cond (and (= c quote) (= state :start)) [:quoted field row rows]
-                          (= c separator) [:start (transient []) (conj! row (str/join (persistent! field))) rows]
-                          (= c \newline) [:start (transient []) (transient []) (conj! rows (persistent! (conj! row (str/join (persistent! field)))))]
-                          (= c \return) [:cr field row rows]
-                          :else [:plain (conj! field c) row rows])))
-                [:start (transient []) (transient []) (transient [])]
+                          (end-row field row rows starts line row-line)
+                          (fail line "a \\r without its \\n"))
+                    (cond (and (= c quote) (= state :start)) [:quoted field row rows starts line row-line]
+                          (= c separator) [:start (transient []) (end-field row field) rows starts line row-line]
+                          (= c \newline) (end-row field row rows starts line row-line)
+                          (= c \return) [:cr field row rows starts line row-line]
+                          :else [:plain (conj! field c) row rows starts line row-line])))
+                [:start (transient []) (transient []) (transient []) (transient []) 1 1]
                 (str text))
         row (persistent! row)
         field (persistent! field)]
-    (when (= state :quoted) (error "CSV: a quoted field is never closed"))
-    (persistent! (if (and (empty? row) (empty? field) (not= state :quote))
-                   rows
-                   (conj! rows (conj row (str/join field)))))))
+    (when (= state :quoted) (fail row-line "a quoted field is never closed"))
+    (if (and (empty? row) (empty? field) (not= state :quote))
+      [(persistent! rows) (persistent! starts)]
+      [(persistent! (conj! rows (conj row (str/join field)))) (persistent! (conj! starts row-line))])))
+
+(defn read-csv
+  "The rows of CSV text, each a vector of strings. Options: :separator
+  (\\,), :quote (\\\"). Text that isn't CSV (a quote left open, text after
+  a closing quote) signals ParseError, with its :line."
+  ^Vector [^String text & {:keys [separator quote] :or {separator \, quote \"}}]
+  (first (parse text separator quote)))
 
 (defn read-maps
   "CSV text with a header row, as maps of its column names (as keywords,
-  or :keys identity for the strings) to each row's fields. Options as
-  read-csv, and :keys."
-  ^Vector [^String text & {:keys [keys] :or {keys keyword} :as opts}]
-  (let [[header & rows] (apply read-csv text (mapcat identity (dissoc opts :keys)))
-        ks (mapv keys header)]
-    (mapv (fn [r] (zipmap ks r)) rows)))
+  or :keys identity for the strings) to each row's fields. A row with more
+  or fewer fields than the header signals ParseError naming its line;
+  with :strict false, extra fields are dropped and missing ones left out
+  of its map. Blank lines are skipped when there are two or more columns.
+  Options as read-csv, and :keys and :strict."
+  ^Vector [^String text & {:keys [keys strict separator quote] :or {keys keyword strict true separator \, quote \"}}]
+  (let [[rows lines] (parse text separator quote)
+        ks (mapv keys (first rows))
+        n (count ks)]
+    (into []
+          (comp (remove (fn [[r _]] (and (> n 1) (= [""] r))))
+                (map (fn [[r line]]
+                       (when (and strict (not= n (count r)))
+                         (fail line (str "a row of " (count r) (if (= 1 (count r)) " field" " fields")
+                                         ", while the header has " n)))
+                       (zipmap ks r))))
+          (map vector (rest rows) (rest lines)))))
 
 (defn- field-text [x separator quote]
   (let [s (if (nil? x) "" (str x))]

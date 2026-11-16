@@ -326,6 +326,19 @@
 
 (defn- html-all [xs] (apply str (map html* xs)))
 
+(defn- row-html
+  "A table row's HTML, its cells aligned as aligns (:left, :center, :right
+  or nil, by column) says, with align= as GitHub's renderer writes it."
+  [[_ a & more] aligns]
+  (let [cells (if (map? a) more (if (nil? a) more (cons a more)))
+        t (if (:head (when (map? a) a)) "th" "td")]
+    (str "<tr>"
+         (apply str (map-indexed (fn [i c]
+                                   (let [a (get aligns i)]
+                                     (str "<" t (when a (str " align=\"" (name a) "\"")) ">" (html-all (rest c)) "</" t ">")))
+                                 cells))
+         "</tr>\n")))
+
 (defn- html* [x]
   (if (string? x)
     (esc x)
@@ -347,10 +360,11 @@
         (= tag :item) (str "<li>" (when (contains? attrs :checked) (if (:checked attrs) "<input type=\"checkbox\" checked disabled> " "<input type=\"checkbox\" disabled> "))
                            (html-all kids) "</li>\n")
         (= tag :thematic-break) "<hr />\n"
-        (= tag :table) (let [[head & body] kids]
-                         (str "<table>\n<thead>\n" (html* head) "</thead>\n"
-                              (when (seq body) (str "<tbody>\n" (html-all body) "</tbody>\n")) "</table>\n"))
-        (= tag :row) (str "<tr>" (apply str (map (fn [c] (let [t (if (:head attrs) "th" "td")] (str "<" t ">" (html-all (rest c)) "</" t ">"))) kids)) "</tr>\n")
+        (= tag :table) (let [[head & body] kids aligns (vec (:align attrs))]
+                         (str "<table>\n<thead>\n" (row-html head aligns) "</thead>\n"
+                              (when (seq body) (str "<tbody>\n" (apply str (map (fn [r] (row-html r aligns)) body)) "</tbody>\n"))
+                              "</table>\n"))
+        (= tag :row) (row-html x [])
         (= tag :em) (tagged "em")
         (= tag :strong) (tagged "strong")
         (= tag :strike) (tagged "del")

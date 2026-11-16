@@ -95,6 +95,12 @@
 
 ;;; ---- values ----
 
+(defn- choices-text
+  "x's :choices as they're typed on the command line (keywords without
+  their colon)."
+  [x]
+  (str/join ", " (map (fn [c] (if (keyword? c) (subs (str c) 1) (str c))) (:choices x))))
+
 (defn- convert
   "Text s for what (an option or argument's name in messages), as x's
   :type gives it, and one of its :choices if it has them."
@@ -113,7 +119,7 @@
                                  (catch Error e (fail path (str what ": " (condition-message e)))))
                 :else (error "norn.cli: unknown :type" (pr-str type)))]
     (when (and (:choices x) (not (some #(= v %) (:choices x))))
-      (fail path (str what ": " (pr-str s) " isn't one of " (str/join ", " (:choices x)))))
+      (fail path (str what ": " (pr-str s) " isn't one of " (choices-text x))))
     v))
 
 (defn- distance
@@ -287,7 +293,7 @@
   (let [notes (cond-> []
                       (#{:multiple :count} (:kind o)) (conj "repeatable")
                       (:negatable o) (conj (str "--no-" (:long o) " to turn off"))
-                      (:choices o) (conj (str "one of " (str/join ", " (:choices o))))
+                      (:choices o) (conj (str "one of " (choices-text o)))
                       (and (contains? o :default) (not (contains? #{nil false [] ""} (:default o))))
                       (conj (str "default " (if (string? (:default o)) (:default o) (pr-str (:default o)))))
                       (:env o) (conj (str "env " (:env o)))

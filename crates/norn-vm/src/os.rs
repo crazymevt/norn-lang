@@ -11,6 +11,18 @@ use norn_rt::string::str_new;
 use norn_rt::vector::vec_from_slice;
 use norn_rt::{Kind, Mutator, Value};
 
+/// A program that can't be started, as the condition its I/O error makes
+/// (FileNotFound for a missing program or working directory,
+/// PermissionDenied…), with :path the program, or the directory when it's
+/// the directory that's missing.
+fn spawn_err(s: &Spawn, e: &std::io::Error) -> Error {
+    let path = match &s.dir {
+        Some(d) if !std::path::Path::new(d).is_dir() => d.clone(),
+        _ => s.cmd.clone(),
+    };
+    Error::io(format!("Can't start {}: {e}", s.cmd), e).with("path", crate::vm::ErrData::Str(path))
+}
+
 fn kw(m: &mut Mutator, k: &str) -> Value {
     rt().keyword(m, None, k)
 }
@@ -61,7 +73,7 @@ pub(crate) fn start(vm: &mut Vm, s: Spawn) -> Result<Value> {
         c.env_clear();
     }
     c.envs(s.env.iter().map(|(k, v)| (k, v)));
-    let mut child = c.spawn().map_err(|e| Error::new(format!("Can't start {}: {e}", s.cmd)))?;
+    let mut child = c.spawn().map_err(|e| spawn_err(&s, &e))?;
     let pid = child.id();
     let m = &mut vm.m;
     let stdin = match child.stdin.take() {
@@ -163,7 +175,7 @@ pub(crate) fn pty_start(vm: &mut Vm, s: Spawn, rows: u16, cols: u16) -> Result<V
             Ok(())
         });
     }
-    let child = c.spawn().map_err(|e| Error::new(format!("Can't start {}: {e}", s.cmd)))?;
+    let child = c.spawn().map_err(|e| spawn_err(&s, &e))?;
     drop(c); // (the parent's copies of the slave)
     drop(slave);
     let pid = child.id();
