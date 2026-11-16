@@ -4,7 +4,7 @@
 
 (ns module-test
   (:require [norn.test :refer [is deftest testing]] [norn.io :as io] [norn.sys :as sys]
-            [norn.string :as str] [norn.lint :as lint]))
+            [norn.string :as str] [norn.lint :as lint] [norn.dev :as dev]))
 
 (def dir (io/path (sys/temp-dir) (str "norn-module-test-" (sys/pid) "-" (nano-time))))
 (io/mkdirs! (io/path dir "mt"))
@@ -212,3 +212,18 @@
   (is (:macro (meta #'when)))
   (is (:dynamic (meta #'*check-contracts*)))
   (is (nil? (meta [1 2])) "values carry none yet"))
+
+(deftest norn-dev-reloads-a-changed-module-and-its-macros-users
+  (module! "dw" "(ns mt.dw)\n(defmacro shout [s] `(str ~s \"!\"))\n(defn word [] \"one\")\n")
+  (module! "du" "(ns mt.du (:require [mt.dw :as w]))\n(defn said [] (w/shout (w/word)))\n")
+  (eval '(require 'mt.du))
+  (is (= "one!" (eval '(mt.du/said))))
+  (let [file (io/path dir "mt" "dw.norn")]
+    (module! "dw" "(ns mt.dw)\n(defmacro shout [s] `(str ~s \"?\"))\n(defn word [] \"two\")\n")
+    (is (= ['mt.dw 'mt.du] (:reloaded (dev/reload! [file]))) "a macro changed: its users too")
+    (is (= "two?" (eval '(mt.du/said))))
+    (module! "dw" "(ns mt.dw)\n(defn word [] \"three\"\n")
+    (let [r (dev/reload! [file])]
+      (is (= [] (:reloaded r)))
+      (is (str/includes? (:error (first (:failed r))) "EOF while reading") "a save that doesn't read"))
+    (is (= "two?" (eval '(mt.du/said))) "keeps the old code")))
