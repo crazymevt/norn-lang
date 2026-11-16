@@ -477,15 +477,15 @@
 (def ^:private syntax-classes
   "Syntax class name → {:desc :pred} (built in) or {:desc :patterns} (made
   with define-syntax-class)."
-  (atom {'id {:desc "identifier" :pred identifier?}
-         'expr {:desc "expression" :pred (fn [s] (not (keyword? (syntax-e s))))}
-         'str {:desc "string" :pred (fn [s] (string? (syntax-e s)))}
-         'number {:desc "number" :pred (fn [s] (number? (syntax-e s)))}
-         'integer {:desc "integer" :pred (fn [s] (integer? (syntax-e s)))}
-         'nat {:desc "natural number" :pred (fn [s] (let [e (syntax-e s)] (and (integer? e) (>= e 0))))}
-         'keyword {:desc "keyword" :pred (fn [s] (keyword? (syntax-e s)))}
-         'boolean {:desc "boolean" :pred (fn [s] (boolean? (syntax-e s)))}
-         'char {:desc "character" :pred (fn [s] (char? (syntax-e s)))}}))
+  (atom {'id {:desc "an identifier" :pred identifier?}
+         'expr {:desc "an expression" :pred (fn [s] (not (keyword? (syntax-e s))))}
+         'str {:desc "a string" :pred (fn [s] (string? (syntax-e s)))}
+         'number {:desc "a number" :pred (fn [s] (number? (syntax-e s)))}
+         'integer {:desc "an integer" :pred (fn [s] (integer? (syntax-e s)))}
+         'nat {:desc "a natural number" :pred (fn [s] (let [e (syntax-e s)] (and (integer? e) (>= e 0))))}
+         'keyword {:desc "a keyword" :pred (fn [s] (keyword? (syntax-e s)))}
+         'boolean {:desc "a boolean" :pred (fn [s] (boolean? (syntax-e s)))}
+         'char {:desc "a character" :pred (fn [s] (char? (syntax-e s)))}}))
 
 (defn %define-syntax-class! [name desc patterns]
   (swap! syntax-classes assoc name {:desc desc :patterns patterns}))

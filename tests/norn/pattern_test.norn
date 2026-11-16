@@ -102,10 +102,10 @@
 
 (deftest syntax-parse-errors
   (testing "the error is the one that got furthest, saying what was expected"
-    (is (str/includes? (message '(pattern-test/my-let [a 1 b] a)) "my-let: expected expression"))
-    (is (str/includes? (message '(pattern-test/my-let [1 2] 3)) "my-let: expected identifier"))
+    (is (str/includes? (message '(pattern-test/my-let [a 1 b] a)) "my-let: expected an expression"))
+    (is (str/includes? (message '(pattern-test/my-let [1 2] 3)) "my-let: expected an identifier"))
     (is (str/includes? (message '(pattern-test/my-let [a 1])) "my-let: expected"))
-    (is (str/includes? (message '(pattern-test/my-defn 3 [x] x)) "expected identifier")))
+    (is (str/includes? (message '(pattern-test/my-defn 3 [x] x)) "expected an identifier")))
   (testing "a class's description"
     (is (str/includes? (message '(pattern-test/pairs [a 1] [:k 2])) "expected binding pair")))
   (testing "~describe"
@@ -123,7 +123,7 @@
     (is (= "let: expected a binding vector [name value …]" (message '(let (a 1) a))))
     (is (= "loop: expected a binding vector [name value …]" (message '(loop [1 2] 3))))
     (is (= "fn: expected a parameter (a name, &, a vector or a map)" (message '(fn f [x 1] x))))
-    (is (= "defn: expected identifier" (message '(defn 3 [] 1))))
+    (is (= "defn: expected an identifier" (message '(defn 3 [] 1))))
     (is (= "cond: expected a result after the test" (message '(cond (= 1 1) :yes :else))))
     (is (= "case: expected an expression to choose by" (message '(case))))
     (is (= "ns: expected a docstring or an ns clause, (:require …), (:require-for-syntax …), (:refer-core …) or (:unsafe)" (message '(ns foo (:requir [x]))))))
