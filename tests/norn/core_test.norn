@@ -432,3 +432,7 @@
   (is (= true (= l (nest list 1))))
   (is (= (hash m) (hash (nest (fn [x] {:k x}) 1))))
   (is (= (* 5 depth) (dec (count (pr-str m))))))
+
+;; abs keeps the kind of number, and -0.0's absolute value is 0.0
+(is (= [3 2.5 1/2 1180591620717411303424] [(abs -3) (abs -2.5) (abs -1/2) (abs (- (bit-shift-left 1 70)))]))
+(is (= "0.0" (pr-str (abs -0.0))) "not -0.0")

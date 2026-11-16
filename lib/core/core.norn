@@ -65,9 +65,10 @@
 (defn odd? "Is integer n odd? A TypeError for a float or a ratio." [n] (not (even? n)))
 (defn abs
   "The absolute value of number n, of the same kind: (abs -3) is 3. An
-  integer never overflows (it grows into a big one)."
+  integer never overflows (it grows into a big one). (abs -0.0) is 0.0."
   [n]
-  (if (neg? n) (- n) n))
+  ;; (-0.0 isn't neg?, but its absolute value is 0.0)
+  (if (neg? n) (- n) (if (float? n) (if (zero? n) 0.0 n) n)))
 (defn max
   "The greatest of the numbers. Of two that are equal, the later one:
   (max 1 1.0) is 1.0."
