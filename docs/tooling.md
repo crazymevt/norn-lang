@@ -17,6 +17,9 @@ also substitute `./target/release/norn` after [building it](getting-started.md#b
 | `norn lint [PATH…]` | Report source diagnostics, including unresolved names and unused imports. |
 | `norn test [PATH…]` | Discover and run tests. Options include `--only REGEX`, `--serial`, `--tap`, and `--junit FILE`. |
 | `norn check [PATH…]` | Run formatting checks, lint, tests, and examples registered in the metadata of loaded definitions. |
+| `norn new NAME [--dir DIR] [--app] [--no-git]` | Make a new project, ready to run, test and package. See [Projects and dependencies](#projects-and-dependencies). |
+| `norn run [ARGS…]` | Call the project's `:main` with the arguments. Its integer result is the exit status. |
+| `norn dev [ARGS…]` | Run the project's `:main`, and reload each module that's saved while it runs. See [Live reloading](#live-reloading). |
 | `norn package [--cli] [--app] [--out DIR]` | Package the project for release: a command-line archive and, on macOS, an app. See [Packaging](#packaging). |
 
 ## Write and run a test
@@ -95,6 +98,14 @@ Markdown code fences are separate from this metadata.
 
 ## Projects and dependencies
 
+`norn new my-app` makes a project in a new folder `my-app`: a `norn.edn`, a
+`main` in `src/my-app/main.norn`, a test in `tests/main_test.norn`, a
+README and a `.gitignore`, and a Git repository unless the folder is
+already in one (`--no-git` skips it). `--app` sets the project up to
+package as a macOS app as well as a command-line archive. In the folder,
+`norn run` calls `main`, `norn test` runs the test, and `norn package`
+packages it. The name is lower-case words joined by hyphens.
+
 Put `norn.edn` at the project root. `:paths` defaults to `["src"]`, and
 `:main` names the entry function for `norn build` when no source files are
 given. For example, `app.main` goes in `src/app/main.norn`.
@@ -111,6 +122,24 @@ Add dependencies under `:deps`. A dependency can point to a folder with
 `:tag` or `:sha`. Paths are relative to the project file that declares them.
 Run `norn deps` to resolve dependencies and write `norn.lock`, which pins Git
 dependencies to commits. `norn deps --update` resolves them again.
+
+## Live reloading
+
+`norn dev` runs the project's `:main`, as `norn run` does, and watches the
+project's `:paths`. Each time you save a module, it loads it again:
+
+- Calls go through vars, so code that's already running uses the new
+  definitions the next time it calls them. A loop already running keeps
+  its own body until it ends.
+- A module that defines macros reloads the modules that use it too, since
+  they expanded the old macros.
+- A file that doesn't read, such as one with a missing bracket, isn't
+  loaded. The old code keeps running, and `norn dev` prints the error.
+- Reloading a module evaluates its definitions again, so state defined
+  with `def` starts over. Define it with `defonce` to keep it.
+- `(norn.dev/after-reload! key f)` calls `(f modules)` after each reload,
+  so a program can redraw.
+- When `:main` has returned, the next save runs it again.
 
 ## Images
 
