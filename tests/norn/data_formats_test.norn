@@ -107,7 +107,10 @@
   (is (= "c48221196ab3" (b/hex (cbor/encode (d/parse "273.15")))))
   (doseq [hex ["" "ffff" "7f6161" "7f61c361a9ff" "a201010102" "bf61aaff" "f81f" "c401" "c201" "0102"]]
     (is (some? (parse-error #(cbor/decode (b/unhex hex)))) hex))
-  (is (= 1 (d/compare (cbor/decode (b/unhex "c4821b00000000ffffffff01")) (d/decimal 1)))))
+  (is (= 1 (d/compare (cbor/decode (b/unhex "c4821b00000000ffffffff01")) (d/decimal 1))))
+  (testing "a value CBOR can't encode, or decoding what isn't bytes, is a TypeError"
+    (is (instance? TypeError (try (cbor/encode [1 (atom 2)]) (catch Error e e))))
+    (is (instance? TypeError (try (cbor/decode "00") (catch Error e e))))))
 
 (deftest json-lines
   (is (= [{"key" "é"} nil false 42] (ndjson/read-string "{\"key\":\"é\"}\r\nnull\nfalse\n42" :keywords false)))
@@ -130,19 +133,21 @@
                     "message: >-\n  hello\n  world\n\n  again\n"
                     "literal: |+2\n  hello # data\n\n"
                     "flow: [yes,\n  False, \"\\U0001F642\", ~,\n  0o17, .Inf]\n...\n")
-        doc (yaml/read-string source :keys keyword)]
+        doc (yaml/read-string source)]
     (is (= [{:name "Ada" :data {:flag true :n 16}}
             {:name "Bob's \"office\"" :data {:flag true :n 16}}] (:items doc)))
     (is (identical? (get-in doc [:items 0 :data]) (get-in doc [:items 1 :data])))
     (is (= "hello world\nagain" (:message doc)))
     (is (= "hello # data\n\n" (:literal doc)))
     (is (= ["yes" false "🙂" nil 15 ##Inf] (:flow doc)))
-    (is (= doc (yaml/read-string (yaml/write-string doc) :keys keyword))))
-  (is (= {"u" "http://host/a#frag" "a" "" "b" nil}
-         (yaml/read-string "u: http://host/a#frag\na: ''\nb:\n")))
-  (is (= {"a" [1 2]} (yaml/read-string "a: &x\n  - 1\n  - 2\n")))
-  (is (= {"a" "x # y" "b" "x # y"} (yaml/read-string "---\na: &ref \"x # y\"\nb: *ref # removed\n")))
-  (is (= [{"a" 1} "other"] (yaml/read-string "--- [a: 1, other]")))
+    (is (= doc (yaml/read-string (yaml/write-string doc)))))
+  (testing "keys are keywords, as in the other formats; :keys identity keeps strings"
+    (is (= {:u "http://host/a#frag" :a "" :b nil}
+           (yaml/read-string "u: http://host/a#frag\na: ''\nb:\n")))
+    (is (= {"a" [1 2]} (yaml/read-string "a: &x\n  - 1\n  - 2\n" :keys identity)))
+    (is (= {:a 1} (io/with-temp-file [p] (io/write-text p "a: 1\n") (yaml/read-file p)))))
+  (is (= {:a "x # y" :b "x # y"} (yaml/read-string "---\na: &ref \"x # y\"\nb: *ref # removed\n")))
+  (is (= [{:a 1} "other"] (yaml/read-string "--- [a: 1, other]")))
   (is (raises? #(yaml/write-string {:a 1 "a" 2})))
   (is (str/includes? (condition-message (parse-error #(yaml/read-string "a: hello\n  world\n"))) "multi-line"))
   (is (= 2 (:line (parse-error #(yaml/read-string "- a\n  b\n")))))

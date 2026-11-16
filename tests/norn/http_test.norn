@@ -104,7 +104,13 @@
   (testing "statuses that aren't 2xx are responses"
     (is (= [404 "nope"] ((juxt :status :body) (http/get (url "/nothing")))))
     (is (= 500 (:status (http/get (url "/boom")))))
-    (is (= ["/boom" "kaboom"] (last @errors)) "the handler's error went to :on-error")))
+    (is (= ["/boom" "kaboom"] (last @errors)) "the handler's error went to :on-error"))
+  (testing "by default, a handler's error is printed to standard error"
+    (let [r (proc/sh (:executable (sys/info)) "-e"
+                     (str "(require '[norn.http :as http]) (let [s (http/serve (fn [_] (error \"kaboom\")))]"
+                          " (print (:status (http/get (str \"http://127.0.0.1:\" (:port s) \"/x\")))) (http/stop! s))"))]
+      (is (= "500nil\n" (:out r)) "(-e prints its value, nil)")
+      (is (str/includes? (:err r) "norn.http: the handler failed on :get /x - kaboom")))))
 
 (deftest redirects
   (let [r (http/get (url "/moved"))]

@@ -14,7 +14,8 @@
    :commands [{:name "add" :summary "Add a note"
                :options [{:name :tag :short \t :multiple true :doc "A tag"}
                          {:name :priority :short \p :type :int :choices [1 2 3] :default 2}
-                         {:name :dry-run :short \n}]
+                         {:name :dry-run :short \n}
+                         {:name :format :type :keyword :choices [:text :json]}]
                :args [{:name :text :variadic true :doc "The note's words"}]
                :run (fn [r] (reset! ran r) 0)}
               {:name "copy" :args [{:name :src :optional true :default "."} {:name :dest}]
@@ -62,6 +63,8 @@
   (is (= ["missing command (one of add)" ["remote"]] (usage-error "remote")))
   (is (= ["-p: \"7\" isn't one of 1, 2, 3" ["add"]] (usage-error "add" "-p" "7" "x")))
   (is (= ["-p: expected an integer, got \"x\"" ["add"]] (usage-error "add" "-p" "x" "x")))
+  (is (= ["--format: \"xml\" isn't one of text, json" ["add"]] (usage-error "add" "--format" "xml" "x"))
+      "keyword choices as they're typed")
   (is (= ["--verbose takes no value" ["add"]] (usage-error "add" "--verbose=3" "x")))
   (is (= ["-t needs a value (TAG)" ["add"]] (usage-error "add" "-t")))
   (is (= ["URL: not a URL" ["remote" "add"]] (usage-error "remote" "add" "nope")))
@@ -90,6 +93,7 @@
     (is (str/includes? top "      --color    Colored output (--no-color to turn off; default true)\n"))
     (is (str/starts-with? add "Usage: notes add [options] TEXT...\n"))
     (is (str/includes? add "  -p, --priority PRIORITY  (one of 1, 2, 3; default 2)\n"))
+    (is (re-find #"--format FORMAT +\(one of text, json\)\n" add) "keyword choices without colons")
     (is (re-find #"Global options:\n  -v, --verbose +More output \(repeatable\)" add))
     (is (not (re-find #"Options:\n(.+\n)*.*--version" add)) "--version is the root's")))
 

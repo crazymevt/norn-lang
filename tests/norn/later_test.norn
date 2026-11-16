@@ -45,7 +45,8 @@
       (is (= "This delay needs its own value to compute it" (message (fn [] @@d)))))))
 
 (deftest futures
-  (let [f (future (sleep 50) (+ 1 2))]
+  ;; (500 ms: still running when looked at, even on a loaded machine)
+  (let [f (future (sleep 500) (+ 1 2))]
     (is (not (future-done? f)))
     (is (= :not-yet (deref f 10 :not-yet)))
     (is (= 3 @f))

@@ -3,7 +3,7 @@
 ;;;;
 ;;;;   (v4)  ; random
 ;;;;   (v7)  ; time-ordered: sorts by when it was made (good database keys)
-;;;;   (parse "6BA7B810-9DAD-11D1-80B4-00C04FD430C8")  ; canonical, or an error
+;;;;   (parse "6BA7B810-9DAD-11D1-80B4-00C04FD430C8")  ; canonical, or ParseError
 ;;;;
 ;;;; The random bits come from the system's secure generator.
 
@@ -45,14 +45,16 @@
 
 (defn parse
   "UUID text, canonical (lowercase); also {…} braced, or 32 hex digits
-  without dashes. An error if it isn't one."
+  without dashes. Text that isn't one signals ParseError."
   ^String [^String s]
   (let [t (str/trim (str s))
         t (if (and (str/starts-with? t "{") (str/ends-with? t "}")) (subs t 1 (dec (count t))) t)
         t (if (re-find #"^[0-9a-fA-F]{32}$" t)
             (str (subs t 0 8) "-" (subs t 8 12) "-" (subs t 12 16) "-" (subs t 16 20) "-" (subs t 20))
             t)]
-    (if (valid? t) (str/lower-case t) (error (str "Not a UUID: " (pr-str s))))))
+    (if (valid? t)
+      (str/lower-case t)
+      (error ParseError :source "UUID" :message (str "Not a UUID: " (pr-str s))))))
 
 (defn version "The version of UUID u (4, 7…)." ^Integer [^String u]
   (bit-shift-right (nth (vec (seq (->bytes u))) 6) 4))

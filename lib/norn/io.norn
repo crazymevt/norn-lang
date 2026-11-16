@@ -46,7 +46,11 @@
 ;;; ---- paths ----
 
 (defn path "Join path parts." [& parts] (%path-join (mapv str parts)))
-(defn parent "The directory part of a path, or nil." [p] (%path-part (str p) :parent))
+(defn parent
+  "The directory part of a path, or nil when it has none (a bare file
+  name, or a root)."
+  [p]
+  (let [d (%path-part (str p) :parent)] (when-not (= "" d) d)))
 (defn file-name "The last part of a path, or nil." [p] (%path-part (str p) :name))
 (defn extension "The extension (without the dot), or nil." [p] (%path-part (str p) :ext))
 (defn stem "The file name without its extension, or nil." [p] (%path-part (str p) :stem))
@@ -69,8 +73,10 @@
 
 (defn open
   "Open a file as a stream. mode: :read, :write (create or truncate),
-  :append (create, add to the end), :read-write, or :create-new (create
-  for writing, signalling FileExists if path exists already)."
+  :append (create, add to the end), :read-write (read and write from the
+  start, creating the file if it's missing, keeping its contents if not),
+  or :create-new (create for writing, signalling FileExists if path exists
+  already)."
   [path mode]
   (auto-close (%fs-open (str path) mode)))
 
@@ -135,22 +141,45 @@
     nil))
 
 (defn close
-  "Close a stream (closing twice is harmless). A TLS stream first tells the
-  peer it is closing."
+  "Close a stream (closing twice is harmless, and closing nil does
+  nothing). A TLS stream first tells the peer it is closing."
   [h]
-  (if (%instance? h)
-    (stream-close h)
-    (do (when (and (= :tls (handle-kind h)) (%handle-live? h))
-          (try (retry-io h (fn [] (%tls-shutdown h))) (catch Error _ nil)))
-        (%io-close h))))
+  (cond (nil? h) nil
+        (%instance? h) (stream-close h)
+        :else (do (when (and (= :tls (handle-kind h)) (%handle-live? h))
+                    (try (retry-io h (fn [] (%tls-shutdown h))) (catch Error _ nil)))
+                  (%io-close h))))
 
 (defmacro with-open
-  "(with-open [h (open path :read)] body…): close h when body ends, however it ends."
-  [binding & body]
-  (let [[sym init] binding]
-    `(let [~sym ~init]
-       (try (do ~@body)
-            (finally (norn.io/close ~sym))))))
+  "(with-open [a (open path :read) b (open other :write) …] body…): bind
+  each name in turn (a later init can use the earlier names), and close
+  them all when body ends, however it ends: the last opened first. If an
+  init fails, the streams opened before it are closed."
+  [bindings & body]
+  (when-not (and (vector? bindings) (even? (count bindings)))
+    (error "with-open needs a vector of name/stream pairs" bindings))
+  (if (empty? bindings)
+    `(do ~@body)
+    (let [[sym init & more] bindings]
+      (when-not (symbol? sym) (error "with-open binds names (symbols)" sym))
+      `(let [~sym ~init]
+         (try ~(if (seq more) `(with-open [~@more] ~@body) `(do ~@body))
+              (finally (norn.io/close ~sym)))))))
+
+;;; ---- standard error ----
+
+(defn eprint
+  "Print xs to standard error, as print does (with-out-str doesn't catch
+  it). nil."
+  [& xs]
+  (%write-stderr (apply print-str xs))
+  nil)
+
+(defn eprintln
+  "Print xs and a newline to standard error, as println does. nil."
+  [& xs]
+  (%write-stderr (str (apply print-str xs) "\n"))
+  nil)
 
 (defn read-all
   "Everything left in a stream, as bytes."

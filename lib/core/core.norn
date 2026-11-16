@@ -3701,7 +3701,7 @@
 
 (defgeneric print-object (obj)
   "The text obj prints as. A method for a class makes its instances print
-  so, everywhere print, prn, str and pr-str print them.")
+  so, everywhere print, prn, str, pr-str, format and spit print them.")
 
 (defgeneric compute-applicable-methods (gf args)
   "The methods of generic function gf that apply to args.")

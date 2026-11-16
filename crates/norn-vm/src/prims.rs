@@ -174,7 +174,8 @@ prims! {
     "reduced?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Reduced)));
     "unreduced" 1 Some(1) => |_, a| Ok(if a[0].is(Kind::Reduced) { a[0].field(0) } else { a[0] });
     "slurp" 1 Some(1) => |vm, a| crate::sys::read(vm, text(a[0]), true);
-    "spit" 2 Some(2) => |vm, a| crate::sys::write(vm, text(a[0]), text(a[1]).into_bytes(), false);
+    // (Bytes are written as they are; anything else as str gives it)
+    "spit" 2 Some(2) => |vm, a| { let data = if a[1].is(Kind::Bytes) { a[1].as_bytes().to_vec() } else { let o = print_overrides(vm, &a[1..2])?; norn_rt::print::with_overrides(o, || text(a[1])).into_bytes() }; crate::sys::write(vm, text(a[0]), data, false) };
     "read-string" 1 Some(1) => |vm, a| { let s = text(a[0]); let mut r = crate::reader::Reader::new(&s); match r.read(vm) { Ok(v) => Ok(v), Err(crate::reader::ReadError::Eof) => Ok(Value::NIL), Err(e) => Err(crate::eval::parse_error(e.to_string(), "<string>", r.line(), r.column())) } };
     // evaluation and namespaces
     "macroexpand-1" 1 Some(1) => |vm, a| Ok(vm.macroexpand_1(a[0])?.0);
@@ -380,7 +381,8 @@ prims! {
     "%re-split" 3 Some(3) => crate::text::re_split;
     "%json-read" 2 Some(2) => crate::text::json_read;
     "%json-write" 3 Some(3) => crate::text::json_write;
-    "%format" 2 Some(2) => crate::text::format;
+    // (%s and %S print instances as print-object says, as str and pr-str do)
+    "%format" 2 Some(2) => |vm, a| { let o = print_overrides(vm, &a[1..2])?; norn_rt::print::with_overrides(o, || crate::text::format(vm, a)) };
     "%parse-number" 2 Some(2) => crate::text::parse_number;
     "%read-cst" 1 Some(1) => crate::cst::read_cst;
     "%form-at" 2 Some(2) => |vm, a| { expect(a[0], Kind::String, "%form-at")?; let line = int(a[1], "%form-at")?.max(1) as usize; crate::eval::form_at(vm, a[0].as_str(), line) };

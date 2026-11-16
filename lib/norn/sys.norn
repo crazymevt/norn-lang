@@ -4,7 +4,12 @@
 (ns norn.sys
   (:refer-core :exclude [exit]))
 
-(defn getenv "An environment variable, or nil. (Read-only: set a child process's environment with norn.process.)" [name] (%getenv (str name)))
+(defn getenv
+  "An environment variable, or nil: name is a string, or a keyword or symbol
+  naming it ((getenv :HOME)). (Read-only: set a child process's environment
+  with norn.process.)"
+  [name]
+  (%getenv (if (or (keyword? name) (symbol? name)) (norn.core/name name) (str name))))
 (defn env "All environment variables, as a map of strings." [] (%env))
 (defn args "The process's command-line arguments (the program first)." [] (%args))
 (defn program-args
