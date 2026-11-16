@@ -11,6 +11,7 @@ also substitute `./target/release/norn` after [building it](getting-started.md#b
 | `norn -e 'EXPR'` | Evaluate forms and print the last result. |
 | `norn FILE.norn [ARGS…]` | Run a source file. `norn.sys/program-args` returns the arguments after the file, and `norn.sys/args` returns the full process argument vector, starting with the program name. Use [`norn.cli`](reference/libraries.md#command-line-programs) to parse them. |
 | `norn --server [PORT]` | Start the REPL and listen on loopback for [editor protocol](design.md#51-the-repl-decided) clients. The default port is 7888. |
+| `norn lsp` | Serve the Language Server Protocol on standard input and output, for the project in the current folder: diagnostics, hover, completion, definition, references, outline, formatting. See [Editors](editors.md). |
 | `norn doc NAME…` | List a namespace, look up a qualified symbol, or look up an unqualified name in `norn.core`. |
 | `norn expand --steps -e 'EXPR'` | Show macro expansion steps. This command also accepts a source filename in place of `-e 'EXPR'`. |
 | `norn fmt [PATH…]` | Format source files. Add `--check` to report files that need changes. |

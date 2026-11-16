@@ -183,3 +183,23 @@ shape and 4's op).
   evaluation and output could reach the wrong one. The server now numbers
   its connections and adds `:conn`; requests are `[conn id]`, output
   events carry `:conn`, and a connection drops others' output.
+- **5, `norn lsp`: done, but not checked with VS Code or Zed.**
+  `norn.lsp` runs in the project's own Norn (`norn lsp`) and answers
+  through the editor protocol's ops in-process (`%serve-request`):
+  diagnostics from `norn lint` on every change, hover (`:doc`),
+  completion (`:complete`), definition (`:definition`), references
+  (`:who-calls`, pointed at where each caller names it), document symbols
+  (read with `norn.syntax`), formatting (`norn fmt`, one edit), and the
+  `norn.eval` command (the top-level form at a position, through `:eval`
+  with its file and line, so drift tracking sees it). A file's module is
+  required when opened and again when saved. Positions are UTF-16, as
+  LSP's default. New primitives: `%stdin-read` (exact bytes, the same
+  buffer as `%stdin-line`) and `%write-stdout`, and `*out*` bound to
+  `:stderr` (what code prints mustn't reach the protocol). Checked: a
+  JSON-RPC conversation in `crates/norn/tests/lsp.rs`, and Emacs's eglot
+  (Emacs 31 is on this machine; the test runs it when Emacs 29+ is
+  there): connect, hover, definition, references, diagnostics,
+  completion, formatting, outline, shutdown. VS Code and Zed aren't
+  installed here, and both need an extension to start a language server;
+  `docs/editors.md` sets up Emacs (tested), Neovim and Helix (from their
+  documentation), and says what the VS Code and Zed extensions need.

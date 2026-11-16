@@ -35,9 +35,10 @@ const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --ser
        norn -e EXPR --image IMG.nimg   (EXPR in the image, though it has an entry)
        norn build OUT.nimg [FILE.norn…] [--entry NS/NAME] [--image BASE.nimg [--layered]] [--shake [--keep NAME]…]
                   (in a project, with no files: its :main)
-       norn test [--only REGEX] [--serial] [--tap] [--junit FILE] [PATH…]
+       norn test [--only REGEX] [--serial] [--tap] [--junit FILE] [--coverage] [--lcov FILE] [PATH…]
        norn fmt [--check] [PATH…]
        norn lint [PATH…]
+       norn lsp                       (a Language Server Protocol server on stdin/stdout)
        norn check [PATH…]
        norn expand [--steps] FILE.norn | -e EXPR
        norn deps [--update]
@@ -281,7 +282,7 @@ pub fn run() {
         }
     }
 
-    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand" | "deps" | "package" | "new" | "run" | "dev" | "api-diff")) = args.first().map(String::as_str) {
+    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand" | "deps" | "package" | "new" | "run" | "dev" | "api-diff" | "lsp")) = args.first().map(String::as_str) {
         // `norn test …`, `norn fmt …`: the library's main returns the exit status.
         // (no location of its own: an error escaping main says where it
         // was raised, or nothing, not "<string>:1", this wrapper)

@@ -710,6 +710,12 @@ protocol by hand with a tool such as `nc localhost 7888`.
 The editor server and the terminal REPL are two clients of the same running
 system. Definitions made through one are visible to the other.
 
+Editors that speak the Language Server Protocol, such as Neovim, Helix and
+Emacs, can use `norn lsp` instead. It gives them `norn lint`'s diagnostics
+as you type, along with hover, completion, go to definition, references,
+the outline and formatting, all from the project's own Norn.
+[Editors](../editors.md) shows how to set each one up.
+
 ## Saving a session as an image
 
 After an hour at the REPL, your process holds definitions, loaded libraries
@@ -768,7 +774,8 @@ snapshot of a session you can return to.
 - `unsaved-definitions` lists what you've evaluated that the files don't
   hold yet.
 - `norn --server` speaks the editor protocol, one Norn map per line, with
-  pushed debugger events and a fiber per request.
+  pushed debugger events and a fiber per request. `norn lsp` serves editors that
+  speak the Language Server Protocol.
 - `save-image` saves a session's heap, and `norn --image` resumes it.
 
 ---

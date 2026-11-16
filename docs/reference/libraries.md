@@ -617,6 +617,7 @@ transaction example.
 | `norn.fmt`, `norn.lint`, `norn.check` | Format, lint, and check source. |
 | `norn.doc`, `norn.expand` | Inspect documentation or trace macro expansion. |
 | `norn.xref` | Who refers to what, read from compiled code: `callers`, `callees`, `references` and `reachable`. |
+| `norn.lsp` | `norn lsp`, a Language Server Protocol server over the editor protocol's ops (see [Editors](../editors.md)). |
 | `norn.deps` | Read project manifests and resolve dependencies. |
 | `norn.image` | Inspect and compare saved images. |
 | `norn.shake` | What shaking an image leaves out (`save-image :shake`, `norn build --shake`): `shake-plan`, `shake-report`. |

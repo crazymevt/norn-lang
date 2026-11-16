@@ -293,6 +293,42 @@ pub(crate) fn stdin_line(vm: &mut Vm) -> Result<Value> {
     )
 }
 
+/// `(%stdin-read n)`: exactly n bytes of standard input (from the same
+/// buffer read-line uses), or nil when it ends first. For a protocol that
+/// frames messages by length, as the Language Server Protocol does.
+pub(crate) fn stdin_read(vm: &mut Vm, n: usize) -> Result<Value> {
+    pooled(
+        vm,
+        move || {
+            use std::io::Read;
+            let mut buf = vec![0u8; n];
+            match std::io::stdin().lock().read_exact(&mut buf) {
+                Ok(()) => Ok(Some(buf)),
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+                Err(e) => Err(format!("Can't read standard input: {e}").into()),
+            }
+        },
+        |m, b| b.map_or(Value::NIL, |b| norn_rt::string::bytes_new(m, &b)),
+    )
+}
+
+/// Text to standard error at once, flushed.
+pub(crate) fn write_stderr(s: &str) {
+    use std::io::Write;
+    let mut e = std::io::stderr().lock();
+    let _ = e.write_all(s.as_bytes());
+    let _ = e.flush();
+}
+
+/// `(%write-stdout s)`: s to standard output at once, flushed, whatever
+/// *out* is (a protocol's messages, while printing goes elsewhere).
+pub(crate) fn write_stdout(s: &str) {
+    use std::io::Write;
+    let mut o = std::io::stdout().lock();
+    let _ = o.write_all(s.as_bytes());
+    let _ = o.flush();
+}
+
 // ---- watching -----------------------------------------------------------------------------------
 
 /// The one mutator that threads outside the carriers (file watchers, signal

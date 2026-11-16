@@ -1,0 +1,355 @@
+;;;; norn.lsp — `norn lsp`: a Language Server Protocol server, for editors
+;;;; that speak it (VS Code, Zed, Helix, Neovim, Emacs's eglot…).
+;;;;
+;;;; It runs in the project's own Norn (norn lsp, run in the project, with
+;;;; its paths and packages), speaking LSP's JSON-RPC on standard input and
+;;;; output, and answers through the editor protocol's ops, as Studio's
+;;;; server does: diagnostics from norn lint as you type, hover (:doc),
+;;;; completion (:complete), go to definition (:definition), references
+;;;; (:who-calls: where each caller refers to it), the outline (document
+;;;; symbols, read from the text), formatting (norn fmt), and the command
+;;;; norn.eval, which evaluates the top-level form at a position (as an
+;;;; editor's evaluation, so unsaved-definitions sees it). A file's module
+;;;; is loaded when it's opened and again when it's saved, so what it
+;;;; defines is known. What its code prints goes to standard error:
+;;;; standard output is the protocol's.
+
+(ns norn.lsp
+  (:require [norn.bytes :as bytes]
+            [norn.io :as io]
+            [norn.json :as json]
+            [norn.string :as str]
+            [norn.syntax :as syn]
+            [norn.sys :as sys]
+            [norn.uri :as uri]))
+
+;; ---- the transport: JSON-RPC, each message after a Content-Length header ----
+
+(defn- read-message
+  "The next message on standard input (a map, keys as keywords), or nil at
+  the end."
+  []
+  (loop [length nil]
+    (let [line (%stdin-line)]
+      (cond (nil? line) nil
+            (= "" line) (when length
+                          (when-let [body (%stdin-read length)]
+                            (json/read-string (bytes->string body))))
+            :else (recur (if-let [[_ n] (re-matches #"(?i)content-length:\s*(\d+)" line)] (parse-long n) length))))))
+
+(defn- send!
+  "Write message m (a map) to standard output, framed."
+  [m]
+  (let [body (json/write-string (assoc m :jsonrpc "2.0"))]
+    (%write-stdout (str "Content-Length: " (count (bytes/utf8 body)) "\r\n\r\n" body))))
+
+(defn- notify! [method params] (send! {:method method :params params}))
+
+(defn- log!
+  "A line in the editor's log for this server (window/logMessage)."
+  [& xs]
+  (notify! "window/logMessage" {:type 4 :message (apply str xs)}))
+
+;; ---- documents and positions ----
+
+(def ^:private docs "Open documents: uri → their text." (atom {}))
+
+(defn- uri->path
+  "The path a file: URI names, or nil."
+  [u]
+  (when (str/starts-with? u "file://") (uri/decode (subs u 7))))
+
+(defn- path->uri [p] (str "file://" (uri/encode p "/")))
+
+(defn- lines [text] (str/split text #"\n" -1))
+
+(defn- utf16-width
+  "How many UTF-16 units character c takes (positions count them)."
+  [c]
+  (if (> (int c) 0xFFFF) 2 1))
+
+(defn- index-of-column
+  "The index into line s of UTF-16 column col."
+  [s col]
+  (loop [i 0 units 0]
+    (if (or (>= i (count s)) (>= units col)) i (recur (inc i) (+ units (utf16-width (nth s i)))))))
+
+(defn- column-of-index
+  "The UTF-16 column of index i in line s."
+  [s i]
+  (reduce + 0 (map utf16-width (subs s 0 (min i (count s))))))
+
+(defn- symbol-char? [c]
+  (not (or (str/blank? (str c)) (contains? #{\( \) \[ \] \{ \} \" \; \, \` \^ \@ \~ \'} c))))
+
+(defn- symbol-at
+  "The name at position pos ({:line :character}) of text: {:name :line
+  :start :end} (columns), or nil."
+  [text pos]
+  (let [s (nth (lines text) (:line pos) "")
+        i (index-of-column s (:character pos))
+        start (loop [j i] (if (and (pos? j) (symbol-char? (nth s (dec j)))) (recur (dec j)) j))
+        end (loop [j i] (if (and (< j (count s)) (symbol-char? (nth s j))) (recur (inc j)) j))
+        nm (subs s start end)
+        ;; (#'f names f; a leading # of a reader form isn't the name's)
+        nm (if (str/starts-with? nm "#") (subs nm 1) nm)]
+    (when (and (seq nm) (not (re-matches #"[0-9].*|:.*" nm)))
+      {:name nm :line (:line pos) :start (column-of-index s start) :end (column-of-index s end)})))
+
+(defn- namespace-of
+  "The namespace text's ns form names, or \"user\"."
+  [text]
+  (or (second (re-find #"\(ns\s+([^\s()\[\]{}\"]+)" text)) "user"))
+
+(defn- line-range [line from to] {:start {:line line :character from} :end {:line line :character to}})
+
+;; ---- the editor protocol, in this process ----
+
+(def ^:private next-id (atom 0))
+
+(defn- op
+  "The editor protocol's answer to request req (a map)."
+  [req]
+  (read-string (%serve-request (pr-str (assoc req :id (swap! next-id inc))))))
+
+;; ---- diagnostics ----
+
+(defn- diagnostics
+  "norn lint's warnings for text (from file path) as LSP diagnostics."
+  [text path]
+  (let [r (op {:op :lint :code text :file (or path "<editor>")})
+        ls (lines text)]
+    (if-let [e (:error r)]
+      (let [line (or (some-> (re-find #":(\d+):" e) second parse-long) 1)]
+        [{:range (line-range (dec line) 0 (count (nth ls (dec line) ""))) :severity 1 :source "norn" :message e}])
+      (vec (for [w (:warnings r)
+                 :let [l (dec (or (:line w) 1))
+                       s (nth ls l "")
+                       ;; (the name a warning is about, on its line, when it says one)
+                       nm (last (str/split (:message w) #" "))
+                       at (when nm (str/index-of s nm))]]
+             {:range (if at
+                       (line-range l (column-of-index s at) (column-of-index s (+ at (count nm))))
+                       (line-range l 0 (column-of-index s (count s))))
+              :severity 2 :source "norn lint" :code (name (or (:kind w) :lint)) :message (:message w)})))))
+
+(defn- publish! [u]
+  (when-let [text (get @docs u)]
+    (notify! "textDocument/publishDiagnostics"
+             {:uri u :diagnostics (try (diagnostics text (uri->path u))
+                                       (catch Error e (log! "lint: " (condition-message e)) []))})))
+
+(defn- load-module!
+  "Load (or, reload, load again) the module of the document at u, when it's
+  one (an ns form): what it defines is then known. A failure is logged."
+  [u reload]
+  (let [text (get @docs u)
+        nsname (namespace-of text)]
+    (when (and (not= nsname "user") (uri->path u))
+      (try (binding [*out* :stderr]
+             (if reload (require (symbol nsname) :reload) (require (symbol nsname))))
+           (catch Error e (log! "loading " nsname ": " (condition-message e)))))))
+
+;; ---- requests ----
+
+(defn- definition-location
+  "An LSP location for a definition the editor protocol describes ({:file
+  :line}), or nil (none, or one in no file: typed in, embedded)."
+  [d]
+  (let [f (:file d)]
+    (when (and f (:line d) (not (str/starts-with? f "<")))
+      {:uri (path->uri (str (io/absolute f))) :range (line-range (dec (:line d)) 0 0)})))
+
+(defn- hover [params]
+  (let [u (get-in params [:textDocument :uri])
+        text (get @docs u "")]
+    (when-let [s (symbol-at text (:position params))]
+      (when-let [d (:doc (op {:op :doc :ns (namespace-of text) :sym (:name s)}))]
+        {:contents {:kind "markdown"
+                    :value (str "```clojure\n"
+                                (if (seq (:arglists d))
+                                  (str/join "\n" (map (fn [a] (str "(" (:ns d) "/" (:name d) " " (subs a 1 (dec (count a))) ")")) (:arglists d)))
+                                  (str (:ns d) "/" (:name d)))
+                                "\n```"
+                                (when (:deprecated d) (str "\n\n**Deprecated:** " (:deprecated d)))
+                                (when (:doc d) (str "\n\n" (:doc d))))}
+         :range (line-range (:line s) (:start s) (:end s))}))))
+
+(defn- completion [params]
+  (let [u (get-in params [:textDocument :uri])
+        text (get @docs u "")
+        pos (:position params)
+        s (nth (lines text) (:line pos) "")
+        i (index-of-column s (:character pos))
+        start (loop [j i] (if (and (pos? j) (symbol-char? (nth s (dec j)))) (recur (dec j)) j))
+        prefix (subs s start i)]
+    {:isIncomplete false
+     :items (vec (for [c (:completions (op {:op :complete :ns (namespace-of text) :prefix prefix}))]
+                   {:label c :kind 3}))}))
+
+(defn- goto-definition [params]
+  (let [u (get-in params [:textDocument :uri])
+        text (get @docs u "")]
+    (when-let [s (symbol-at text (:position params))]
+      (definition-location (op {:op :definition :ns (namespace-of text) :sym (:name s)})))))
+
+(defn- references [params]
+  (let [u (get-in params [:textDocument :uri])
+        text (get @docs u "")]
+    (when-let [s (symbol-at text (:position params))]
+      (let [short (last (str/split (:name s) #"/"))
+            r (op {:op :who-calls :ns (namespace-of text) :sym (:name s)})]
+        (vec (for [c (:vars r)
+                   :let [f (:file c)]
+                   :when (and f (:line c) (not (str/starts-with? f "<")))
+                   :let [path (str (io/absolute f))
+                         ls (lines (or (get @docs (path->uri path)) (try (slurp path) (catch Error _ ""))))
+                         ;; (where in the caller's definition it's written: the
+                         ;; first line from its start that names it)
+                         hit (first (for [l (range (dec (:line c)) (min (count ls) (+ (:line c) 200)))
+                                          :let [at (str/index-of (nth ls l) short)]
+                                          :when at]
+                                      [l (column-of-index (nth ls l) at)]))
+                         [l col] (or hit [(dec (:line c)) 0])]]
+               {:uri (path->uri path) :range (line-range l col (+ col (count short)))}))))))
+
+(def ^:private symbol-kinds
+  "Definition form → LSP SymbolKind."
+  {"defn" 12 "defn-" 12 "defmacro" 12 "defgeneric" 12 "defmethod" 6 "def" 13 "defonce" 13
+   "defclass" 5 "defrecord" 5 "defprotocol" 11 "defcontract" 13 "deftest" 12 "defsyntax" 12})
+
+(defn- document-symbols [params]
+  (let [u (get-in params [:textDocument :uri])
+        text (get @docs u "")
+        r (%reader text (or (uri->path u) "<editor>"))]
+    (loop [out []]
+      (let [s (try (syn/read-syntax r) (catch Error _ :eof))]
+        (if (= s :eof)
+          out
+          (let [d (syn/syntax->datum s)
+                head (when (and (seq? d) (symbol? (first d))) (name (first d)))
+                nm (when (and head (str/starts-with? head "def") (< 1 (count d))) (second d))
+                l (dec (or (syn/syntax-line s) 1))
+                c (dec (or (syn/syntax-column s) 1))
+                ;; (where it ends: its text's lines from where it starts)
+                body (subs text (or (syn/syntax-position s) 0) (+ (or (syn/syntax-position s) 0) (or (syn/syntax-span s) 0)))
+                body-lines (lines body)
+                end-line (+ l (dec (count body-lines)))
+                end-col (if (= 1 (count body-lines)) (+ c (count (peek body-lines))) (count (peek body-lines)))]
+            (recur (if (and nm (or (symbol? nm) (seq? nm)))
+                     (conj out {:name (str (if (seq? nm) (first nm) nm) (when (= head "defmethod") (str " " (pr-str (vec (drop 2 d))))))
+                                :kind (get symbol-kinds head 13)
+                                :detail head
+                                :range {:start {:line l :character c} :end {:line end-line :character end-col}}
+                                :selectionRange (line-range l c c)})
+                     out))))))))
+
+(defn- formatting [params]
+  (let [u (get-in params [:textDocument :uri])
+        text (get @docs u "")
+        r (op {:op :format :code text})]
+    (if-let [new (:value r)]
+      (if (= new text)
+        []
+        (let [ls (lines text)]
+          [{:range {:start {:line 0 :character 0} :end {:line (count ls) :character 0}} :newText new}]))
+      (do (log! "format: " (:error r)) nil))))
+
+(defn- top-level-form-at
+  "The top-level form of text around line (0-based): [its first line, its
+  text], or nil."
+  [text line]
+  (let [r (%reader text "<editor>")]
+    (loop []
+      (let [s (try (syn/read-syntax r) (catch Error _ :eof))]
+        (when-not (= s :eof)
+          (let [l (dec (or (syn/syntax-line s) 1))
+                p (or (syn/syntax-position s) 0)
+                form (subs text p (+ p (or (syn/syntax-span s) 0)))
+                last-line (+ l (dec (count (lines form))))]
+            (if (<= l line last-line) [l form] (recur))))))))
+
+(defn- execute-command [params]
+  (case (:command params)
+    "norn.eval"
+    (let [[u pos] (:arguments params)
+          text (get @docs u "")]
+      (if-let [[l form] (top-level-form-at text (:line pos 0))]
+        (let [r (binding [*out* :stderr]
+                  (op {:op :eval :ns (namespace-of text) :file (uri->path u) :line (inc l) :code form}))
+              said (or (:value r) (str "Error: " (:error r)))]
+          (notify! "window/showMessage" {:type (if (:error r) 1 3) :message said})
+          said)
+        nil))
+    (throw (ex-info (str "No such command: " (:command params)) {:code -32601}))))
+
+(def ^:private capabilities
+  {:positionEncoding "utf-16"
+   :textDocumentSync {:openClose true :change 1 :save {:includeText false}}
+   :hoverProvider true
+   :completionProvider {:triggerCharacters ["/"]}
+   :definitionProvider true
+   :referencesProvider true
+   :documentSymbolProvider true
+   :documentFormattingProvider true
+   :executeCommandProvider {:commands ["norn.eval"]}})
+
+(defn- handle
+  "Message m's answer (for a request) or effect (for a notification): the
+  result, or nil."
+  [m]
+  (let [p (:params m)]
+    (case (:method m)
+      "initialize" {:capabilities capabilities :serverInfo {:name "norn" :version (sys/norn-version)}}
+      "initialized" nil
+      "shutdown" nil
+      "textDocument/didOpen" (let [d (:textDocument p)]
+                               (swap! docs assoc (:uri d) (:text d))
+                               (load-module! (:uri d) false)
+                               (publish! (:uri d)))
+      "textDocument/didChange" (let [u (get-in p [:textDocument :uri])]
+                                 (when-let [c (last (:contentChanges p))]
+                                   (swap! docs assoc u (:text c)))
+                                 (publish! u))
+      "textDocument/didSave" (let [u (get-in p [:textDocument :uri])]
+                               (when-let [t (:text p)] (swap! docs assoc u t))
+                               (load-module! u true)
+                               (publish! u))
+      "textDocument/didClose" (let [u (get-in p [:textDocument :uri])]
+                                (swap! docs dissoc u)
+                                (notify! "textDocument/publishDiagnostics" {:uri u :diagnostics []}))
+      "textDocument/hover" (hover p)
+      "textDocument/completion" (completion p)
+      "textDocument/definition" (goto-definition p)
+      "textDocument/references" (references p)
+      "textDocument/documentSymbol" (document-symbols p)
+      "textDocument/formatting" (formatting p)
+      "workspace/executeCommand" (execute-command p)
+      (if (contains? m :id)
+        (throw (ex-info (str "Unknown method: " (:method m)) {:code -32601}))
+        nil))))
+
+(defn serve
+  "Answer LSP messages on standard input until exit (or its end): the exit
+  status, 0 after a shutdown request, else 1. Printing goes to standard
+  error meanwhile."
+  ^Integer []
+  (binding [*out* :stderr]
+    (loop [shut false]
+      (let [m (read-message)]
+        (cond (nil? m) (if shut 0 1)
+              (= "exit" (:method m)) (if shut 0 1)
+              :else
+              (do (if (contains? m :id)
+                    (try (send! {:id (:id m) :result (handle m)})
+                         (catch Error e
+                           (send! {:id (:id m) :error {:code (or (:code (ex-data e)) -32603) :message (condition-message e)}})))
+                    (try (handle m)
+                         (catch Error e (log! (:method m) ": " (condition-message e)))))
+                  (recur (or shut (= "shutdown" (:method m))))))))))
+
+(defn main
+  "`norn lsp`: serve the Language Server Protocol on standard input and
+  output, for the project in the current folder (its paths and packages)."
+  [& _]
+  (serve))

@@ -367,6 +367,8 @@ prims! {
     "%fs-mkdir" 1 Some(1) => |vm, a| crate::sys::mkdir(vm, text(a[0]));
     "%fs-sync-dir" 1 Some(1) => |vm, a| crate::sys::sync_dir(vm, text(a[0]));
     "%stdin-line" 0 Some(0) => |vm, _| crate::sys::stdin_line(vm);
+    "%stdin-read" 1 Some(1) => |vm, a| { let n = int(a[0], "%stdin-read")?.max(0) as usize; crate::sys::stdin_read(vm, n) };
+    "%write-stdout" 1 Some(1) => |_, a| { expect(a[0], Kind::String, "%write-stdout")?; crate::sys::write_stdout(a[0].as_str()); Ok(Value::NIL) };
     "%fs-watch" 2 Some(2) => |vm, a| crate::sys::watch(vm, text(a[0]), a[1].truthy());
     "%path-join" 1 Some(1) => |_vm, a| { let parts: Vec<String> = seq::SeqIter::new(a[0]).map(|it| it.map(text).collect()).unwrap_or_default(); Ok(str_new(&mut _vm.m, &crate::sys::path_join(&parts))) };
     "%path-part" 2 Some(2) => |vm, a| { let part = if a[1].is_keyword() { a[1].sym_name().to_owned() } else { text(a[1]) }; crate::sys::path_part(&mut vm.m, &text(a[0]), &part) };
@@ -893,6 +895,14 @@ fn out_to(vm: &mut Vm, s: &str, newline: bool) -> Result<Value> {
             crate::sched::post_event(line);
             return Ok(Value::NIL);
         }
+    }
+    // Bound to :stderr: printing goes to standard error (a program whose
+    // standard output is a protocol's, as norn lsp's is).
+    if let Some(k) = capture.filter(|k| k.is(Kind::Keyword) && k.sym_name() == "stderr" && k.sym_ns().is_none()) {
+        let _ = k;
+        let text = if newline { format!("{s}\n") } else { s.to_owned() };
+        crate::sys::write_stderr(&text);
+        return Ok(Value::NIL);
     }
     if let Some(buf) = capture.filter(|b| b.is(Kind::Atom)) {
         let text = if newline { format!("{s}\n") } else { s.to_owned() };
