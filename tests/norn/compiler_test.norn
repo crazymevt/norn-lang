@@ -70,3 +70,15 @@
             (+ 1 (eval 'nowhere-yet)))))
 (is (= :instead (handler-bind [norn.compiler/CompileError (fn [c] (invoke-restart 'use-value :instead))]
                   (eval '(missing-fn 1)))))
+
+;;; The IR (M10 part 1): analyze's tree, and generate from it.
+(let [ir (norn.compiler/analyze nil '(let* [x 1] (fn* [y] (inc (+ x y)))))
+      [[b init]] (:bindings ir)
+      f (peek (:body (:body ir)))
+      call (peek (:body (:body (first (:arities f)))))
+      x-ref (first (:args (first (:args call))))]
+  (is (= [:let false :const 1] [(:op ir) (:loop ir) (:op init) (:value init)]))
+  (is (= :fn (:op f)))
+  (is (= [:call #'inc] [(:op call) (:var (:f call))]))
+  (is (= [:local b] [(:op x-ref) (:binding x-ref)]) "x inside the fn is the let's binding, by identity"))
+(is (= 7 ((norn.compiler/generate (norn.compiler/analyze nil '(let* [x 1] ((fn* [y] (+ x y)) 6)))))))

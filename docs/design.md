@@ -673,7 +673,13 @@ Images work as described above, with these details and gaps (runtime.md §7.5):
 
 **Status (M4):**
 - **The compiler is written in Norn and self-hosts.** It emits the same
-  register bytecode as the seed (no IR or optimiser yet).
+  register bytecode as the seed.
+- **The IR (M10 part 1):** `norn.compiler/analyze` turns kernel forms into
+  a tree of nodes with names resolved (locals to bindings, globals to
+  vars), macros expanded and functions named; `generate` turns that into
+  bytecode. A tree rather than ANF, so the bytecode stays the same byte
+  for byte (checked against the seed) until the optimiser's passes, which
+  go between the two, change it.
 - **Tier 1 is a Cranelift backend over the bytecode** with native fast
   paths. See [runtime.md §8.2](runtime.md) and §9.
 - **Destructuring** is a set of macros (`destructure`).

@@ -43,7 +43,7 @@ compilation of every `defn`. Done when there are "measured wins on
 | # | Part |
 | --- | --- |
 | 0 | **A baseline.** `bench/` grows the programs M9b's lang-tests made (loglens's report, ledger's import and report, quire's build, chat's fan-out) beside the micro and workload suites, and a `bench/compare` that runs everything at both tiers and diffs against a recorded baseline (`bench/baseline.edn`), so each later part shows its win or its cost. |
-| 1 | **The IR.** An ANF IR (design §8.3) between the expander and code generation, in Norn (`norn.compiler.ir`): every intermediate value named, calls and primitives explicit, closures with their captures, `let`/`loop`/`if`/`do` as structure. The compiler lowers kernel forms to it and generates the same bytecode from it as now. Nothing gets faster; every later part works on the IR. Checked by the suites at both tiers and by compiling the standard library both ways and comparing behaviour. |
+| 1 | **The IR.** An IR (design §8.3) between the expander and code generation, in Norn (as built: a tree in `norn.compiler`, see Status): names resolved, calls and primitives explicit, closures with their captures, `let`/`loop`/`if`/`do` as structure. The compiler lowers kernel forms to it and generates the same bytecode from it as now. Nothing gets faster; every later part works on the IR. Checked by the suites at both tiers and by compiling the standard library both ways and comparing behaviour. |
 | 2 | **Tier 1's calling convention.** Calls and returns stay native: push-frame + `return_call` (runtime.md §3.2), so a call from tier-1 code to tier-1 code doesn't go through the interpreter, closures are made natively, and tail calls stay proper. Frames keep their layout. Every `defn` compiles at tier 1 when it's defined, and hot tier-0 code is promoted by a call counter. |
 | 3 | **Direct linking and deoptimisation.** A call from a sealed module to a sealed module's var compiles to the function itself, not a var read, and the compiled code is recorded as depending on that var. Redefining it (which unseals, with the warning it gives now) marks its dependents stale: they go back to calling through the var the next time they run, and recompile. |
 | 4 | **Inlining.** Small functions (a size budget) from sealed modules and private functions within a module are inlined at the IR level, core primitives (`inc`, `first`, `nth`, `count`…) by kind, and a contract's checks at the call site instead of through the wrapper, dropping checks the types prove. Then sign `norn.string`, `norn.math`, `norn.regex` and `norn.bytes` (the todo item). |
@@ -111,3 +111,22 @@ baseline compared.
   tier 0 and 293 ms at tier 1, about 180× and 145× slower. Boxed floats
   and calls through the interpreter are most of that: parts 2 and 5.
   Baseline recorded at `b4a8bc2`.
+- **1, the IR: done,** a little differently from the plan: a tree, not
+  ANF. `analyze` turns a kernel form into nodes (`:const :local :global
+  :if :do :def :fn :let :letrec :recur :call`): locals resolved to
+  bindings `{:id :sym}` (matched by identity, as before), globals to
+  their vars, macros expanded, a `def`'s var interned before its value
+  (so it can refer to itself), collection literals made calls to
+  `vector`/`hash-map`/`hash-set`, anonymous functions named
+  (`outer/fn`). `generate` walks the tree as the one-pass compiler walked
+  forms, allocating registers and constants in the same order, with
+  locals and captures known by binding id. ANF would name every
+  intermediate value, which changes register allocation: the tree keeps
+  the bytecode the same byte for byte, which is how this part is checked.
+  `compiler_test` (byte-identical to the seed on `core.norn` and the
+  compiler, and the self-hosting fixpoint) passes unchanged, and every
+  function of the standard library and the expander (1,683) compiles to
+  the same code as before (`%signature`, auto-gensym names aside). Passes
+  that need named intermediates (escape analysis) can name them on the
+  tree. Its cost: compiling and loading `http.norn` takes 46 ms against
+  the baseline's 43 (tier 0), about 7% more, for the tree it builds.
