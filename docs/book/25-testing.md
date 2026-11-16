@@ -301,6 +301,28 @@ Fixtures run in the order you list them, the first outermost. Calling
 `use-fixtures` again for the same kind replaces that kind's fixtures, which
 is what you want when you re-evaluate the file at the REPL.
 
+## Helpers for several test files
+
+When several test files need the same setup, such as a fake server or
+sample data, put it in a module of its own beside them. A project's test
+folders are on the library path, so a module in `tests/` is found as one
+in `src/` is: `tests/shop/fixtures.norn` is `shop.fixtures`.
+
+<!-- skip -->
+```clojure
+(ns shop.fixtures
+  "Carts for the tests.")
+
+(def full-cart [{:sku "pen" :qty 2 :price 150} {:sku "pad" :qty 1 :price 400}])
+```
+
+A test file requires it like any module, with `[shop.fixtures :as fx]`.
+Name it without `_test`, so the runner doesn't take it for a test file. The
+test folders are on the path only for the project's own tools, `norn test`,
+`norn lint` and the REPL among them. A package a project uses keeps its
+test folders to itself, and `norn package` includes only what `:main`
+loads.
+
 ## Choosing what runs
 
 `norn test` takes files and folders. A folder stands for every

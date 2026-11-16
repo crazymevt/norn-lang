@@ -24,11 +24,20 @@
   (:refer-core :exclude [format])
   (:require [norn.bytes :as bytes] [norn.io :as io] [norn.string :as str] [norn.sys :as sys]))
 
-(defclass Instant () ((nanos :initform 0)))
-(defclass Duration () ((nanos :initform 0)))
-(defclass LocalDate () ((year :required true) (month :required true) (day :required true)))
-(defclass LocalTime () ((hour :required true) (minute :required true) (second :required true) (nanos :required true)))
-(defclass LocalDateTime () ((date :required true) (time :required true)))
+(defclass Instant () ((nanos :initform 0))
+  (:doc "A point on the time line, in nanoseconds since 1970-01-01T00:00:00Z, the
+  same everywhere (from now, parse or of-epoch-ms)."))
+(defclass Duration () ((nanos :initform 0))
+  (:doc "A span of time in nanoseconds (from duration or between)."))
+(defclass LocalDate () ((year :required true) (month :required true) (day :required true))
+  (:doc "A calendar date without a time or a time zone (from local-date or
+  parse-local-date)."))
+(defclass LocalTime () ((hour :required true) (minute :required true) (second :required true) (nanos :required true))
+  (:doc "A time of day without a date or a time zone (from local-time or
+  parse-local-time)."))
+(defclass LocalDateTime () ((date :required true) (time :required true))
+  (:doc "A date and a time of day without a time zone (from local-date-time or
+  parse-local-date-time)."))
 
 (defn instant? "Is x an Instant?" ^Boolean [x] (instance? Instant x))
 (defn duration? "Is x a Duration?" ^Boolean [x] (instance? Duration x))
@@ -151,7 +160,9 @@
 ;; :abbreviation}; the first is in effect before any transition), and the
 ;; POSIX TZ rule for times after the last transition.
 (defclass Zone ()
-  ((name :required true) (times :initform []) (index :initform []) (types :initform []) (rule :initform nil)))
+  ((name :required true) (times :initform []) (index :initform []) (types :initform []) (rule :initform nil))
+  (:doc "A time zone: its offsets from UTC and when they change (from zone or
+  system-zone)."))
 
 (defmethod print-object ((z Zone)) (str "#<Zone " (:name z) ">"))
 
@@ -390,7 +401,9 @@
 
 ;;; ---- zoned date-times ----
 
-(defclass ZonedDateTime () ((instant :required true) (zone :required true) (offset :required true) (local :required true)))
+(defclass ZonedDateTime () ((instant :required true) (zone :required true) (offset :required true) (local :required true))
+  (:doc "An instant as a date and time in a zone, with the offset in effect then
+  (from zoned, in-zone or parse-zoned)."))
 
 (defn zoned? "Is x a ZonedDateTime?" ^Boolean [x] (instance? ZonedDateTime x))
 

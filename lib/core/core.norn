@@ -2667,10 +2667,13 @@
 (%set-unsafe! (var %mem-alloc)) (%set-unsafe! (var %mem-free)) (%set-unsafe! (var %mem-get)) (%set-unsafe! (var %mem-set!))
 (%set-unsafe! (var %mem-string)) (%set-unsafe! (var %mem-bytes)) (%set-unsafe! (var %mem-write-bytes!))
 
+(def %ns-docs "Each namespace's docstring, from its ns form: name → text (norn doc shows it)." (atom {}))
+
 (defmacro ns
-  "(ns name (:refer-core …)? (:require spec…) (:require-for-syntax spec…)…
-  (:unsafe)?): switch to (creating) a namespace, then require libraries as
-  in `require`, and for compile time as in `require-for-syntax`.
+  "(ns name \"docstring\"? (:refer-core …)? (:require spec…) (:require-for-syntax
+  spec…)… (:unsafe)?): switch to (creating) a namespace, then require libraries as
+  in `require`, and for compile time as in `require-for-syntax`. The
+  docstring says what the module is for: norn doc shows it.
   (:refer-core :exclude [get] :rename {map map-core}) says which of
   norn.core's names this namespace takes for its own: see %refer-core!.
   (:unsafe) lets the module use the raw FFI (norn.ffi), which can crash
@@ -2678,8 +2681,10 @@
   [name & clauses]
   (let [of (fn [k] (mapcat (fn [c] (when (and (seq? c) (= (first c) k)) (rest c))) clauses))
         core-opts (of :refer-core)
-        unsafe? (some (fn [c] (and (seq? c) (= (first c) :unsafe))) clauses)]
+        unsafe? (some (fn [c] (and (seq? c) (= (first c) :unsafe))) clauses)
+        doc (when (string? (first clauses)) (first clauses))]
     `(do (in-ns '~name)
+         ~@(when doc [`(swap! %ns-docs assoc '~name ~doc)])
          ~@(when unsafe? [`(%declare-unsafe!)])
          ~@(when (seq core-opts) [`(%refer-core! '~(apply hash-map core-opts))])
          ~@(map (fn [r] `(require '~r)) (of :require))
@@ -4672,3 +4677,37 @@
   "Does x have a method for every one of protocol p's methods?"
   [p x]
   (every? (fn [v] (boolean (seq (%applicable-methods-for (var-get v) x)))) (:methods p)))
+
+;;; ---- hints for Java habits (an unresolved Math/round says what Norn has) ----
+
+(def ^:private %interop-exact
+  "Java names people reach for, and Norn's for them."
+  {"Thread/sleep" "sleep" "System/currentTimeMillis" "(norn.time/epoch-ms (norn.time/now))"
+   "System/nanoTime" "nano-time" "System/exit" "norn.sys/exit" "System/getenv" "norn.sys/getenv"
+   "Integer/parseInt" "parse-long" "Long/parseLong" "parse-long" "Double/parseDouble" "parse-double"
+   "Integer/MAX_VALUE" "norn.math" "Long/MAX_VALUE" "norn.math"})
+
+(def ^:private %interop-classes
+  "Java classes people reach for, and the Norn libraries that do their work."
+  {"Math" "norn.math" "StrictMath" "norn.math" "System" "norn.sys" "String" "norn.string"
+   "Character" "norn.string" "Integer" "norn.math" "Long" "norn.math" "Double" "norn.math"
+   "Thread" "fibers (spawn, sleep)" "Files" "norn.io" "Paths" "norn.io" "UUID" "norn.uuid"
+   "Instant" "norn.time" "Pattern" "norn.regex"})
+
+(def ^:private %upper-letters (set "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+(def ^:private %lower-letters (set "abcdefghijklmnopqrstuvwxyz"))
+
+(defn %interop-hint
+  "For an unresolved symbol that names a member of a Java class people
+  often reach for (Math/round), what to use in Norn, as text to add to the
+  message; else nil."
+  [sym]
+  (when-let [c (namespace sym)]
+    (when (and (contains? %upper-letters (first c))
+               (every? (fn [ch] (or (contains? %upper-letters ch) (contains? %lower-letters ch))) c)
+               (not-any? (fn [n] (= (str n) c)) (all-ns)))
+      (let [whole (str sym)
+            hint (cond (get %interop-exact whole) (str "use " (get %interop-exact whole))
+                       (= "norn.math" (get %interop-classes c)) (str "try norn.math/" (name sym))
+                       (get %interop-classes c) (str "see " (get %interop-classes c)))]
+        (when hint (str " (Norn has no Java classes: " hint ")"))))))

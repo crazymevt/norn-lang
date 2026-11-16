@@ -13,7 +13,9 @@
   (:refer-core :exclude [float int boolean shuffle bytes])
   (:require [norn.math]))
 
-(defclass Generator () ((seed) (counter)))
+(defclass Generator () ((seed) (counter))
+  (:doc "A seeded, splittable random number generator: the same seed gives the
+  same values (from generator)."))
 
 (defn generator "A generator seeded with integer seed (default: a fresh random seed)."
   (^Generator [] (generator (%rand-seed)))

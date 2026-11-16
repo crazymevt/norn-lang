@@ -3,8 +3,12 @@
 (ns norn.cbor
   (:require [norn.bytes :as b] [norn.decimal :as decimal] [norn.io :as io] [norn.math :as math]))
 
-(defclass Tagged () ((tag :required true) (value :required true)))
-(defclass Simple () ((code :required true)))
+(defclass Tagged () ((tag :required true) (value :required true))
+  (:doc "A CBOR tagged value, a tag number and the value it tags, when the tag
+  has no Norn reading (tagged makes one; decode gives one)."))
+(defclass Simple () ((code :required true))
+  (:doc "A CBOR simple value with no Norn equivalent, by its code (simple makes
+  one; decode gives one)."))
 
 (def ^:private max-uint 18446744073709551615)
 (def ^:private max-depth 256)

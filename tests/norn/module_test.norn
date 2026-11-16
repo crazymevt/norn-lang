@@ -19,7 +19,11 @@
                   "(def ^:private hidden 5)\n"
                   "(defn reveal [] hidden)\n"
                   "(defn- double [x] (* 2 x))\n"
-                  "(defmacro twice [x] `(double ~x))\n"))
+                  "(defmacro twice [x] `(double ~x))\n"
+                  ;; (^:private on a defining macro's name: pulse finding)
+                  "(defn ^:private also-hidden [] 2)\n"
+                  "(defmacro ^:private quietly [x] x)\n"
+                  "(defn use-both [] (quietly (also-hidden)))\n"))
 
 (module! "b" (str "(ns mt.b\n  (:require [mt.a :as a]))\n"
                   "(defn twice-of [n] (a/twice n))\n"))
@@ -55,7 +59,8 @@
   (testing "a var reaches one on purpose"
     (is (= 1 (run '((var mt.a/helper))))))
   (testing "they aren't public, and can't be referred"
-    (is (= '[finish reveal start twice] (vec (sort (keys (ns-publics 'mt.a))))))
+    (is (= '[finish reveal start twice use-both] (vec (sort (keys (ns-publics 'mt.a))))))
+    (is (= 2 (run '(mt.a/use-both))) "defn ^:private and defmacro ^:private are private too")
     (is (contains? (ns-interns 'mt.a) 'helper))
     (is (= "No such public var: mt.a/helper" (message (fn [] (run '(require '[mt.a :refer [helper]]))))))))
 
@@ -204,6 +209,16 @@
   (eval '(def mt-unbound))
   (is (not (bound? (resolve 'mt-unbound))) "(def x) makes a var without a value"))
 
+;; (pulse finding: a module's ns form may say what it's for)
+(deftest an-ns-docstring
+  (module! "nd" "(ns mt.nd\n  \"Things for the test.\n\n  More about them.\"\n  (:require [norn.string :as str]))\n(defn f \"F.\" [] (str/upper-case \"f\"))\n")
+  (eval '(require 'mt.nd))
+  (is (= "F" (eval '(mt.nd/f))) "the clauses after it still count")
+  (is (= "Things for the test.\n\n  More about them." (get @%ns-docs 'mt.nd)))
+  (require 'norn.doc)
+  (is (= "mt.nd\n  Things for the test.\n\n  More about them.\n\n  f  F.\n" ((resolve 'norn.doc/ns-summary) "mt.nd")))
+  (is (thrown-with-msg? Error #"expected an ns clause" (eval '(ns mt.nd2 "Doc." (:requir [x]))))))
+
 (deftest meta-of-a-var
   (let [m (meta #'map)]
     (is (= ['map "norn.core"] [(:name m) (:ns m)]))
@@ -226,4 +241,9 @@
     (let [r (dev/reload! [file])]
       (is (= [] (:reloaded r)))
       (is (str/includes? (:error (first (:failed r))) "EOF while reading") "a save that doesn't read"))
-    (is (= "two?" (eval '(mt.du/said))) "keeps the old code")))
+    (is (= "two?" (eval '(mt.du/said))) "keeps the old code")
+    ;; (an editor's temporary file, gone by the time its event comes, isn't
+    ;; an embedded module, whose path doesn't exist either: pulse finding)
+    (require 'norn.csv)
+    (is (= {:reloaded [] :failed [] :unknown [(io/path dir "mt" ".!123!dw.norn")]}
+           (dev/reload! [(io/path dir "mt" ".!123!dw.norn")])))))

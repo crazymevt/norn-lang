@@ -135,6 +135,16 @@ live in the `norn.stm` library. See Part III, starting with
 
 ### Other differences
 
+- **No Java.** There are no Java classes or interop forms. Their work is
+  done by Norn's libraries: `norn.math/round` rather than `Math/round`,
+  `norn.sys/getenv` rather than `System/getenv`, `sleep` rather than
+  `Thread/sleep`. When you write one of the common ones out of habit,
+  the error says what to use:
+
+  ```clojure
+  (condition-message (try (eval '(Math/round 2.5)) (catch Error e e)))
+  ; => "Unable to resolve symbol: Math/round in this context (Norn has no Java classes: try norn.math/round)"
+  ```
 - **Dynamic binding.** `binding` works on any var; you don't need to mark
   it `^:dynamic`. Bindings are conveyed to the fibers you spawn.
 - **Metadata.** The reader's `^:private`, `^:dynamic` and `^{:doc …}` work

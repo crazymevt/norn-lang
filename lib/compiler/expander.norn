@@ -490,7 +490,10 @@
         scopes (syn/syntax-scopes s)]
     (syn/add-scope
      (if (every? (fn [a] (and (or (syn/%raw? a) (not (compound? (syn/%raw-e a))))
-                              (= scopes (syn/syntax-scopes a))))
+                              (= scopes (syn/syntax-scopes a))
+                              ;; (^:private on a defn's name: kept by the
+                              ;; precise way, which gives the name back)
+                              (or (syn/%raw? a) (nil? (syn/syntax-props a)))))
                  args)
        ;; the usual case: plain data with the call's scopes, in and out
        ;; (what the result keeps of the arguments keeps their places)

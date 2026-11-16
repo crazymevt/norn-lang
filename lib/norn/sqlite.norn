@@ -30,13 +30,22 @@
   (:require [norn.ffi :as ffi] [norn.sync :as sync] [norn.sys :as sys] [norn.string :as str])
   (:unsafe))
 
-(defclass DatabaseError (Error) ((code :initform nil) (extended-code :initform nil) (sql :initform nil)))
-(defclass ConstraintError (DatabaseError) ())
-(defclass BusyError (DatabaseError) ())
+(defclass DatabaseError (Error) ((code :initform nil) (extended-code :initform nil) (sql :initform nil))
+  (:doc "An error from SQLite, with its :code and :extended-code (SQLite's result
+  codes) and the :sql it ran. ConstraintError and BusyError are kinds of
+  it."))
+(defclass ConstraintError (DatabaseError) ()
+  (:doc "A statement broke a constraint: a UNIQUE or PRIMARY KEY taken, a NOT
+  NULL column left empty, a FOREIGN KEY with nothing to refer to, a CHECK."))
+(defclass BusyError (DatabaseError) ()
+  (:doc "The database was locked by another connection for longer than the busy
+  timeout (SQLITE_BUSY)."))
 
 (defclass Connection ()
   ((path :initarg :path) (handle :initarg :handle) (epoch :initarg :epoch) (blocking :initarg :blocking)
-                         (statements :initarg :statements) (lock :initarg :lock) (owner :initarg :owner) (depth :initarg :depth)))
+                         (statements :initarg :statements) (lock :initarg :lock) (owner :initarg :owner) (depth :initarg :depth))
+  (:doc "An open SQLite database (from open; closed by close!). Fibers may share
+  one: one at a time uses it."))
 
 (defmethod print-object ((c Connection)) (str "#<sqlite " (pr-str (:path c)) (when-not @(:handle c) " closed") ">"))
 

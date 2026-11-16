@@ -5,11 +5,16 @@
 ;;;;   {:name my-app
 ;;;;    :version "0.1.0"
 ;;;;    :paths ["src"]                              ; its source folders (default)
+;;;;    :test-paths ["tests"]                       ; its tests' (default)
 ;;;;    :deps {norn-ui {:path "../norn-ui"}         ; a folder
 ;;;;           json-x {:git "https://…/json-x" :tag "v1.2.0"}
 ;;;;           other {:git "https://…/other" :sha "4f1c…"}}
 ;;;;    :overrides {json-x {:git "…" :tag "v1.3.0"}} ; settles two versions
 ;;;;    :main my.app/main}                          ; norn build's entry
+;;;;
+;;;; The project's :test-paths are on the library path too, after the
+;;;; others, so its test files can share helpers (tests/my/helpers.norn is
+;;;; my.helpers); a package's aren't.
 ;;;;
 ;;;; A package is a project used as a dependency: its own norn.edn gives its
 ;;;; paths and its dependencies (a folder without one is a package whose
@@ -71,8 +76,9 @@
   spec)
 
 (defn read-project
-  "Folder dir's norn.edn (checked), with defaults: :paths [\"src\"], :deps {},
-  :overrides {}. A folder without one is a package with the defaults."
+  "Folder dir's norn.edn (checked), with defaults: :paths [\"src\"],
+  :test-paths [\"tests\"], :deps {}, :overrides {}. A folder without one is
+  a package with the defaults."
   [dir]
   (let [f (io/path dir "norn.edn")
         p (if (io/file? f)
@@ -83,9 +89,10 @@
     (doseq [k [:deps :overrides]]
       (when-not (or (nil? (k p)) (map? (k p))) (error (str f ": " k " is a map of name to dependency")))
       (doseq [[n s] (k p)] (check-spec f n s)))
-    (when-not (or (nil? (:paths p)) (and (vector? (:paths p)) (every? string? (:paths p))))
-      (error (str f ": :paths is a vector of folders")))
-    (merge {:paths ["src"] :deps {} :overrides {}} p)))
+    (doseq [k [:paths :test-paths]]
+      (when-not (or (nil? (k p)) (and (vector? (k p)) (every? string? (k p))))
+        (error (str f ": " k " is a vector of folders"))))
+    (merge {:paths ["src"] :test-paths ["tests"] :deps {} :overrides {}} p)))
 
 ;; ---- Git ----
 
@@ -231,11 +238,13 @@
 (defn use-project!
   "Use the project in folder dir: resolve its packages (fetching what's
   missing, and writing norn.lock if it changed), and put its paths, then
-  its packages', on the library path. The resolution."
+  its packages', then its test paths, on the library path. The
+  resolution."
   [dir]
-  (let [r (resolve-project dir)]
+  (let [r (resolve-project dir)
+        tests (map (fn [p] (io/path (:dir r) p)) (:test-paths (:project r)))]
     (try (write-lock! r) (catch Error _ nil)) ; (a project we can't write to still runs)
-    (doseq [p (concat (:paths r) (mapcat :paths (:packages r)))]
+    (doseq [p (concat (:paths r) (mapcat :paths (:packages r)) (filter io/directory? tests))]
       (add-lib-path! p))
     r))
 

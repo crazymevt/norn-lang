@@ -93,6 +93,12 @@
 ;; An error settle or await received isn't raised again, however the
 ;; child and the body are scheduled.
 (is (= {:ok 200} (frequencies (repeatedly 200 (fn [] (with-scope [s] (settle (spawn s (error "x"))) :ok))))))
+;; (and with many scopes at once, on every carrier: settle seeing the child
+;; DONE before the child had told its scope used to leave the error to be
+;; raised when the body ended, once in a few thousand)
+(is (= {:ok 1600} (frequencies (with-scope [outer]
+                                 (mapcat await (mapv (fn [_] (spawn outer (vec (repeatedly 200 (fn [] (with-scope [s] (settle (spawn s (error "x"))) :ok))))))
+                                                     (range 8)))))))
 (is (= :handled (with-scope [s]
                   (let [f (spawn s (/ 1 0))]
                     (handler-case (await f) (ArithmeticError [_] :handled))))))

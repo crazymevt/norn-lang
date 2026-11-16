@@ -10,9 +10,13 @@
 ;;;; - defonce keeps a module's state when it reloads.
 ;;;; - after-reload! hooks run after each reload (a UI re-renders).
 ;;;; - When :main has returned, the next save runs it again.
+;;;; - Ctrl-C (or SIGTERM) stops it. A program that listens for the signal
+;;;;   itself gets it too, and dev waits for it to finish shutting down;
+;;;;   one that doesn't is cancelled.
 
 (ns norn.dev
-  (:require [norn.deps :as deps] [norn.fs :as fs] [norn.io :as io] [norn.string :as str] [norn.syntax :as syn]))
+  (:require [norn.deps :as deps] [norn.fs :as fs] [norn.io :as io] [norn.signal :as signal] [norn.string :as str]
+            [norn.syntax :as syn]))
 
 ;; ---- hooks ----
 
@@ -28,7 +32,10 @@
 
 ;; ---- what a save reloads ----
 
-(defn- real-path [p] (try (io/canonical p) (catch Error _ p)))
+;; (a path that's gone, as an editor's temporary file is by the time its
+;; event comes, or an embedded module's "<norn.x>", stays as it is: it
+;; matches no module's file)
+(defn- real-path [p] (or (try (io/canonical p) (catch Error _ nil)) p))
 
 (defn- module-at
   "The loaded module whose source is file (a canonical path), or nil."
@@ -93,11 +100,14 @@
 
 (defn- changes
   "The .norn files the next save changed: events from chs, gathered until
-  they stop for 100 ms (an editor's save can be several)."
-  [chs]
+  they stop for 100 ms (an editor's save can be several). The signal
+  instead if one comes on stop first."
+  [chs stop]
   (let [paths (fn [ev] (filter (fn [p] (str/ends-with? p ".norn")) (:paths ev)))
-        [ev _] (alts! chs)]
-    (when ev
+        [ev port] (alts! (conj (vec chs) stop))]
+    (cond
+      (identical? port stop) ev
+      ev
       (loop [acc (set (paths ev))]
         (let [[ev port] (alts! (conj (vec chs) (timeout 100)))]
           (if (and ev (some (fn [c] (identical? c port)) chs))
@@ -111,6 +121,15 @@
          (catch Error e (println (str "norn dev: " entry " failed: " (:message e))))
          (finally (reset! done true)))))
 
+(defn- stop-main!
+  "On signal sig: wait for main, running (fiber), to end if it listens for
+  sig itself (it's shutting down), else cancel it."
+  [fiber done sig]
+  (when-not @done
+    (if (> (%signal-listeners sig) 1)
+      (loop [n 0] (when (and (not @done) (< n 600)) (sleep 50) (recur (inc n))))
+      (cancel! fiber))))
+
 (defn main
   "Run the project's :main with args, reloading what's saved: runs until
   stopped (Ctrl-C)."
@@ -122,17 +141,29 @@
             watches (mapv (fn [r] (fs/watch r :recursive true)) roots)
             done (atom false)]
         (println (str "norn dev: running " entry ", reloading what's saved in " (str/join ", " (:paths project ["src"]))))
-        (start-main entry args done)
-        (loop []
-          (when-let [files (changes (mapv :events watches))]
-            (when (seq files)
-              (let [{:keys [reloaded failed]} (reload! files)]
-                (when (seq reloaded) (println (str "norn dev: reloaded " (str/join ", " reloaded))))
-                (doseq [{:keys [module error]} failed]
-                  (println (str "norn dev: " module " wasn't reloaded: " error)))
-                (when (and (seq reloaded) @done)
-                  (println (str "norn dev: running " entry " again"))
-                  (start-main entry args done))))
-            (recur))))
+        (let [stop (or (try (signal/listen :int :term) (catch Error _ nil)) ; (Windows has only :int)
+                       (signal/listen :int))
+              fiber (atom (start-main entry args done))]
+          (loop []
+            (let [files (changes (mapv :events watches) (:signals stop))]
+              (cond
+                (keyword? files)
+                (do (stop-main! @fiber done files)
+                    (signal/stop stop)
+                    (println "norn dev: stopped")
+                    0)
+
+                (nil? files) 0
+
+                :else
+                (do (when (seq files)
+                      (let [{:keys [reloaded failed]} (reload! files)]
+                        (when (seq reloaded) (println (str "norn dev: reloaded " (str/join ", " reloaded))))
+                        (doseq [{:keys [module error]} failed]
+                          (println (str "norn dev: " module " wasn't reloaded: " error)))
+                        (when (and (seq reloaded) @done)
+                          (println (str "norn dev: running " entry " again"))
+                          (reset! fiber (start-main entry args done)))))
+                    (recur)))))))
       (do (println (str "norn dev: " dir "/norn.edn has no :main (the entry function, as my.app/main)")) 2))
     (do (println "norn dev: no norn.edn here or in a folder above") 2)))

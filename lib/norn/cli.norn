@@ -19,7 +19,10 @@
 (ns norn.cli
   (:require [norn.string :as str] [norn.sys :as sys]))
 
-(defclass UsageError (Error) ((command :initform [])))
+(defclass UsageError (Error) ((command :initform []))
+  (:doc "A command line that doesn't fit its spec: an unknown option, a missing
+  argument, a value of the wrong type. :command is the path of the command
+  it was for. run prints it with a pointer to --help (status 2)."))
 
 (defn- fail [path msg] (error UsageError :message msg :command path))
 

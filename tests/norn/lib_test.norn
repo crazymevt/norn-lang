@@ -244,6 +244,22 @@
     (is (= ":term\n" (:out r)) "one listener left still gets it")
     (is (= :term (:signal r)))))
 
+;; Ctrl-C is a program's own while it listens for :int: the norn command
+;; doesn't interrupt the evaluation as well (pulse finding). Without a
+;; listener it does.
+(when norn-exe
+  (let [r (proc/sh norn-exe "-e" "(do (require '[norn.signal :as sig])
+                                      (let [l (sig/listen :int)]
+                                        (sig/raise :int)
+                                        (prn (first (alts! [(:signals l) (timeout 5000)])))
+                                        (sleep 200)
+                                        (prn :cleaned-up)))")]
+    (is (= ":int\n:cleaned-up\nnil\n" (:out r)))
+    (is (= 0 (:exit r))))
+  (let [r (proc/sh norn-exe "-e" "(do (%raise-signal :int) (sleep 2000) (prn :not-interrupted))")]
+    (is (= "" (:out r)))
+    (is (= 1 (:exit r)))))
+
 ;;; ---- norn.net ----
 ;; This file's directory, for the test certificates (runners use different
 ;; working directories).
@@ -733,6 +749,11 @@
          [10 :arity "map called with 7 arguments; it takes 1 or 2 or 3 or 4"]}
        lint-found))
 (is (= [] (lint/lint-string "(ns lint-clean)\n(defn f [x] (let [y (inc x)] (* y 2)))\n(f 1)\n")))
+;; (a Java habit says what Norn has instead: pulse finding)
+(is (= ["unresolved symbol Math/round (Norn has no Java classes: try norn.math/round)"
+        "unresolved symbol Thread/sleep (Norn has no Java classes: use sleep)"
+        "unresolved symbol Widget/make"]
+       (mapv :message (lint/lint-string "(ns lint-java)\n(defn f [] (Math/round 2.5) (Thread/sleep 1) (Widget/make))\n"))))
 (is (= :read (:kind (first (lint/lint-string "(a")))))
 (is (= "f.norn:3: unused: unused local x" (lint/format-warning {:file "f.norn" :line 3 :kind :unused :message "unused local x"})))
 (is (= [] (lint/lint-file (io/path here "../../lib/norn/lint.norn"))))

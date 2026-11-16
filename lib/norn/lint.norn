@@ -54,17 +54,17 @@
 
 (def ^:private specials #{'quote 'quote-syntax 'if 'do 'def 'var 'fn* 'let* 'letrec* 'loop* 'recur '&})
 
-(def ^:dynamic *warnings* nil)
-(def ^:dynamic *where* nil) ; {:file :line}
-(def ^:dynamic *source-syms* #{}) ; symbols written in the current top-level form
-(def ^:dynamic *source-heads* #{}) ; symbols written in call position in it
+(def ^:dynamic ^:private *warnings* nil)
+(def ^:dynamic ^:private *where* nil) ; {:file :line}
+(def ^:dynamic ^:private *source-syms* #{}) ; symbols written in the current top-level form
+(def ^:dynamic ^:private *source-heads* #{}) ; symbols written in call position in it
 (def ^:dynamic ^:private *exempt* #{}) ; catch bindings: unused is fine
 (def ^:dynamic ^:private *file-defs* nil) ; atom: name → arities ([nfixed variadic?] …) or :unknown
 (def ^:dynamic ^:private *module* nil)
 (def ^:dynamic ^:private *home-ns* nil) ; atom: the file's own namespace (its first ns or in-ns), as a string ; in a module: {:ns :requires :compile-time-defs :namespaces}
-(def ^:dynamic *file-qualified* nil) ; atom: ns/name of every def in the file, in whichever namespace
-(def ^:dynamic *file-generics* nil) ; atom: generic name → [nreq rest?]
-(def ^:dynamic *later-macros* nil) ; atom: in a module, macros defined further down
+(def ^:dynamic ^:private *file-qualified* nil) ; atom: ns/name of every def in the file, in whichever namespace
+(def ^:dynamic ^:private *file-generics* nil) ; atom: generic name → [nreq rest?]
+(def ^:dynamic ^:private *later-macros* nil) ; atom: in a module, macros defined further down
 
 (defn- warn [kind & msg]
   (swap! *warnings* conj (assoc *where* :kind kind :message (apply str msg)))
@@ -184,7 +184,7 @@
                 (contains? (deref *file-qualified*) sym)
                 (resolve sym)
                 (str/ends-with? (name sym) ".")) ; constructor-style names
-    (warn :unresolved "unresolved symbol " sym))
+    (warn :unresolved "unresolved symbol " sym (or (%interop-hint sym) "")))
   (when-let [d (when (resolve sym) (definition sym))]
     (when (:deprecated d) (warn :deprecated sym " is deprecated: " (:deprecated d)))))
 

@@ -63,11 +63,16 @@
 (ns norn.ffi
   (:unsafe))
 
-(defclass Library () ((path) (cell)))
+(defclass Library () ((path) (cell))
+  (:doc "A loaded shared library, to look functions up in (from library)."))
 ;; mode: false (on the carrier), true (the blocking pool) or :main (the
 ;; main-thread lane), as %ffi-fn takes it.
-(defclass ForeignFunction () ((name) (lib) (params) (ret) (mode) (cell) (prep)))
-(defclass Callback () ((id) (address) (params) (ret) (fn) (chan)))
+(defclass ForeignFunction () ((name) (lib) (params) (ret) (mode) (cell) (prep))
+  (:doc "A C function with its parameter and return types, to call (from function
+  or function-at)."))
+(defclass Callback () ((id) (address) (params) (ret) (fn) (chan))
+  (:doc "A Norn function that C can call, at an address (from callback; freed by
+  free-callback!)."))
 
 (defmethod print-object ((f ForeignFunction)) (str "#<foreign " (:name f) ">"))
 (defmethod print-object ((c Callback)) (str "#<callback " (:params c) " " (:ret c) ">"))

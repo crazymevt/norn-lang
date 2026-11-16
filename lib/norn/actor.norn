@@ -32,14 +32,17 @@
 ;;;; it). A child is :permanent (always restarted), :transient (only after a
 ;;;; crash) or :temporary (never). More than :max-restarts (3) in
 ;;;; :max-ms (5000) and the supervisor gives up: it ends its children and
-;;;; ends itself, with reason :too-many-restarts.
+;;;; ends itself, with reason :too-many-restarts. start-child! and
+;;;; stop-child! add and remove children while it runs.
 
 (ns norn.actor)
 
 (defclass Process ()
   ((id :initarg :id) (fiber :initarg :fiber) (mailbox :initarg :mailbox) (signal :initarg :signal)
                      (links :initarg :links) (monitors :initarg :monitors) (trapping :initarg :trapping)
-                     (reason :initarg :reason) (done :initarg :done) (name :initarg :name)))
+                     (reason :initarg :reason) (done :initarg :done) (name :initarg :name))
+  (:doc "A process: a fiber with a mailbox, started by spawn-process or a
+  supervisor. send puts a message in it; receive takes one."))
 
 (defmethod print-object ((p Process)) (str "#<process " (:id p) (when-let [n @(:name p)] (str " " n)) ">"))
 
@@ -347,6 +350,23 @@
        (do (deliver reply (mapv (fn [c] [(:id c) (:process c)]) children))
            (recur children restarts))
 
+       [:start-child spec reply]
+       (if (some (fn [c] (= (:id c) (:id spec))) children)
+         (do (deliver reply [nil (str "the supervisor has a child " (pr-str (:id spec)) " already")])
+             (recur children restarts))
+         (let [c (try (start-child spec) (catch Error e (condition-message e)))]
+           (if (string? c)
+             (do (deliver reply [nil c]) (recur children restarts))
+             (do (deliver reply [(:process c) nil]) (recur (conj children c) restarts)))))
+
+       [:stop-child id reply]
+       (let [i (first (keep-indexed (fn [i c] (when (= (:id c) id) i)) children))]
+         (if i
+           (do (stop-child (nth children i))
+               (deliver reply true)
+               (recur (into (subvec children 0 i) (subvec children (inc i))) restarts))
+           (do (deliver reply false) (recur children restarts))))
+
        [:stop reply]
        (do (stop-all children) (deliver reply :stopped))))))
 
@@ -362,6 +382,21 @@
 
 (defn which-children "Supervisor sup's children now: [[id process]…]." ^Vector [sup]
   (ask sup [:which-children]))
+
+(defn start-child!
+  "Start child spec (made with child) under supervisor sup, after its
+  other children, supervised like them: its process. An error if sup has a
+  child with that id, or the child can't start (its name is taken, say)."
+  ^Process [^Process sup ^Map spec]
+  (let [[p problem] (ask sup [:start-child spec])]
+    (or p (error (str "start-child!: " problem)))))
+
+(defn stop-child!
+  "Stop supervisor sup's child id, as the supervisor stops its children
+  (:shutdown, then killed after its :shutdown-ms), and forget it: it isn't
+  restarted. Whether sup had a child id."
+  ^Boolean [^Process sup id]
+  (ask sup [:stop-child id] 60000))
 
 (defn stop-supervisor!
   "Stop supervisor sup: its children are stopped, the last started first,

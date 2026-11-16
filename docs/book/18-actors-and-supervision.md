@@ -535,6 +535,38 @@ finish what it was doing:
 trapping exits; a process that is told to shut down before it has called
 `trap-exits!` is ended at once.
 
+### Children that come and go
+
+The children a supervisor starts with needn't be all it ever has. A server
+that starts a process per connection, or a monitor that watches a list of
+sites someone can add to, gets new work while it runs. `start-child!` gives
+a running supervisor another child, started after the others and supervised
+like them. It returns the child's process, once the child is up.
+`stop-child!` stops one, as the supervisor stops its children, and forgets
+it, so it isn't restarted:
+
+```clojure
+(def pool (a/supervisor {} []))
+
+(a/start-child! pool (a/child :w1 worker 1))
+(a/start-child! pool (a/child :w2 worker 2))
+(mapv first (a/which-children pool)) ; => [:w1 :w2]
+
+(a/stop-child! pool :w1) ; => true
+(mapv first (a/which-children pool)) ; => [:w2]
+(a/whereis :w1) ; => nil
+```
+
+A child whose id the supervisor already has is an error, as is one that
+can't start, and the supervisor carries on as it was. `stop-child!` with an
+id the supervisor doesn't have returns `false`:
+
+```clojure
+(a/start-child! pool (a/child :w2 worker 3)) ; !! Error
+(a/stop-child! pool :w1) ; => false
+(a/stop-supervisor! pool)
+```
+
 ### Supervision trees
 
 A supervisor is a process, so it can be the child of another supervisor.

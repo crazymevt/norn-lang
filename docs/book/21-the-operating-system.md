@@ -430,6 +430,11 @@ arrives, the worker leaves the loop and returns a result instead of being
 killed. A real program would flush its files or close its connections at
 that point, then exit.
 
+Ctrl-C works the same way in a program the `norn` command runs. Ordinarily
+it interrupts the evaluation, as at the REPL. While the program listens for
+`:int`, Ctrl-C is the program's to handle, and the `norn` command leaves the
+evaluation alone.
+
 ## Time
 
 `norn.time` has two families of values. Instants and durations are

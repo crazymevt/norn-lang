@@ -307,6 +307,18 @@ const MAX_SIGNAL: usize = 65;
 /// How many norn.signal listeners each signal has.
 static LISTENERS: [AtomicUsize; MAX_SIGNAL] = [const { AtomicUsize::new(0) }; MAX_SIGNAL];
 
+/// How many norn.signal listeners signal `n` has.
+pub(crate) fn listeners(n: i32) -> usize {
+    if n > 0 && (n as usize) < MAX_SIGNAL { LISTENERS[n as usize].load(Ordering::SeqCst) } else { 0 }
+}
+
+/// Is a norn.signal listener listening for SIGINT? The norn command then
+/// leaves ^C to the program, as its own (a clean shutdown, say), rather than
+/// interrupting the evaluation too.
+pub fn listening_for_interrupt() -> bool {
+    LISTENERS[libc::SIGINT as usize].load(Ordering::SeqCst) > 0
+}
+
 /// The signals whose disposition has been looked at (see `keep_default`).
 static PREPARED: std::sync::Mutex<[bool; MAX_SIGNAL]> = std::sync::Mutex::new([false; MAX_SIGNAL]);
 

@@ -463,6 +463,7 @@ prims! {
     "%process-wait" 1 Some(1) => |vm, a| crate::os::wait(vm, a[0]);
     "%process-kill" 2 Some(2) => |vm, a| { let n = signal_arg(a[1])?; crate::os::kill(vm, a[0], n) };
     "%signal-listen" 1 Some(1) => |vm, a| { let names: Vec<String> = seq::SeqIter::new(a[0]).map(|it| it.map(|k| if k.is_keyword() { k.sym_name().to_owned() } else { text(k) }).collect()).unwrap_or_default(); crate::os::listen(vm, &names) };
+    "%signal-listeners" 1 Some(1) => |_, a| { let n = signal_arg(a[0])?; Ok(Value::fix(crate::os::listeners(n) as i64)) };
     "%raise-signal" 1 Some(1) => |_, a| { let n = signal_arg(a[0])?; unsafe { libc::raise(n) }; Ok(Value::NIL) };
     "%now-nanos" 0 Some(0) => |_, _| Ok(Value::fix(crate::os::now_nanos()));
     "%local-offset" 1 Some(1) => |_, a| Ok(Value::fix(crate::os::local_offset(int(a[0], "%local-offset")?)));

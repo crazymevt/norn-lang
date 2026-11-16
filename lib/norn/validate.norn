@@ -100,10 +100,11 @@
    (checked quick-with-scope (fn [s] (syntax-parse s [(_ (~describe "a binding vector [name]" [name:id]) body ...) nil])))
    ;; (rare enough to match every time)
    "norn.core/ns"
-   (fn [s] (syntax-parse s [(_ name:id (~describe "an ns clause, (:require …), (:require-for-syntax …), (:refer-core …) or (:unsafe)"
-                                                  (~or (:require (~or lib:id [lib:id & opts]) ...)
-                                                       (:require-for-syntax (~or lib:id [lib:id & opts]) ...)
-                                                       (:refer-core opt ...)
-                                                       (:unsafe)))
+   (fn [s] (syntax-parse s [(_ name:id (~optional (~describe "a docstring" doc:str))
+                               (~describe "an ns clause, (:require …), (:require-for-syntax …), (:refer-core …) or (:unsafe)"
+                                          (~or (:require (~or lib:id [lib:id & opts]) ...)
+                                               (:require-for-syntax (~or lib:id [lib:id & opts]) ...)
+                                               (:refer-core opt ...)
+                                               (:unsafe)))
                                ...)
                             nil]))})

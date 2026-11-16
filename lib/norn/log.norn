@@ -69,11 +69,11 @@
   (let [ns-name (str (current-ns))]
     `(when (enabled? ~level ~ns-name) (emit ~level ~ns-name ~msg [~@kvs]))))
 
-(defmacro trace [msg & kvs] `(log :trace ~msg ~@kvs))
-(defmacro debug [msg & kvs] `(log :debug ~msg ~@kvs))
-(defmacro info [msg & kvs] `(log :info ~msg ~@kvs))
-(defmacro warn [msg & kvs] `(log :warn ~msg ~@kvs))
-(defmacro error [msg & kvs] `(log :error ~msg ~@kvs))
+(defmacro trace "Log msg at :trace, with key-value pairs kvs: (log/trace \"msg\" :k v …)." [msg & kvs] `(log :trace ~msg ~@kvs))
+(defmacro debug "Log msg at :debug, with key-value pairs kvs: (log/debug \"msg\" :k v …)." [msg & kvs] `(log :debug ~msg ~@kvs))
+(defmacro info "Log msg at :info, with key-value pairs kvs: (log/info \"msg\" :k v …)." [msg & kvs] `(log :info ~msg ~@kvs))
+(defmacro warn "Log msg at :warn, with key-value pairs kvs: (log/warn \"msg\" :k v …)." [msg & kvs] `(log :warn ~msg ~@kvs))
+(defmacro error "Log msg at :error, with key-value pairs kvs: (log/error \"msg\" :k v …)." [msg & kvs] `(log :error ~msg ~@kvs))
 
 (defmacro spy "Log form and its value at :debug, and return the value." [form]
   `(let [v# ~form] (log :debug (pr-str '~form) :value v#) v#))

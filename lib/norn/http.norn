@@ -143,7 +143,10 @@
 ;; (on-end reusable?) gives the connection back to the pool, or closes it.
 (defclass ResponseBody ()
   ((reader :required true) (kind :required true) (left :required true) (state :required true)
-                           (on-end :required true)))
+                           (on-end :required true))
+  (:doc "A response body read as it arrives (:as :stream): a norn.io stream.
+  Reading it to its end gives the connection back for reuse; closing it
+  first closes the connection."))
 
 (defmethod print-object ((b ResponseBody)) (str "#<response-body " (name @(:state b)) ">"))
 

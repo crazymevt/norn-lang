@@ -193,6 +193,33 @@
     (is (= :too-many-restarts (a/await-exit sup 1000)))
     (is (nil? (a/whereis :fragile)))))
 
+;; (a supervisor's children can change while it runs: pulse finding)
+(deftest children-added-and-removed
+  (let [sup (a/supervisor {} [(a/child :dyn-a counter 0)])
+        b (a/start-child! sup (a/child :dyn-b counter 5))]
+    (is (identical? b (a/whereis :dyn-b)) "started and registered when start-child! returns")
+    (is (= [:dyn-a :dyn-b] (mapv first (a/which-children sup))) "after the others")
+    (is (= 5 (a/ask :dyn-b [:get])))
+    (testing "supervised like the others"
+      (a/send :dyn-b [:crash])
+      (is (eventually (fn [] (let [p (a/whereis :dyn-b)] (and p (not (identical? p b)))))))
+      (is (= 5 (a/ask :dyn-b [:get]))))
+    (testing "an id it has already"
+      (is (thrown? Error (a/start-child! sup (a/child :dyn-a counter 1))))
+      (is (= [:dyn-a :dyn-b] (mapv first (a/which-children sup))) "and the supervisor carries on"))
+    (testing "a child that can't start"
+      (let [squatter (a/spawn-process counter 0)]
+        (a/register! :dyn-taken squatter)
+        (is (thrown? Error (a/start-child! sup (a/child :dyn-taken counter 0))))
+        (a/exit! squatter)))
+    (testing "stopping one"
+      (let [b (a/whereis :dyn-b)]
+        (is (true? (a/stop-child! sup :dyn-b)))
+        (is (= :shutdown (a/await-exit b 1000)))
+        (is (= [:dyn-a] (mapv first (a/which-children sup))) "and it isn't restarted")
+        (is (false? (a/stop-child! sup :dyn-b)) "one it hasn't")))
+    (a/stop-supervisor! sup)))
+
 (deftest supervisors-in-supervisors
   (let [top (a/supervisor {} [(a/child :inner a/supervise {} [(a/child :leaf counter 0)])])
         leaf (eventually (fn [] (a/whereis :leaf)))]

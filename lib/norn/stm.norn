@@ -32,7 +32,9 @@
 
 (defclass Ref ()
   ((id :initarg :id) (versions :initarg :versions) (lock :initarg :lock)
-                     (validator :initarg :validator) (max-history :initarg :max-history)))
+                     (validator :initarg :validator) (max-history :initarg :max-history))
+  (:doc "A transactional reference: its value changes only inside a transaction
+  (dosync), with ref-set, alter or commute (from ref)."))
 
 (defmethod print-object ((r Ref)) (str "#<ref " (:id r) " " (pr-str (second (peek @(:versions r)))) ">"))
 

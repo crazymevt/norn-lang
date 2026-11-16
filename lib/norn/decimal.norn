@@ -4,7 +4,9 @@
   (:refer-core :exclude [compare])
   (:require [norn.math :as math] [norn.string :as str]))
 
-(defclass Decimal () ((coefficient :required true) (scale :required true)))
+(defclass Decimal () ((coefficient :required true) (scale :required true))
+  (:doc "An exact decimal number: an integer coefficient and a scale, the
+  number of digits after the point (decimal and parse make one)."))
 
 (defmethod initialize-instance :after ((x Decimal) _)
   (when-not (and (integer? (:coefficient x)) (integer? (:scale x)))

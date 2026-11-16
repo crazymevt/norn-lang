@@ -9,7 +9,9 @@
 
 ;; ---- semaphores ----------------------------------------------------------------------------
 
-(defclass Semaphore () ((permits) (tokens)))
+(defclass Semaphore () ((permits) (tokens))
+  (:doc "A number of permits that fibers acquire! and release!, waiting when none
+  is left (from semaphore)."))
 
 (defn semaphore "A semaphore with n permits." ^Semaphore [^Integer n]
   (let [tokens (chan n)]
@@ -28,7 +30,9 @@
 
 ;; ---- latches -------------------------------------------------------------------------------
 
-(defclass Latch () ((count) (done)))
+(defclass Latch () ((count) (done))
+  (:doc "A count that fibers wait to reach zero (await-latch), counted down by
+  count-down! (from latch)."))
 
 (defn latch "A latch that opens after n count-down! calls." ^Latch [^Integer n]
   (let [l (Latch :count (atom n) :done (chan))]
@@ -50,7 +54,9 @@
 
 ;; ---- barriers ------------------------------------------------------------------------------
 
-(defclass Barrier () ((parties) (state)))
+(defclass Barrier () ((parties) (state))
+  (:doc "A meeting point for a number of fibers: each arrive! waits until all of
+  them have arrived (from barrier)."))
 
 (defn barrier "A reusable barrier for n fibers: each arrive! parks until all n have arrived." ^Barrier [^Integer n]
   (Barrier :parties n :state (atom {:waiting 0 :gate (chan)})))
@@ -70,7 +76,9 @@
 
 ;; ---- rate limiting -------------------------------------------------------------------------
 
-(defclass RateLimiter () ((rate) (burst) (state)))
+(defclass RateLimiter () ((rate) (burst) (state))
+  (:doc "A token bucket: tokens come at a rate, up to a burst, and try-take! or
+  take-token! spends them (from rate-limiter)."))
 
 (defn rate-limiter
   "A token bucket: rate tokens a second, holding at most burst (default
@@ -107,7 +115,9 @@
 
 ;; ---- once ----------------------------------------------------------------------------------
 
-(defclass Once () ((f) (state)))
+(defclass Once () ((f) (state))
+  (:doc "A function run at most once, however many fibers call it: the others
+  wait for its value (from once)."))
 
 (defn once
   "A function that runs f the first time it's called, and afterwards

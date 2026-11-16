@@ -4,7 +4,9 @@
   (:refer-core :exclude [count nth])
   (:require [norn.bytes :as b]))
 
-(defclass Buffer () ((element-type :required true) (order :required true) (data :required true)))
+(defclass Buffer () ((element-type :required true) (order :required true) (data :required true))
+  (:doc "A packed, immutable sequence of numbers of one element type (from pack,
+  from-bytes, freeze! or snapshot)."))
 
 (def ^:private widths {:u8 1 :i8 1 :u16 2 :i16 2 :u32 4 :i32 4 :u64 8 :i64 8 :f32 4 :f64 8})
 (def ^:private signed-types #{:i8 :i16 :i32 :i64})
@@ -55,7 +57,10 @@
 (defclass MutableBuffer ()
   ((element-type :required true) (order :required true) (length :required true)
                                  (data :required true :mutable true))
-  (:mutable))
+  (:mutable)
+  (:doc "A packed sequence of numbers of one element type that set!, fill! and
+  copy! change in place (from mutable or mutable-copy). It belongs to the
+  fiber that made it, as a (:mutable) object does."))
 
 (def ^:private codes {:u8 0 :i8 1 :u16 2 :i16 3 :u32 4 :i32 5 :u64 6 :i64 7 :f32 8 :f64 9})
 

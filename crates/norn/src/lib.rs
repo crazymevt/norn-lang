@@ -158,8 +158,9 @@ fn run_app(app: &App) -> ! {
         exit(1)
     });
     let _ = ctrlc::set_handler(move || {
+        // (a program listening for :int handles ^C itself)
         let t = CURRENT.load(Ordering::Acquire);
-        if t != 0 {
+        if t != 0 && !norn_vm::os::listening_for_interrupt() {
             norn.interrupt(t);
         }
     });
@@ -230,6 +231,10 @@ pub fn run() {
         exit(1)
     });
     let _ = ctrlc::set_handler(move || {
+        // (a program listening for :int handles ^C itself)
+        if norn_vm::os::listening_for_interrupt() {
+            return;
+        }
         INTERRUPTED.store(true, Ordering::Release);
         let t = CURRENT.load(Ordering::Acquire);
         if t != 0 {

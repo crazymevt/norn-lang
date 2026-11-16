@@ -109,7 +109,10 @@ packages it. The name is lower-case words joined by hyphens.
 
 Put `norn.edn` at the project root. `:paths` defaults to `["src"]`, and
 `:main` names the entry function for `norn build` when no source files are
-given. For example, `app.main` goes in `src/app/main.norn`.
+given. For example, `app.main` goes in `src/app/main.norn`. `:test-paths`
+defaults to `["tests"]`. Those folders are on the library path after the
+rest, so test files can share helper modules (`tests/app/fixtures.norn` is
+`app.fixtures`); a dependency's test folders aren't.
 
 ```edn
 {:name sample-app
@@ -141,6 +144,9 @@ project's `:paths`. Each time you save a module, it loads it again:
 - `(norn.dev/after-reload! key f)` calls `(f modules)` after each reload,
   so a program can redraw.
 - When `:main` has returned, the next save runs it again.
+- Ctrl-C (or SIGTERM) stops it. A program that listens for the signal
+  itself (`norn.signal`) gets it too, and `norn dev` waits for it to finish
+  shutting down; one that doesn't is cancelled.
 
 ## Sealed modules
 

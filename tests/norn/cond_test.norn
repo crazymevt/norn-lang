@@ -114,14 +114,17 @@
   (is (= [:cleaned] @log)))
 
 ;;; the debugger
+;; (each check looks for its own fiber: other suites running in this
+;; process at the same time, as under cargo test, park theirs too)
+(defn parked "Fiber id's entry in the debugger, or nil." [id] (first (filter (fn [d] (= id (:fiber d))) (debugging))))
 ;; (error …) is not in tail position, so half's frame stays on the stack: a tail
 ;; call would replace it (proper tail calls), leaving nothing to restart.
 (defn half [x] (when (odd? x) (error "odd:" x)) (quot x 2))
 (defn halve-all [xs] (mapv half xs))
 (let [f (binding [*debugger* :park] (spawn-detached (halve-all [2 3 4])))
       id (fiber-id f)]
-  (is (= true (wait-until (fn [] (seq (debugging))))))
-  (is (= "odd: 3" (:condition (first (debugging)))))
+  (is (= true (wait-until (fn [] (parked id)))))
+  (is (= "odd: 3" (:condition (parked id))))
   (let [frames (backtrace id)
         i (some (fn [i] (when (= 'cond-test/half (:fn (nth frames i))) i)) (range (count frames)))]
     (is (= {'x 3} (:locals (nth frames i))))
@@ -129,16 +132,16 @@
     (defn half [x] (quot x 2))
     (debug-restart-frame id i))
   (is (= [1 1 2] (await f)))
-  (is (= [] (debugging))))
+  (is (nil? (parked id))))
 (let [f (binding [*debugger* :park] (spawn-detached (+ 1 (/ 1 0))))
       id (fiber-id f)]
-  (wait-until (fn [] (seq (debugging))))
+  (wait-until (fn [] (parked id)))
   (debug-restart id 0 41)
   (is (= 42 (await f))))
 (let [log (atom [])
       f (binding [*debugger* :park] (spawn-detached (unwind-protect (error "give up") (swap! log conj :cleanup))))
       id (fiber-id f)]
-  (wait-until (fn [] (seq (debugging))))
+  (wait-until (fn [] (parked id)))
   (debug-abort id)
   (is (= {:error "give up"} (settle f)))
   (is (= [:cleanup] @log)))
@@ -147,10 +150,10 @@
 ;; an error, not a wait.
 (let [f (binding [*debugger* :park] (spawn-detached (/ 1 0)))
       id (fiber-id f)]
-  (wait-until (fn [] (seq (debugging))))
+  (wait-until (fn [] (parked id)))
   (cancel! f)
   (is (= {:error "Cancelled"} (settle f)))
-  (is (= [] (debugging)))
+  (is (nil? (parked id)))
   (is (thrown? Error (debug-abort id))))
 ;;; warn and muffle-warning
 (is (= "WARNING: careful 1\n" (with-out-str (warn "careful" 1))))

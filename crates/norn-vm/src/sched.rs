@@ -671,6 +671,12 @@ fn finish(vm: &mut Vm, f: Value, r: Result<Value, Error>) {
         }
         None => (Value::NIL, Value::NIL, Value::NIL),
     };
+    let sc = f.field(fiber::SCOPE);
+    let cancel_end = matches!(&err, Some(e) if is_cancel_end(f, e));
+    // (a scope's child failing with nobody waiting: in its scope's UNSEEN
+    // before anyone can see it DONE, so an await or settle that sees it
+    // DONE finds it there to take out; see scope_child_done)
+    let mut pre_unseen = false;
     let joiners = {
         let _g = spin_lock(f, fiber::LOCK);
         f.set_field(fiber::RESULT, val);
@@ -679,8 +685,14 @@ fn finish(vm: &mut Vm, f: Value, r: Result<Value, Error>) {
         f.set_field(fiber::CONDITION, econd);
         f.set_field(fiber::SEG, Value::NIL);
         aset(f, fiber::PARK, Value::NIL);
-        f.fiber_state().store(fiber::DONE, Ordering::Release);
         let j = f.field(fiber::JOINERS);
+        if err.is_some() && !cancel_end && j.is_nil() && !sc.is_nil() && sc.field(scope::BODY) != f {
+            let _sg = spin_lock(sc, scope::LOCK);
+            let unseen = cons(&mut vm.m, f, sc.field(scope::UNSEEN));
+            sc.set_field(scope::UNSEEN, unseen);
+            pre_unseen = true;
+        }
+        f.fiber_state().store(fiber::DONE, Ordering::Release);
         f.set_field(fiber::JOINERS, Value::NIL);
         j
     };
@@ -695,16 +707,15 @@ fn finish(vm: &mut Vm, f: Value, r: Result<Value, Error>) {
             seen = true;
         }
     }
-    let sc = f.field(fiber::SCOPE);
     if !sc.is_nil() {
         let end = match &err {
             None => ChildEnd::Ok,
             // stopped by cancel! (or by its scope's own cancelling): quiet
-            Some(e) if is_cancel_end(f, e) => ChildEnd::Cancelled,
+            Some(_) if cancel_end => ChildEnd::Cancelled,
             Some(_) if seen => ChildEnd::Seen,
             Some(_) => ChildEnd::Unseen,
         };
-        scope_child_done(vm, sc, f, end);
+        scope_child_done(vm, sc, f, end, pre_unseen);
     }
     let ticket = f.word(fiber::NOTIFY);
     if ticket != 0 {
@@ -850,22 +861,43 @@ fn body_runs(sc: Value) {
     sc.set_word(scope::FLAGS, sc.word(scope::FLAGS) & !scope::BODY_WAITING);
 }
 
-fn scope_child_done(vm: &mut Vm, sc: Value, child: Value, end: ChildEnd) {
+/// List `l` without `x`, in order.
+fn list_without(vm: &mut Vm, l: Value, x: Value) -> Value {
+    let mut rest = Value::NIL;
+    for &y in list_items(l).iter().rev() {
+        if y != x {
+            rest = cons(&mut vm.m, y, rest);
+        }
+    }
+    rest
+}
+
+/// Child `child` of scope `sc` has ended. `pre_unseen`: finish put it in
+/// UNSEEN already (it failed with nobody waiting), so if it isn't there
+/// now an await or settle has taken it out: seen.
+fn scope_child_done(vm: &mut Vm, sc: Value, child: Value, end: ChildEnd, pre_unseen: bool) {
     let (owner, cancel_siblings) = {
         let _g = spin_lock(sc, scope::LOCK);
         sc.set_word(scope::PENDING, sc.word(scope::PENDING) - 1);
         let body = sc.field(scope::BODY);
         let is_body = body == child;
         let mut cancel_siblings = false;
-        if end == ChildEnd::Unseen && sc.field(scope::FAILED).is_nil() {
+        let still_unseen = !pre_unseen || list_items(sc.field(scope::UNSEEN)).contains(&child);
+        if end == ChildEnd::Unseen && still_unseen && sc.field(scope::FAILED).is_nil() {
             let body_running = !body.is_nil()
                 && !is_body
                 && sc.word(scope::FLAGS) & scope::BODY_WAITING == 0
                 && body.fiber_state().load(Ordering::Acquire) != fiber::DONE;
             if body_running {
-                let unseen = cons(&mut vm.m, child, sc.field(scope::UNSEEN));
-                sc.set_field(scope::UNSEEN, unseen);
+                if !pre_unseen {
+                    let unseen = cons(&mut vm.m, child, sc.field(scope::UNSEEN));
+                    sc.set_field(scope::UNSEEN, unseen);
+                }
             } else {
+                if pre_unseen {
+                    let rest = list_without(vm, sc.field(scope::UNSEEN), child);
+                    sc.set_field(scope::UNSEEN, rest);
+                }
                 sc.set_field(scope::FAILED, child);
                 cancel_siblings = true;
             }

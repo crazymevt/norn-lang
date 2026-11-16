@@ -138,7 +138,8 @@
 
 ;; ---- mult: one source, many taps ------------------------------------------------------------
 
-(defclass Mult () ((source) (taps)))
+(defclass Mult () ((source) (taps))
+  (:doc "A channel copied to several others: what mult makes, for tap and untap."))
 
 (defn mult
   "Copy every value from ch to each tap (see tap). A slow tap holds up the
@@ -163,7 +164,8 @@
 
 ;; ---- pub/sub: values routed by topic --------------------------------------------------------
 
-(defclass Pub () ((source) (topic-fn) (subs)))
+(defclass Pub () ((source) (topic-fn) (subs))
+  (:doc "A channel split by topic: what pub makes, for sub and unsub."))
 
 (defn pub
   "Route each value v from ch to the channels subscribed to (topic-fn v)."

@@ -27,7 +27,7 @@
 ;;;;   test --serial` runs everything one at a time.
 
 (ns norn.test
-  (:require [norn.string :as str] [norn.walk])
+  (:require [norn.io :as io] [norn.string :as str] [norn.walk])
   ;; (are's code uses postwalk-replace while it expands)
   (:require-for-syntax [norn.walk]))
 
@@ -344,10 +344,19 @@
 (defn- find-tests "Every *_test.norn file under dir, sorted." [dir]
   (vec (sort (filter (fn [p] (str/ends-with? p "_test.norn")) (%fs-walk (str dir))))))
 
+(defn- add-test-paths!
+  "Put the folders of paths (test files and folders) on the library path,
+  so that test files can require helpers kept beside them."
+  [paths]
+  (doseq [d (distinct (keep (fn [p] (if (io/directory? p) p (io/parent p))) paths))]
+    (add-lib-path! (str (io/absolute d)))))
+
 (defn main
   "`norn test [options] [paths…]`: run test files (default: every
   *_test.norn under tests/). Options: --only REGEX (test names), --serial,
-  --tap, --junit FILE. Exits 1 if anything failed."
+  --tap, --junit FILE. Exits 1 if anything failed. The folders given (or
+  tests/) are on the library path while they run, for helpers the test
+  files share (tests/my/helpers.norn is my.helpers)."
   [& args]
   (loop [args args opts {:paths []}]
     (if-let [a (first args)]
@@ -356,7 +365,9 @@
             (= a "--tap") (recur (next args) (assoc opts :tap true))
             (= a "--junit") (recur (nnext args) (assoc opts :junit (second args)))
             :else (recur (next args) (update opts :paths conj a)))
-      (let [result (run-files (if (seq (:paths opts)) (:paths opts) ["tests"]) :only (:only opts) :serial (:serial opts))
+      (let [paths (if (seq (:paths opts)) (:paths opts) ["tests"])
+            _ (add-test-paths! paths)
+            result (run-files paths :only (:only opts) :serial (:serial opts))
             t (:totals result)]
         (print (if (:tap opts) (%tap result) (%human result)))
         (when (:junit opts) (spit (:junit opts) (%junit result)))

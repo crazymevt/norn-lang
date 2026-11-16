@@ -40,7 +40,9 @@
 
 ;;; ---- generators ----
 
-(defclass Generator () ((run :required true)))
+(defclass Generator () ((run :required true))
+  (:doc "A generator of random values for property tests, and how they shrink
+  (integers, strings, vectors, fmap… make them; generate runs one)."))
 
 (defn generator?
   "Is x a generator?"
@@ -211,7 +213,9 @@
 
 ;;; ---- properties ----
 
-(defclass Property () ((names) (generate) (holds)))
+(defclass Property () ((names) (generate) (holds))
+  (:doc "A claim about every value some generators make, for check (from
+  for-all)."))
 
 (defmacro for-all
   "(for-all [x gen y gen…] body…): a property that body is truthy (and

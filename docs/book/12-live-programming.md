@@ -194,6 +194,11 @@ draws, such as a Norn UI app, can redraw after each reload:
 function that `norn dev` calls with the names of the modules it
 reloaded. Outside `norn dev`, nothing calls it.
 
+Ctrl-C stops `norn dev`. A program that listens for Ctrl-C itself, to shut
+down cleanly ([Chapter 21](21-the-operating-system.md)), gets it too, and
+`norn dev` waits for it to finish. A program that doesn't is stopped where
+it is.
+
 ## When an evaluation fails
 
 At the REPL, an error that no handler takes doesn't end the evaluation. The

@@ -54,7 +54,7 @@
   (io/mkdirs! (io/path dir "app" "src" "deep" "er"))
   (is (= (io/path dir "app") (deps/find-project (io/path dir "app" "src" "deep" "er"))) "from a folder below it")
   (is (= ["src"] (:paths (deps/read-project (io/path dir "app")))) "the default paths")
-  (is (= {:paths ["src"] :deps {} :overrides {}} (deps/read-project (io/path dir "nothing-here"))) "a folder without one")
+  (is (= {:paths ["src"] :test-paths ["tests"] :deps {} :overrides {}} (deps/read-project (io/path dir "nothing-here"))) "a folder without one")
   (file! "bad/norn.edn" "{:deps {x {:git \"u\"}}}\n")
   (is (str/includes? (message (fn [] (deps/read-project (io/path dir "bad"))))
                      "the dependency x {:git \"u\"} should be {:path \"folder\"}, or {:git \"url\" :tag \"tag\"}")))

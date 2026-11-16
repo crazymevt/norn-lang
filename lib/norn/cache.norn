@@ -7,7 +7,9 @@
 
 (ns norn.cache)
 
-(defclass Cache () ((kind) (limit) (state)))
+(defclass Cache () ((kind) (limit) (state))
+  (:doc "A cache of values by key, from lru or ttl: lookup, store!, evict!,
+  through."))
 
 (defn lru "An empty cache holding at most n entries, evicting the least recently used." ^Cache [^Integer n]
   (Cache :kind :lru :limit n :state (atom {:entries {} :order (sorted-map) :tick 0})))

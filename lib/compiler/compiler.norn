@@ -202,7 +202,7 @@
           (= (first loc) :self) (emit! cs (abc SELF dest 0 0))
           :else
           (let [v (resolve sym)]
-            (when-not v (cerr "Unable to resolve symbol:" (pr-str sym) "in this context"))
+            (when-not v (cerr (str "Unable to resolve symbol: " (pr-str sym) " in this context" (%interop-hint sym))))
             (when (macro? v) (cerr "Can't take the value of a macro:" (pr-str v)))
             (emit! cs (abx GETVAR dest (konst! cs v)))))
     (finish! cs dest pos)))

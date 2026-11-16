@@ -109,6 +109,7 @@ defines after it.
 ```clojure
 (write-module! "lib/shop/money.norn"
   '(ns shop.money
+     "Prices, kept as whole cents."
      (:require [norn.string :as str]))
 
   '(println "loading shop.money")
@@ -121,6 +122,10 @@ defines after it.
   '(defn- cents->text [cents]
      (format "$%d.%02d" (quot cents 100) (rem cents 100))))
 ```
+
+The string after the module's name is its docstring, which says what the
+module is for. It's optional, as a function's is, and `norn doc
+shop.money` prints it above the module's definitions.
 
 The `lib` folder isn't one Norn searches yet. `add-lib-path!` adds it.
 (You'll see the other places Norn looks in
@@ -387,6 +392,10 @@ tally/
   output and in packaged releases.
 - `:paths` lists the source folders, relative to `norn.edn`. It defaults
   to `["src"]`, so you can leave it out when that's your layout.
+- `:test-paths` lists the test folders, and defaults to `["tests"]`. They
+  are on the library path too, after everything else, so test files can
+  share helper modules ([Chapter 25](25-testing.md)). A package's test
+  folders aren't.
 - `:main` names the entry function, as a fully qualified symbol. `norn
   build` and `norn package` start the program there.
 - `:deps` and `:overrides`, described below, declare the packages the
@@ -557,8 +566,8 @@ Two more clauses belong to later chapters:
 ## Summary
 
 - A namespace maps names to vars. A module is a file that starts with
-  `ns`; one file is one module is one namespace, and `a.b-c` lives in
-  `a/b-c.norn`.
+  `ns`, and a docstring after its name says what it's for; one file is
+  one module is one namespace, and `a.b-c` lives in `a/b-c.norn`.
 - A module compiles as a unit, so it can refer to definitions later in the
   file. Scripts and the REPL run one form at a time.
 - `require` loads a module once. `:as` gives it an alias, `:refer` brings
@@ -572,7 +581,8 @@ Two more clauses belong to later chapters:
   (including a project's paths and packages), then `NORN_PATH`, then the
   current directory.
 - `norn new` makes a project, and `norn run` calls its `:main`.
-- A project's `norn.edn` gives its `:paths`, `:main`, and `:deps`: folders
+- A project's `norn.edn` gives its `:paths`, `:test-paths`, `:main`, and
+  `:deps`: folders
   or Git repositories at a tag or commit. `norn deps` resolves them and
   `norn.lock` pins each Git package to a commit; `:overrides` settles
   version conflicts.

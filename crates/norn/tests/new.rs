@@ -134,7 +134,9 @@ fn dev_reloads_what_is_saved_while_main_runs() {
     assert!(read_until(&mut out, &mut seen, "wasn't reloaded"), "{seen}");
     let after = seen.len();
     assert!(read_until(&mut out, &mut seen, "second\n") && !seen[after..].contains("third"));
-    let _ = p.kill();
-    let _ = p.wait();
+    // Ctrl-C stops it, cancelling a main that doesn't listen for it
+    Command::new("kill").args(["-INT", &p.id().to_string()]).status().unwrap();
+    assert!(read_until(&mut out, &mut seen, "norn dev: stopped\n"), "{seen}");
+    assert_eq!(Some(0), p.wait().unwrap().code());
     std::fs::remove_dir_all(&dir).unwrap();
 }

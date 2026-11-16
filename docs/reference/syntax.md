@@ -128,8 +128,10 @@ specified keys and match their values. A failed match signals `MatchError`.
 
 ## Namespaces and modules
 
-**Macro** · `(ns name clauses…)` enters a namespace. A source file beginning
-with `ns` is compiled as a module and supports forward references. In a script
+**Macro** · `(ns name docstring? clauses…)` enters a namespace. A source
+file beginning with `ns` is compiled as a module and supports forward
+references. The optional docstring says what the module is for; `norn doc`
+shows it. In a script
 without `ns`, top-level forms are evaluated in order. Modules have access to
 `norn.core` names by default. Use `(:refer-core :exclude [name…])` or
 `(:refer-core :rename {old new})` to resolve naming conflicts.
@@ -148,6 +150,7 @@ is an error.
 
 ```clojure
 (ns reference.syntax-example
+  "An example module."
   (:require [norn.string :as s :refer [join]]))
 
 (s/upper-case (join " " ["hello" "norn"])) ; => "HELLO NORN"
