@@ -148,18 +148,25 @@
     (is (= (inc before) (count @%declarations)))))
 
 (def signed-libraries
-  "M9a's libraries, whose public functions carry checked signatures."
-  '[norn.actor norn.bin norn.cli norn.compress norn.crypto norn.csv norn.data norn.ffi norn.http
-    norn.process norn.property norn.schedule norn.sqlite norn.stm norn.terminal norn.time norn.toml
-    norn.uri norn.uuid norn.zip])
+  "The libraries whose public functions carry checked signatures: all but\n  core, the tools, norn.syntax, and norn.string, math, regex and bytes\n  (hot and thin, their primitives checking types: signed when M10 inlines\n  the checks)."
+  '[norn.actor norn.async norn.bin norn.buffer norn.cache norn.cbor norn.cli norn.compress norn.crypto
+    norn.csv norn.data norn.decimal norn.edn norn.ffi norn.format norn.fs norn.http norn.io norn.json
+    norn.log norn.markdown norn.ndjson norn.net norn.pprint norn.process norn.property norn.random
+    norn.rope norn.schedule norn.set norn.signal norn.sqlite norn.stm norn.sync norn.sys norn.terminal
+    norn.time norn.toml norn.uri norn.uuid norn.walk norn.xml norn.yaml norn.zip])
 
 (def unsigned
   "The functions there that take nothing a type can say (no arguments,
-  only a function, or any value or name), and ffi/call, which every
-  defcfun function calls after checking its own C signature."
+  only functions, or any values, streams or names), and three on hot
+  paths whose primitives check their arguments: ffi/call, which every
+  defcfun function calls after checking its own C signature, and
+  io/auto-close and io/retry-io, under every stream operation."
   '#{norn.actor/exit! norn.actor/run-in-process norn.actor/send norn.actor/trap-exits!
-     norn.ffi/call norn.http/close-idle! norn.stm/after-commit norn.stm/run-transaction
-     norn.terminal/call-with-raw-mode norn.terminal/suspend!})
+     norn.ffi/call norn.http/close-idle! norn.io/auto-close norn.io/close norn.io/eprint
+     norn.io/eprintln norn.io/retry-io norn.log/set-sink! norn.ndjson/write-record
+     norn.stm/after-commit norn.stm/run-transaction norn.terminal/call-with-raw-mode
+     norn.terminal/suspend! norn.walk/keywordize-keys norn.walk/macroexpand-all
+     norn.walk/postwalk norn.walk/prewalk norn.walk/stringify-keys norn.walk/walk})
 
 (deftest the-libraries-public-functions-are-checked
   (doseq [l signed-libraries] (require l))

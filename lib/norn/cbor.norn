@@ -122,7 +122,7 @@
       6 (tag! st (argument! st info) (inc depth))
       7 (read-simple! st info))))
 
-(defn decode "Decode exactly one CBOR item from Bytes (ParseError if they aren't CBOR)." [data]
+(defn decode "Decode exactly one CBOR item from Bytes (ParseError if they aren't CBOR)." [^Bytes data]
   (when-not (bytes? data) (error TypeError :expected "Bytes" :value data :message (str "CBOR decode expects Bytes, got " (pr-str data))))
   (let [st {:data data :pos (volatile! 0)} value (item! st 0)]
     (when (< @(:pos st) (count data)) (fail! st "trailing bytes"))
