@@ -30,11 +30,11 @@
 (defclass LocalTime () ((hour :required true) (minute :required true) (second :required true) (nanos :required true)))
 (defclass LocalDateTime () ((date :required true) (time :required true)))
 
-(defn instant? ^Boolean [x] (instance? Instant x))
-(defn duration? ^Boolean [x] (instance? Duration x))
-(defn local-date? ^Boolean [x] (instance? LocalDate x))
-(defn local-time? ^Boolean [x] (instance? LocalTime x))
-(defn local-date-time? ^Boolean [x] (instance? LocalDateTime x))
+(defn instant? "Is x an Instant?" ^Boolean [x] (instance? Instant x))
+(defn duration? "Is x a Duration?" ^Boolean [x] (instance? Duration x))
+(defn local-date? "Is x a LocalDate?" ^Boolean [x] (instance? LocalDate x))
+(defn local-time? "Is x a LocalTime?" ^Boolean [x] (instance? LocalTime x))
+(defn local-date-time? "Is x a LocalDateTime?" ^Boolean [x] (instance? LocalDateTime x))
 
 (defn leap-year? "Is year a leap year in the Gregorian calendar?" ^Boolean [^Integer year]
   (and (zero? (mod year 4)) (or (not (zero? (mod year 100))) (zero? (mod year 400)))))
@@ -114,8 +114,8 @@
 (defn now "The current instant (wall clock)." ^Instant [] (Instant :nanos (%now-nanos)))
 (defn instant "The instant n nanoseconds after the epoch." ^Instant [^Integer n] (Instant :nanos n))
 (defn of-epoch-ms "The instant ms milliseconds after the epoch." ^Instant [^Integer ms] (Instant :nanos (* ms 1000000)))
-(defn epoch-ms ^Integer [^Instant i] (quot (:nanos i) 1000000))
-(defn epoch-nanos ^Integer [^Instant i] (:nanos i))
+(defn epoch-ms "Instant i as milliseconds since the epoch (truncated toward zero)." ^Integer [^Instant i] (quot (:nanos i) 1000000))
+(defn epoch-nanos "Instant i as nanoseconds since the epoch." ^Integer [^Instant i] (:nanos i))
 
 (defn duration
   "(duration :hours 1 :minutes 30) — any of :days :hours :minutes :seconds :millis :nanos."
@@ -123,9 +123,9 @@
   (Duration :nanos (+ (* (or days 0) 86400000000000) (* (or hours 0) 3600000000000)
                       (* (or minutes 0) 60000000000) (* (or seconds 0) 1000000000)
                       (* (or millis 0) 1000000) (or nanos 0))))
-(defn nanos ^Integer [^Duration d] (:nanos d))
-(defn millis ^Integer [^Duration d] (quot (:nanos d) 1000000))
-(defn seconds ^Integer [^Duration d] (quot (:nanos d) 1000000000))
+(defn nanos "Duration d in nanoseconds." ^Integer [^Duration d] (:nanos d))
+(defn millis "Duration d in whole milliseconds, truncated toward zero." ^Integer [^Duration d] (quot (:nanos d) 1000000))
+(defn seconds "Duration d in whole seconds, truncated toward zero." ^Integer [^Duration d] (quot (:nanos d) 1000000000))
 
 (defn plus
   "An instant moved forward by a duration, or two durations added."

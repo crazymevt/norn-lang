@@ -27,7 +27,7 @@
 (defn length "The number of characters." [r] (first (stats r)))
 (defn newlines "The number of newline characters." [r] (second (stats r)))
 (defn line-count "The number of lines (one more than the newlines)." [r] (inc (newlines r)))
-(defn rope? [x] (or (string? x) (branch? x)))
+(defn rope? "Is x a rope? A string is one: the smallest kind." [x] (or (string? x) (branch? x)))
 
 (defn- rotate-right [n] (let [l (left n)] (node (left l) (node (right l) (right n)))))
 (defn- rotate-left [n] (let [r (right n)] (node (node (left n) (left r)) (right r))))

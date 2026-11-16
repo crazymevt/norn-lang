@@ -40,7 +40,10 @@
   folder's deps folder)."
   nil)
 
-(defn deps-root []
+(defn deps-root
+  "The folder packages are fetched to: *deps-root*, else $NORN_DEPS, else
+  deps in the module cache's folder. An error when there's none."
+  []
   (or *deps-root*
       (sys/getenv "NORN_DEPS")
       (when-let [c (%cache-dir)] (io/path c "deps"))
@@ -153,7 +156,10 @@
       {:id [:git url full] :dir dir :source (str "git " url " " ref (when (not= ref full) (str " (" (subs full 0 12) ")")))
        :lock (cond-> {:git url :sha full} (:tag spec) (assoc :tag (:tag spec)) (:sha spec) (assoc :want (:sha spec)))})))
 
-(defn read-lock [dir]
+(defn read-lock
+  "The Git packages project folder dir's norn.lock pins: a map of each
+  package's entry ({} with no norn.lock). An error names a malformed one."
+  [dir]
   (let [f (io/path dir "norn.lock")]
     (if (io/file? f)
       (let [l (try (edn/read-string (io/read-text f)) (catch Error e (error (str f ": " (condition-message e)))))]

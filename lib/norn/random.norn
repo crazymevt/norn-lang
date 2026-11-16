@@ -19,7 +19,7 @@
   ([] (generator (%rand-seed)))
   ([seed] (Generator :seed seed :counter (atom 0))))
 
-(defn generator? [x] (instance? Generator x))
+(defn generator? "Is x a random generator (from generator)?" [x] (instance? Generator x))
 
 (defn- tick! [g] (dec (swap! (:counter g) inc)))
 

@@ -10,7 +10,7 @@
   (when-not (and (integer? (:coefficient x)) (integer? (:scale x)))
     (error "Decimal expects an integer coefficient and scale")))
 
-(defn decimal? [x] (instance? Decimal x))
+(defn decimal? "Is x a Decimal?" [x] (instance? Decimal x))
 
 (defn decimal
   "coefficient × 10^(-scale). One argument constructs a scale-zero decimal."
@@ -58,9 +58,9 @@
     [(times-power (:coefficient a) (- scale (:scale a)))
      (times-power (:coefficient b) (- scale (:scale b))) scale]))
 
-(defn add [a b] (let [[a b scale] (align a b)] (decimal (+ a b) scale)))
-(defn subtract [a b] (let [[a b scale] (align a b)] (decimal (- a b) scale)))
-(defn multiply [a b] (decimal (* (:coefficient a) (:coefficient b)) (+ (:scale a) (:scale b))))
+(defn add "a + b, exactly: the scale is the larger of theirs." [a b] (let [[a b scale] (align a b)] (decimal (+ a b) scale)))
+(defn subtract "a - b, exactly: the scale is the larger of theirs." [a b] (let [[a b scale] (align a b)] (decimal (- a b) scale)))
+(defn multiply "a × b, exactly: the scale is the sum of theirs (1.5 × 2.25 is 3.375)." [a b] (decimal (* (:coefficient a) (:coefficient b)) (+ (:scale a) (:scale b))))
 
 (defn- digit-count [n] (count (str (abs n))))
 

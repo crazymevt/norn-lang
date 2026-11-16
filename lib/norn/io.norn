@@ -24,7 +24,7 @@
   "{:type :file|:dir|:symlink|:other :size :modified (epoch ms) :readonly}, or nil if path doesn't exist."
   [path]
   (%fs-info (str path)))
-(defn exists? [path] (some? (info path)))
+(defn exists? "Is there a file, folder or other entry at path? (A symbolic link is, even one whose target is gone.)" [path] (some? (info path)))
 (defn- type-of
   "Path's type, a symbolic link's being its target's (nil if it dangles)."
   [path]
@@ -40,7 +40,7 @@
   "Delete a file or an empty directory; with :recursive true, a directory and everything in it."
   [path & {:keys [recursive]}]
   (%fs-delete (str path) (if recursive true false)))
-(defn rename! [from to] (%fs-rename (str from) (str to)))
+(defn rename! "Rename (move) from to to, replacing a file already at to." [from to] (%fs-rename (str from) (str to)))
 (defn copy! "Copy a file; returns the number of bytes copied." [from to] (%fs-copy (str from) (str to)))
 
 ;;; ---- paths ----

@@ -527,7 +527,9 @@
 
 (defn lint-file "Warnings for file path." [path] (lint-string (slurp path) path))
 
-(defn format-warning [{:keys [file line kind message]}]
+(defn format-warning
+  "A warning as norn lint prints it: file:line: kind: message."
+  [{:keys [file line kind message]}]
   (str file (when line (str ":" line)) ": " (name kind) ": " message))
 
 (defn main
