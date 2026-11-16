@@ -48,6 +48,7 @@ pub fn build_id() -> u64 {
         eat(env!("CARGO_PKG_VERSION").as_bytes());
         eat(&norn_rt::image::FORMAT.to_le_bytes());
         eat(&ROOTS_VERSION.to_le_bytes());
+        eat(&crate::reader::READER_VERSION.to_le_bytes());
         for p in crate::prims::PRIMS {
             eat(p.name.as_bytes());
             eat(&[p.min as u8, p.max.map_or(255, |m| m as u8)]);

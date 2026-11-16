@@ -14,4 +14,4 @@ language and tools in this checkout.
 | [Command-line tools](tooling.md) | Run scripts, format, lint, test, manage dependencies, and build images. |
 
 For implementation details, see the [language design](design.md),
-[runtime architecture](runtime.md), and [editor protocol](ui-protocol.md).
+[runtime architecture](runtime.md), and [editor protocol](design.md#51-the-repl-decided).

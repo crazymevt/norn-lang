@@ -805,6 +805,11 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// What source reads as, versioned: bump it when that changes (the build
+/// fingerprint takes it in, so compiled modules cached by an older reader
+/// aren't loaded). 2: stacked metadata (`^:a ^:b x`) keeps every part.
+pub const READER_VERSION: u32 = 2;
+
 /// Metadata as a map: `^:k` is {:k true}, `^Type` or `^"t"` {:tag …}.
 fn meta_map(vm: &mut Vm, m: Value) -> Value {
     if m.is(Kind::Map) {
@@ -817,12 +822,17 @@ fn meta_map(vm: &mut Vm, m: Value) -> Value {
     }
 }
 
+/// Metadata a, with b's entries added (`^:a ^:b x` is both). (SeqIter
+/// doesn't walk a map, which once lost every ^ after the first.)
 fn merge_meta(vm: &mut Vm, a: Value, b: Value) -> Value {
+    let mut entries = Vec::new();
+    b.map_for_each(|k, v| {
+        entries.push((k, v));
+        true
+    });
     let mut out = a;
-    if let Some(it) = SeqIter::new(b) {
-        for e in it {
-            out = map_assoc(&mut vm.m, out, e.vec_nth(0), e.vec_nth(1));
-        }
+    for (k, v) in entries {
+        out = map_assoc(&mut vm.m, out, k, v);
     }
     out
 }

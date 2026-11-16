@@ -1084,10 +1084,24 @@
   [form]
   (loop [f form] (if (macro-head f) (recur (macroexpand-1* f)) f)))
 
+(defn- mark-private-defs!
+  "Mark private the vars that core, the compiler, norn.syntax and this file
+  def as ^:private: the compilers that loaded them read plain data, which
+  keeps no metadata. (A scan of the text: reading it all again as syntax
+  would slow every start.)"
+  []
+  (doseq [[nsym src] [['norn.core (%core-source)] ['norn.compiler (%compiler-source)]
+                      ['norn.syntax (first (%find-lib "norn.syntax"))] ['norn.expander (%expander-source)]]
+          :when src
+          [_ nm] (re-seq #"(?m)^\(def\s+(?:\^[:\w]+\s+)*\^:private\s+(?:\^[:\w]+\s+)*([^\s()\[\]{}]+)" src)]
+    (when-let [v (%resolve-in nsym (symbol nm))]
+      (%set-private! v))))
+
 (defn %install!
   "Make the expander the way eval (and so load-file, require, the REPL…)
   expands, and modules the way files load."
   []
+  (mark-private-defs!)
   (%set-root! (var norn.core/eval) eval)
   (%set-root! (var norn.core/%eval-reader) eval-reader)
   (%set-root! (var norn.core/macroexpand-1) macroexpand-1*)
