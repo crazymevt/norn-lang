@@ -7,6 +7,7 @@
 ;;;;   norn bench/micro.norn               (tier 0)
 ;;;;   NORN_TIER=1 norn bench/micro.norn   (tier 1)
 ;;;;   norn bench/micro.norn calls         (only cases whose name has "calls")
+;;;;   norn bench/micro.norn --edn         (results as data, for bench/compare.norn)
 
 (ns bench-micro
   (:require [norn.bench :as bench] [norn.buffer :as buf] [norn.io :as io] [norn.string :as str] [norn.sys :as sys]))
@@ -118,12 +119,16 @@
    ["arithmetic: fixnum + and <" (fn [] (loop [i 0 s 0] (if (< i n) (recur (inc i) (+ s i)) s)))]
    ["arithmetic: float *" (fn [] (loop [i 0 s 1.0] (if (< i n) (recur (inc i) (* s 1.0000001)) s)))]])
 
-(defn -main [& [only]]
-  (println (str "tier " (or (sys/getenv "NORN_TIER") "0") ", ns per operation (1,000 per run)"))
-  (doseq [[label f] cases
-          :when (or (nil? only) (str/includes? label only))]
-    (let [r (bench/run f :warmup-ms 100 :ms 300)]
-      (println (format "%8.1f  %s" (/ (:mean-ns r) n) label))))
+(defn -main [& args]
+  (let [edn? (some #{"--edn"} args)
+        only (first (remove #{"--edn"} args))]
+    (when-not edn? (println (str "tier " (or (sys/getenv "NORN_TIER") "0") ", ns per operation (1,000 per run)")))
+    (let [results (into {} (for [[label f] cases
+                                 :when (or (nil? only) (str/includes? label only))]
+                             (let [ns (/ (:mean-ns (bench/run f :warmup-ms 100 :ms 300)) n)]
+                               (when-not edn? (println (format "%8.1f  %s" ns label)))
+                               [label ns])))]
+      (when edn? (prn results))))
   (io/delete! tmp :recursive true))
 
 (apply -main (sys/program-args))

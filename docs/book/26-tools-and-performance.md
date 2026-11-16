@@ -355,9 +355,14 @@ A few rules make the numbers worth having:
 - Compare tiers. If tier 1 barely changes a number, the time is spent in a
   primitive, an algorithm, or the collector, not in interpreted code.
 
-The repository has two benchmark suites you can run and read as examples:
-`bench/micro.norn` times single operations, and `bench/workloads.norn`
-times whole jobs.
+The repository has three benchmark suites you can run and read as
+examples: `bench/micro.norn` times single operations,
+`bench/workloads.norn` times whole jobs, and `bench/programs.norn` times
+small programs (a log report, a ledger, a static site, a chat fan-out and
+a Mandelbrot renderer). `bench/compare.norn` runs all three at both tiers
+and compares them with a recorded baseline, `bench/baseline.edn`, and it
+times the Mandelbrot renderer in SBCL too (`bench/mandelbrot.lisp`), when
+`sbcl` is installed, for a point of comparison outside Norn.
 
 ## Finding where the time goes: `norn.prof`
 

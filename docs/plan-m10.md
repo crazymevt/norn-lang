@@ -92,4 +92,22 @@ baseline compared.
 
 ## Status
 
-Drafted; not started.
+- **0, the baseline: done.** `bench/programs.norn` has five programs made
+  from the libraries with generated data, modelled on the lang-tests
+  programs: a log report (loglens), a ledger (ledger), a static site
+  (quire), a chat fan-out (chat), and Mandelbrot (the mandelbrot
+  project's escape-time kernel). The suites print their results as data
+  with `--edn`; `bench/compare.norn` runs micro, workloads and programs at
+  both tiers, each in its own process, and either records
+  `bench/baseline.edn` (`--record`, `--suites` to redo some) or prints
+  each case's speed-up against it. The programs run on one carrier
+  (`NORN_THREADS=1`): the chat fan-out takes 4.5 ms on one and about 64 ms
+  on ten, and swung between 12 and 59 ms run to run, which would hide
+  every other change (todo). Run to run, the rest repeat within about 7%
+  at tier 0 and 1% at tier 1. **SBCL as a reference:**
+  `bench/mandelbrot.lisp` is the same kernel in SBCL (typed doubles,
+  `(speed 3)`), with a checksum matching Norn's (11,251 interior pixels,
+  591,574 for the escape counts): 2.0 ms against Norn's 365–390 ms at
+  tier 0 and 293 ms at tier 1, about 180× and 145× slower. Boxed floats
+  and calls through the interpreter are most of that: parts 2 and 5.
+  Baseline recorded at `b4a8bc2`.

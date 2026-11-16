@@ -1,0 +1,134 @@
+;;;; Run the benchmark suites at both tiers and compare them with the
+;;;; recorded baseline (bench/baseline.edn): M10's measuring stick
+;;;; (docs/plan-m10.md, part 0). Each suite runs in a process of its own,
+;;;; with this norn, one tier at a time. With sbcl on the PATH, the
+;;;; Mandelbrot program is also compared with the same kernel in SBCL
+;;;; (bench/mandelbrot.lisp).
+;;;;
+;;;;   norn bench/compare.norn                  (against the baseline)
+;;;;   norn bench/compare.norn --record         (run, and record it as the baseline:
+;;;;                                             with --suites, just those suites')
+;;;;   norn bench/compare.norn --only calls     (cases whose names have "calls")
+;;;;   norn bench/compare.norn --suites micro,programs
+;;;;
+;;;; A speed-up is the baseline's time over this run's: 2.00× is twice as
+;;;; fast. One under 0.95× (micro: 0.90×, which is noisier) is marked as
+;;;; slower. Times vary a few percent from run to run, more on a busy
+;;;; machine.
+
+(ns bench-compare
+  (:require [norn.edn :as edn]
+            [norn.io :as io]
+            [norn.process :as proc]
+            [norn.string :as str]
+            [norn.sys :as sys]
+            [norn.time :as time]))
+
+(def suites
+  "Each suite: its file, the unit its results are in, below what speed-up
+  it counts as slower, and its environment. The programs run on one
+  carrier: chat's fan-out takes 4.5 ms on one and about 64 ms on ten
+  (waking fibers on other carriers costs), and swings with where its
+  fibers land, which would hide any other change."
+  {"micro" {:file "bench/micro.norn" :unit "ns per operation" :slower 0.90}
+   "workloads" {:file "bench/workloads.norn" :unit "ms per run" :slower 0.95}
+   "programs" {:file "bench/programs.norn" :unit "ms per run" :slower 0.95 :env {"NORN_THREADS" "1"}}})
+
+(def baseline-file "bench/baseline.edn")
+
+(defn- run-suite
+  "Suite name's results at tier: {label value}."
+  [name tier only]
+  (let [{:keys [file env]} (get suites name)
+        r (apply proc/sh (:executable (sys/info)) file "--edn"
+                 (concat (when only [only]) [:env (merge env {"NORN_TIER" (str tier)})]))]
+    (when-not (zero? (:exit r))
+      (throw (ex-info (str file " failed at tier " tier ": " (str/trim (:err r))) {})))
+    (edn/read-string (last (remove str/blank? (str/split-lines (:out r)))))))
+
+(defn- sbcl-mandelbrot
+  "SBCL's Mandelbrot time in ms (bench/mandelbrot.lisp), or nil without
+  sbcl."
+  []
+  (try (let [r (proc/sh "sbcl" "--script" "bench/mandelbrot.lisp")]
+         (when (zero? (:exit r)) (parse-double (first (str/split (str/trim (:out r)) #" ")))))
+       (catch Error _ nil)))
+
+(defn- run-all [names only]
+  ;; (sorted, so a recorded baseline reads and diffs in order)
+  (into (sorted-map) (for [n names]
+                       (do (println (str "running " n "…"))
+                           [n (sorted-map "0" (into (sorted-map) (run-suite n 0 only))
+                                          "1" (into (sorted-map) (run-suite n 1 only)))]))))
+
+(defn- cell
+  "A speed-up, as text: base over now, or - without both."
+  [base now slower]
+  (if (and base now (pos? now))
+    (let [x (/ base now)]
+      (str (format "%5.2f×" x) (if (< x slower) " slower" "")))
+    "     -"))
+
+(defn report
+  "This run's results against the baseline's, as text (lisp: SBCL's
+  Mandelbrot time this run, or nil)."
+  [base now lisp]
+  (str/join
+   "\n"
+   (concat
+    (for [[n tiers] now
+          :let [{:keys [unit slower]} (get suites n)
+                labels (sort (distinct (concat (keys (get tiers "0")) (keys (get tiers "1")))))]]
+      (str n " (" unit "; speed-up against the baseline)\n"
+           (format "  %-58s %9s %9s %-14s %9s %9s %s\n" "" "tier 0" "base" "" "tier 1" "base" "")
+           (str/join "\n"
+                     (for [l labels
+                           :let [b0 (get-in base [:results n "0" l]) n0 (get-in tiers ["0" l])
+                                 b1 (get-in base [:results n "1" l]) n1 (get-in tiers ["1" l])
+                                 num (fn [x] (if x (format "%9.2f" (double x)) "        -"))]]
+                       (format "  %-58s %s %s %-14s %s %s %s"
+                               (if (> (count l) 58) (str (subs l 0 57) "…") l)
+                               (num n0) (num b0) (cell b0 n0 slower)
+                               (num n1) (num b1) (cell b1 n1 slower))))
+           "\n"))
+    (when lisp
+      (let [label "mandelbrot: 200×125 pixels, escape time, floats"
+            [t0 t1] [(get-in now ["programs" "0" label]) (get-in now ["programs" "1" label])]]
+        [(str "SBCL, the same Mandelbrot (bench/mandelbrot.lisp): " (format "%.2f ms" lisp)
+              (when t0 (format "; Norn is %.0f× slower at tier 0" (/ t0 lisp)))
+              (when t1 (format ", %.0f× at tier 1" (/ t1 lisp)))
+              (when-let [b (get-in base [:sbcl])] (format " (baseline's SBCL: %.2f ms)" b)))])))))
+
+(defn -main [& args]
+  (let [opts (loop [args args o {}]
+               (if-let [a (first args)]
+                 (case a
+                   "--record" (recur (next args) (assoc o :record true))
+                   "--only" (recur (nnext args) (assoc o :only (second args)))
+                   "--suites" (recur (nnext args) (assoc o :suites (str/split (second args) #",")))
+                   (do (println "bench/compare.norn: unknown option" a) (sys/exit 2)))
+                 o))
+        names (or (:suites opts) (sort (keys suites)))
+        results (run-all names (:only opts))
+        lisp (when (some #{"programs"} names) (sbcl-mandelbrot))]
+    (if (:record opts)
+      (let [old (when (io/exists? baseline-file) (edn/read-string (io/read-text baseline-file)))]
+        (spit baseline-file
+              (str ";; bench/compare.norn --record: the benchmark baseline M10 is measured against.\n"
+                   (edn/write-string {:recorded (str (time/today))
+                                      :machine (select-keys (sys/info) [:os :arch :cores])
+                                      :norn (str/trim (:out (proc/sh "git" "rev-parse" "--short" "HEAD")))
+                                      ;; (the suites not run this time keep theirs)
+                                      :results (into (into (sorted-map) (:results old)) results)
+                                      :sbcl (or lisp (:sbcl old))}
+                                     :pretty true)
+                   "\n"))
+        (println "recorded" baseline-file))
+      (let [base (if (io/exists? baseline-file)
+                   (edn/read-string (io/read-text baseline-file))
+                   (do (println "(no baseline yet: norn bench/compare.norn --record)") {}))]
+        (when (:recorded base)
+          (println (str "baseline: " (:recorded base) ", at " (:norn base) ", " (get-in base [:machine :cores]) " cores")))
+        (println (report base results lisp))))))
+
+(apply -main (sys/program-args))

@@ -1,0 +1,211 @@
+;; bench/compare.norn --record: the benchmark baseline M10 is measured against.
+{:machine {:arch :aarch64, :os :macos, :cores 10},
+ :norn "b4a8bc2",
+ :results {"micro" {"0" {"collections: assoc on a small map" 73.23561586538462,
+                         "collections: map inc over a 1,000 vector (per item)"
+                          141.7663041044776,
+                         "loop alone" 35.18554279384328,
+                         "objects: generic function, :before and :after"
+                          145.10585,
+                         "vars: a plain var" 31.401171875,
+                         "calls: an options map" 178.02734257075474,
+                         "collections: str of two strings" 118.4904296875,
+                         "collections: conj! onto a transient" 54.2056102729885,
+                         "calls: one argument" 50.70346824596774,
+                         "objects: making a map" 105.75984515449439,
+                         "arithmetic: float *" 65.94855815972223,
+                         "objects: owned mutable update-slot!"
+                          218.30014825581395,
+                         "calls: multi-arity, second arity" 50.02233676861702,
+                         "collections: get from a 20-key map" 66.69529511443662,
+                         "collections: nth of a string (non-ASCII)"
+                          53.08041467696629,
+                         "collections: assoc on a 20-key map" 101.18636569148937,
+                         "collections: count of a vector" 47.2895578125,
+                         "calls: a closure" 58.00642168209876,
+                         "calls: another module, plain" 73.53548217773438,
+                         "state: swap! on an atom" 177.82829775943398,
+                         "calls: keyword options, two given" 340.25346396396395,
+                         "collections: count of a library collection (Buffer)"
+                          685.5845704545454,
+                         "collections: nth of a library collection (Buffer)"
+                          2684.4628214285713,
+                         "objects: map read (:x m)" 62.34566961348684,
+                         "collections: = on 1,000-vectors (per item)"
+                          14.467570505401234,
+                         "objects: generic function, one method" 83.772322265625,
+                         "calls: two arguments" 50.3435506981383,
+                         "collections: reduce + over a 1,000 vector (per item)"
+                          75.83288230846775,
+                         "calls: keyword options with :or, two given"
+                          348.53481944444445,
+                         "collections: into [] with a transducer (per item)"
+                          236.00045390625002,
+                         "calls: apply with a list" 119.3666428006329,
+                         "vars: binding a dynamic var" 475.21090506329114,
+                         "state: vswap! on a volatile" 217.65754022988506,
+                         "objects: making an instance" 2094.897,
+                         "control: an error signalled and caught"
+                          5123.353813559322,
+                         "objects: instance equality" 141.7839333022388,
+                         "arithmetic: fixnum + and <" 48.983222493489585,
+                         "collections: conj onto a vector" 90.69064212740385,
+                         "objects: generic function, inherited method"
+                          83.52176946271929,
+                         "calls: rest args, none given" 49.2294716796875,
+                         "objects: slot read (:x p)" 44.4894360259434,
+                         "calls: keyword options, none given" 142.24920833333334,
+                         "calls: rest args, two given" 70.82895009328358,
+                         "calls: destructuring a vector and a map"
+                          179.3764504716981,
+                         "vars: a dynamic var" 31.288016666666667,
+                         "collections: nth of a vector" 49.475842269736845,
+                         "control: try with no error" 1604.8537393617023,
+                         "calls: making a closure" 42.827521306818184,
+                         "calls: another module, checked ^Integer signature"
+                          548.0508786231884},
+                    "1" {"collections: assoc on a small map" 37.36239744543651,
+                         "collections: map inc over a 1,000 vector (per item)"
+                          88.91694811320754,
+                         "loop alone" 4.25596140455163,
+                         "objects: generic function, :before and :after"
+                          112.42409151785715,
+                         "vars: a plain var" 4.28191697803442,
+                         "calls: an options map" 122.16171063311688,
+                         "collections: str of two strings" 79.97894465042373,
+                         "collections: conj! onto a transient"
+                          16.160281303510274,
+                         "calls: one argument" 17.48260587086397,
+                         "objects: making a map" 68.66522305253622,
+                         "arithmetic: float *" 29.867747626582275,
+                         "objects: owned mutable update-slot!"
+                          152.64784778225805,
+                         "calls: multi-arity, second arity" 18.433809753417968,
+                         "collections: get from a 20-key map" 32.92558224826389,
+                         "collections: nth of a string (non-ASCII)"
+                          19.32358119877049,
+                         "collections: assoc on a 20-key map" 66.6684765070922,
+                         "collections: count of a vector" 12.764405698029892,
+                         "calls: a closure" 24.317053882087627,
+                         "calls: another module, plain" 38.00406363407258,
+                         "state: swap! on an atom" 109.24034011627907,
+                         "calls: keyword options, two given" 272.41922826086955,
+                         "collections: count of a library collection (Buffer)"
+                          635.5230020833334,
+                         "collections: nth of a library collection (Buffer)"
+                          2153.711907142857,
+                         "objects: map read (:x m)" 30.830158583603897,
+                         "collections: = on 1,000-vectors (per item)"
+                          14.27981861822289,
+                         "objects: generic function, one method"
+                          52.01079567307692,
+                         "calls: two arguments" 18.29854266826923,
+                         "collections: reduce + over a 1,000 vector (per item)"
+                          24.911167351973685,
+                         "calls: keyword options with :or, two given"
+                          279.5236681985294,
+                         "collections: into [] with a transducer (per item)"
+                          166.62965899122807,
+                         "calls: apply with a list" 84.30539620535714,
+                         "vars: binding a dynamic var" 391.43478255208333,
+                         "state: vswap! on a volatile" 155.3807192622951,
+                         "objects: making an instance" 1765.0737823529412,
+                         "control: an error signalled and caught"
+                          4343.854757142857,
+                         "objects: instance equality" 103.83223076923076,
+                         "arithmetic: fixnum + and <" 4.7850525138608875,
+                         "collections: conj onto a vector" 45.45578590745192,
+                         "objects: generic function, inherited method"
+                          51.89700635302198,
+                         "calls: rest args, none given" 18.108335576923075,
+                         "objects: slot read (:x p)" 13.116258246527778,
+                         "calls: keyword options, none given" 70.39533722014926,
+                         "calls: rest args, two given" 34.705072954963235,
+                         "calls: destructuring a vector and a map"
+                          106.82189453125,
+                         "vars: a dynamic var" 4.276228628849638,
+                         "collections: nth of a vector" 14.847165990901898,
+                         "control: try with no error" 1335.2651622807018,
+                         "calls: making a closure" 16.679659991197184,
+                         "calls: another module, checked ^Integer signature"
+                          416.6469347222222}},
+           "programs" {"0" {"chat: 500 lines to 40 clients through channels"
+                             4.734448,
+                            "ledger: 6,000 CSV rows, decimals, rules, by month"
+                             243.574167,
+                            "log report: 20,000 JSON lines, routes, percentiles, a join"
+                             182.40025,
+                            "mandelbrot: 200×125 pixels, escape time, floats"
+                             391.677125,
+                            "site: 150 Markdown posts with YAML, an index, tags"
+                             58.33925},
+                       "1" {"chat: 500 lines to 40 clients through channels"
+                             3.393625,
+                            "ledger: 6,000 CSV rows, decimals, rules, by month"
+                             205.525792,
+                            "log report: 20,000 JSON lines, routes, percentiles, a join"
+                             160.449542,
+                            "mandelbrot: 200×125 pixels, escape time, floats"
+                             292.563375,
+                            "site: 150 Markdown posts with YAML, an index, tags"
+                             43.423875}},
+           "workloads" {"0" {"text: read 20,000 lines from a file" 32.736084,
+                             "sqlite: insert 10,000 rows in a transaction"
+                              112.293667,
+                             "text: split 1.2 MB into lines" 1.0045885,
+                             "data: into a map, 100,000 entries" 364.120333,
+                             "text: format 10,000 lines" 6.0063855,
+                             "data: sort-by a key, 20,000 maps" 1.223948,
+                             "source: read core.norn's forms (158 KB)" 3.044474,
+                             "text: build 100,000 pieces with str" 27.460625,
+                             "edn: pr-str 1 MB" 2.59425525,
+                             "text: 20,000 line lookups in a rope" 321.762416,
+                             "http: 200 local requests, kept alive" 22.896292,
+                             "bin: encode" 1.985963625,
+                             "bin: decode" 3.842078125,
+                             "text: 1,000 inserts into a 1.2 MB rope" 26.3585,
+                             "data: group-by and frequencies, 100,000"
+                              260.271792,
+                             "terminal: decode 70 KB of keys" 80.404667,
+                             "source: compile and load http.norn" 42.799375,
+                             "fibers: spawn and await 10,000" 61.237417,
+                             "data: sort 100,000 integers" 38.134709,
+                             "source: lint http.norn (34 KB)" 556.079042,
+                             "json: write 1 MB" 2.28472925,
+                             "text: regex, every match in 1.2 MB" 14.900916,
+                             "json: read 1 MB" 4.1192395,
+                             "fibers: 10,000 messages through a channel"
+                              1.46845575,
+                             "source: format http.norn (34 KB)" 13.474167,
+                             "edn: read 1 MB" 5.90866675},
+                        "1" {"text: read 20,000 lines from a file" 28.043292,
+                             "sqlite: insert 10,000 rows in a transaction"
+                              98.663375,
+                             "text: split 1.2 MB into lines" 1.0125599375,
+                             "data: into a map, 100,000 entries" 384.010292,
+                             "text: format 10,000 lines" 5.68146875,
+                             "data: sort-by a key, 20,000 maps" 1.2088176875,
+                             "source: read core.norn's forms (158 KB)" 3.080677,
+                             "text: build 100,000 pieces with str" 23.17925,
+                             "edn: pr-str 1 MB" 2.505604125,
+                             "text: 20,000 line lookups in a rope" 279.263959,
+                             "http: 200 local requests, kept alive" 21.445125,
+                             "bin: encode" 1.951395875,
+                             "bin: decode" 3.81445825,
+                             "text: 1,000 inserts into a 1.2 MB rope" 21.703667,
+                             "data: group-by and frequencies, 100,000"
+                              235.525542,
+                             "terminal: decode 70 KB of keys" 67.169625,
+                             "source: compile and load http.norn" 48.812583,
+                             "fibers: spawn and await 10,000" 60.14425,
+                             "data: sort 100,000 integers" 34.20425,
+                             "source: lint http.norn (34 KB)" 528.449459,
+                             "json: write 1 MB" 2.2066875,
+                             "text: regex, every match in 1.2 MB" 14.6936665,
+                             "json: read 1 MB" 4.18,
+                             "fibers: 10,000 messages through a channel"
+                              1.3111458125,
+                             "source: format http.norn (34 KB)" 11.3298545,
+                             "edn: read 1 MB" 5.93366675}}},
+ :sbcl 2.021,
+ :recorded "2026-11-16"}

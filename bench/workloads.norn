@@ -5,6 +5,7 @@
 ;;;;   norn bench/workloads.norn               (tier 0)
 ;;;;   NORN_TIER=1 norn bench/workloads.norn   (tier 1)
 ;;;;   norn bench/workloads.norn json          (only workloads named so)
+;;;;   norn bench/workloads.norn --edn         (results as data, for bench/compare.norn)
 
 (ns bench-workloads
   (:require [norn.bench :as bench] [norn.json :as json] [norn.edn :as edn] [norn.bin :as bin]
@@ -68,12 +69,16 @@
                                                          (loop [n 0] (if (take! c) (recur (inc n)) n))))]
    ["terminal: decode 70 KB of keys" (fn [] (count (:keys (term/decode-keys keys-bytes))))]])
 
-(defn -main [& [only]]
-  (println (str "tier " (or (sys/getenv "NORN_TIER") "0") ", ms per run (best of the runs in about 2 s)"))
-  (doseq [[label f] workloads
-          :when (or (nil? only) (str/includes? label only))]
-    (let [r (bench/run f :warmup-ms 300 :ms 1500)]
-      (println (format "%9.2f  %s" (/ (:min-ns r) 1e6) label))))
+(defn -main [& args]
+  (let [edn? (some #{"--edn"} args)
+        only (first (remove #{"--edn"} args))]
+    (when-not edn? (println (str "tier " (or (sys/getenv "NORN_TIER") "0") ", ms per run (best of the runs in about 2 s)")))
+    (let [results (into {} (for [[label f] workloads
+                                 :when (or (nil? only) (str/includes? label only))]
+                             (let [ms (/ (:min-ns (bench/run f :warmup-ms 300 :ms 1500)) 1e6)]
+                               (when-not edn? (println (format "%9.2f  %s" ms label)))
+                               [label ms])))]
+      (when edn? (prn results))))
   (http/stop! server)
   (io/delete! tmp :recursive true))
 
