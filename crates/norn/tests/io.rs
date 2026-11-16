@@ -92,12 +92,14 @@ fn an_echo_server_holds_10000_connections_on_two_carriers() {
                (def l (net/listen "127.0.0.1" 0))
                (def port (net/port (net/local-address l)))
                (def open (atom 0))
+               (def accepted (atom 0))
                (def peak (atom 0))
                (def all-in (chan))
                (def server
                  (spawn-detached
                    (dotimes [_ n]
                      (let [c (net/accept l)]
+                       (swap! accepted inc)
                        (spawn-detached
                          (let [now (swap! open inc)]
                            (swap! peak max now)
@@ -115,12 +117,14 @@ fn an_echo_server_holds_10000_connections_on_two_carriers() {
                          eof (io/read-line r)]
                      (io/close c)
                      (and (= reply (str i "!")) (nil? eof)))))
-               ;; Connect in batches of 100, each established before the next
-               ;; (macOS caps the accept backlog at 128), then talk on all.
+               ;; Connect in batches of 100, each accepted by the server before the
+               ;; next (macOS caps the accept backlog at 128, and a connection
+               ;; is established before it's accepted), then talk on all.
                (def clients
                  (loop [i 0 acc []]
                    (if (< i n)
                      (let [conns (mapv await (mapv (fn [_] (spawn-detached (net/connect "127.0.0.1" port))) (range 100)))]
+                       (loop [] (when (< @accepted (+ i 100)) (sleep 1) (recur)))
                        (recur (+ i 100) (into acc (map-indexed (fn [j c] (spawn-detached (talk (+ i j) c))) conns))))
                      acc)))
                (def ok (count (filter true? (mapv await clients))))
