@@ -34,8 +34,12 @@ const DELIMS: &[u8] = b"()[]{}\";";
 
 impl Cst<'_> {
     fn err(&self, msg: &str) -> Error {
-        let line = self.s[..self.i.min(self.s.len())].matches('\n').count() + 1;
-        Error::of("ParseError", format!("Syntax error at line {line}: {msg}")).with("line", crate::vm::ErrData::Int(line as i64))
+        let before = &self.s[..self.i.min(self.s.len())];
+        let line = before.matches('\n').count() + 1;
+        let column = before[before.rfind('\n').map_or(0, |i| i + 1)..].chars().count() + 1;
+        Error::of("ParseError", format!("Syntax error at line {line}: {msg}"))
+            .with("line", crate::vm::ErrData::Int(line as i64))
+            .with("column", crate::vm::ErrData::Int(column as i64))
     }
 
     fn kw(vm: &mut Vm, k: &str) -> Value {

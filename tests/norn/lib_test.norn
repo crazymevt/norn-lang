@@ -623,6 +623,11 @@
 (is (= "(my-indented-macro 1\n  2)\n"
        (do (eval '(defmacro my-indented-macro {:indent 1} [a & body] `(do ~a ~@body)))
            (codefmt/format-string "(my-indented-macro 1\n 2)"))))
+;; (and one defined in the text being formatted, read but never run)
+(is (= "(defmacro ^:private in-file \"doc\" {:indent 1} [a & body] a)\n(in-file 1\n  2)\n"
+       (codefmt/format-string "(defmacro ^:private in-file \"doc\" {:indent 1} [a & body] a)\n(in-file 1\n 2)")))
+(is (= {"in-file" 1 "other" 0} (codefmt/indent-hints "(defmacro in-file {:indent 1} [a] a) (defmacro other {:indent 0} [] 1) (defmacro plain [] 1)")))
+(is (nil? (resolve 'in-file)) "nothing was defined")
 ;; (a result type before an arity's parameters doesn't move its body)
 (is (= "(defn f\n  (^Map [^Map a]\n   (g a)\n   (h a)))\n"
        (codefmt/format-string "(defn f\n  (^Map [^Map a]\n          (g a)\n   (h a)))")))

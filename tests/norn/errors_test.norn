@@ -80,6 +80,10 @@
     (is (= ["JSON" 2 3] [(:source c) (:line c) (:column c)])))
   (let [c (caught (fn [] (load-string "(defn f []\n  (+ 1 2")))]
     (is (= "ParseError" (class-of-name c)) "Norn source"))
+  (let [c (caught (fn [] (read-string "(1 2")))]
+    (is (= ["ParseError" "<string>" 1 5] [(class-of-name c) (:source c) (:line c) (:column c)]) "where it stopped"))
+  (let [c (caught (fn [] (read-string "[1\n  2 )")))]
+    (is (= [2 5] [(:line c) (:column c)])))
   (is (= ["ParseError" "URI"] ((juxt class-of-name :source) (caught (fn [] (uri/parse "http://h:8x/"))))))
   (let [s (net/listen "127.0.0.1" 0)
         port (net/port (net/local-address s))]
