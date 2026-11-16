@@ -1,0 +1,74 @@
+(ns quire.render
+  "A site's files: each page's HTML, the feed (RSS 2.0) and the sitemap, as
+  {path text}."
+  (:require [norn.html :as html]
+            [norn.string :as str]
+            [norn.time :as t]
+            [norn.xml :as xml]
+            [quire.images :as images]
+            [quire.markdown :as qmd]
+            [quire.templates :as tp]))
+
+(defn- post-path [p] (str "posts/" (:slug p) ".html"))
+
+(defn- el
+  "An XML element, as norn.xml writes them, in namespace ns (nil for none)."
+  [ns tag & content]
+  {:tag [ns (name tag)] :attrs {} :content (vec (remove nil? content))})
+
+(def ^:private sitemap-ns "http://www.sitemaps.org/schemas/sitemap/0.9")
+
+(defn- rfc-822
+  "Date d as RSS writes dates: Tue, 03 Nov 2026 00:00:00 +0000."
+  [d]
+  (t/format-local (t/local-date-time d (t/local-time 0 0)) "%a, %d %b %Y %H:%M:%S +0000"))
+
+(defn feed
+  "The RSS 2.0 feed of posts (the newest 20)."
+  [site posts]
+  (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+       (xml/write-string
+        (assoc (el nil :rss
+                   (apply el nil :channel
+                          (el nil :title (:title site))
+                          (el nil :link (:url site))
+                          (el nil :description (or (:description site) (:title site)))
+                          (for [p (take 20 (remove :broken posts))]
+                            (el nil :item
+                                (el nil :title (:title p))
+                                (el nil :link (str (:url site) "/" (post-path p)))
+                                (el nil :guid (str (:url site) "/" (post-path p)))
+                                (el nil :pubDate (rfc-822 (:date p)))
+                                (when (:summary p) (el nil :description (:summary p)))))))
+               :attrs {[nil "version"] "2.0"}))))
+
+(defn sitemap
+  "The sitemap of paths (the site's pages)."
+  [site paths]
+  (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+       (xml/write-string
+        (assoc (apply el sitemap-ns :urlset (for [p (sort paths)] (el sitemap-ns :url (el sitemap-ns :loc (str (:url site) "/" p)))))
+               :namespaces {nil sitemap-ns}))))
+
+(defn post-file
+  "[path html] of post p's page. image-size as quire.markdown's."
+  [site p image-size]
+  [(post-path p) (html/write (tp/post-page site p (qmd/->hiccup (:doc p) image-size)))])
+
+(defn site-files
+  "Every file of the site but the posts' pages: {path text}."
+  [site posts]
+  (let [tags (sort (distinct (mapcat :tags posts)))]
+    (merge {"index.html" (html/write (tp/index-page site {} posts))
+            "feed.xml" (feed site posts)}
+           (into {} (for [tg tags]
+                      [(str "tags/" tg ".html")
+                       (html/write (tp/tag-page site {:title (str "#" tg) :tag tg} (filter (fn [p] (some #{tg} (:tags p))) posts)))])))))
+
+(defn image-sizes
+  "image-size for a site in folder dir: an image's size, by src, from its
+  file under dir/static, remembered."
+  [dir]
+  (memoize (fn [src]
+             (when (and src (str/starts-with? src "/"))
+               (images/size-of (str dir "/static" src))))))

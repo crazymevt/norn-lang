@@ -1,0 +1,22 @@
+(ns quire.template
+  "deftemplate: a page's template, a function from its arguments to
+  norn-html forms, maybe inside a layout.
+
+    (deftemplate post-page
+      \"One post.\"
+      [site post]
+      :layout base
+      [:article [:h1 (:title post)] …])
+
+  With :layout, the template's forms go to the layout as its content:
+  (base site page content), page the template's second argument. Without
+  one, a template gives its form, or a list of its forms."
+  (:require [norn.syntax :refer [defsyntax syntax-parser syntax]]))
+
+(defsyntax deftemplate
+  (syntax-parser
+   [(_ name:id (~optional doc:str) (~describe "a parameter vector [site page …]" [site:id page:id more:id ...])
+       (~optional (~seq :layout layout:id)) body ...+)
+    (syntax (defn name (~? doc "A template.") [site page more ...]
+              (let [content (list body ...)]
+                (~? (layout site page content) (if (next content) content (first content))))))]))

@@ -1,0 +1,69 @@
+(ns quire.serve
+  "quire serve: the site built into a folder and served from it, rebuilt
+  when its files change, and browsers told to reload (server-sent events
+  at /__reload)."
+  (:require [norn.fs :as fs]
+            [norn.http :as http]
+            [norn.io :as io]
+            [norn.log :as log]
+            [norn.string :as str]
+            [quire.build :as build]))
+
+(def ^:private types
+  {"html" "text/html; charset=utf-8" "xml" "application/xml" "css" "text/css" "js" "text/javascript"
+   "png" "image/png" "jpg" "image/jpeg" "jpeg" "image/jpeg" "gif" "image/gif" "svg" "image/svg+xml"
+   "zip" "application/zip" "txt" "text/plain; charset=utf-8"})
+
+(defn- type-of [path] (get types (str/lower-case (or (second (re-find #"\.([^./]+)$" path)) "")) "application/octet-stream"))
+
+(defn- events
+  "A server-sent event stream: an event each time ch has a value, until it
+  closes. (A lazy sequence: the server sends each as it comes.)"
+  [ch]
+  (lazy-seq (when (<! ch) (cons "data: reload\n\n" (events ch)))))
+
+(defn handler
+  "The preview's handler: the files in folder out, and /__reload."
+  [out listeners]
+  (fn [req]
+    (let [path (:path req)]
+      (if (= path "/__reload")
+        (let [ch (chan 1 :dropping)]
+          (swap! listeners conj ch)
+          {:status 200 :headers {"content-type" "text/event-stream" "cache-control" "no-cache"}
+           :body (cons ": listening\n\n" (events ch))})
+        (let [rel (str/replace (str (when (str/ends-with? path "/") (str path "index.html")) (when-not (str/ends-with? path "/") path)) #"^/+" "")
+              f (io/path out rel)]
+          (if (and (not (str/includes? rel "..")) (io/file? f))
+            {:status 200 :headers {"content-type" (type-of rel)} :body (io/read-bytes f)}
+            {:status 404 :headers {"content-type" "text/plain"} :body "Not found\n"}))))))
+
+(defn- rebuild! [dir out listeners]
+  (try (let [r (build/build! dir out :drafts true)]
+         (log/info "built" :posts (:posts r) :written (:written r) :removed (:removed r))
+         (doseq [ch @listeners] (offer! ch true)))
+       (catch Error e (log/error "the build failed" :error (condition-message e)))))
+
+(defn serve!
+  "Build the site in folder dir into out and serve it on port, rebuilding
+  as its files change: {:server :stop}."
+  [dir out port]
+  (let [listeners (atom #{})
+        _ (rebuild! dir out listeners)
+        server (http/serve (handler out listeners) :port port)
+        watches (vec (for [d ["posts" "static" "site.edn"] :let [p (io/path dir d)] :when (io/exists? p)]
+                       (fs/watch p :recursive true)))
+        watcher (spawn-detached
+                  (loop []
+                    (let [[ev _] (alts! (mapv :events watches))]
+                      (when ev
+                        ;; (a save is often several events: wait for them to stop)
+                        (loop [] (when (first (alts! [(timeout 100) (first (mapv :events watches))])) (recur)))
+                        (rebuild! dir out listeners)
+                        (recur)))))]
+    {:server server
+     :stop (fn []
+             (doseq [w watches] (fs/unwatch w))
+             (cancel! watcher)
+             (doseq [ch @listeners] (close! ch))
+             (http/stop! server))}))

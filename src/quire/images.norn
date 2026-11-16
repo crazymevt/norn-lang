@@ -1,0 +1,39 @@
+(ns quire.images
+  "Images' sizes, read from their files' first bytes (PNG, GIF and JPEG),
+  for <img width height>: the page doesn't move as images load."
+  (:require [norn.bytes :as b]
+            [norn.io :as io]))
+
+(defn- png [bs]
+  (when (and (>= (count bs) 24) (= (b/hex (b/slice bs 0 8)) "89504e470d0a1a0a"))
+    {:width (b/read-uint bs 16 4 :be) :height (b/read-uint bs 20 4 :be)}))
+
+(defn- gif [bs]
+  (when (and (>= (count bs) 10) (contains? #{"474946383761" "474946383961"} (b/hex (b/slice bs 0 6))))
+    {:width (b/read-uint bs 6 2 :le) :height (b/read-uint bs 8 2 :le)}))
+
+(defn- jpeg
+  "The size in a JPEG's first start-of-frame segment (SOF0–SOF15 but DHT,
+  JPG and DAC)."
+  [bs]
+  (when (and (>= (count bs) 4) (= 0xff (nth bs 0)) (= 0xd8 (nth bs 1)))
+    (loop [i 2]
+      (when (< (+ i 9) (count bs))
+        (if (not= 0xff (nth bs i))
+          nil
+          (let [marker (nth bs (inc i))
+                len (b/read-uint bs (+ i 2) 2 :be)]
+            (if (and (<= 0xc0 marker 0xcf) (not (contains? #{0xc4 0xc8 0xcc} marker)))
+              {:height (b/read-uint bs (+ i 5) 2 :be) :width (b/read-uint bs (+ i 7) 2 :be)}
+              (recur (+ i 2 len)))))))))
+
+(defn size-of-bytes
+  "The {:width :height} of the image in bs (PNG, GIF or JPEG), or nil."
+  [bs]
+  (or (png bs) (gif bs) (jpeg bs)))
+
+(defn size-of
+  "The {:width :height} of the image file at path, or nil (not one, or not there)."
+  [path]
+  (when (io/file? path)
+    (size-of-bytes (io/read-bytes path))))

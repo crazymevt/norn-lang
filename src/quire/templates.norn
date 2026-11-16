@@ -1,0 +1,57 @@
+(ns quire.templates
+  "The site's pages: a layout, the front page, a post, a tag's page."
+  (:require [norn.html :as html]
+            [norn.time :as t]
+            [quire.template :refer [deftemplate]]))
+
+(def style
+  "The site's style sheet."
+  "body{font:17px/1.6 Georgia,serif;max-width:40em;margin:2em auto;padding:0 1em;color:#222}
+   header a{color:inherit;text-decoration:none}nav a{margin-right:1em}
+   .meta{color:#777;font-size:.9em}.tags a{margin-right:.5em}img{max-width:100%;height:auto}
+   pre{background:#f6f6f6;padding:1em;overflow:auto}")
+
+(defn- date-text [d] (t/format-local d "%e %B %Y"))
+
+(defn- tag-links [tags]
+  [:span.tags (for [tg tags] [:a {:href (str "/tags/" tg ".html")} (str "#" tg)])])
+
+(deftemplate base
+  "The page around every other: head, header, the content, footer."
+  [site page content]
+  (html/document
+   {:title (if (:title page) (str (:title page) " · " (:title site)) (:title site))
+    :lang (or (:lang site) "en")
+    :head [[:style style]
+           [:link {:rel "alternate" :type "application/rss+xml" :href "/feed.xml" :title (:title site)}]
+           (when (:live-reload site)
+             [:script (html/raw "new EventSource('/__reload').onmessage=()=>location.reload()")])]}
+   [:header [:h2 [:a {:href "/"} (:title site)]]]
+   [:main content]
+   [:footer.meta (str "© " (:author site))]))
+
+(deftemplate post-page
+  "One post."
+  [site post body]
+  :layout base
+  [:article
+   [:h1 (:title post)]
+   [:p.meta (date-text (:date post)) " " (tag-links (:tags post))]
+   body])
+
+(deftemplate index-page
+  "The front page: every post, newest first."
+  [site page posts]
+  :layout base
+  (for [p posts]
+    [:section
+     [:h3 [:a {:href (str "/posts/" (:slug p) ".html")} (:title p)]]
+     [:p.meta (date-text (:date p))]
+     (when (:summary p) [:p (:summary p)])]))
+
+(deftemplate tag-page
+  "The posts with a tag."
+  [site page posts]
+  :layout base
+  [:h1 "#" (:tag page)]
+  [:ul (for [p posts] [:li [:a {:href (str "/posts/" (:slug p) ".html")} (:title p)] " " [:span.meta (date-text (:date p))]])])

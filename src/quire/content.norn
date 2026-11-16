@@ -1,0 +1,96 @@
+(ns quire.content
+  "A site's content: posts, Markdown files with YAML front matter.
+
+    ---
+    title: Hello
+    date: 2026-11-03
+    tags: [norn, notes]
+    draft: false
+    ---
+    The post, in Markdown."
+  (:require [norn.fs :as fs]
+            [norn.io :as io]
+            [norn.markdown :as md]
+            [norn.string :as str]
+            [norn.time :as t]
+            [norn.yaml :as yaml]))
+
+(defclass BadPost (Error) ((path :initform nil))
+  (:doc "A post that can't be read: front matter that isn't YAML, no title, a
+  date that isn't one. load-posts offers the restarts skip-post and
+  use-placeholder."))
+
+(defn split-front-matter
+  "Text as [front-matter body]: the YAML between the first two --- lines, if
+  it starts with one, and the rest."
+  [text]
+  (if (str/starts-with? text "---\n")
+    (let [end (str/index-of text "\n---\n" 3)]
+      (if end
+        [(subs text 4 end) (subs text (+ end 5))]
+        [nil text]))
+    [nil text]))
+
+(defn- bad [path & why] (error BadPost :path path :message (str path ": " (apply str why))))
+
+(defn- slug-of [path] (str/replace (io/file-name path) #"\.md$" ""))
+
+(defn- date-of [path x]
+  (cond (nil? x) (bad path "no date")
+        (t/local-date? x) x
+        :else (try (t/parse-local-date (str x))
+                   (catch ParseError _
+                     (try (t/parse-local-date (str x) "%d %B %Y")
+                          (catch ParseError _ (bad path "the date " (pr-str x) " isn't YYYY-MM-DD or 3 November 2026")))))))
+
+(defn summary-of
+  "The text of a post's first paragraph (from md/parse's data), at most
+  200 characters."
+  [doc]
+  (let [text (fn text [x] (cond (string? x) x
+                                (vector? x) (apply str (map text (filter (fn [y] (not (map? y))) (rest x))))
+                                :else ""))
+        p (first (filter (fn [b] (and (vector? b) (= :paragraph (first b)))) (rest doc)))]
+    (when p (str/truncate (text p) 200 "…"))))
+
+(defn read-post
+  "The post in Markdown file path: {:slug :title :date :tags :draft
+  :summary :doc :source}, :doc the Markdown as md/parse's data. A BadPost
+  if it can't be read."
+  [path]
+  (let [[front body] (split-front-matter (io/read-text path))
+        meta (if front
+               (try (yaml/read-string front) (catch Error e (bad path "the front matter isn't YAML: " (condition-message e))))
+               {})]
+    (when-not (map? meta) (bad path "the front matter isn't a map"))
+    (when (str/blank? (str (:title meta))) (bad path "no title"))
+    (let [doc (md/parse body)]
+      {:slug (slug-of path)
+       :title (str (:title meta))
+       :date (date-of path (:date meta))
+       :tags (vec (map str (or (:tags meta) [])))
+       :draft (true? (:draft meta))
+       :summary (summary-of doc)
+       :doc doc
+       :source path})))
+
+(defn placeholder
+  "A post standing in for the one at path that couldn't be read."
+  [path why]
+  {:slug (slug-of path) :title (str "(" (slug-of path) " couldn't be read)") :date (t/local-date 1970 1 1)
+   :tags [] :draft false :summary why :doc [:doc [:paragraph why]] :source path :broken true})
+
+(defn load-posts
+  "The posts in folder dir (every *.md under it), newest first; drafts
+  only with :drafts. A post that can't be read is a BadPost, with the
+  restarts skip-post (leave it out) and use-placeholder (a page saying it
+  couldn't be read)."
+  [dir & {:keys [drafts]}]
+  (->> (fs/glob (str dir "/**/*.md"))
+       (keep (fn [path]
+               (restart-case (read-post path)
+                 (skip-post [] :report "Leave the post out" nil)
+                 (use-placeholder [why] :report "Put a page saying it couldn't be read" (placeholder path why)))))
+       (filter (fn [p] (or drafts (not (:draft p)))))
+       (sort-by (fn [p] [(- (t/epoch-day (:date p))) (:slug p)]))
+       vec))
