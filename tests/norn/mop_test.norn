@@ -5,7 +5,7 @@
 ;;;; the fast paths.
 
 (ns mop-test
-  (:require [norn.test :refer [is deftest testing]]))
+  (:require [norn.test :refer [is deftest testing]] [norn.string :as str]))
 
 (defclass Point () ((x :reader px) (y :reader py)))
 (defclass Point3 (Point) ((z :reader pz)))
@@ -101,7 +101,12 @@
   (is (satisfies? Shape (Square :side 1)))
   (is (satisfies? Shape 7) "a built-in class too")
   (is (not (satisfies? Shape "no")))
-  (is (= ["mop-test/area" "mop-test/scale"] (mapv (fn [v] (%var-name v)) (:methods Shape)))))
+  (is (= ["mop-test/area" "mop-test/scale"] (mapv (fn [v] (%var-name v)) (:methods Shape))))
+  (testing "a method has one parameter vector (it's a generic function)"
+    (let [msg (try (eval '(defprotocol Twice (twice [x] [x y]))) nil (catch Error e (condition-message e)))]
+      (is (and msg (str/includes? msg "twice has more than one parameter vector")) msg))
+    (is (thrown? Error (eval '(defprotocol Odd (odd-one [x] "doc" "more"))))
+        "a docstring at most after it")))
 
 (deftest the-fast-paths-stay
   ;; (classes and generic functions that specialise nothing are made, read

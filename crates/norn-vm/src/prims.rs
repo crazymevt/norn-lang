@@ -175,7 +175,7 @@ prims! {
     "unreduced" 1 Some(1) => |_, a| Ok(if a[0].is(Kind::Reduced) { a[0].field(0) } else { a[0] });
     "slurp" 1 Some(1) => |vm, a| crate::sys::read(vm, text(a[0]), true);
     "spit" 2 Some(2) => |vm, a| crate::sys::write(vm, text(a[0]), text(a[1]).into_bytes(), false);
-    "read-string" 1 Some(1) => |vm, a| { let s = text(a[0]); let mut r = crate::reader::Reader::new(&s); match r.read(vm) { Ok(v) => Ok(v), Err(crate::reader::ReadError::Eof) => Ok(Value::NIL), Err(e) => Err(Error::of("ParseError", e.to_string()).with("source", crate::vm::ErrData::Str("<string>".into()))) } };
+    "read-string" 1 Some(1) => |vm, a| { let s = text(a[0]); let mut r = crate::reader::Reader::new(&s); match r.read(vm) { Ok(v) => Ok(v), Err(crate::reader::ReadError::Eof) => Ok(Value::NIL), Err(e) => Err(crate::eval::parse_error(e.to_string(), "<string>", r.line(), r.column())) } };
     // evaluation and namespaces
     "macroexpand-1" 1 Some(1) => |vm, a| Ok(vm.macroexpand_1(a[0])?.0);
     "macroexpand" 1 Some(1) => |vm, a| vm.macroexpand(a[0]);

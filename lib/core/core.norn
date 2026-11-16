@@ -1759,12 +1759,50 @@
          ~@(when (:indent attrs) [`(%set-indent! '~mname ~(:indent attrs))])
          (var ~mname))))
 
+(def %for-stop "What a for or doseq step gives when its :while test fails." (%uninterned-symbol "stop"))
+
+(defn %comprehension-check
+  "An error unless bindings, a for or doseq binding vector, is pairs of a
+  binding and a collection, or :let, :when or :while and its form (a
+  :while after a binding: it stops that binding)."
+  [what bindings]
+  (when (odd? (count bindings))
+    (error what "requires an even number of forms in its binding vector"))
+  (loop [ps (partition 2 bindings) seen-binding false]
+    (when-let [[a _] (first ps)]
+      (cond (= a :while)
+            (if seen-binding
+              (recur (rest ps) true)
+              (error what ":while must come after a binding: it stops the binding before it"))
+            (contains? #{:let :when} a) (recur (rest ps) seen-binding)
+            (keyword? a) (error what "doesn't know" (str a) "(it takes :let, :when and :while)")
+            :else (recur (rest ps) true)))))
+
+(defn- %while-follows?
+  "Is there a :while among the modifiers that start bindings (before the
+  next binding)?"
+  [bindings]
+  (loop [bs (seq bindings)]
+    (cond (empty? bs) false
+          (= (first bs) :while) true
+          (contains? #{:let :when} (first bs)) (recur (nnext bs))
+          :else false)))
+
 (defn %doseq-emit [bindings body]
   (if (empty? bindings)
     `(do ~@body)
     (let [[a b & more] bindings]
       (cond (= a :let) `(let ~b ~(%doseq-emit more body))
             (= a :when) `(when ~b ~(%doseq-emit more body))
+            ;; (stops the loop of the binding before it; nil otherwise)
+            (= a :while) `(if ~b ~(%doseq-emit more body) %for-stop)
+            (%while-follows? more)
+            (let [s (gensym "s") r (gensym "r")]
+              `(loop* [~s (seq ~b)]
+                 (when ~s
+                   (let* [~r (let [~a (first ~s)] ~(%doseq-emit more body))]
+                     (when-not (identical? ~r %for-stop)
+                       (recur (next ~s)))))))
             :else (let [s (gensym "s")]
                     `(loop* [~s (seq ~b)]
                        (when ~s
@@ -1773,9 +1811,10 @@
 
 (defmacro doseq
   "Run body for each binding of the names, for its effects; nil. As for:
-  (doseq [x xs y ys :when (odd? x) :let [z (* x y)]] …) nests, left to
-  right, and bindings destructure."
+  (doseq [x xs y ys :when (odd? x) :let [z (* x y)] :while (< z 10)] …)
+  nests, left to right, and bindings destructure."
   [bindings & body]
+  (%comprehension-check "doseq" (vec bindings))
   (%doseq-emit (vec bindings) body))
 
 ;;; ---- images (design §7) ------------------------------------------------------------------
@@ -1941,10 +1980,22 @@
     (when-not (contains? defined [(str ns) sym])
       (%ns-unmap ns sym))))
 
+(defn- %check-lib-ns
+  "An error if library lib's source (text, from path) starts with an ns
+  form naming another namespace: it would load, define that one, and
+  leave lib undefined."
+  [lib text path]
+  (let [d (try (%read (%reader text path)) (catch Error _ nil))
+        n (when (and (seq? d) (= 'ns (first d))) (second d))]
+    (when (and (symbol? n) (not= (str n) (str lib)))
+      (error "Library" (str lib) "is found at" (str path ",") "but that file defines" (str n)
+             "(its ns form says so): rename the file or change its ns form"))))
+
 (defn- %load-lib-source [lib]
   (let [found (%find-lib (str lib))]
     (cond found
           (let [ns (current-ns)]
+            (%check-lib-ns lib (nth found 0) (nth found 1))
             (try (%eval-reader (%reader (nth found 0) (nth found 1)))
                  (finally (in-ns ns))))
           ;; A namespace with no source that already has definitions: a
@@ -2822,20 +2873,30 @@
   [f coll]
   (reduce (fn [acc x] (into acc (f x))) [] coll))
 
+(defn %for-cat-while
+  "%for-cat, stopping at the first x whose (f x) is %for-stop."
+  [f coll]
+  (reduce (fn [acc x] (let [r (f x)] (if (identical? r %for-stop) (reduced acc) (into acc r)))) [] coll))
+
 (defn- %for-emit [bindings body]
   (if (empty? bindings)
     `[(do ~@body)]
     (let [[a b & more] bindings]
       (cond (= a :let) `(let ~b ~(%for-emit more body))
             (= a :when) `(if ~b ~(%for-emit more body) [])
-            :else `(%for-cat (fn [~a] ~(%for-emit more body)) ~b)))))
+            (= a :while) `(if ~b ~(%for-emit more body) %for-stop)
+            :else `(~(if (%while-follows? more) `%for-cat-while `%for-cat)
+                    (fn [~a] ~(%for-emit more body)) ~b)))))
 
 (defmacro for
   "List comprehension, eager: a vector of body's value for each binding of
   the names, left to right, nested. Bindings destructure; :let [...] binds
-  more names, :when test skips.
-  (for [x [1 2 3] :when (odd? x) y [:a :b]] [x y]) => [[1 :a] [1 :b] [3 :a] [3 :b]]"
+  more names, :when test skips, and :while test stops the binding before
+  it at the first item for which test is false (as in Clojure).
+  (for [x [1 2 3] :when (odd? x) y [:a :b]] [x y]) => [[1 :a] [1 :b] [3 :a] [3 :b]]
+  (for [x (range) :while (< x 3)] x) => [0 1 2]"
   [bindings & body]
+  (%comprehension-check "for" (vec bindings))
   (%for-emit (vec bindings) body))
 
 ;;; ---- more of Clojure's core (found missing while building the editor, M7.6) ---------------
@@ -3741,12 +3802,24 @@
 (defmacro defprotocol
   "(defprotocol Name \"doc\"? (method [params…] \"doc\"?)…): each method a
   generic function, dispatching on its first argument; extend-type and
-  extend-protocol give them methods, and satisfies? asks."
+  extend-protocol give them methods, and satisfies? asks. A method has one
+  parameter vector (a generic function has one parameter list): for
+  optional arguments, give it & more, or define a second method."
   [pname & specs]
   (let [specs (if (string? (first specs)) (rest specs) specs)
-        methods (mapv (fn [[m params & doc]]
-                        (when-not (vector? params) (error "defprotocol" pname ":" m "needs a parameter vector"))
-                        [m params (first doc)])
+        methods (mapv (fn [spec]
+                        (when-not (and (seq? spec) (symbol? (first spec)))
+                          (error "defprotocol" (str pname ":") "expected (method [params…] \"doc\"?), got" (pr-str spec)))
+                        (let [[m params & more] spec]
+                          (when-not (vector? params) (error "defprotocol" (str pname ":") (str m) "needs a parameter vector"))
+                          (when (some vector? more)
+                            (error "defprotocol" (str pname ":") (str m) "has more than one parameter vector,"
+                                   "but a protocol method has one arity (it's a generic function): use & for"
+                                   "optional arguments, or define another method"))
+                          (when (or (next more) (and (seq more) (not (string? (first more)))))
+                            (error "defprotocol" (str pname ":") (str m) "takes a parameter vector and an optional docstring, not"
+                                   (pr-str more)))
+                          [m params (first more)]))
                       specs)]
     `(do ~@(map (fn [[m params doc]] `(defgeneric ~m ~(apply list params) ~@(when doc [doc]))) methods)
          (def ~pname {:protocol '~(symbol (name (current-ns)) (name pname))

@@ -139,3 +139,22 @@
     (is (= [] (:steps (norn.expand/macro-steps '(if 1 2 3))))))
   (testing "a syntax template shows as the quote-syntax it was"
     (is (= '(fn* [] (quote-syntax x)) (:expanded (norn.expand/macro-steps '(fn* [] (quote-syntax x))))))))
+
+;; A hygienic template that hands a defmacro macro (let, when-let) the
+;; names it was given: they keep their scopes, in a function as at top level.
+(defsyntax bind-it (syn/syntax-rules () [(_ n v body) (let [n v] body)]))
+(defsyntax bind-it-when (syn/syntax-rules () [(_ n v body) (when-let [n v] body)]))
+(defsyntax bind-first (syn/syntax-rules () [(_ n v body) (let [[n] [v]] body)]))
+
+(defn- bound-in-a-function [] [(bind-it x 5 x) (bind-it x 5 (+ x 1)) (bind-it-when y 7 y) (bind-first z 9 z)])
+
+(deftest a-template-binding-a-given-name
+  (is (= [5 6 7 9] (bound-in-a-function)))
+  (is (= 5 (bind-it x 5 x)) "at top level")
+  (is (= 3 (let [x 1] (bind-it y 2 (+ x y)))) "the body still sees the function's own locals"))
+
+(deftest macroexpand-of-a-hygienic-macro
+  (is (= '(let [x 5] x) (macroexpand-1 '(expander-test/bind-it x 5 x))))
+  (is (= '(let* [x 5] x) (macroexpand '(expander-test/bind-it x 5 x))))
+  (is (= '(let* [x 5] x) (macroexpand '(let [x 5] x))) "a defmacro's, as before")
+  (is (= '(f 1) (macroexpand-1 '(f 1))) "not a macro call: unchanged"))

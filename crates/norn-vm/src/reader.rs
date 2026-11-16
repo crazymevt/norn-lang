@@ -247,6 +247,12 @@ impl<'a> Reader<'a> {
         self.src[..self.pos].matches('\n').count() + 1
     }
 
+    /// 1-based column (in characters) of the current position.
+    pub fn column(&self) -> usize {
+        let start = self.src[..self.pos].rfind('\n').map_or(0, |i| i + 1);
+        self.src[start..self.pos].chars().count() + 1
+    }
+
     pub fn at_end(&mut self) -> bool {
         self.skip_ws();
         self.pos >= self.src.len()
@@ -760,6 +766,27 @@ impl<'a> Reader<'a> {
             _ => {}
         }
         if let Some(name) = tok.strip_prefix("::") {
+            // ::k is the current namespace's; ::alias/k the aliased one's
+            // (as in Clojure), and an alias that isn't one is an error.
+            if let Some((alias, kname)) = name.split_once('/')
+                && !alias.is_empty()
+                && !kname.is_empty()
+            {
+                let a = rt().symbol(&mut vm.m, None, alias);
+                return match vm.ns.alias_target(a) {
+                    Some(target) => {
+                        let ns = target.sym_name().to_owned();
+                        Ok(rt().keyword(&mut vm.m, Some(&ns), kname))
+                    }
+                    None => Err(ReadError::Syntax(format!(
+                        "Invalid token: {tok} ({alias} isn't an alias in {})",
+                        vm.ns.name.sym_name()
+                    ))),
+                };
+            }
+            if name.is_empty() || name.contains('/') {
+                return Err(ReadError::Syntax(format!("Invalid token: {tok}")));
+            }
             let ns = vm.ns.name.sym_name().to_owned();
             return Ok(rt().keyword(&mut vm.m, Some(&ns), name));
         }

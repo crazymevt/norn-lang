@@ -13,7 +13,7 @@ meaning. Spaces, newlines, and commas separate forms.
 | `42`, `3/4`, `1.5e3`, `##Inf`, `##-Inf`, `##NaN` | Integers, ratios, and floats. |
 | `"line\n"`, `\a`, `\newline` | A string and two character literals. |
 | `item`, `app/item` | Unqualified and namespace-qualified symbols. |
-| `:item`, `:app/item`, `::item` | Keywords. The double colon qualifies the keyword with the current namespace. |
+| `:item`, `:app/item`, `::item`, `::s/item` | Keywords. The double colon qualifies the keyword with the current namespace, or with the namespace an alias stands for: after `(require '[norn.string :as s])`, `::s/item` reads as `:norn.string/item`. An unknown alias is a read error. |
 | `(f x)`, `[x y]`, `{:x x}`, `#{x y}` | A list, vector, map, and set. |
 | `'form`, `@ref`, `#'name` | Reader shorthand for `(quote form)`, `(deref ref)`, and `(var name)`. |
 | `` `form ``, `~x`, `~@xs` | Syntax quote, unquote, and unquote-splicing in a template. |
@@ -98,12 +98,16 @@ function arity and requires matching arity and tail position. The compiler
 also supports proper tail calls for ordinary function calls in tail position.
 
 Use `doseq` or `dotimes` to iterate for effects. Use `for` to collect the
-results of a comprehension into a vector.
+results of a comprehension into a vector. In the bindings of either,
+`:let [name value …]` binds more names, `:when test` skips an item, and
+`:while test` stops the binding before it at the first item that fails the
+test, as in Clojure. An endless sequence can be cut short that way.
 
 ```clojure
 (loop [n 4 acc 1]
   (if (zero? n) acc (recur (dec n) (* acc n)))) ; => 24
 (for [x [1 2 3] :when (odd? x)] (* x x)) ; => [1 9]
+(for [x (range) :while (< x 3)] x) ; => [0 1 2]
 ```
 
 ## Pattern matching
@@ -137,7 +141,9 @@ Private definitions are accessible by ordinary names only inside their module.
 
 The module `my.app` is searched as `my/app.norn` under a library root. Norn
 supports bundled libraries, project paths, the `NORN_PATH` environment
-variable, and paths added with `add-lib-path!`.
+variable, and paths added with `add-lib-path!`. The file's `ns` form must
+name the module: requiring `my.app` from a file that says `(ns my.other)`
+is an error.
 
 ```clojure
 (ns reference.syntax-example
@@ -168,6 +174,12 @@ definitions that run at that phase, and `(:require-for-syntax …)` in `ns`
 for compile-time imports. `(for-syntax form)` resolves a form one phase up. See [`norn.syntax`](libraries.md#language-development)
 for syntax objects and structured syntax patterns. Use `macroexpand-1`,
 `macroexpand`, or [`norn expand`](../tooling.md) to examine expanded code.
+The first two expand `defmacro` and `defsyntax` macros alike and return
+data; `norn expand` also shows how a hygienic macro's names were kept apart.
+
+In a module, a macro must be defined before its first use. A call above
+the macro's definition is an error when the module loads, and `norn lint`
+reports it as `:macro-order`.
 
 ## Function contracts
 

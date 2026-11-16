@@ -104,7 +104,7 @@ primary results with a named operator.
 
 | Form | Behavior |
 | --- | --- |
-| `(defprotocol P (method [this args…]) …)` | Define a group of generic functions for first-argument dispatch. |
+| `(defprotocol P (method [this args…]) …)` | Define a group of generic functions for first-argument dispatch. Each method has one parameter vector; a second one is an error (use `&` for optional arguments). |
 | `(extend-type Class P (method [this args…] body…) …)` | Install implementations for a class. |
 | `(extend-protocol P Class (method [this args…] body…) …)` | Install implementations for several classes. |
 | `(satisfies? P x)` | Test whether `x` has a specialized method for every method in the protocol. |

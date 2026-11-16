@@ -498,10 +498,18 @@
   [m s args]
   (binding [*datums* (or *datums* (atom {}))]
     (let [seen (atom {})
+          ;; (a symbol is the same object wherever it's written, so it can't
+          ;; be traced by identity: a name in the result goes back to the
+          ;; identifier the arguments wrote it as, when they wrote it with
+          ;; one set of scopes — a defsyntax template that hands a datum
+          ;; macro the user's x and its own (let …) mustn't lose x's scopes)
+          ids (atom {})
           record (fn record [x ops depth]
                    ;; x's data, noting which syntax (and which pending scope
                    ;; changes not yet made to it) it came from
                    (let [d (raw-datum x)]
+                     (when (and (syn/syntax? x) (symbol? d) (not (syn/%raw? x)))
+                       (swap! ids update d conj (if (seq ops) (syn/%change-scopes x ops) x)))
                      (when (and (syn/syntax? x) (compound? (syn/%raw-e x)))
                        (swap! seen update (%identity-hash d) conj [d x ops])
                        ;; (a raw object's parts have its scopes: nothing to note)
@@ -514,8 +522,16 @@
           args (mapv (fn [a] (record a [] 0)) args)
           result (apply m args)
           known @seen
+          names @ids
           back (fn back [x]
                  (cond (syn/syntax? x) x
+                       (symbol? x)
+                       (let [cands (get names x)]
+                         (if (and (seq cands)
+                                  (let [ss (syn/syntax-scopes (first cands))]
+                                    (every? (fn [c] (= ss (syn/syntax-scopes c))) cands)))
+                           (first cands)
+                           (syn/datum->syntax s x)))
                        (compound? x)
                        (if-let [[_ stx ops] (some (fn [k] (when (identical? (first k) x) k)) (get known (%identity-hash x)))]
                          (if (seq ops) (syn/%change-scopes stx ops) stx)
@@ -601,6 +617,23 @@
       out)
     (first (apply-macro v s))))
 
+(def ^:private pending-macros
+  "The vars of the macros the modules loading now define further down
+  (declared, not yet defined)."
+  (atom #{}))
+
+(defn- check-not-later-macro
+  "An error if call head h names var v, which its module declares as a
+  macro defined further down (defmacro or defsyntax) and which isn't
+  defined yet: compiled now, the call would be a function call, giving the
+  macro's expansion as data at run time."
+  [h v]
+  (when (and (contains? @pending-macros v)
+             (not (macro? v))
+             (nil? (%bound-value (symbol (%var-name v)))))
+    (fail h (%var-name v) "is a macro defined further down this module, and a macro must be defined"
+          "before its first use: move its definition above this form")))
+
 (defn- macro-of
   "The macro var a call's head names, or nil."
   [h]
@@ -636,7 +669,8 @@
                     :else (let [v (resolve-global h)]
                             (if (and v (macro? v))
                               (expand (macro-step v s))
-                              (apply list (expand-body xs)))))))
+                              (do (when v (check-not-later-macro h v))
+                                  (apply list (expand-body xs))))))))
           (vector? x) (mapv expand x)
           (map? x) (into {} (map (fn [[k v]] [(expand k) (expand v)])) x)
           (set? x) (into #{} (map expand) x)
@@ -726,7 +760,7 @@
   [v]
   (swap! definers conj (%var-name v)))
 
-(def modules "Module name → {:path :requires :defines}." (atom {}))
+(def modules "Module name → {:path :requires :defines :macros}." (atom {}))
 
 (defn module-info "What the registry knows of module m (a symbol), or nil." [m] (get @modules m))
 
@@ -741,6 +775,15 @@
             (and (or (= head "def") (contains? @definers head)) (symbol? (second d)) (nil? (namespace (second d))))
             [(second d)]
             :else nil))))
+
+(def ^:private macro-definers #{"norn.core/defmacro" "norn.syntax/defsyntax"})
+
+(defn- defined-macros
+  "The macro names top-level form d defines (defmacro, defsyntax)."
+  [d]
+  (when (and (seq? d) (symbol? (first d)) (symbol? (second d)) (nil? (namespace (second d))))
+    (when-let [v (resolve (first d))]
+      (when (contains? macro-definers (%var-name v)) [(second d)]))))
 
 (defn- ns-switch? [d] (and (seq? d) (contains? #{'ns 'in-ns} (first d))))
 
@@ -758,18 +801,20 @@
   [text src ns-form]
   (let [r (%reader text src)
         _ (%read r)
-        names (loop [acc []]
-                (let [d (try (%read r) (catch Error _ ::unreadable))]
-                  (if (or (= d ::unreadable) (%eof? d) (ns-switch? d))
-                    acc
-                    (recur (into acc (defined-names d))))))
+        [names macros] (loop [acc [] macros #{}]
+                         (let [d (try (%read r) (catch Error _ ::unreadable))]
+                           (if (or (= d ::unreadable) (%eof? d) (ns-switch? d))
+                             [acc macros]
+                             (recur (into acc (defined-names d)) (into macros (defined-macros d))))))
         here (current-ns)]
     (doseq [n names]
       ;; (unbound until its definition runs; a name already defined here
       ;; keeps its value)
       (when-not (when-let [v (%resolve-in (symbol (str here)) n)] (= (var-ns-of v) (symbol (str here))))
         (%intern here n)))
-    (swap! modules assoc (symbol (str here)) {:path src :requires (requires-of ns-form) :defines (vec (distinct names))})))
+    (swap! pending-macros into (keep (fn [n] (%resolve-in (symbol (str here)) n))) macros)
+    (swap! modules assoc (symbol (str here)) {:path src :requires (requires-of ns-form) :defines (vec (distinct names))
+                                              :macros macros})))
 
 (defn %declare-module!
   "Declare the names a module's text defines, as loading it does (for tools
@@ -987,12 +1032,45 @@
             (binding [*strict* (or module? *strict*)]
               (let [v (eval-located s src)]
                 (if module?
-                  (do (declare-module! (%reader-text r) src d)
-                      (load-module-body r src d))
+                  (let [nsym (current-ns-sym)]
+                    (try (declare-module! (%reader-text r) src d)
+                         (load-module-body r src d)
+                         (finally (swap! pending-macros (fn [vs] (into #{} (remove (fn [v] (= nsym (var-ns-of v)))) vs))))))
                   (loop [last v]
                     (let [s (syn/read-syntax r)]
                       (if (= s :eof) last (recur (eval-located s src)))))))))))
       (finally (%set-location! saved)))))
+
+;; ---- macroexpand and macroexpand-1 ----
+;;
+;; The primitives call a macro's function on the call's data, which a
+;; defsyntax macro hasn't got (its value is a transformer): these take a
+;; hygienic macro's step here, as the expander would, and give its result
+;; as data (a hygienic macro's renaming shows only in a full expansion:
+;; norn expand, macro-steps).
+
+(def ^:private prim-macroexpand-1 norn.core/macroexpand-1)
+
+(defn- macro-head
+  "The macro var form's head names in the current namespace, or nil."
+  [form]
+  (when (and (seq? form) (symbol? (first form)) (not (contains? specials (first form))))
+    (let [v (resolve (first form))]
+      (when (and (var? v) (macro? v)) v))))
+
+(defn- macroexpand-1*
+  [form]
+  (if-let [v (macro-head form)]
+    (if (transformer? (var-get v))
+      (let [nsym (current-ns-sym)]
+        (binding [*ns-sym* nsym *on-step* nil]
+          (syn/syntax->datum (first (apply-macro v (syn/%raw-syntax form #{(ns-scope nsym)} nil))))))
+      (prim-macroexpand-1 form))
+    form))
+
+(defn- macroexpand*
+  [form]
+  (loop [f form] (if (macro-head f) (recur (macroexpand-1* f)) f)))
 
 (defn %install!
   "Make the expander the way eval (and so load-file, require, the REPL…)
@@ -1000,6 +1078,8 @@
   []
   (%set-root! (var norn.core/eval) eval)
   (%set-root! (var norn.core/%eval-reader) eval-reader)
+  (%set-root! (var norn.core/macroexpand-1) macroexpand-1*)
+  (%set-root! (var norn.core/macroexpand) macroexpand*)
   :installed)
 
 ;; ---- checking the expander against the plain compiler (8.7) ----

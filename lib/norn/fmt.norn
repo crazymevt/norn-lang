@@ -12,7 +12,8 @@
 ;;;; - indentation:
 ;;;;   - items in [ ], { } and #{ } line up just inside the bracket;
 ;;;;   - a form with a body (defn, let, when, fn, deftest… any name starting
-;;;;     with def or with-, and macros declaring {:indent n}) indents its
+;;;;     with def or with-, and macros declaring {:indent n}, whether loaded
+;;;;     or defined by a defmacro in the files being formatted) indents its
 ;;;;     later lines by two;
 ;;;;   - any other call aligns later lines with its first argument when that
 ;;;;     is on the head's line, and indents by one when it isn't;
@@ -39,12 +40,17 @@
   "Forms whose later lines always indent by two."
   #{"fn" "fn*" "defmethod" "reify" "proxy" "extend"})
 
+(def ^:dynamic *file-hints*
+  "Macro name → its {:indent n}, from the defmacro forms in the files being
+  formatted (read, not run)."
+  {})
+
 (defn- indent-rule
   "How a form headed by symbol text t indents: :inner, [:block n] or nil
   (align with the first argument)."
   [t]
   (let [n (let [i (str/last-index-of t "/")] (if (and i (pos? i) (< i (dec (count t)))) (subs t (inc i)) t))
-        hint (get (deref %indent-hints) n)]
+        hint (or (get *file-hints* n) (get (deref %indent-hints) n))]
     (cond (some? hint) [:block hint]
           (contains? inner-forms n) :inner
           (str/starts-with? n "def") :inner
@@ -180,11 +186,43 @@
 
 (defn parse "The syntax tree of source text s (see %read-cst)." [s] (%read-cst s))
 
+(defn- forms-of [n] (filterv form? (nth n 3)))
+
+(defn- indent-hint
+  "The {:indent n} of a top-level (defmacro name doc? {attrs} …) node, as
+  [name n], or nil."
+  [node]
+  (when (and (= :coll (kind node)) (= "(" (nth node 1)))
+    (let [[head & more] (forms-of node)
+          t (when (and head (= :token (kind head))) (nth head 1))]
+      (when (and t (or (= t "defmacro") (str/ends-with? t "/defmacro")))
+        (let [more (drop-while (fn [x] (= :prefix (kind x))) more) ; ^:private
+              nm (first more)
+              more (rest more)
+              more (if (and (first more) (= :token (kind (first more))) (str/starts-with? (nth (first more) 1) "\""))
+                     (rest more)
+                     more)
+              attrs (first more)]
+          (when (and nm (= :token (kind nm)) attrs (= :coll (kind attrs)) (= "{" (nth attrs 1)))
+            (let [kv (forms-of attrs)
+                  i (first (keep-indexed (fn [i x] (when (and (even? i) (= :token (kind x)) (= ":indent" (nth x 1))) i)) kv))
+                  v (when i (nth kv (inc i) nil))
+                  n (when (and v (= :token (kind v))) (try (read-string (nth v 1)) (catch Error _ nil)))]
+              (when (and (integer? n) (>= n 0)) [(nth nm 1) n]))))))))
+
+(defn indent-hints
+  "Macro name → its {:indent n}, from the top-level defmacro forms in
+  source text s (read, not run)."
+  [s]
+  (into {} (keep indent-hint) (try (parse s) (catch Error _ []))))
+
 (defn format-string "Source text s in the Norn style." [s]
-  (let [els (elements (parse s))]
-    (if (empty? els)
-      ""
-      (str (first (render-elements els 0 (fn [_] 0) true)) "\n"))))
+  (let [nodes (parse s)
+        els (elements nodes)]
+    (binding [*file-hints* (merge *file-hints* (into {} (keep indent-hint) nodes))]
+      (if (empty? els)
+        ""
+        (str (first (render-elements els 0 (fn [_] 0) true)) "\n")))))
 
 (defn- tokens
   "The code of a syntax tree without layout: tokens and brackets, in order."
@@ -226,10 +264,13 @@
   (let [check (some (fn [a] (= a "--check")) args)
         paths (remove (fn [a] (= a "--check")) args)
         files (vec (mapcat norn-files (if (seq paths) paths ["."])))
-        bad (filterv (fn [f]
-                       (if check
-                         (not (formatted? (slurp f)))
-                         (format-file! f)))
-                     files)]
+        ;; (a macro defined in one of the files indents its calls in all)
+        hints (into {} (mapcat (fn [f] (indent-hints (slurp f)))) files)
+        bad (binding [*file-hints* hints]
+              (filterv (fn [f]
+                         (if check
+                           (not (formatted? (slurp f)))
+                           (format-file! f)))
+                       files))]
     (doseq [f bad] (println (if check (str "not formatted: " f) (str "formatted " f))))
     (if (and check (seq bad)) 1 0)))

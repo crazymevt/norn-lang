@@ -163,3 +163,32 @@
   (let [loads (mapv (fn [_] (future (run '(require 'mt.shared)) :ok)) (range 4))]
     (is (= [:ok :ok :ok :ok] (mapv #(deref % 10000 :timed-out) loads)))
     (is (= 1 (run '@mt.shared/loads)) "loaded once")))
+
+(deftest a-macro-used-before-its-definition
+  ;; (compiled as a call, it would give the expansion as data at run time)
+  (module! "early" "(ns mt.early)\n(defn f [] (m 2))\n(defmacro m [x] `(* 2 ~x))\n")
+  (let [m (message (fn [] (run '(require 'mt.early))))]
+    (is (str/includes? m "mt/early.norn:2") m)
+    (is (str/includes? m "mt.early/m is a macro defined further down this module") m))
+  (module! "late" "(ns mt.late)\n(defmacro m [x] `(* 2 ~x))\n(defn f [] (m 2))\n(defn g [] (h 1))\n(defn h [x] x)\n")
+  (is (= 4 (run '(do (require 'mt.late) (mt.late/f)))) "defined first: fine")
+  (is (= 1 (run '(mt.late/g))) "a function may still come later")
+  (testing "the linter says so too"
+    (is (= [[2 :macro-order (str "m is a macro defined further down this module: a macro must be defined"
+                                 " before its first use (loading the module stops here)")]]
+           (lint "(ns lm-m)\n(defn f [] (m 2))\n(defmacro m [x] `(* 2 ~x))\n")))
+    (is (= [] (lint "(ns lm-n)\n(defmacro m [x] `(* 2 ~x))\n(defn f [] (m 2))\n")))))
+
+(deftest a-module-whose-ns-isnt-its-name
+  (module! "named" "(ns mt.other)\n(defn hi [] :hi)\n")
+  (let [m (message (fn [] (run '(require 'mt.named))))]
+    (is (str/includes? m "Library mt.named is found at") m)
+    (is (str/includes? m "but that file defines mt.other") m))
+  (is (not (some #(= "mt.other" (str %)) (all-ns))) "nothing of it ran"))
+
+(deftest auto-resolved-alias-keywords
+  (module! "kw" "(ns mt.kw\n  (:require [norn.string :as money]))\n(defn k [] [::money/x ::y])\n")
+  (is (= [:norn.string/x :mt.kw/y] (run '(do (require 'mt.kw) (mt.kw/k)))))
+  (is (= [] (lint "(ns lm-o (:require [norn.string :as money]))\n(defn k [] ::money/x)\n(defn j [] (money/join []))\n"))
+      "the linter reads them with the module's aliases")
+  (is (str/includes? (message (fn [] (read-string "::nope/x"))) "nope isn't an alias")))

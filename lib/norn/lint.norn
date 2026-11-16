@@ -24,6 +24,9 @@
 ;;;; - :deprecated — a use of a definition marked {:deprecated "…"};
 ;;;; - :private — naming another module's private var (only `(var …)`
 ;;;;   reaches one on purpose);
+;;;; - :macro-order — in a module, a call to a macro the module defines
+;;;;   further down (loading the module stops there: a macro must be
+;;;;   defined before its first use);
 ;;;;
 ;;;; and in a module (a file starting with `ns`, M8 part 8.8):
 ;;;;
@@ -58,6 +61,7 @@
 (def ^:dynamic *module* nil) ; in a module: {:ns :requires :compile-time-defs :namespaces}
 (def ^:dynamic *file-qualified* nil) ; atom: ns/name of every def in the file, in whichever namespace
 (def ^:dynamic *file-generics* nil) ; atom: generic name → [nreq rest?]
+(def ^:dynamic *later-macros* nil) ; atom: in a module, macros defined further down
 
 (defn- warn [kind & msg]
   (swap! *warnings* conj (assoc *where* :kind kind :message (apply str msg)))
@@ -299,7 +303,11 @@
               (warn :macro "expanding " head ": " expansion))))
 
       :else
-      (do (analyze env head)
+      (do (when (and *later-macros* (symbol? head) (nil? (namespace head)) (not (get-in env [:locals head]))
+                     (contains? (deref *later-macros*) head))
+            (warn :macro-order head " is a macro defined further down this module: a macro must be defined"
+                  " before its first use (loading the module stops here)"))
+          (analyze env head)
           (analyze-all env (rest form))
           (check-call env head (count (rest form)))))))
 
@@ -364,6 +372,21 @@
 (def ^:private definer-heads
   "Defining forms by head name, for the forward-reference prescan."
   #{"def" "defn" "defn-" "defmacro" "defclass" "defgeneric" "defsyntax" "deftest" "defcfun"})
+
+(defn- macros-defined
+  "The macros a module's top-level forms define with defmacro or defsyntax
+  (up to any second ns or in-ns)."
+  [s path]
+  (let [r (%reader s path)
+        first-form (try (%read r) (catch Error _ nil))]
+    (if-not (and (seq? first-form) (= 'ns (first first-form)))
+      #{}
+      (loop [acc #{}]
+        (let [d (try (%read r) (catch Error _ ::stop))]
+          (cond (or (= d ::stop) (%eof? d) (and (seq? d) (contains? #{'ns 'in-ns} (first d)))) acc
+                (and (seq? d) (contains? #{'defmacro 'defsyntax} (first d)) (symbol? (second d)))
+                (recur (conj acc (second d)))
+                :else (recur acc)))))))
 
 (defn- names-defined
   "The names a module's top-level forms define (up to any second ns or
@@ -455,42 +478,52 @@
   maps with :file :line :kind and :message."
   ([s] (lint-string s "<string>"))
   ([s path]
-   (let [lines (try (top-level-lines s) (catch Error _ []))
-         here (current-ns)
-         r (%reader s path)]
-     (binding [*warnings* (atom []) *file-defs* (atom (zipmap (names-defined s path) (repeat :unknown)))
-               *file-qualified* (atom #{}) *file-generics* (atom {})
-               *module* (let [m (module-of s path)] (when m (update m :requires into (:more-requires m))))]
-       (try
-         (loop [i 0]
-           (let [form (%read r)]
-             (when-not (%eof? form)
-               (binding [*where* {:file path :line (get lines i)} *source-syms* (symbols-in form)
-                         *source-heads* (heads-in form) *exempt* (catch-bindings form)]
-                 (cond
-                   ;; compile-time definitions: analyzed as the code they are
-                   (and (seq? form) (= 'begin-for-syntax (first form)))
-                   (do (doseq [f (rest form)] (analyze {:phase 1} f))
-                       ;; (and evaluated: macros later in the file may call them)
-                       (try (eval form) (catch Error e (warn :macro "evaluating begin-for-syntax: " (condition-message e)))))
-                   (evaluated-form? form)
-                   (let [macro-def? (and *module* (contains? #{'defmacro 'defsyntax} (first form)))]
-                     (when-not (and (= 'defmacro (first form))
-                                    (when-let [v (resolve (second form))] (macro? v)))
-                       (try (eval form)
-                            (catch Error e
-                              ;; (in a module the analysis below says why, with the name)
-                              (when-not macro-def?
-                                (warn :macro "evaluating " (first form) ": " (condition-message e))))))
-                     ;; (a macro's code is analyzed too: compile-time code)
-                     (when macro-def? (analyze {} form)))
-                   :else (analyze {} form)))
-               (recur (inc i)))))
-         (when *module*
-           (binding [*where* {:file path :line (first lines)}] (check-requires *module*)))
-         (catch Error e (swap! *warnings* conj {:file path :line nil :kind :read :message (condition-message e)}))
-         (finally (in-ns (symbol (str here)))))
-       (vec (distinct (deref *warnings*)))))))
+   (let [here (current-ns)]
+     ;; (a module's ns form first, so the whole file reads as it will when
+     ;; loaded: ::alias/k needs the alias)
+     (try (let [d (%read (%reader s path))]
+            (when (and (seq? d) (= 'ns (first d))) (eval d)))
+          (catch Error _ nil))
+     (try (lint-text s path) (finally (in-ns (symbol (str here))))))))
+
+(defn- lint-text [s path]
+  (let [lines (try (top-level-lines s) (catch Error _ []))
+        here (current-ns)
+        r (%reader s path)]
+    (binding [*warnings* (atom []) *file-defs* (atom (zipmap (names-defined s path) (repeat :unknown)))
+              *file-qualified* (atom #{}) *file-generics* (atom {}) *later-macros* (atom (macros-defined s path))
+              *module* (let [m (module-of s path)] (when m (update m :requires into (:more-requires m))))]
+      (try
+        (loop [i 0]
+          (let [form (%read r)]
+            (when-not (%eof? form)
+              (binding [*where* {:file path :line (get lines i)} *source-syms* (symbols-in form)
+                        *source-heads* (heads-in form) *exempt* (catch-bindings form)]
+                (cond
+                  ;; compile-time definitions: analyzed as the code they are
+                  (and (seq? form) (= 'begin-for-syntax (first form)))
+                  (do (doseq [f (rest form)] (analyze {:phase 1} f))
+                      ;; (and evaluated: macros later in the file may call them)
+                      (try (eval form) (catch Error e (warn :macro "evaluating begin-for-syntax: " (condition-message e)))))
+                  (evaluated-form? form)
+                  (let [macro-def? (and *module* (contains? #{'defmacro 'defsyntax} (first form)))]
+                    (when macro-def? (swap! *later-macros* disj (second form)))
+                    (when-not (and (= 'defmacro (first form))
+                                   (when-let [v (resolve (second form))] (macro? v)))
+                      (try (eval form)
+                           (catch Error e
+                             ;; (in a module the analysis below says why, with the name)
+                             (when-not macro-def?
+                               (warn :macro "evaluating " (first form) ": " (condition-message e))))))
+                    ;; (a macro's code is analyzed too: compile-time code)
+                    (when macro-def? (analyze {} form)))
+                  :else (analyze {} form)))
+              (recur (inc i)))))
+        (when *module*
+          (binding [*where* {:file path :line (first lines)}] (check-requires *module*)))
+        (catch Error e (swap! *warnings* conj {:file path :line nil :kind :read :message (condition-message e)}))
+        (finally (in-ns (symbol (str here)))))
+      (vec (distinct (deref *warnings*))))))
 
 (defn lint-file "Warnings for file path." [path] (lint-string (slurp path) path))
 
