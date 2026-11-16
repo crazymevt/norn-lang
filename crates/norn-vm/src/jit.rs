@@ -90,6 +90,13 @@ unsafe extern "C" {
     fn sys_icache_invalidate(start: *mut libc::c_void, len: libc::size_t);
 }
 
+// (arm64 keeps instruction and data caches apart: code just written must
+// be flushed from one to the other before it runs, or stale bytes run)
+#[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
+unsafe extern "C" {
+    fn __clear_cache(start: *mut libc::c_char, end: *mut libc::c_char);
+}
+
 /// Copy machine code into executable memory (MAP_JIT on macOS: runtime.md
 /// §7.4). Never freed: protos are rarely collected, and code is small.
 pub(crate) fn install_code(bytes: &[u8]) -> Option<usize> {
@@ -123,6 +130,8 @@ pub(crate) fn install_code(bytes: &[u8]) -> Option<usize> {
             libc::pthread_jit_write_protect_np(1);
             sys_icache_invalidate(at as *mut libc::c_void, len);
         }
+        #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
+        __clear_cache(at as *mut libc::c_char, (at + len) as *mut libc::c_char);
     }
     Some(at)
 }

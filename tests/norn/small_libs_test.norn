@@ -13,6 +13,12 @@
 (def dir (io/path (sys/temp-dir) (str "norn-small-libs-" (sys/pid) "-" (nano-time))))
 (io/mkdirs! dir)
 
+(defn- installed?
+  "Is program name on PATH? (Checks against the system's tools skip
+  without them.)"
+  [name]
+  (= 0 (:exit (proc/sh "sh" "-c" (str "command -v " name)))))
+
 (deftest compression
   (let [s (apply str (repeat 1000 "hello norn "))]
     (doseq [f [:gzip :zlib :raw]]
@@ -165,15 +171,16 @@ role = \"backend\"
     (is (= 1700000000000 (:modified (first (zip/entries z)))) "MS-DOS time (to two seconds; this one's even)")
     (is (= 1700000000000 (:modified (first (zip/entries (zip/zip {"x" "y"} :modified 1700000001999)))))
         "an odd second goes down to the even one")
-    (testing "the system's unzip reads ours, and we read its zip's"
-      (let [path (io/path dir "ours.zip")]
-        (io/write-bytes path z)
-        (is (str/includes? (:out (proc/sh "unzip" "-t" path)) "No errors detected")))
-      (proc/sh "sh" "-c" (str "cd " dir " && mkdir -p src/sub && printf one > src/one.txt && seq 1 2000 > src/sub/nums.txt && cd src && zip -qr ../theirs.zip ."))
-      (let [theirs (io/read-bytes (io/path dir "theirs.zip"))]
-        (is (= "one" (bytes->string (zip/read-entry theirs "one.txt"))))
-        (is (= 2000 (count (remove empty? (str/split-lines (bytes->string (zip/read-entry theirs "sub/nums.txt")))))))
-        (is (= 2 (count (zip/extract! theirs (io/path dir "out")))))))
+    (testing "the system's unzip reads ours, and we read its zip's (where they're installed)"
+      (when (every? installed? ["zip" "unzip"])
+        (let [path (io/path dir "ours.zip")]
+          (io/write-bytes path z)
+          (is (str/includes? (:out (proc/sh "unzip" "-t" path)) "No errors detected")))
+        (proc/sh "sh" "-c" (str "cd " dir " && mkdir -p src/sub && printf one > src/one.txt && seq 1 2000 > src/sub/nums.txt && cd src && zip -qr ../theirs.zip ."))
+        (let [theirs (io/read-bytes (io/path dir "theirs.zip"))]
+          (is (= "one" (bytes->string (zip/read-entry theirs "one.txt"))))
+          (is (= 2000 (count (remove empty? (str/split-lines (bytes->string (zip/read-entry theirs "sub/nums.txt")))))))
+          (is (= 2 (count (zip/extract! theirs (io/path dir "out"))))))))
     (testing "untrusted archives"
       (is (str/includes? (message (fn [] (zip/extract! (zip/zip {"../evil" "x"}) (io/path dir "no")))) "outside the folder"))
       (is (str/includes? (message (fn [] (zip/extract! (zip/zip {"/etc/evil" "x"}) (io/path dir "no")))) "outside the folder"))

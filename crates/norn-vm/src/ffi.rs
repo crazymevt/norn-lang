@@ -229,8 +229,11 @@ fn lower(params: &[Ty], variadic_from: Option<usize>) -> Vec<Piece> {
                         let es = if c == CType::F32 { 4 } else { 8 };
                         out.extend((0..n).map(|k| Piece::Part(i, k * es, float_type(c))));
                     } else {
-                        // (AAPCS64 elsewhere: its memory image, in 8-byte slots)
-                        out.extend((0..size.div_ceil(8)).map(|k| Piece::Part(i, k * 8, types::I64)));
+                        // (AAPCS64 elsewhere: its memory image, in 8-byte
+                        // slots. As F64s: the float registers are used up,
+                        // so they go on the stack; as integers they'd take
+                        // the next free x register instead)
+                        out.extend((0..size.div_ceil(8)).map(|k| Piece::Part(i, k * 8, types::F64)));
                     }
                 }
             }

@@ -61,16 +61,18 @@ pub(crate) fn raise_fd_limit() {
         if libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) != 0 {
             return;
         }
-        let mut want = r.rlim_max;
+        let want = r.rlim_max;
+        // macOS refuses RLIM_INFINITY; its real cap is kern.maxfilesperproc.
         #[cfg(target_os = "macos")]
-        {
-            // macOS refuses RLIM_INFINITY; its real cap is kern.maxfilesperproc.
+        let want = {
             let mut cap: libc::c_int = 0;
             let mut len = std::mem::size_of::<libc::c_int>();
             if libc::sysctlbyname(c"kern.maxfilesperproc".as_ptr(), &mut cap as *mut _ as *mut libc::c_void, &mut len, std::ptr::null_mut(), 0) == 0 {
-                want = want.min(cap as libc::rlim_t);
+                want.min(cap as libc::rlim_t)
+            } else {
+                want
             }
-        }
+        };
         if want > r.rlim_cur {
             r.rlim_cur = want;
             libc::setrlimit(libc::RLIMIT_NOFILE, &r);
