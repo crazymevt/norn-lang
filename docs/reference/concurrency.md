@@ -6,12 +6,12 @@
 
 | Form | Behavior |
 | --- | --- |
-| `(with-scope [s] body…)` | Run the body in a new scope and wait for its children. Return the body's value when the scope succeeds. A failure cancels the other fibers in the scope and propagates to the caller. |
+| `(with-scope [s] body…)` | Run the body in a new scope and wait for its children. Return the body's value when the scope succeeds. An error nobody handled cancels the other fibers in the scope and propagates to the caller. The binding must be a vector of one name. |
 | `(spawn s body…)` | Schedule a fiber inside scope `s` and return its handle. |
 | `(spawn-detached body…)` | Schedule a fiber outside a scope and return its handle. |
 | `(await fiber)` | Wait for the fiber's result or signal its failure. |
 | `(settle fiber)` | Wait and return `{:value v}` or `{:error message}`. |
-| `(cancel! fiber)` | Request cancellation of a fiber. |
+| `(cancel! fiber)` | Request cancellation of a fiber. A fiber cancelled before it starts never runs its body. |
 | `(sleep ms)`, `(yield)` | Park a fiber for a duration in milliseconds, or yield execution. |
 
 ```clojure
@@ -19,6 +19,21 @@
   (let [a (spawn s (+ 20 1))
         b (spawn s (* 3 7))]
     (+ (await a) (await b)))) ; => 42
+```
+
+A scope fails only for an error nobody handled. A fiber stopped with
+`cancel!` ends quietly, so the body can cancel one fiber (the losers of a
+race, say) and carry on. An error that `await` or `settle` has received
+isn't raised again by the scope: the code that awaited it has it. While the
+body is running, a failure nobody has waited for yet is held back, so the
+body can still await or settle that fiber; the scope fails with it as soon
+as the body waits for anything else, or ends. Cancelling the fiber waiting
+in `with-scope` cancels the whole scope.
+
+```clojure
+(with-scope [s] (cancel! (spawn s (sleep 1000))) :ok) ; => :ok
+(with-scope [s] (settle (spawn s (error "x"))) :ok) ; => :ok
+(with-scope [s] (spawn s (error "x")) :ok) ; raises x
 ```
 
 `(pmap f coll)` runs the mapping in parallel and returns a vector in
@@ -29,7 +44,7 @@ an associative operation and its identity as `init`.
 
 | Function | Behavior |
 | --- | --- |
-| `(chan)`, `(chan n)` | Make an unbuffered channel or a channel with capacity `n`. |
+| `(chan)`, `(chan n)` | Make an unbuffered channel or a channel with capacity `n` (0 or more; a negative size is a `TypeError`). |
 | `(chan n :dropping)`, `(chan n :sliding)` | Use a full buffer policy that drops the incoming item or the oldest item, respectively. |
 | `(put! ch x)`, `(>! ch x)` | Suspend until the item can be sent. Return `true` on success and `false` when closed. Sending `nil` signals an error. |
 | `(take! ch)`, `(<! ch)` | Suspend until an item is available or the channel closes. Return `nil` after a closed channel's buffer is drained. |

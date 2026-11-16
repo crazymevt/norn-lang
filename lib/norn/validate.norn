@@ -1,5 +1,6 @@
 ;;;; norn.validate — the shapes of the core forms people get wrong most
-;;;; (M8 part 8.3, decision 5): let, loop, fn, defn, cond, case and ns.
+;;;; (M8 part 8.3, decision 5): let, loop, fn, defn, cond, case, with-scope
+;;;; and ns.
 ;;;;
 ;;;; Each is still the defmacro it was; the expander first checks a call
 ;;;; here, so a malformed one is an error that says what was expected, at
@@ -67,6 +68,13 @@
 
 (defn- quick-case [s] (>= (count (parts s)) 2))
 
+(defn- quick-with-scope [s]
+  (let [xs (parts s)]
+    (and (>= (count xs) 2)
+         (let [b (syn/syntax-e (nth xs 1))]
+           (and (vector? b) (= 1 (count b))
+                (let [n (syn/syntax-e (first b))] (and (symbol? n) (nil? (namespace n)))))))))
+
 (defn- checked
   "A validator: calls quick? passes, else the syntax-parse check."
   [quick? check]
@@ -88,6 +96,8 @@
    (checked quick-cond (fn [s] (syntax-parse s [(_ (~seq test (~describe "a result after the test" then)) ...) nil])))
    "norn.core/case"
    (checked quick-case (fn [s] (syntax-parse s [(_ (~describe "an expression to choose by" e) clause ...) nil])))
+   "norn.core/with-scope"
+   (checked quick-with-scope (fn [s] (syntax-parse s [(_ (~describe "a binding vector [name]" [name:id]) body ...) nil])))
    ;; (rare enough to match every time)
    "norn.core/ns"
    (fn [s] (syntax-parse s [(_ name:id (~describe "an ns clause, (:require …), (:require-for-syntax …), (:refer-core …) or (:unsafe)"

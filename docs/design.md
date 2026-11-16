@@ -472,7 +472,10 @@ As built (M3):
 ### 6.2 Structured concurrency **[decided]**
 
 Fibers live inside scopes; a scope can't exit until its children finish.
-Errors propagate upward and cancellation propagates downward.
+Errors propagate upward and cancellation propagates downward. Only errors
+nobody handled fail a scope: a child its own code stops with `cancel!` ends
+quietly, and an error `await` or `settle` received is the awaiter's to deal
+with, not raised again by the scope.
 
 ```clojure
 (defn fetch-all [urls]

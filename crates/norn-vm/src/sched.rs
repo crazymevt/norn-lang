@@ -543,6 +543,16 @@ pub(crate) fn finish_unsaved(vm: &mut Vm, f: Value) {
 /// Create a fiber running `thunk` (a callable, or an internal `[f arg…]`
 /// array) and make it runnable.
 pub fn spawn(vm: &mut Vm, thunk: Value, scope_v: Value) -> Value {
+    spawn_in(vm, thunk, scope_v, false)
+}
+
+/// Like `spawn`, for a scope's body (`with-scope`): the scope then judges a
+/// failure nobody waited for by what its body does next (see `scope_child_done`).
+pub fn spawn_body(vm: &mut Vm, thunk: Value, scope_v: Value) -> Value {
+    spawn_in(vm, thunk, scope_v, true)
+}
+
+fn spawn_in(vm: &mut Vm, thunk: Value, scope_v: Value, body: bool) -> Value {
     let s = sched();
     let f = fiber_new(&mut vm.m, s.next_id(), thunk, scope_v, vm.ns as *const Namespace as usize);
     // Conveyance: the child starts in its creator's dynamic environment
@@ -553,6 +563,15 @@ pub fn spawn(vm: &mut Vm, thunk: Value, scope_v: Value) -> Value {
         let kids = cons(&mut vm.m, f, scope_v.field(scope::CHILDREN));
         scope_v.set_field(scope::CHILDREN, kids);
         scope_v.set_word(scope::PENDING, scope_v.word(scope::PENDING) + 1);
+        if body && scope_v.field(scope::BODY).is_nil() {
+            scope_v.set_field(scope::BODY, f);
+        }
+        // A scope that has been cancelled (it failed, or its owner was) has
+        // already cancelled its children: one spawned now, by a fiber still
+        // unwinding, starts cancelled and never runs its body.
+        if scope_v.word(scope::FLAGS) & scope::CANCELLED != 0 {
+            f.atomic_word(fiber::CANCEL).store(fiber::CANCELLED as u64, Ordering::SeqCst);
+        }
     }
     s.spawned.fetch_add(1, Ordering::Relaxed);
     schedule(f);
@@ -665,17 +684,27 @@ fn finish(vm: &mut Vm, f: Value, r: Result<Value, Error>) {
         f.set_field(fiber::JOINERS, Value::NIL);
         j
     };
+    // (an await or settle that receives the outcome has seen the error)
+    let mut seen = false;
     for w in list_items(joiners) {
         if try_claim(w.field(waiter::CLAIM)) {
             if err.is_some() && w.word(waiter::FLAGS) & waiter::NO_RAISE == 0 {
                 aset(w.field(waiter::FIBER), fiber::WAKE_ERR, f);
             }
             deliver(w, val, Value::NIL);
+            seen = true;
         }
     }
     let sc = f.field(fiber::SCOPE);
     if !sc.is_nil() {
-        scope_child_done(sc, f, err.is_some());
+        let end = match &err {
+            None => ChildEnd::Ok,
+            // stopped by cancel! (or by its scope's own cancelling): quiet
+            Some(e) if is_cancel_end(f, e) => ChildEnd::Cancelled,
+            Some(_) if seen => ChildEnd::Seen,
+            Some(_) => ChildEnd::Unseen,
+        };
+        scope_child_done(vm, sc, f, end);
     }
     let ticket = f.word(fiber::NOTIFY);
     if ticket != 0 {
@@ -726,10 +755,43 @@ pub fn cancel(f: Value, code: i64) {
 }
 
 // ---- scopes ----------------------------------------------------------------------------
+//
+// A scope fails only for an error nobody handled:
+//
+// - A child stopped by `cancel!` ends quietly (`ChildEnd::Cancelled`).
+// - A child whose error an `await` or `settle` received when it ended
+//   (`ChildEnd::Seen`) doesn't fail the scope: the waiter has it.
+// - A child that fails with nobody waiting (`ChildEnd::Unseen`) fails the
+//   scope at once (cancelling the rest) if the scope's body is waiting or
+//   has finished. While the body is still running it may yet await or
+//   settle that child, so the failure waits in UNSEEN: an await or settle
+//   of the finished child takes it out (`observe`); the body's next park, or
+//   its end, fails the scope with the oldest one left. That keeps
+//   `(settle (spawn s …))` the same however the two fibers are scheduled.
+
+#[derive(Clone, Copy, PartialEq)]
+enum ChildEnd {
+    Ok,
+    Cancelled,
+    Seen,
+    Unseen,
+}
+
+/// Did fiber `f` end because it was cancelled (and not with some other
+/// error raised while it unwound)? Cancellation is no condition, so the
+/// error has no class.
+fn is_cancel_end(f: Value, e: &Error) -> bool {
+    let code = match f.fiber_cancel() {
+        0 => f.word(fiber::CANCELLED_WITH),
+        c => c,
+    };
+    code != 0 && e.class.is_none() && e.msg == cancel_error(code as i64).msg
+}
 
 fn cancel_children(sc: Value) {
     let kids = {
         let _g = spin_lock(sc, scope::LOCK);
+        sc.set_word(scope::FLAGS, sc.word(scope::FLAGS) | scope::CANCELLED);
         sc.field(scope::CHILDREN)
     };
     for k in list_items(kids) {
@@ -737,13 +799,78 @@ fn cancel_children(sc: Value) {
     }
 }
 
-fn scope_child_done(sc: Value, child: Value, failed: bool) {
+/// The oldest failure in UNSEEN, made the scope's failure (under its lock).
+/// True if there was one: the caller then cancels the children.
+fn fail_with_unseen(sc: Value) -> bool {
+    let unseen = sc.field(scope::UNSEEN);
+    if unseen.is_nil() || !sc.field(scope::FAILED).is_nil() {
+        return false;
+    }
+    let oldest = list_items(unseen).last().copied().unwrap_or(Value::NIL);
+    sc.set_field(scope::UNSEEN, Value::NIL);
+    sc.set_field(scope::FAILED, oldest);
+    true
+}
+
+/// An await or settle has received finished fiber `f`'s error: if it was
+/// waiting in its scope's UNSEEN, it no longer fails the scope.
+pub(crate) fn observe(vm: &mut Vm, f: Value) {
+    let sc = f.field(fiber::SCOPE);
+    if sc.is_nil() || f.field(fiber::ERROR).is_nil() {
+        return;
+    }
+    let _g = spin_lock(sc, scope::LOCK);
+    let items = list_items(sc.field(scope::UNSEEN));
+    if items.contains(&f) {
+        let mut rest = Value::NIL;
+        for &x in items.iter().rev() {
+            if x != f {
+                rest = cons(&mut vm.m, x, rest);
+            }
+        }
+        sc.set_field(scope::UNSEEN, rest);
+    }
+}
+
+/// The scope's body is about to park: a failure nobody saw fails the scope now.
+fn body_waits(sc: Value) {
+    let fail = {
+        let _g = spin_lock(sc, scope::LOCK);
+        sc.set_word(scope::FLAGS, sc.word(scope::FLAGS) | scope::BODY_WAITING);
+        fail_with_unseen(sc)
+    };
+    if fail {
+        cancel_children(sc);
+    }
+}
+
+/// The scope's body runs again.
+fn body_runs(sc: Value) {
+    let _g = spin_lock(sc, scope::LOCK);
+    sc.set_word(scope::FLAGS, sc.word(scope::FLAGS) & !scope::BODY_WAITING);
+}
+
+fn scope_child_done(vm: &mut Vm, sc: Value, child: Value, end: ChildEnd) {
     let (owner, cancel_siblings) = {
         let _g = spin_lock(sc, scope::LOCK);
         sc.set_word(scope::PENDING, sc.word(scope::PENDING) - 1);
+        let body = sc.field(scope::BODY);
+        let is_body = body == child;
         let mut cancel_siblings = false;
-        if failed && sc.field(scope::FAILED).is_nil() {
-            sc.set_field(scope::FAILED, child);
+        if end == ChildEnd::Unseen && sc.field(scope::FAILED).is_nil() {
+            let body_running = !body.is_nil()
+                && !is_body
+                && sc.word(scope::FLAGS) & scope::BODY_WAITING == 0
+                && body.fiber_state().load(Ordering::Acquire) != fiber::DONE;
+            if body_running {
+                let unseen = cons(&mut vm.m, child, sc.field(scope::UNSEEN));
+                sc.set_field(scope::UNSEEN, unseen);
+            } else {
+                sc.set_field(scope::FAILED, child);
+                cancel_siblings = true;
+            }
+        }
+        if is_body && fail_with_unseen(sc) {
             cancel_siblings = true;
         }
         let owner = if sc.word(scope::PENDING) == 0 {
@@ -942,9 +1069,17 @@ fn run_one(vm: &mut Vm, f: Value) {
     // SAFETY: NS holds a leaked &'static Namespace.
     vm.ns = unsafe { &*(f.word(fiber::NS) as *const Namespace) };
     vm.dyn_env = f.field(fiber::DYN);
+    // (the scope whose body this fiber runs, if any)
+    let body_of = {
+        let sc = f.field(fiber::SCOPE);
+        if !sc.is_nil() && sc.field(scope::BODY) == f { sc } else { Value::NIL }
+    };
     loop {
         aset(f, fiber::PARK, Value::NIL);
         aset(f, fiber::JOINING, Value::NIL);
+        if !body_of.is_nil() {
+            body_runs(body_of);
+        }
         // run_fiber notices a pending cancel itself (and unwinds).
         let r = vm.run_fiber(f);
         f.set_word(fiber::NS, vm.ns as *const Namespace as usize as u64);
@@ -964,6 +1099,11 @@ fn run_one(vm: &mut Vm, f: Value) {
                 break;
             }
             Ok(Exit::Park) => {
+                // (a scope's body parking lets a failure nobody saw fail the
+                // scope, which may cancel this fiber: seen just below)
+                if !body_of.is_nil() {
+                    body_waits(body_of);
+                }
                 // A cancel that arrived before our waiter was visible in PARK
                 // couldn't wake us; we must notice it ourselves, or we would
                 // park forever with the cancel flag set.

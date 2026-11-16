@@ -337,9 +337,14 @@ pub fn wait_fiber(vm: &mut Vm, f: Value, raise: bool) -> Result<Value> {
     if f == vm.current {
         return Err(Error::new("A fiber can't await itself"));
     }
-    let done = |f: Value| if raise { crate::sched::fiber_outcome(f) } else { Ok(Value::NIL) };
+    // (receiving a finished fiber's error here counts as seeing it: its
+    // scope won't raise it again)
+    let done = |vm: &mut Vm, f: Value| {
+        crate::sched::observe(vm, f);
+        if raise { crate::sched::fiber_outcome(f) } else { Ok(Value::NIL) }
+    };
     if f.fiber_state().load(std::sync::atomic::Ordering::Acquire) == fiber::DONE {
-        return done(f);
+        return done(vm, f);
     }
     if !vm.can_park() {
         return Err(Vm::park_error());
@@ -351,7 +356,7 @@ pub fn wait_fiber(vm: &mut Vm, f: Value, raise: bool) -> Result<Value> {
         let _g = spin_lock(f, fiber::LOCK);
         if f.fiber_state().load(std::sync::atomic::Ordering::Acquire) == fiber::DONE {
             drop(_g);
-            return done(f);
+            return done(vm, f);
         }
         let j = cons(&mut vm.m, w, f.field(fiber::JOINERS));
         f.set_field(fiber::JOINERS, j);

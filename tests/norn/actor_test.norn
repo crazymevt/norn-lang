@@ -139,6 +139,22 @@
     (is (= :normal (a/exit-reason sup)))
     (is (nil? (a/whereis :sup-counter)) "its children stopped too")))
 
+(defn- versioned [] (a/receive [:which reply] (do (deliver reply :v1) (recur)) [:crash] (/ 1 0)))
+
+(deftest a-restart-calls-the-function-the-child-was-given
+  ;; (the function value, unless it was given the var: book finding 18)
+  (let [old versioned
+        sup (a/supervisor {} [(a/child :by-value versioned) (a/child :by-var #'versioned)])]
+    (eventually (fn [] (and (a/whereis :by-value) (a/whereis :by-var))))
+    (alter-var-root #'versioned (constantly (fn [] (a/receive [:which reply] (do (deliver reply :v2) (recur))))))
+    (doseq [id [:by-value :by-var]]
+      (let [p (a/whereis id)]
+        (a/send id [:crash])
+        (eventually (fn [] (let [q (a/whereis id)] (and q (not (identical? p q))))))))
+    (is (= [:v1 :v2] [(a/ask :by-value [:which]) (a/ask :by-var [:which])]))
+    (a/stop-supervisor! sup)
+    (alter-var-root #'versioned (constantly old))))
+
 (deftest strategies
   (let [run (fn [strategy]
               (let [sup (a/supervisor {:strategy strategy}

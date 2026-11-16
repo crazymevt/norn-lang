@@ -75,6 +75,85 @@
   (is (= {:error "Cancelled"} (settle f)))
   (is (= {:error "Cancelled"} (settle @inner))))
 
+;; A scope fails only for an error nobody handled (book finding 6).
+;; A child the body cancels ends quietly:
+(is (= :ok (with-scope [s] (cancel! (spawn s (sleep 1000))) :ok)))
+(is (= [{:error "Cancelled"} :b]
+       (with-scope [s]
+         (let [a (spawn s (sleep 10000)) b (spawn s (sleep 5) :b)]
+           (cancel! a)
+           [(settle a) (await b)]))))
+;; ...so a race can cancel its losers.
+(is (= 10 (with-scope [s]
+            (let [out (chan 3)
+                  fs (mapv (fn [ms] (spawn s (sleep ms) (put! out ms))) [200 10 100])
+                  v (take! out)]
+              (run! cancel! fs)
+              v))))
+;; An error settle or await received isn't raised again, however the
+;; child and the body are scheduled.
+(is (= {:ok 200} (frequencies (repeatedly 200 (fn [] (with-scope [s] (settle (spawn s (error "x"))) :ok))))))
+(is (= :handled (with-scope [s]
+                  (let [f (spawn s (/ 1 0))]
+                    (handler-case (await f) (ArithmeticError [_] :handled))))))
+(is (= :settled (with-scope [s]
+                  (let [f (spawn s (error "x"))]
+                    (loop [] (when-not (done? f) (yield) (recur))) ; (failed, unseen)
+                    (settle f)
+                    :settled))))
+;; A failure nobody sees still fails the scope: when the body ends...
+(is (= {:raised 200} (frequencies (repeatedly 200 (fn [] (handler-case (with-scope [s] (spawn s (error "x")) :ok)
+                                                           (Error [_] :raised)))))))
+(is (= {:error "b"} (settle (spawn-detached (with-scope [s]
+                                              (let [a (spawn s (error "a"))]
+                                                (spawn s (error "b"))
+                                                (settle a)
+                                                :ok))))))
+;; ...or as soon as it waits for something else, cancelling the rest.
+(is (= {:error "producer died"}
+       (settle (spawn-detached (with-scope [s] (spawn s (error "producer died")) (take! (chan)))))))
+(let [slow (atom nil)
+      f (spawn-detached (with-scope [s]
+                          (reset! slow (spawn s (sleep 10000)))
+                          (spawn s (sleep 5) (error "lost"))
+                          (sleep 10000)))]
+  (is (= {:error "lost"} (settle f)))
+  (is (= {:error "Cancelled"} (settle @slow))))
+;; An error a fiber's cleanup raises while it's cancelled isn't quiet.
+(is (= {:error "in cleanup"}
+       (settle (spawn-detached (with-scope [s]
+                                 (let [f (spawn s (try (sleep 10000) (finally (error "in cleanup"))))]
+                                   (sleep 5)
+                                   (cancel! f)
+                                   :ok))))))
+;; Cancelling a fiber that waits in the debugger takes it off the list.
+(is (= [1 0] (binding [*debugger* :park]
+               (with-scope [s]
+                 (let [f (spawn s (error "x"))]
+                   (loop [i 0] (when (and (empty? (debugging)) (< i 1000)) (sleep 1) (recur (inc i))))
+                   (let [before (count (debugging))]
+                     (cancel! f)
+                     (settle f)
+                     [before (count (debugging))]))))))
+;; with-scope wants [name] (book finding 11).
+(doseq [form ['(with-scope (dotimes [i 1]) :ok) '(with-scope [a b] :ok) '(with-scope [] :ok) '(with-scope [:s] :ok)]]
+  (is (re-find #"^with-scope: expected a binding vector \[name\]"
+               (handler-case (eval form) (Error [e] (condition-message e))))
+      (pr-str form)))
+
+;; A fiber spawned in a scope that has already been cancelled (by a cleanup
+;; still unwinding) starts cancelled and never runs (book finding 19).
+(let [ran (atom [])
+      late (promise)
+      f (spawn-detached (with-scope [s]
+                          (try (sleep 10000)
+                               (finally (deliver late (spawn s (swap! ran conj :late)))))))]
+  (sleep 10)
+  (cancel! f)
+  (is (= {:error "Cancelled"} (settle f)))
+  (is (= {:error "Cancelled"} (settle @late)))
+  (is (= [] @ran)))
+
 ;;; channels
 (let [c (chan)]
   (spawn-detached (dotimes [i 5] (put! c i)) (close! c))
@@ -93,6 +172,9 @@
   (is (= :a (take! c)))
   (is (= nil (take! c)))
   (is (= false (put! c :b))))
+;; A buffer size can't be negative.
+(is (= "TypeError" (handler-case (chan -1) (TypeError [e] (name (class-name (class-of e)))))))
+(is (= true (closed? (doto (chan 0) close!))))
 ;; A full buffered channel blocks the putter until a take makes room.
 (let [c (chan 1) log (atom [])]
   (put! c 1)

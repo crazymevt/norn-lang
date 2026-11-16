@@ -539,7 +539,27 @@
       e (spawn-detached (as/into [] evens))]
   (is (= [1 3 5] (as/into [] odds)))
   (is (= [0 2 4] (await e))))
-(is (= (mapv (fn [x] (* x x)) (range 20)) (as/into [] (as/pipeline 4 (chan) (fn [x] (sleep (rand-int 3)) (* x x)) (as/to-chan! (range 20))))))
+(let [out (chan)
+      p (as/pipeline 4 out (fn [x] (sleep (rand-int 3)) (* x x)) (as/to-chan! (range 20)))]
+  (is (= (mapv (fn [x] (* x x)) (range 20)) (as/into [] out)))
+  (is (= nil (await p))))
+;; pipeline keeps at most n calls of f going (book finding 7)...
+(let [now (atom 0) peak (atom 0) out (chan)]
+  (as/pipeline 3 out (fn [x] (swap! peak max (swap! now inc)) (sleep (rand-int 4)) (swap! now dec) x)
+               (as/to-chan! (range 40)))
+  (is (= (range 40) (as/into [] out)))
+  (is (<= 1 @peak 3)))
+;; ...and a failing f stops it: to is closed, and the fiber it returns
+;; raises f's error.
+(let [out (chan)
+      p (as/pipeline 3 out (fn [x] (sleep 2) (if (= x 4) (/ 1 0) x)) (as/to-chan! (range 10)))]
+  (is (= [0 1 2 3] (as/into [] out)))
+  (is (= :divided-by-zero (handler-case (await p) (ArithmeticError [_] :divided-by-zero)))))
+(let [out (chan 1)
+      p (as/pipeline 2 out (fn [_] (error "nope")) (as/to-chan! [1 2 3]) false)]
+  (is (= {:error "nope"} (settle p)))
+  (is (= false (closed? out))))
+(is (= "TypeError" (handler-case (as/pipeline 0 (chan) inc (chan)) (TypeError [e] (name (class-name (class-of e)))))))
 (let [src (chan) m (as/mult src) a (as/tap m (chan 10)) b (as/tap m (chan 10))]
   (as/onto-chan! src [1 2])
   (is (= [[1 2] [1 2]] [(as/into [] a) (as/into [] b)])))
