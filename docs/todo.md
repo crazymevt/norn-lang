@@ -42,6 +42,7 @@ The [survey](perf-survey.md) (2026-11-15) found two items that change what calle
 ### Signatures
 
 - [x] **Sign the rest of the standard library.** 43 libraries carry checked signatures; `contracts_test.norn` checks every public function and lists the few that take nothing a type can say. `ContractError` is a `TypeError` now, so adding a signature never breaks a `TypeError` handler. Checked calls keep a plan of their contract's tests (25–50% cheaper). [Design §8.4](design.md#84-types-decided)
+- [ ] **VS Code and Zed extensions for `norn lsp` (M9b stays open until then).** Both editors start a language server only through an extension: for VS Code, one built on `vscode-languageclient` running `norn lsp`; for Zed, one whose `language_server_command` returns it, with Clojure's grammar. Write them and check `norn lsp` in each (M9b's done-check); `docs/editors.md` says what they need, and Emacs, Neovim and Helix need no extension.
 - [ ] **Sign norn.string, norn.math, norn.regex and norn.bytes with M10.** A checked call costs 0.3–0.4 µs, which made their thinnest functions 3–6 times slower; once M10 inlines the checks at the call site, sign them (and io/auto-close and io/retry-io), as the other libraries are.
 
 ### Windows, before sealing
