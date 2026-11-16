@@ -145,3 +145,13 @@
          (vec (filter (fn [full] (%contracted? (resolve full))) (sort-by str unsigned))))
       "the list holds only unsigned functions")
   (is (str/starts-with? (:message (caught '(norn.uri/parse 5))) "norn.uri/parse: its 1st argument should be String, got 5")))
+
+(deftest a-module-loaded-mid-form-keeps-its-own-signatures
+  ;; (a macro that loads a module while a typed defn expands: that module's
+  ;; own defn of the same name mustn't take the place of the signature)
+  (module! "loads" "(ns ct2.loads)\n(defmacro loader [x] (require 'ct2.same-name) x)\n")
+  (module! "same-name" "(ns ct2.same-name)\n(defn parse [x] x)\n")
+  (module! "typed-parse" "(ns ct2.typed-parse (:require [ct2.loads :as l]))\n(defn parse ^String [^String s] (l/loader s))\n")
+  (run '(require 'ct2.typed-parse))
+  (is (%contracted? (resolve 'ct2.typed-parse/parse)))
+  (is (= "ContractError" (some-> (caught '(ct2.typed-parse/parse 5)) class-of class-name name))))

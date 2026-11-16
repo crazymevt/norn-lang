@@ -303,7 +303,8 @@
 
 (def ^:dynamic *signatures*
   "While a top-level form expands: an atom of the types its defn calls
-  wrote, by the name defined (defn hands fn data, which drops them)."
+  wrote, by [namespace name] defined (defn hands fn data, which drops
+  them)."
   nil)
 
 (def ^:dynamic *fn-signature*
@@ -412,7 +413,7 @@
                   ;; its contract, beside it, checked from other modules)
                   ;; (what defn's call wrote, if it was a defn; else what fn's,
                   ;; or fn*'s, did)
-                  sigs (or (when *signatures* (get @*signatures* nm)) (when (vector? @sig) @sig))
+                  sigs (or (when *signatures* (get @*signatures* [(ns-sym) nm])) (when (vector? @sig) @sig))
                   f (last init)
                   typed (and (vector? sigs) (seq? f) (= 'fn* (first f))
                              (some (fn [a] (or (some some? (:args a)) (:rest a) (:result a))) sigs))
@@ -608,7 +609,9 @@
   (when (and *signatures* (identical? v defn-macro))
     (let [nm (nth (vec (syn/syntax-e s)) 1 nil)]
       (when (and nm (syn/identifier? nm))
-        (swap! *signatures* assoc (syn/syntax-e nm) (mapv arity-signature (fn-param-vectors s))))))
+        ;; (keyed by namespace too: a module loaded while this form expands,
+        ;; by a macro say, shares the table and may define the same name)
+        (swap! *signatures* assoc [(ns-sym) (syn/syntax-e nm)] (mapv arity-signature (fn-param-vectors s))))))
   (if-let [hook *on-step*]
     ;; (what the macro's own code expands, as it runs, isn't a step of this
     ;; expansion)
