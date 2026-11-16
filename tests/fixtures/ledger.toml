@@ -1,0 +1,31 @@
+# Where the ledger is kept, how each account's export reads, and the rules.
+file = "ledger.edn"
+
+[accounts.checking]
+date = "Date"
+description = "Description"
+amount = "Amount"
+date-format = "us"
+
+[accounts.card]
+date = "Posted"
+description = "Payee"
+debit = "Debit"
+credit = "Credit"
+date-format = "iso"
+
+[[rules]]
+match = "(?i)payroll"
+category = "Income"
+
+[[rules]]
+match = "(?i)whole foods|trader joe"
+category = "Groceries"
+
+[[rules]]
+match = "(?i)rent"
+category = "Housing"
+
+[[rules]]
+match = "(?i)shell|chevron"
+category = "Transport"
