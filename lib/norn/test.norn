@@ -98,8 +98,6 @@
 
 (defn- message-of [e] (if (instance? Condition e) (condition-message e) (str e)))
 
-(defn message-of* [e] (message-of e))
-
 (defn %thrown [cls f re]
   (try
     (f)
