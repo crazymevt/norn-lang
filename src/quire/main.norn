@@ -25,7 +25,7 @@
     (println (str "Serving " (:dir options) " at http://127.0.0.1:" (:port (:server s)) "/ (Ctrl-C stops)"))
     (<! (:signals sigs))
     ((:stop s))
-    (signal/stop sigs)
+    (signal/stop! sigs)
     0))
 
 (defn- new-post [{:keys [options args]}]
