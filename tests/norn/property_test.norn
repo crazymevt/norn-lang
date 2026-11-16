@@ -45,10 +45,10 @@
                          (p/keyword) (p/symbol) (p/chars :unicode true))))
 
 (p/defproperty json-round-trips [x json-value]
-  (= x (json/read-string (json/write-string x) :keywords false)))
+  (= x (json/read-string (json/write-string x) :keys identity)))
 
 (p/defproperty ndjson-round-trips [xs (p/vectors json-value :max 5)]
-  (= xs (ndjson/read-string (ndjson/write-string xs) :keywords false)))
+  (= xs (ndjson/read-string (ndjson/write-string xs) :keys identity)))
 
 (p/defproperty edn-round-trips [x norn-value]
   (= x (edn/read-string (pr-str x))))

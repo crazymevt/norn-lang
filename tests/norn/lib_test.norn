@@ -4,7 +4,7 @@
                        [norn.process :as proc] [norn.time :as t] [norn.signal :as sig]
                        [norn.net :as net] [norn.ffi :as ffi] [norn.rope :as rope]
                        [norn.string :as str] [norn.regex :as re] [norn.json :as json]
-                       [norn.edn :as edn] [norn.format :as fmt] [norn.pprint :as pp]
+                       [norn.edn :as edn] [norn.format :as fmt] [norn.pprint :as pp] [norn.ndjson :as ndjson]
                        [norn.math :as math] [norn.set :as set] [norn.walk :as walk]
                        [norn.random :as random] [norn.async :as as] [norn.sync :as sync]
                        [norn.cache :as cache] [norn.log :as log] [norn.fmt :as codefmt] [norn.lint :as lint]
@@ -219,14 +219,14 @@
 (let [l (sig/listen :usr1)]
   (sig/raise :usr1)
   (is (= :usr1 (first (alts! [(:signals l) (timeout 5000)]))))
-  (sig/stop l))
+  (sig/stop! l))
 (let [l (sig/listen :usr2)]
   (proc/sh "kill" "-USR2" (str (sys/pid)))
   (is (= :usr2 (first (alts! [(:signals l) (timeout 5000)]))))
-  (sig/stop l))
+  (sig/stop! l))
 (is (= :error (fails (sig/listen :kill))))
 (is (= :error (fails (sig/listen :segv))) "the runtime keeps it")
-(let [l (sig/listen :abrt)] (sig/stop l))
+(let [l (sig/listen :abrt)] (sig/stop! l))
 ;; The norn command, for the checks that run one (none when this file runs
 ;; elsewhere, as in the Rust test harness: that would run the harness).
 (def norn-exe (let [e (:executable (sys/info))] (when (and e (= "norn" (io/file-name e))) e)))
@@ -236,9 +236,9 @@
 (when norn-exe
   (let [code "(do (require '[norn.signal :as sig])
                 (let [a (sig/listen :term) b (sig/listen :term)]
-                  (sig/stop a) (sig/raise :term)
+                  (sig/stop! a) (sig/raise :term)
                   (prn (first (alts! [(:signals b) (timeout 5000)])))
-                  (sig/stop b))
+                  (sig/stop! b))
                 (sig/raise :term) (sleep 2000) (prn :alive))"
         r (proc/sh norn-exe "-e" code)]
     (is (= ":term\n" (:out r)) "one listener left still gets it")
@@ -481,7 +481,16 @@
 (is (= #{#"a" #"b"} (hash-set #"b" #"a")))
 ;;; ---- norn.json ----
 (is (= {:a 1, :b [true false nil], :c "é\n", :d 1.5} (json/read-string "{\"a\":1,\"b\":[true,false,null],\"c\":\"\\u00e9\\n\",\"d\":1.5}")))
-(is (= {"a" 1} (json/read-string "{\"a\": 1}" :keywords false)))
+(is (= {"a" 1} (json/read-string "{\"a\": 1}" :keys identity)))
+;; :keys, as norn.yaml, norn.toml and norn.csv take it (sweep: JSON had
+;; :keywords true/false alone)
+(is (= {"A" {"B" 1}} (json/read-string "{\"a\": {\"b\": 1}}" :keys str/upper-case)))
+(is (= [{:a [{:b 1}]}] (ndjson/read-string "{\"a\": [{\"b\": 1}]}")))
+;; EDN files, as the other formats have them
+(let [path (io/path (sys/temp-dir) (str "norn-edn-" (sys/pid) "-" (nano-time) ".edn"))]
+  (edn/write-file path {:a [1 2] :b "x"} :pretty true)
+  (is (= {:a [1 2] :b "x"} (edn/read-file path)))
+  (io/delete! path))
 (is (= 123456789012345678901234567890 (json/read-string "123456789012345678901234567890")))
 (is (= "😀" (json/read-string "\"\\ud83d\\ude00\"")))
 (is (= :error (fails (json/read-string "{\"a\" 1}"))))

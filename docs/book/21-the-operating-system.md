@@ -384,7 +384,7 @@ default effect.
 (proc/sh "kill" "-HUP" (str (sys/pid)))
 (first (alts! [(:signals hup) (timeout 2000)])) ; => :hup
 
-(sig/stop hup)
+(sig/stop! hup)
 (take! (:signals hup)) ; => nil
 ```
 

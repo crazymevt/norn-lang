@@ -122,7 +122,7 @@
     (is (instance? TypeError (try (cbor/decode "00") (catch Error e e))))))
 
 (deftest json-lines
-  (is (= [{"key" "é"} nil false 42] (ndjson/read-string "{\"key\":\"é\"}\r\nnull\nfalse\n42" :keywords false)))
+  (is (= [{"key" "é"} nil false 42] (ndjson/read-string "{\"key\":\"é\"}\r\nnull\nfalse\n42" :keys identity)))
   (is (= [] (ndjson/read-string "")))
   (is (= 2 (:line (parse-error #(ndjson/read-string "true\n\n")))))
   (is (= "null\n[1,2]\nfalse\n" (ndjson/write-string [nil [1 2] false])))

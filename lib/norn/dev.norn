@@ -149,7 +149,7 @@
               (cond
                 (keyword? files)
                 (do (stop-main! @fiber done files)
-                    (signal/stop stop)
+                    (signal/stop! stop)
                     (println "norn dev: stopped")
                     0)
 

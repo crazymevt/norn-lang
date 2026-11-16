@@ -190,7 +190,7 @@ Once the native compiler is good, moving more into Norn is an option.
   pattern (512 entries, then cleared), so the hot path takes no lock.
 - **JSON** is read and written by a small hand-written Rust parser and
   printer (no serde): objects become hash maps with keyword keys (strings
-  with `:keywords false`), integers of any size become fixnums or
+  with `:keys identity`), integers of any size become fixnums or
   bignums. Writing turns ratios into floats and refuses NaN, the
   infinities and values with no JSON form. An unrealized stream is
   realized first (§5.4.1).

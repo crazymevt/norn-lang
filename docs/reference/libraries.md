@@ -45,19 +45,19 @@ norn doc norn.json/read-string norn.io/with-open norn.sqlite/query
 | `norn.crypto` | Digests, HMAC, key derivation, and secure random bytes. |
 
 `(norn.json/read-string s)` reads JSON objects as maps with keyword keys.
-Pass `:keywords false` to retain string keys. Arrays become vectors and
+Pass `:keys identity` to retain string keys (or another function to make them something else), as `norn.yaml`, `norn.toml` and `norn.csv` take it. Arrays become vectors and
 JSON `null` becomes `nil`.
 
 ```clojure
 (require '[norn.json :as json])
 
 [(json/read-string "{\"id\":7}")
- (json/read-string "{\"id\":7}" :keywords false)] ; => [{:id 7} {"id" 7}]
+ (json/read-string "{\"id\":7}" :keys identity)] ; => [{:id 7} {"id" 7}]
 ```
 
 ### JSON Lines
 
-`norn.ndjson/read-string` and `read-file` return vectors. Pass `:keywords false`
+`norn.ndjson/read-string` and `read-file` return vectors. Pass `:keys identity`
 to keep JSON object keys as strings. Each line needs one complete JSON value.
 `write-string` and `write-file` emit a line feed after each value. For streams,
 `reduce-records` takes a `norn.io/line-reader` and `write-record` takes a handle.

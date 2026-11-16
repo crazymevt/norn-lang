@@ -4,38 +4,38 @@
   (:refer-core :exclude [read-string])
   (:require [norn.io :as io] [norn.json :as json] [norn.string :as str]))
 
-(defn- parse-line [s source line keywords]
-  (try (json/read-string s :keywords keywords)
+(defn- parse-line [s source line keys]
+  (try (json/read-string s :keys keys)
        (catch ParseError e
          (error ParseError :source source :line line
                 :message (str "JSON Lines, line " line ": " (condition-message e))))))
 
-(defn- reduce-lines [read-line f init source keywords]
+(defn- reduce-lines [read-line f init source keys]
   (loop [acc init line 1]
     (if-some [s (read-line)]
-      (let [result (f acc (parse-line s source line keywords))]
+      (let [result (f acc (parse-line s source line keys))]
         (if (reduced? result) (unreduced result) (recur result (inc line))))
       acc)))
 
 (defn reduce-records
   "Reduce JSON Lines from a norn.io line reader. A reduced result finishes
   the reduction and the same reader can continue with the next record.
-  :keywords defaults to true."
-  [f init ^io/LineReader reader & {:keys [keywords] :or {keywords true}}]
-  (reduce-lines #(io/read-line reader) f init "JSON Lines" keywords))
+  :keys as norn.json/read-string's (keyword by default)."
+  [f init ^io/LineReader reader & {:keys [keys] :or {keys keyword}}]
+  (reduce-lines #(io/read-line reader) f init "JSON Lines" keys))
 
-(defn read-file "Read a UTF-8 JSON Lines file as a vector. :keywords defaults to true."
-  ^Vector [^String path & {:keys [keywords] :or {keywords true}}]
+(defn read-file "Read a UTF-8 JSON Lines file as a vector. :keys as norn.json/read-string's."
+  ^Vector [^String path & {:keys [keys] :or {keys keyword}}]
   (io/with-open [handle (io/open path :read)]
     (let [reader (io/line-reader handle)]
-      (reduce-lines #(io/read-line reader) conj [] (str path) keywords))))
+      (reduce-lines #(io/read-line reader) conj [] (str path) keys))))
 
-(defn read-string "Read JSON Lines text as a vector. :keywords defaults to true."
-  ^Vector [^String s & {:keys [keywords] :or {keywords true}}]
+(defn read-string "Read JSON Lines text as a vector. :keys as norn.json/read-string's."
+  ^Vector [^String s & {:keys [keys] :or {keys keyword}}]
   (if (= "" s) []
       (let [lines (vec (str/split s "\n"))
             lines (if (str/ends-with? s "\n") (pop lines) lines)]
-        (mapv (fn [i line] (parse-line line "JSON Lines" (inc i) keywords)) (range (count lines)) lines))))
+        (mapv (fn [i line] (parse-line line "JSON Lines" (inc i) keys)) (range (count lines)) lines))))
 
 (defn write-record "Write a JSON value and LF to an open handle." [handle value]
   (io/write handle (str (json/write-string value) "\n")))

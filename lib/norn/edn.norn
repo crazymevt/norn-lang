@@ -12,7 +12,7 @@
 
 (ns norn.edn
   (:refer-core :exclude [read-string])
-  (:require [norn.pprint]))
+  (:require [norn.io :as io] [norn.pprint]))
 
 (defn- reading
   "(f) with *tag-readers* and *default-tag-reader* as options say."
@@ -72,3 +72,14 @@
   (if pretty
     (norn.pprint/pprint-str x (or width 80))
     (pr-str x)))
+
+(defn read-file
+  "The first value in file path (UTF-8): read-string's, options and all."
+  [^String path & opts]
+  (apply read-string (io/read-text path) opts))
+
+(defn write-file
+  "Write x to file path (UTF-8) as write-string writes it (options too),
+  then a newline."
+  [^String path x & opts]
+  (io/write-text path (str (apply write-string x opts) "\n")))

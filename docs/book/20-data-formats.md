@@ -245,8 +245,10 @@ use `norn.bin`, later in this chapter.
 (edn/write-string {:count (atom 0)}) ; !! TypeError
 ```
 
-For a file people will read too, such as a config or a small database,
-`:pretty true` lays the value out over lines, as `norn.pprint` does:
+`read-file` and `write-file` do the same with a file, as the other
+formats' do. For a file people will read too, such as a config or a small
+database, `:pretty true` lays the value out over lines, as `norn.pprint`
+does:
 
 ```clojure
 (println (edn/write-string (sorted-map :name "ada" :langs ["norn" "c"]) :pretty true :width 20))
@@ -277,10 +279,10 @@ vectors, `null` as nil, and numbers as integers (of any size) or floats.
 
 Keyword keys are convenient when you know the keys, as with a service's
 documented response. When keys are data, such as user names or IDs, or
-contain spaces, pass `:keywords false` to keep them as strings:
+contain spaces, pass `:keys identity` to keep them as strings:
 
 ```clojure
-(json/read-string "{\"Ada Lovelace\": 36}" :keywords false) ; => {"Ada Lovelace" 36}
+(json/read-string "{\"Ada Lovelace\": 36}" :keys identity) ; => {"Ada Lovelace" 36}
 ```
 
 `write-string` goes the other way. Maps become objects, any sequence becomes
@@ -987,7 +989,7 @@ attacker might want to guess.
   unless you pass `:local-times true`; YAML follows the 1.2 Core rules and
   reads keys as keywords too; EDN reads Norn data without evaluating it,
   and `write-string` refuses values that wouldn't read back.
-- JSON reads keys as keywords by default (`:keywords false` keeps strings);
+- JSON reads keys as keywords by default (`:keys identity` keeps strings);
   JSON Lines streams records with `reduce-records`; CSV fields are always
   strings; XML elements are maps with expanded `[namespace local]` names.
 - `norn.bytes` converts between bytes and hex, Base64, and fixed-width
