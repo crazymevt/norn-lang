@@ -215,6 +215,7 @@ prims! {
     "%spawn" 1 Some(1) => |vm, a| Ok(crate::sched::spawn(vm, a[0], Value::NIL));
     "%scope" 0 Some(0) => |vm, _| Ok(norn_rt::conc::scope_new(&mut vm.m));
     "%scope-spawn" 2 Some(2) => |vm, a| { expect(a[0], Kind::Scope, "spawn")?; Ok(crate::sched::spawn(vm, a[1], a[0])) };
+    "%scope-spawn-body" 2 Some(2) => |vm, a| { expect(a[0], Kind::Scope, "%scope-spawn-body")?; Ok(crate::sched::spawn_body(vm, a[1], a[0])) };
     "%scope-join" 1 Some(1) => |vm, a| { expect(a[0], Kind::Scope, "%scope-join")?; crate::sched::scope_join(vm, a[0]) };
     "%scope-result" 2 Some(2) => scope_result;
     "await" 1 Some(1) => |vm, a| crate::conc::await_fiber(vm, a[0]);
@@ -228,7 +229,13 @@ prims! {
     "cancel!" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "cancel!")?; crate::sched::cancel(a[0], norn_rt::conc::fiber::CANCELLED); Ok(Value::NIL) };
     "%interrupt!" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "%interrupt!")?; crate::sched::cancel(a[0], norn_rt::conc::fiber::INTERRUPTED); Ok(Value::NIL) };
     "chan" 0 Some(2) => |vm, a| {
-        let n = match a.first() { Some(&v) => int(v, "chan")?.max(0) as usize, None => 0 };
+        let n = match a.first() {
+            Some(&v) => match int(v, "chan")? {
+                n if n < 0 => return Err(type_err("chan", "a buffer size of 0 or more", v)),
+                n => n as usize,
+            },
+            None => 0,
+        };
         let c = norn_rt::conc::chan_new(&mut vm.m, n);
         if let Some(&p) = a.get(1) {
             let policy = if p.is_keyword() { p.sym_name() } else { "" };

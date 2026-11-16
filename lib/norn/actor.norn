@@ -261,7 +261,11 @@
   process registered as id when id is a keyword or symbol. Options, as a
   map before f: :restart :permanent (always restarted), :transient (after
   a crash) or :temporary (never); :shutdown-ms, how long it has to end when
-  told to (5000) before it's killed."
+  told to (5000) before it's killed.
+
+  The child keeps f itself, so a restart calls the same function value
+  even after its defn is evaluated again. Pass the var (#'store rather
+  than store) for restarts to pick up a redefinition."
   ^Map [id & more]
   (let [[opts f & args] (if (map? (first more)) more (cons {} more))]
     {:id id :start (fn [] (let [p (apply spawn-process f args)]
@@ -350,7 +354,9 @@
   "Start a supervisor of children (made with child), in order: the
   supervisor process. Options: :strategy :one-for-one (restart the child
   that ended), :one-for-all (all of them) or :rest-for-one (it and those
-  after it); more than :max-restarts (3) in :max-ms (5000) and it gives up."
+  after it); more than :max-restarts (3) in :max-ms (5000) and it gives up.
+  A restart calls the function each child was given: a redefined function
+  is used only when the child was given its var (#'store)."
   ^Process [^(? Map) opts ^(? Sequential) children]
   (spawn-process supervise opts children))
 

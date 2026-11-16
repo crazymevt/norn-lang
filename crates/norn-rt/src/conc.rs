@@ -63,7 +63,10 @@ pub mod fiber {
     pub const DYN: usize = 20; //        dynamic environment: map var → value (or nil)
     pub const LOC: usize = 21; //        source location being loaded ("file:line"), or nil
     pub const CONDITION: usize = 22; //  the condition it ended with, or nil (M9 part 9.13)
-    pub const WORDS: usize = 23;
+    /// Raw: the cancel code it is unwinding for, or 0 (CANCEL is cleared
+    /// then, so its cleanups run without being cancelled again).
+    pub const CANCELLED_WITH: usize = 23;
+    pub const WORDS: usize = 24;
 
     /// Fields holding values (everything else is raw).
     pub const VALUE_FIELDS: &[usize] = &[
@@ -111,6 +114,7 @@ pub fn fiber_new(m: &mut Mutator, id: u64, thunk: Value, scope: Value, ns: usize
     f.set_word(CANCEL, 0);
     f.set_word(LOCK, 0);
     f.set_word(NOTIFY, 0);
+    f.set_word(CANCELLED_WITH, 0);
     f
 }
 
@@ -212,10 +216,23 @@ pub mod scope {
     pub const LOCK: usize = 0; // raw spinlock
     pub const CHILDREN: usize = 1; // list of fibers
     pub const PENDING: usize = 2; // raw count of unfinished children
-    pub const FAILED: usize = 3; // first child that failed, or nil
+    pub const FAILED: usize = 3; // the child whose failure fails the scope, or nil
     pub const OWNER: usize = 4; // waiter of the joining owner, or nil
-    pub const WORDS: usize = 5;
-    pub const VALUE_FIELDS: &[usize] = &[CHILDREN, FAILED, OWNER];
+    pub const BODY: usize = 5; // the fiber running with-scope's body, or nil
+    /// Children that failed with nobody waiting for them while the body was
+    /// running (newest first): the scope fails with the oldest one still
+    /// here when the body next waits or finishes, unless an await or settle
+    /// sees it first.
+    pub const UNSEEN: usize = 6;
+    pub const FLAGS: usize = 7; // raw: the bits below
+    pub const WORDS: usize = 8;
+    pub const VALUE_FIELDS: &[usize] = &[CHILDREN, FAILED, OWNER, BODY, UNSEEN];
+
+    /// The body is parked (waiting): a failure nobody sees fails the scope now.
+    pub const BODY_WAITING: u64 = 1;
+    /// The scope's children have been cancelled (it failed, or its owner
+    /// was): a fiber spawned in it from now on starts cancelled.
+    pub const CANCELLED: u64 = 2;
 }
 
 pub fn scope_new(m: &mut Mutator) -> Value {
@@ -226,6 +243,9 @@ pub fn scope_new(m: &mut Mutator) -> Value {
     s.set_word(PENDING, 0);
     s.set_field(FAILED, Value::NIL);
     s.set_field(OWNER, Value::NIL);
+    s.set_field(BODY, Value::NIL);
+    s.set_field(UNSEEN, Value::NIL);
+    s.set_word(FLAGS, 0);
     s
 }
 

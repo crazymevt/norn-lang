@@ -417,20 +417,28 @@
   `(%spawn (fn* [] ~@body)))
 
 (defn %scope-run [s thunk]
-  (let [body (%scope-spawn s thunk)]
+  (let [body (%scope-spawn-body s thunk)]
     (%scope-join s)
     (%scope-result s body)))
 
 (defmacro with-scope
-  "Structured concurrency: body runs in a fiber of a new scope bound to s, and
-  the form returns only when every fiber spawned in s has finished. If any of
-  them fails, the others are cancelled and the error is re-raised here."
+  "(with-scope [s] body…): structured concurrency. body runs in a fiber of a
+  new scope bound to s, and the form returns body's value only when every
+  fiber spawned in s has finished. If one of them fails with an error
+  nobody handled, the others are cancelled and the error is raised here.
+  A fiber stopped with cancel! ends quietly, and an error that an await or
+  settle has received isn't raised again: the code that awaited it has it.
+  (An error is held back while body is running, so body can still await
+  or settle that fiber; the scope fails as soon as body waits for anything
+  else, or ends.)"
   [binding & body]
-  (let [s (first binding)]
-    `(let* [~s (%scope)] (%scope-run ~s (fn* [] ~@body)))))
+  (if (and (vector? binding) (= 1 (count binding)) (symbol? (first binding)))
+    `(let* [~(first binding) (%scope)] (%scope-run ~(first binding) (fn* [] ~@body)))
+    (error (str "with-scope: expected a binding vector [name], got " (pr-str binding)))))
 
 (defn settle
-  "Wait for fiber f without raising: {:value v} or {:error message}."
+  "Wait for fiber f without raising: {:value v} or {:error message}. A
+  fiber of a scope whose error settle receives doesn't fail the scope."
   [f]
   (%join f)
   (let [e (fiber-error f)]
@@ -1332,9 +1340,10 @@
     (%post-event (pr-str {:event :debug :fiber id :condition (condition-text c)
                           :class (str (class-name (class-of c)))
                           :restarts (mapv %describe-restart rs)}))
-    (let [cmd (take! ch)]
-      (swap! %debugging dissoc id)
-      (%post-event (pr-str {:event :resumed :fiber id}))
+    ;; (in a finally: a fiber cancelled while it waits here leaves too)
+    (let [cmd (try (take! ch)
+                   (finally (swap! %debugging dissoc id)
+                            (%post-event (pr-str {:event :resumed :fiber id}))))]
       (cond (= (first cmd) :restart) (apply invoke-restart (nth rs (nth cmd 1)) (nth cmd 2))
             (= (first cmd) :frame) (%restart-frame (nth cmd 1) (nth cmd 2))
             :else (%abort c)))))

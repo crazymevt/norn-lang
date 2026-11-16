@@ -1129,8 +1129,12 @@ impl Vm {
                     self.invoke(st, fk.runtime_error, &[msg, trace, cls, data, cond], d)
                 }
                 _ => {
-                    // Honoured: let cleanups run without being cancelled again.
-                    self.current.atomic_word(fiber::CANCEL).store(0, std::sync::atomic::Ordering::SeqCst);
+                    // Honoured: let cleanups run without being cancelled again
+                    // (remembering it was a cancel, for the fiber's scope).
+                    let code = self.current.atomic_word(fiber::CANCEL).swap(0, std::sync::atomic::Ordering::SeqCst);
+                    if code != 0 {
+                        self.current.set_word(fiber::CANCELLED_WITH, code);
+                    }
                     let kw = rt().keyword(&mut self.m, None, "die");
                     let how = vec_from_slice(&mut self.m, &[trace, Value::NIL]);
                     self.unwind(st, Target::Bottom, kw, msg, how)

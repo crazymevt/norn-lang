@@ -93,23 +93,48 @@
     [yes no]))
 
 (defn pipeline
-  "Apply f to each value from from, n at a time in parallel, putting the
-  results on to in the original order. Closes to when from closes (unless
-  close? is false)."
+  "Apply f to each value from from, at most n calls at a time in parallel,
+  putting the results on to in the original order. Closes to when from
+  closes (unless close? is false). Returns a fiber that ends when the
+  pipeline does.
+
+  If f fails on a value, the results for the values before it still reach
+  to, in order; then the pipeline stops: the calls still running are
+  cancelled, nothing more is taken from from, to is closed (unless close?
+  is false), and awaiting the returned fiber raises f's error. A consumer
+  reading to sees it end early, so await the fiber after reading to
+  learn why."
   ([n to f from] (pipeline n to f from true))
   ([n to f from close?]
-   (let [jobs (chan n)]
-     ;; a reader starts each job in its own fiber and queues the fiber, so
-     ;; at most n run at once and results leave in order
+   (when-not (pos-int? n)
+     (error TypeError :message (str "pipeline expects n to be a positive integer, got " (pr-str n))
+            :expected "a positive integer" :value n))
+   (let [jobs (chan n)
+         slots (chan n)]
+     (dotimes [_ n] (offer! slots true))
      (spawn-detached
-       (loop []
-         (let [v (take! from)]
-           (if (nil? v) (close! jobs) (do (put! jobs (spawn-detached (f v))) (recur))))))
-     (spawn-detached
-       (loop []
-         (let [job (take! jobs)]
-           (if (nil? job) (when close? (close! to)) (do (put! to (await job)) (recur))))))
-     to)))
+       (try
+         ;; a reader starts each call in a fiber of the scope once a slot
+         ;; is free and queues the fiber; the body puts the results on to
+         ;; in order, freeing the slot as each call ends. A call's failure
+         ;; comes back as a value, so it's raised in its turn; the scope
+         ;; then cancels the rest.
+         (with-scope [s]
+           (spawn s (loop []
+                      (let [v (take! from)]
+                        (if (nil? v)
+                          (close! jobs)
+                          (do (take! slots)
+                              (put! jobs (spawn s (handler-case [::value (f v)] (Error [c] [::failed c]))))
+                              (recur))))))
+           (loop []
+             (when-some [job (take! jobs)]
+               (let [[how r] (await job)]
+                 (put! slots true)
+                 (when (= how ::failed) (error r))
+                 (put! to r)
+                 (recur)))))
+         (finally (when close? (close! to))))))))
 
 ;; ---- mult: one source, many taps ------------------------------------------------------------
 
