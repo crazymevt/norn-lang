@@ -48,6 +48,16 @@
       (is (= "ConnectionError" (class-of-name c)))
       (is (= :refused (:reason c)))
       (is (= (str "127.0.0.1:" port) (:address c)))))
+  (testing "accepting on a closed listener (it was a RuntimeError)"
+    (let [l (net/listen "127.0.0.1" 0)]
+      (io/close l)
+      (let [c (caught (fn [] (net/accept l)))]
+        (is (= ["ConnectionError" :closed] [(class-of-name c) (:reason c)]))))
+    (let [l (net/listen "127.0.0.1" 0)
+          f (spawn-detached (caught (fn [] (net/accept l))))]
+      (sleep 20)
+      (io/close l)
+      (is (= ["ConnectionError" :closed] ((juxt class-of-name :reason) (await f))) "closed while waiting")))
   (testing "TLS"
     (let [certs (io/path here "certs")
           s (http/serve (fn [_] {:status 200 :body "ok"}) :tls true

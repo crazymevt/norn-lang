@@ -280,6 +280,15 @@ SQL and the remaining items supply bound parameters.
 ; => {:title "The Left Hand of Darkness"}
 ```
 
+`execute!` returns the number of rows the statement changed, which is 0 for
+a statement that changes none, such as `CREATE TABLE`. `with-transaction`
+and `transact` commit when the body returns and roll back when it doesn't:
+an error, a warning or restart that unwinds past it, or the fiber being
+cancelled. Inside another transaction they use a savepoint, which rolls back
+alone. Errors are `DatabaseError`s, with `ConstraintError` and `BusyError`
+among them; a value SQLite can't store, such as an integer beyond 64 bits,
+is one too.
+
 ### HTTP bodies and forms
 
 By default, `norn.http/request` reads the whole response body. With
@@ -350,7 +359,7 @@ JavaScript's Temporal:
 - `:compatible` (the default) picks the later time for a skipped time and
   the earlier one for a repeated time.
 - `:earlier` and `:later` pick that side in both cases.
-- `:reject` signals an error.
+- `:reject` signals a `TypeError`.
 
 ```clojure
 (require '[norn.time :as t])
@@ -382,6 +391,18 @@ for time units. Other calendar helpers are `days-between`, `months-between`,
 `2026-03-08T03:30:00-04:00[America/New_York]`, and `parse-zoned` reads it.
 `before?`, `after?`, and `compare-time` compare dates, times, and zoned
 date-times.
+
+Text that isn't a date, time, or zone signals `ParseError`: `parse` and the
+other parsing functions, and `zone` given a name it can't find. Values that
+don't make a date or time signal `TypeError`, such as `(local-date 2026 2
+30)` or a wall-clock time that `:reject` refuses.
+
+`norn.schedule` reads five-field cron expressions and runs their times in
+a zone (`:zone`, UTC by default). Across a clock change it follows Vixie
+cron. A time that the change skips runs once, at the change. A time that it
+repeats runs once, the first time. An expression whose minute or hour is
+`*` follows the clock instead: it runs in both occurrences of a repeated
+hour and not at all in a skipped one. Bad cron text signals `ParseError`.
 
 ### The terminal
 
