@@ -158,7 +158,7 @@
   only a function, or any value or name), and ffi/call, which every
   defcfun function calls after checking its own C signature."
   '#{norn.actor/exit! norn.actor/run-in-process norn.actor/send norn.actor/trap-exits!
-     norn.ffi/call norn.http/close-idle! norn.sqlite/c-libversion norn.stm/after-commit norn.stm/run-transaction
+     norn.ffi/call norn.http/close-idle! norn.stm/after-commit norn.stm/run-transaction
      norn.terminal/call-with-raw-mode norn.terminal/suspend!})
 
 (deftest the-libraries-public-functions-are-checked

@@ -513,9 +513,12 @@
   define a Norn function calling a C function (options as for function).
   Its signature is checked on calls from other modules. A variadic one
   ends [… & more]. Parameter types may come alone ([:string :int]),
-  unnamed and unchecked (:... for variadic)."
+  unnamed and unchecked (:... for variadic). :private true keeps the
+  function inside its module, as defn- does (a library's raw bindings)."
   [fname lib cname params ret & opts]
-  (let [named? (symbol? (first params))
+  (let [private? (true? (get (apply hash-map opts) :private))
+        opts (apply concat (dissoc (apply hash-map opts) :private))
+        named? (symbol? (first params))
         [fixed rest-name] (let [[a b] (split-with (fn [x] (not= x '&)) params)] [a (second b)])
         names (if named? (mapv first (partition 2 fixed)) (mapv (fn [i] (symbol (str "arg" i))) (range (count params))))
         types (if named? (cond-> (mapv second (partition 2 fixed)) rest-name (conj :...)) params)
@@ -526,8 +529,10 @@
          ~(cond rest-name `(defn ~fname [~@names ~'& ~rest-name] (apply norn.ffi/call ~ff ~@names ~rest-name))
                 named? `(defn ~fname ~names (norn.ffi/call ~ff ~@names))
                 :else `(defn ~fname [& args#] (apply norn.ffi/call ~ff args#)))
-         ~@(when (and named? (not rest-name))
-             [`(defcontract ~fname (fn-of [~@(map contract-for types)] ~(if out? 'vector? (contract-for ret))))])
+         ~@(if private?
+             [`(%set-private! (var ~fname))]
+             (when (and named? (not rest-name))
+               [`(defcontract ~fname (fn-of [~@(map contract-for types)] ~(if out? 'vector? (contract-for ret))))]))
          (var ~fname))))
 
 ;; (everything here that touches C or its memory is for (:unsafe) modules)

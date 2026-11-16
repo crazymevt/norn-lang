@@ -344,3 +344,9 @@
     (is (= 5 (labs -5)))
     (when-not windows?
       (is (= 5000000000 (labs -5000000000)) "wider than 32 bits"))))
+
+(ffi/defcfun labs-inside libc "labs" [n :long] :long :private true)
+
+(deftest a-binding-can-stay-inside-its-module
+  (is (private? #'labs-inside))
+  (is (= 3 (labs-inside -3)) "and works there"))
