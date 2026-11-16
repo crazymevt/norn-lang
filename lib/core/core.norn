@@ -42,38 +42,65 @@
                                      (if (seq ns)
                                        (recur (rest ns) (cons (list 'def (first ns)) acc))
                                        acc))))
-(defmacro comment [& _] nil)
+(defmacro comment "(comment …): ignore the forms, giving nil: for notes and examples
+  kept in source." [& _] nil)
 
 ;;; ---- basics -------------------------------------------------------------------
 
-(defn not [x] (if x false true))
-(defn some? [x] (not (nil? x)))
-(defn true? [x] (identical? x true))
-(defn false? [x] (identical? x false))
-(defn identity [x] x)
-(defn second [coll] (first (next coll)))
-(defn ffirst [coll] (first (first coll)))
-(defn nnext [coll] (next (next coll)))
-(defn empty? [coll] (not (seq coll)))
-(defn not-empty [coll] (if (seq coll) coll nil))
-(defn zero? [n] (== n 0))
-(defn pos? [n] (> n 0))
-(defn neg? [n] (< n 0))
-(defn even? [n] (zero? (rem n 2)))
-(defn odd? [n] (not (even? n)))
-(defn abs [n] (if (neg? n) (- n) n))
-(defn max ([x] x) ([x y] (if (> x y) x y)) ([x y & more] (apply max (max x y) more)))
-(defn min ([x] x) ([x y] (if (< x y) x y)) ([x y & more] (apply min (min x y) more)))
-(defn constantly [x] (fn [& _] x))
-(defn complement [f] (fn [& args] (not (apply f args))))
+(defn not "true if x is false or nil, else false." [x] (if x false true))
+(defn some? "Is x anything but nil? (True of false too.)" [x] (not (nil? x)))
+(defn true? "Is x the value true (not just any truthy value)?" [x] (identical? x true))
+(defn false? "Is x the value false? (nil isn't.)" [x] (identical? x false))
+(defn identity "x itself." [x] x)
+(defn second "The second item of coll, or nil if it has fewer." [coll] (first (next coll)))
+(defn ffirst "The first item of coll's first item." [coll] (first (first coll)))
+(defn nnext "coll as a seq after its first two items, or nil if nothing is left." [coll]
+  (next (next coll)))
+(defn empty? "Has coll no items? True of nil and \"\" too." [coll] (not (seq coll)))
+(defn not-empty "coll, or nil if it has no items." [coll] (if (seq coll) coll nil))
+(defn zero? "Is number n zero (0.0 too)?" [n] (== n 0))
+(defn pos? "Is number n above zero?" [n] (> n 0))
+(defn neg? "Is number n below zero?" [n] (< n 0))
+(defn even? "Is integer n even? A TypeError for a float or a ratio." [n] (zero? (rem n 2)))
+(defn odd? "Is integer n odd? A TypeError for a float or a ratio." [n] (not (even? n)))
+(defn abs
+  "The absolute value of number n, of the same kind: (abs -3) is 3. An
+  integer never overflows (it grows into a big one)."
+  [n]
+  (if (neg? n) (- n) n))
+(defn max
+  "The greatest of the numbers. Of two that are equal, the later one:
+  (max 1 1.0) is 1.0."
+  ([x] x) ([x y] (if (> x y) x y)) ([x y & more] (apply max (max x y) more)))
+(defn min
+  "The least of the numbers. Of two that are equal, the later one:
+  (min 1 1.0) is 1.0."
+  ([x] x) ([x y] (if (< x y) x y)) ([x y & more] (apply min (min x y) more)))
+(defn constantly "A function that takes any arguments and returns x." [x] (fn [& _] x))
+(defn complement "A function that returns (not (apply f args)): the opposite of f." [f]
+  (fn [& args] (not (apply f args))))
 
 ;;; ---- control flow ------------------------------------------------------------
 
-(defmacro when [test & body] `(if ~test (do ~@body)))
-(defmacro when-not [test & body] `(if ~test nil (do ~@body)))
-(defmacro if-not [test then & else] `(if ~test (do ~@else) ~then))
+(defmacro when
+  "(when test body…): body's last value if test is truthy, else nil."
+  [test & body]
+  `(if ~test (do ~@body)))
+(defmacro when-not
+  "(when-not test body…): body's last value if test is falsy, else nil."
+  [test & body]
+  `(if ~test nil (do ~@body)))
+(defmacro if-not
+  "(if-not test then else…): then if test is falsy; otherwise the else
+  forms' last value (nil without any)."
+  [test then & else]
+  `(if ~test (do ~@else) ~then))
 
-(defmacro cond [& clauses]
+(defmacro cond
+  "(cond test expr …): the expr after the first truthy test, or nil if no
+  test is. A last test of :else (any truthy value) gives a default. The
+  tests after the one that holds aren't evaluated."
+  [& clauses]
   (when (seq clauses)
     (when-not (next clauses)
       (error "cond requires an even number of forms"))
@@ -81,14 +108,20 @@
        ~(second clauses)
        (cond ~@(nnext clauses)))))
 
-(defmacro and [& xs]
+(defmacro and
+  "(and x…): the first falsy x, evaluating no further, or else the last
+  x. (and) is true."
+  [& xs]
   (if (seq xs)
     (if (next xs)
       `(let* [and# ~(first xs)] (if and# (and ~@(rest xs)) and#))
       (first xs))
     true))
 
-(defmacro or [& xs]
+(defmacro or
+  "(or x…): the first truthy x, evaluating no further, or else the last
+  x (nil or false). (or) is nil."
+  [& xs]
   (if (seq xs)
     (if (next xs)
       `(let* [or# ~(first xs)] (if or# or# (or ~@(rest xs))))
@@ -105,7 +138,10 @@
   `(let* [temp# ~(second binding)]
      (when temp# (let* [~(first binding) temp#] ~@body))))
 
-(defmacro -> [x & forms]
+(defmacro ->
+  "(-> x form…): thread x through the forms as their first argument:
+  (-> x (f a) g) is (g (f x a)). A bare symbol f is called as (f x)."
+  [x & forms]
   (loop* [x x forms forms]
     (if forms
       (let* [form (first forms)]
@@ -113,7 +149,10 @@
                (next forms)))
       x)))
 
-(defmacro ->> [x & forms]
+(defmacro ->>
+  "(->> x form…): thread x through the forms as their last argument:
+  (->> x (f a) g) is (g (f a x)). A bare symbol f is called as (f x)."
+  [x & forms]
   (loop* [x x forms forms]
     (if forms
       (let* [form (first forms)]
@@ -121,7 +160,10 @@
                (next forms)))
       x)))
 
-(defmacro doto [x & forms]
+(defmacro doto
+  "(doto x (f a)…): evaluate x once, call each form with it as the first
+  argument ((f x a)), for effect, and return x."
+  [x & forms]
   (let* [g (gensym "doto")]
     `(let* [~g ~x]
        ~@(loop* [fs forms acc []]
@@ -131,7 +173,11 @@
              acc))
        ~g)))
 
-(defmacro letfn [fnspecs & body]
+(defmacro letfn
+  "(letfn [(name [params] body…)…] body…): local functions that can call
+  themselves and each other, then body. Each spec is a fn* form (one arity
+  or several) whose parameters don't destructure."
+  [fnspecs & body]
   `(letrec* ~(loop* [specs fnspecs acc []]
                (if (seq specs)
                  (let* [spec (first specs)]
@@ -139,13 +185,19 @@
                  acc))
      ~@body))
 
-(defmacro assert [x & msg]
+(defmacro assert
+  "(assert x message?): nil if x is truthy; otherwise signal an error
+  \"Assert failed: …\" with message (evaluated only then) or x's source."
+  [x & msg]
   `(when-not ~x
      (error "Assert failed:" ~(if (seq msg) (first msg) (pr-str x)))))
 
 ;;; ---- iteration ------------------------------------------------------------------
 
-(defmacro dotimes [bindings & body]
+(defmacro dotimes
+  "(dotimes [i n] body…): run body n times, with i bound to 0, 1, … n-1
+  (n is evaluated once). nil."
+  [bindings & body]
   (let* [i (first bindings) n (second bindings)]
     `(let* [n# ~n]
        (loop* [~i 0]
@@ -160,10 +212,15 @@
          (let* [~x (first s#)] ~@body)
          (recur (next s#))))))
 
-(defmacro while [test & body]
+(defmacro while
+  "(while test body…): run body as long as test is truthy, testing first. nil."
+  [test & body]
   `(loop* [] (when ~test ~@body (recur))))
 
-(defmacro time [expr]
+(defmacro time
+  "(time expr): evaluate expr, print \"Elapsed time: … msecs\", and return
+  expr's value."
+  [expr]
   `(let* [start# (nano-time)
           ret# ~expr]
      (println (str "Elapsed time: " (/ (float (- (nano-time) start#)) 1000000.0) " msecs"))
@@ -184,13 +241,25 @@
      (loop [s (seq coll) acc init]
        (if s (recur (next s) (f acc (first s))) acc)))))
 
-(defn reduce-kv [f init m]
+(defn reduce-kv
+  "Reduce map m with (f acc k v) for each entry, from init. (reduced x)
+  from f stops early with x. m's items must be [k v] pairs: a vector's
+  aren't (there's no index-and-value form, as in Clojure)."
+  [f init m]
   (reduce (fn [acc e] (f acc (first e) (second e))) init m))
 
-(defn reverse* [coll] (reduce (fn [acc x] (cons x acc)) () coll))
-(defn reverse [coll] (reverse* coll))
+;; (norn.core's own: reverse may be redefined)
+(defn- reverse* [coll] (reduce (fn [acc x] (cons x acc)) () coll))
+(defn reverse
+  "The items of coll in reverse order, as a list (() for nil or an empty
+  coll). Eager: it reads all of coll."
+  [coll]
+  (reverse* coll))
 
 (defn comp
+  "Compose functions: ((comp f g) x…) is (f (g x…)). The last function
+  takes the arguments, and each one before it the result of the one after
+  it. (comp) is identity."
   ([] identity)
   ([f] f)
   ([f g] (fn [& args] (f (apply g args))))
@@ -203,7 +272,10 @@
        (loop [gs others acc (apply innermost args)]
          (if gs (recur (next gs) ((first gs) acc)) acc))))))
 
-(defn partial [f & bound] (fn [& args] (apply f (concat bound args))))
+(defn partial
+  "f with the arguments bound given first: ((partial f a) b) is (f a b)."
+  [f & bound]
+  (fn [& args] (apply f (concat bound args))))
 
 (defn into [to from]
   (if (and (vector? to) (empty? to))
@@ -239,15 +311,24 @@
   ([f coll] (reduce (fn [acc x] (into acc (f x))) [] coll))
   ([f c1 c2] (reduce (fn [acc x] (into acc x)) [] (map f c1 c2))))
 
-(defn some [pred coll]
+(defn some
+  "The first truthy (pred x) for an item x of coll, or nil if there's none.
+  Stops at the first: (some #{2 3} xs) finds the first 2 or 3."
+  [pred coll]
   (loop [s (seq coll)]
     (when s (or (pred (first s)) (recur (next s))))))
 
-(defn every? [pred coll]
+(defn every?
+  "Is (pred x) truthy for every item x of coll? True for an empty coll.
+  Stops at the first falsy one."
+  [pred coll]
   (loop [s (seq coll)]
     (if s (if (pred (first s)) (recur (next s)) false) true)))
 
-(defn not-any? [pred coll] (not (some pred coll)))
+(defn not-any?
+  "Is (pred x) falsy for every item x of coll? (not (some pred coll))."
+  [pred coll]
+  (not (some pred coll)))
 
 (defn take [n coll]
   (loop [s (seq coll) i 0 acc []]
@@ -265,15 +346,23 @@
   (loop [s (seq coll)]
     (if (and s (pred (first s))) (recur (next s)) (vec s))))
 
-(defn last [coll]
+(defn last
+  "The last item of coll, or nil if it's empty. A vector's directly;
+  anything else is walked to its end."
+  [coll]
   (if (vector? coll)
     (peek coll)
     (loop [s (seq coll)] (if (next s) (recur (next s)) (first s)))))
 
-(defn butlast [coll]
+(defn butlast
+  "All but coll's last item, as a vector: [] for one item, nil for none."
+  [coll]
   (let [v (vec coll)] (if (seq v) (pop v) nil)))
 
-(defn nthnext [coll n]
+(defn nthnext
+  "coll as a seq without its first n items: (nthnext [1 2 3] 1) is (2 3).
+  nil when nothing is left."
+  [coll n]
   (loop [s (seq coll) n n] (if (and s (pos? n)) (recur (next s) (dec n)) s)))
 
 (defn repeat [n x] (loop [i 0 acc []] (if (< i n) (recur (inc i) (conj acc x)) acc)))
@@ -296,19 +385,30 @@
     (let [chunk (take n s)]
       (if (== (count chunk) n) (recur (nthnext s n) (conj acc chunk)) acc))))
 
-(defn frequencies [coll]
+(defn frequencies
+  "A map from each distinct item of coll to the number of times it occurs."
+  [coll]
   (reduce (fn [m x] (assoc m x (inc (get m x 0)))) {} coll))
 
-(defn group-by [f coll]
+(defn group-by
+  "A map from each (f x) to the vector of coll's items x that give it, in
+  their order in coll."
+  [f coll]
   (reduce (fn [m x] (let [k (f x)] (assoc m k (conj (get m k []) x)))) {} coll))
 
-(defn zipmap [ks vs]
+(defn zipmap
+  "A map of keys ks to values vs, paired in order, stopping at the shorter.
+  A repeated key takes its last value."
+  [ks vs]
   (loop [k (seq ks) v (seq vs) m {}]
     (if (and k v) (recur (next k) (next v) (assoc m (first k) (first v))) m)))
 
 ;;; ---- maps -----------------------------------------------------------------------
 
-(defn merge [& maps]
+(defn merge
+  "The maps merged left to right: a key's value from a later map wins.
+  nil maps are skipped; with no maps, or only nil ones, nil."
+  [& maps]
   (reduce (fn [acc m] (if m (conj (or acc {}) m) acc)) nil maps))
 
 (defn get-in
@@ -321,16 +421,29 @@
        (if (contains? m (first ks)) (recur (get m (first ks)) (next ks)) not-found)
        m))))
 
-(defn assoc-in [m ks v]
+(defn assoc-in
+  "m with v at path ks in nested maps, making maps for the levels that are
+  missing: (assoc-in {} [:a :b] 1) is {:a {:b 1}}. A vector along the
+  path takes an index."
+  [m ks v]
   (let [k (first ks) more (next ks)]
     (if more (assoc m k (assoc-in (get m k) more v)) (assoc m k v))))
 
-(defn update [m k f & args] (assoc m k (apply f (get m k) args)))
+(defn update
+  "m with key k's value replaced by (f old args…), old nil when k is
+  missing. A vector takes an index for k."
+  [m k f & args]
+  (assoc m k (apply f (get m k) args)))
 
-(defn update-in [m ks f & args]
+(defn update-in
+  "m with the value at path ks in nested maps replaced by (f old args…),
+  making maps for missing levels (old is then nil)."
+  [m ks f & args]
   (assoc-in m ks (apply f (get-in m ks) args)))
 
-(defn select-keys [m ks]
+(defn select-keys
+  "A map of the keys in ks that m has, with their values (nil ones too)."
+  [m ks]
   (reduce (fn [acc k] (if (contains? m k) (assoc acc k (get m k)) acc)) {} ks))
 
 ;;; ---- sorting --------------------------------------------------------------------
@@ -387,7 +500,11 @@
     (in-ns ns)
     v))
 
-(defn load-file [path]
+(defn load-file
+  "Evaluate every form in the file at path, in order, and return the last
+  one's value. The current namespace is restored afterwards. A
+  FileNotFound if there's no such file."
+  [path]
   (let [ns (current-ns)
         v (%eval-reader (%reader (slurp path) path))]
     (in-ns ns)
@@ -455,7 +572,11 @@
       (let [e (first ws)] ((second e) (first e) a old new))
       (recur (next ws)))))
 
-(defn swap! [a f & args]
+(defn swap!
+  "Set atom a to (f old args…) atomically, and return the new value. If
+  another change lands first, f is called again with the newer value, so
+  it shouldn't have side effects. Calls a's watches."
+  [a f & args]
   (loop []
     (let [old (deref a)
           new (apply f old args)]
@@ -463,8 +584,14 @@
         (do (when (pos? (deref %watched)) (%fire-watches a old new)) new)
         (recur)))))
 
-(def >! put!)
-(def <! take!)
+(def >!
+  "(>! ch x): put!, under the name core.async gives it. Send x on channel
+  ch, parking until there's room or a taker: true, or false if ch is closed."
+  put!)
+(def <!
+  "(<! ch): take!, under the name core.async gives it. The next value from
+  channel ch, parking until there is one; nil once ch is closed and empty."
+  take!)
 
 (defn- %chunk-size [n]
   (let [parts (* 4 (carrier-count))]
@@ -502,12 +629,21 @@
 ;;; resolves its names in compile-time instances of modules; without the
 ;;; expander (boot, NORN_EXPANDER=off) it's just e.
 
-(def for-syntax (fn* for-syntax [e] e))
+(def for-syntax
+  "(for-syntax e): e as compile-time code, one phase up: the expander
+  resolves its names in the compile-time instances of modules (as
+  begin-for-syntax and require-for-syntax set them up). defmacro wraps a
+  macro's function in it. Without the expander, it's just e."
+  (fn* for-syntax [e] e))
 (%set-macro! (var for-syntax))
 
 ;;; ---- vars -------------------------------------------------------------------------
 
-(defn alter-var-root [v f & args] (%set-root! v (apply f (var-get v) args)))
+(defn alter-var-root
+  "Set var v's root value to (f old args…), and return the new value. Not
+  atomic, unlike swap!: a change made meanwhile by another fiber is lost."
+  [v f & args]
+  (%set-root! v (apply f (var-get v) args)))
 
 (defmacro ns
   "M0: switch to (creating) a namespace. :require arrives with modules (M6)."
@@ -628,44 +764,135 @@
     (when builtin (%register-builtin! builtin c))
     c))
 
-(def Object (%defbuiltin 'Object [] "object"))
+(def Object
+  "The root class: every value is an Object, nil included. Values with no
+  class of their own (a transient, say) have Object as their class."
+  (%defbuiltin 'Object [] "object"))
 (%register-builtin! "other" Object)
-(def Null (%defbuiltin 'Null [Object] "null"))
-(def Boolean (%defbuiltin 'Boolean [Object] "boolean"))
-(def Character (%defbuiltin 'Character [Object] "character"))
-(def Number (%defbuiltin 'Number [Object] nil))
-(def Integer (%defbuiltin 'Integer [Number] "integer"))
-(def Float (%defbuiltin 'Float [Number] "float"))
-(def Ratio (%defbuiltin 'Ratio [Number] "ratio"))
-(def String (%defbuiltin 'String [Object] "string"))
-(def Bytes (%defbuiltin 'Bytes [Object] "bytes"))
-(def Handle (%defbuiltin 'Handle [Object] "handle"))
-(def Regex (%defbuiltin 'Regex [Object] "regex"))
-(def Symbol (%defbuiltin 'Symbol [Object] "symbol"))
-(def Keyword (%defbuiltin 'Keyword [Object] "keyword"))
-(def Collection (%defbuiltin 'Collection [Object] nil))
-(def Sequential (%defbuiltin 'Sequential [Collection] nil))
-(def List (%defbuiltin 'List [Sequential] "list"))
-(def Vector (%defbuiltin 'Vector [Sequential] "vector"))
-(def Seq (%defbuiltin 'Seq [Sequential] "seq"))
-(def Queue (%defbuiltin 'Queue [Sequential] "queue"))
-(def Map (%defbuiltin 'Map [Collection] "map"))
-(def Set (%defbuiltin 'Set [Collection] "set"))
-(def Function (%defbuiltin 'Function [Object] "function"))
-(def GenericFunction (%defbuiltin 'GenericFunction [Function] "generic-function"))
-(def Var (%defbuiltin 'Var [Object] "var"))
-(def Fiber (%defbuiltin 'Fiber [Object] "fiber"))
-(def Channel (%defbuiltin 'Channel [Object] "channel"))
-(def Atom (%defbuiltin 'Atom [Object] "atom"))
-(def Scope (%defbuiltin 'Scope [Object] "scope"))
-(def Class (%defbuiltin 'Class [Object] "class"))
-(def StandardObject (%defbuiltin 'StandardObject [Object] nil))
+(def Null
+  "The class of nil."
+  (%defbuiltin 'Null [Object] "null"))
+(def Boolean
+  "The class of true and false."
+  (%defbuiltin 'Boolean [Object] "boolean"))
+(def Character
+  "The class of characters: \\a, \\newline."
+  (%defbuiltin 'Character [Object] "character"))
+(def Number
+  "The class of numbers, with subclasses Integer, Float and Ratio. No
+  value's class is Number itself."
+  (%defbuiltin 'Number [Object] nil))
+(def Integer
+  "The class of integers, small (fixnums) and big alike."
+  (%defbuiltin 'Integer [Number] "integer"))
+(def Float
+  "The class of floating-point numbers (64-bit): 1.5, ##Inf, ##NaN."
+  (%defbuiltin 'Float [Number] "float"))
+(def Ratio
+  "The class of ratios such as 1/3. A ratio that comes out whole, such as
+  4/2, is an Integer."
+  (%defbuiltin 'Ratio [Number] "ratio"))
+(def String
+  "The class of strings. A string isn't a Collection, though seq, count
+  and nth work on one."
+  (%defbuiltin 'String [Object] "string"))
+(def Bytes
+  "The class of byte strings, as bytes and binary reads make."
+  (%defbuiltin 'Bytes [Object] "bytes"))
+(def Handle
+  "The class of OS handles: the files, sockets and pipes the runtime holds
+  open (handle? tests for one)."
+  (%defbuiltin 'Handle [Object] "handle"))
+(def Regex
+  "The class of regular expressions: #\"a+\", re-pattern."
+  (%defbuiltin 'Regex [Object] "regex"))
+(def Symbol
+  "The class of symbols: 'a, 'ns/a."
+  (%defbuiltin 'Symbol [Object] "symbol"))
+(def Keyword
+  "The class of keywords: :a, :ns/a."
+  (%defbuiltin 'Keyword [Object] "keyword"))
+(def Collection
+  "The class of collections, abstract: Sequential ones, maps and sets.
+  Strings and nil aren't Collections."
+  (%defbuiltin 'Collection [Object] nil))
+(def Sequential
+  "The class of ordered collections, abstract: lists, vectors, seqs and
+  queues."
+  (%defbuiltin 'Sequential [Collection] nil))
+(def List
+  "The class of lists: '(1 2), (), and what cons gives, and seq of a list
+  or a map."
+  (%defbuiltin 'List [Sequential] "list"))
+(def Vector
+  "The class of vectors: [1 2]. A map's entries are vectors too."
+  (%defbuiltin 'Vector [Sequential] "vector"))
+(def Seq
+  "The class of seqs over other things: ranges, lazy streams, and seq of a
+  vector."
+  (%defbuiltin 'Seq [Sequential] "seq"))
+(def Queue
+  "The class of persistent queues (queue)."
+  (%defbuiltin 'Queue [Sequential] "queue"))
+(def Map
+  "The class of maps, hash and sorted alike: a sorted map is a Map."
+  (%defbuiltin 'Map [Collection] "map"))
+(def Set
+  "The class of sets, hash and sorted alike: a sorted set is a Set."
+  (%defbuiltin 'Set [Collection] "set"))
+(def Function
+  "The class of functions, closures and primitives; GenericFunction is a
+  subclass. Keywords, maps and sets can be called but aren't Functions."
+  (%defbuiltin 'Function [Object] "function"))
+(def GenericFunction
+  "The class of generic functions (defgeneric), unless a generic
+  function has a class of its own."
+  (%defbuiltin 'GenericFunction [Function] "generic-function"))
+(def Var
+  "The class of vars: (var x), #'x."
+  (%defbuiltin 'Var [Object] "var"))
+(def Fiber
+  "The class of fibers, as spawn and spawn-detached make."
+  (%defbuiltin 'Fiber [Object] "fiber"))
+(def Channel
+  "The class of channels, as chan and timeout make."
+  (%defbuiltin 'Channel [Object] "channel"))
+(def Atom
+  "The class of atoms (atom)."
+  (%defbuiltin 'Atom [Object] "atom"))
+(def Scope
+  "The class of structured-concurrency scopes, as with-scope makes."
+  (%defbuiltin 'Scope [Object] "scope"))
+(def Class
+  "The class of classes, unless a class has a metaclass of its own."
+  (%defbuiltin 'Class [Object] "class"))
+(def StandardObject
+  "The class of objects made with make: the superclass of every
+  defclass class that names none. Built-in values aren't
+  StandardObjects."
+  (%defbuiltin 'StandardObject [Object] nil))
 
-(defn class-name [c] (%class-get c :name))
-(defn class-precedence-list [c] (%class-get c :cpl))
-(defn class-direct-superclasses [c] (%class-get c :supers))
-(defn class-direct-subclasses [c] (%class-get c :subclasses))
-(defn class-slots [c] (%class-get c :slots))
+(defn class-name
+  "Class c's name, a qualified symbol: norn.core/Integer."
+  [c]
+  (%class-get c :name))
+(defn class-precedence-list
+  "Class c and all its superclasses, most specific first (the C3
+  linearisation): the order in which methods are chosen for c."
+  [c]
+  (%class-get c :cpl))
+(defn class-direct-superclasses "The superclasses class c names itself, as a vector." [c]
+  (%class-get c :supers))
+(defn class-direct-subclasses
+  "The classes that name class c as a superclass, as a vector."
+  [c]
+  (%class-get c :subclasses))
+(defn class-slots
+  "Class c's slots, inherited ones first: a vector of maps with :name and
+  :initarg, and :initform (a function), :reader, :type, :doc and so on as
+  the defclass forms gave them."
+  [c]
+  (%class-get c :slots))
 
 (defn- %slot-spec [s]
   (let [s (if (symbol? s) (list s) s)
@@ -753,7 +980,8 @@
       (%check-slot-types (%make-from c initargs)))
     (%make-from c initargs)))
 
-(defn instance->map [o] (zipmap (keys o) (vals o)))
+(defn instance->map "Object o's slots as a map, from slot keyword to value." [o]
+  (zipmap (keys o) (vals o)))
 
 ;;; ---- generic functions ---------------------------------------------------------------
 
@@ -869,7 +1097,12 @@
         gf
         (recur)))))
 
-(defn generic-methods [gf] (%gf-get gf :methods))
+(defn generic-methods
+  "Generic function gf's methods: a vector of maps with :specs (a
+  specializer per required parameter), :qualifier (nil, :before, :after,
+  :around…) and :fn."
+  [gf]
+  (%gf-get gf :methods))
 
 (defn %dv-spec
   "Specializer for a custom-dispatch method's dispatch value."
@@ -1114,8 +1347,17 @@
                 (if s (recur (nnext s) (conj (conj acc (list 'var (first s))) (second s))) acc))]
     `(%with-bindings* (%bind-map [~@pairs]) (fn* [] ~@body) (%dyn))))
 
-(defmacro catch-tag [tag & body] `(%catch* ~tag (fn* [] ~@body) (%dyn)))
-(defn throw-tag [tag value] (%throw tag value))
+(defmacro catch-tag
+  "(catch-tag tag body…): body's value; but if (throw-tag tag v) is
+  called while body runs (in this fiber), unwind to here and give v.
+  Tags match by identity; the innermost catch-tag for a tag takes it."
+  [tag & body]
+  `(%catch* ~tag (fn* [] ~@body) (%dyn)))
+(defn throw-tag
+  "Unwind to the innermost catch-tag for tag in this fiber (running
+  cleanups on the way), which gives value. A RuntimeError if there's none."
+  [tag value]
+  (%throw tag value))
 
 (defmacro unwind-protect
   "Evaluate form; always run cleanup afterwards, including when the stack is
@@ -1125,45 +1367,93 @@
 
 ;;; ---- conditions (design.md §5.2) -------------------------------------------------------
 
-(defclass Condition () ((message :initform nil) (trace :initform nil) (location :initform nil)))
-(defclass Warning (Condition) ())
-(defclass SeriousCondition (Condition) ())
-(defclass Error (SeriousCondition) ())
-(defclass SimpleError (Error) ())
+(defclass Condition () ((message :initform nil) (trace :initform nil) (location :initform nil))
+  (:doc "The root of the condition classes, what signal, error and warn deal in.
+  Slots: :message (text, or nil), :trace (the stack, for one the runtime
+  raised) and :location (\"file:line\" where it was signalled, when known)."))
+(defclass Warning (Condition) ()
+  (:doc "A condition warn signals: printed as WARNING: … unless a handler
+  muffles it (muffle-warning)."))
+(defclass SeriousCondition (Condition) ()
+  (:doc "A condition that shouldn't go unhandled: Error's superclass, as in
+  Common Lisp."))
+(defclass Error (SeriousCondition) ()
+  (:doc "The class of errors: what error and the runtime signal, and what
+  (catch Error e …) catches. One no handler takes goes to the debugger
+  (invoke-debugger)."))
+(defclass SimpleError (Error) ()
+  (:doc "The error (error \"message\" args…) makes, with just a :message."))
 
 ;; What the runtime raises (M9 part 9.13). A handler chooses by class, and
 ;; reads what went wrong from slots rather than from the message.
 ;;
 ;; RuntimeError: an operation the program asked for can't be done as asked
 ;; (a mistake in the program, usually), with use-value and retry restarts.
-(defclass RuntimeError (Error) ())
-(defclass TypeError (RuntimeError) ((expected :initform nil) (value :initform nil)))
-(defclass ArityError (RuntimeError) ((function :initform nil) (given :initform nil)))
-(defclass UnboundVarError (RuntimeError) ((var :initform nil)))
-(defclass IndexError (RuntimeError) ((index :initform nil)))
-(defclass ArithmeticError (RuntimeError) ())
+(defclass RuntimeError (Error) ()
+  (:doc "An operation the program asked for can't be done as asked (usually a
+  mistake in the program). Raised from Rust code, with restarts use-value
+  (a value for the operation instead) and retry (try it again, after
+  fixing something). Its subclasses say more; a runtime error with no
+  class of its own is a plain RuntimeError."))
+(defclass TypeError (RuntimeError) ((expected :initform nil) (value :initform nil))
+  (:doc "A value of the wrong type for an operation: (+ 1 :a). :expected says
+  what was wanted (as text) and :value what was given, when known."))
+(defclass ArityError (RuntimeError) ((function :initform nil) (given :initform nil))
+  (:doc "A function called with the wrong number of arguments: :function is the
+  function and :given the number it got."))
+(defclass UnboundVarError (RuntimeError) ((var :initform nil))
+  (:doc "A var used that has no value (declared, or def'd without one): :var is
+  the var. Its retry restart tries again once it's defined."))
+(defclass IndexError (RuntimeError) ((index :initform nil))
+  (:doc "An index out of range: nth or assoc on a vector, subs, a byte offset.
+  :index is the index."))
+(defclass ArithmeticError (RuntimeError) ()
+  (:doc "Arithmetic with no answer: integer division by zero (/, quot, rem, mod).
+  Float division by zero gives ##Inf or ##NaN instead."))
 
 ;; IOError: the world outside didn't cooperate. :reason is a keyword
 ;; (:not-found, :refused, :reset, :timed-out…); :path or :address says
 ;; where, when it's known.
-(defclass IOError (Error) ((path :initform nil) (address :initform nil) (reason :initform nil)))
-(defclass FileNotFound (IOError) ())
-(defclass PermissionDenied (IOError) ())
-(defclass FileExists (IOError) ())
-(defclass ConnectionError (IOError) ())
-(defclass TlsError (ConnectionError) ())
+(defclass IOError (Error) ((path :initform nil) (address :initform nil) (reason :initform nil))
+  (:doc "A file, socket or process operation failed. :reason is a keyword
+  (:unexpected-end, :invalid-data, :other, or a subclass's), and :path or
+  :address says where, when known. Subclasses: FileNotFound,
+  PermissionDenied, FileExists, ConnectionError."))
+(defclass FileNotFound (IOError) ()
+  (:doc "No such file or directory: :reason :not-found, and :path when known."))
+(defclass PermissionDenied (IOError) ()
+  (:doc "The OS refused access to a file or resource: :reason
+  :permission-denied, and :path when known."))
+(defclass FileExists (IOError) ()
+  (:doc "A file that had to be new already exists: :reason :exists, and :path
+  when known."))
+(defclass ConnectionError (IOError) ()
+  (:doc "A network operation failed: :reason :refused, :reset, :aborted,
+  :not-connected, :broken-pipe, :unreachable, :address-in-use,
+  :address-not-available or :host-not-found, and :address when known."))
+(defclass TlsError (ConnectionError) ()
+  (:doc "A TLS handshake or session failed: :reason :tls."))
 
 ;; TimeoutError: something didn't happen in time (:after ms, when known). A
 ;; class of its own, since what timed out needn't be I/O (a future, a
 ;; channel); an I/O timeout is one too.
-(defclass TimeoutError (Error) ((after :initform nil) (reason :initform nil) (address :initform nil)))
+(defclass TimeoutError (Error) ((after :initform nil) (reason :initform nil) (address :initform nil))
+  (:doc "Something didn't happen in time: :after is the limit in milliseconds,
+  when known. An I/O timeout is one too (:reason :timed-out, :address).
+  Not an IOError, since what timed out needn't be I/O."))
 
 ;; ParseError: text that isn't what it should be (:source, :line, :column
 ;; where known): Norn source, EDN, JSON, a URI, an HTTP message.
-(defclass ParseError (Error) ((source :initform nil) (line :initform nil) (column :initform nil)))
+(defclass ParseError (Error) ((source :initform nil) (line :initform nil) (column :initform nil))
+  (:doc "Text or data that isn't what it should be: Norn source, JSON, YAML,
+  norn.bin, a file read as text that isn't UTF-8. :source, :line and
+  :column say where, when known."))
 
-(defn condition-message [c] (:message c))
-(defn condition-text [c]
+(defn condition-message "Condition c's :message, or nil if it has none." [c] (:message c))
+(defn condition-text
+  "Condition c as a line of text: its message (or, without one, its class's
+  name), after its location and \": \" when that's known."
+  [c]
   (let [loc (:location c)
         msg (or (:message c) (str (class-name (class-of c))))]
     (if loc (str loc ": " msg) msg)))
@@ -1171,9 +1461,19 @@
 ;; Each handler is [class fn owner]. Handlers that unwind (handler-case) can
 ;; only reach their catch point in the fiber that established them, so other
 ;; fibers skip them; handler-bind handlers (owner nil) are conveyed.
-(def *handlers* nil)
+(def *handlers*
+  "The active condition handlers, innermost first, as handler-bind and
+  handler-case establish them (each [class handler owner]). Internal, but
+  a test runner binds it to nil to run code with no handlers outside it."
+  nil)
 (def *restarts* nil)
-(def *debugger* nil)
+(%set-private! (var *restarts*))
+(def *debugger*
+  "What happens to a condition no handler takes (see invoke-debugger):
+  :park keeps the fiber waiting in the debugger (REPL and editor
+  evaluations bind it so); a function is called with the condition, and
+  then the fiber ends; nil, the default, just ends the fiber."
+  nil)
 
 (defn- %visible? [owner] (or (nil? owner) (identical? owner (current-fiber))))
 
@@ -1220,7 +1520,11 @@
     (signal c)
     (invoke-debugger c)))
 
-(defn throw [c] (error c))
+(defn throw
+  "(throw c): signal condition c, as (error c) does: (throw (ex-info \"Bad\"
+  {:id 7})). A message or an error class works too, as error's argument."
+  [c]
+  (error c))
 
 (declare %restart-case)
 
@@ -1288,7 +1592,11 @@
              `(do ~@body))]
     (if fin `(unwind-protect ~hc ~@(rest fin)) hc)))
 
-(defmacro ignore-errors [& body] `(handler-case (do ~@body) (Error [] nil)))
+(defmacro ignore-errors
+  "(ignore-errors body…): body's value, or nil if an Error is signalled in
+  it (unwinding out of body). Warnings pass through."
+  [& body]
+  `(handler-case (do ~@body) (Error [] nil)))
 
 ;;; ---- restarts --------------------------------------------------------------------------------
 
@@ -1318,12 +1626,20 @@
                               `{:name '~rname :report ~report :fn (fn* ~params ~@body)}))
                           clauses)]))
 
-(defn compute-restarts [] (vec (filter (fn [r] (%visible? (:owner r))) *restarts*)))
+(defn compute-restarts
+  "The restarts active in this fiber, innermost first: a vector of maps
+  with :name and :report (and more, for invoke-restart)."
+  []
+  (vec (filter (fn [r] (%visible? (:owner r))) *restarts*)))
 
-(defn find-restart [rname]
+(defn find-restart "The innermost active restart named rname (a symbol), or nil." [rname]
   (some (fn [r] (when (= (:name r) rname) r)) (compute-restarts)))
 
-(defn invoke-restart [r & args]
+(defn invoke-restart
+  "Invoke restart r (one of compute-restarts', or its name) with args:
+  unwind to the restart-case that made it and run its body. An error if
+  no active restart has that name."
+  [r & args]
   (let [r (if (map? r) r (or (find-restart r) (error "No active restart named" (pr-str r))))]
     (throw-tag (:tag r) [(:index r) args])))
 
@@ -1335,7 +1651,10 @@
   ([] (invoke-restart 'muffle-warning))
   ([c] (invoke-restart 'muffle-warning)))
 
-(defmacro with-simple-restart [rname report & body]
+(defmacro with-simple-restart
+  "(with-simple-restart name report body…): body's value, with a restart
+  called name (described by report) that makes the form return nil."
+  [rname report & body]
   `(restart-case (do ~@body) (~rname [] :report ~report nil)))
 
 ;; A runtime error raised by Rust code is turned into a call to this, in place
@@ -1791,7 +2110,10 @@
 (defn- %simple-bindings? [bindings]
   (loop [s (seq bindings)] (if s (if (symbol? (first s)) (recur (nnext s)) false) true)))
 
-(defmacro let [bindings & body]
+(defmacro let
+  "(let [binding value …] body…): bind each value in turn (a binding may
+  destructure, and sees the ones before it), then body; its last value."
+  [bindings & body]
   (if (%simple-bindings? bindings)
     `(let* ~bindings ~@body)
     `(let* ~(destructure bindings) ~@body)))
@@ -1812,7 +2134,11 @@
   `(let* [temp# ~(second binding)]
      (when temp# (let [~(first binding) temp#] ~@body))))
 
-(defmacro loop [bindings & body]
+(defmacro loop
+  "(loop [binding init …] body…): like let, but recur in tail position in
+  body jumps back to the top with new values for the bindings. Bindings
+  may destructure."
+  [bindings & body]
   (if (%simple-bindings? bindings)
     `(loop* ~bindings ~@body)
     (let [pairs (partition 2 bindings)
@@ -1831,7 +2157,11 @@
             binds (vec (mapcat (fn [p g] (when-not (symbol? p) [p g])) ps new))]
         (list new `(let ~binds ~@body))))))
 
-(defmacro fn [& sigs]
+(defmacro fn
+  "(fn name? [params] body…) or (fn name? ([params] body…)…): a function,
+  of one arity or several. Parameters may destructure; with name, the
+  body can call the function itself by it."
+  [& sigs]
   (let [nm (when (symbol? (first sigs)) (first sigs))
         sigs (if nm (rest sigs) sigs)]
     (if (vector? (first sigs))
@@ -1941,7 +2271,9 @@
 ;; doesn't keep it alive.
 (def %resources (atom []))
 
-(defclass ResourceLost (Error) ((resource :initform nil)))
+(defclass ResourceLost (Error) ((resource :initform nil))
+  (:doc "ensure-live found :resource dead after an image restore (no
+  on-image-restore method reconnected it). Restarts: reconnect, abort."))
 
 (defgeneric on-image-restore (resource)
   "Called on every registered resource after the image it lives in has been
@@ -2086,13 +2418,17 @@
 ;;; and refers. Several fibers may require the same library at once: one
 ;;; loads it, the others wait for it.
 
-(def *loading* #{})
+(def *loading* #{}) ; (the libraries this fiber is loading)
+(%set-private! (var *loading*))
 (def %libs (atom {}))
 
-;; While a library reloads, an atom of [namespace-name symbol] for each def
-;; compiled meanwhile (compile-def! adds them), so the library's own names
-;; its new source no longer defines can be unmapped after.
-(def *defined* nil)
+;; (compile-def! adds to *defined*, so the library's own names its new
+;; source no longer defines can be unmapped after)
+(def *defined*
+  "While a library reloads, an atom of [namespace-name symbol] for each def
+  compiled meanwhile; otherwise nil. Internal: for require and the
+  compiler."
+  nil)
 
 (defn- %unmap-stale!
   "Unmap namespace ns's own vars that weren't defined again while it reloaded."
@@ -2299,11 +2635,14 @@
 ;;; share it: then any fiber may read it, and changes happen inside
 ;;; (locking obj …), which parks rather than spins.
 
-(defclass OwnershipError (RuntimeError) ())
+(defclass OwnershipError (RuntimeError) ()
+  (:doc "A fiber touched a mutable object (a (:mutable) class's instance, or a
+  transient) that another fiber owns. See owner, release! and share."))
 
-;; Bound true while the debugger or the inspector reads objects that belong
-;; to other fibers (allowed for reading only).
-(def *inspecting* false)
+(def *inspecting*
+  "Bound true while the debugger or the inspector reads objects that other
+  fibers own: reading them is then allowed (changing them still isn't)."
+  false)
 
 (defn owner
   "The fiber that owns mutable object o, :shared, or nil when it is free."
@@ -2415,7 +2754,10 @@
   ([start end] (%range start end))
   ([start end step] (%range start end step)))
 
-(defn ensure-reduced [x] (if (reduced? x) x (reduced x)))
+(defn ensure-reduced
+  "x as reduced, so a reduction stops with it, unless it is already."
+  [x]
+  (if (reduced? x) x (reduced x)))
 
 (defn reduce
   "Reduce coll with f. (reduced x) from f stops early with x."
@@ -2596,8 +2938,8 @@
 
 (def %concat concat)
 (defn concat
-  "All the items of the collections, in order: a vector, or a stream if any
-  of them is one."
+  "All the items of the collections, in order: a list (() for none), or a
+  lazy stream if any of them is a stream."
   [& colls]
   (if (some stream? colls)
     (lazy-seq (when-let [cs (seq colls)]
@@ -3007,7 +3349,8 @@
 
 (defmacro with-out-str "What body prints, as a string." [& body] `(%with-out-str (fn [] ~@body)))
 
-(def ^:dynamic *trace-depth* 0)
+(def ^:dynamic *trace-depth* 0) ; (how deep trace-var!'s calls are)
+(%set-private! (var *trace-depth*))
 (def ^:private %traced (atom {}))
 
 (defn trace-var!
@@ -3074,7 +3417,9 @@
   (swap! %after-eval-hooks assoc key f)
   key)
 
-(defn remove-after-eval-hook! [key] (swap! %after-eval-hooks dissoc key) nil)
+(defn remove-after-eval-hook! "Remove the after-eval hook added under key. nil." [key]
+  (swap! %after-eval-hooks dissoc key)
+  nil)
 
 (defn %run-after-eval-hooks []
   (doseq [[_ f] (deref %after-eval-hooks)]
@@ -3294,7 +3639,11 @@
        (lazy-seq (step init coll)))
      (seq (reduce (fn [out x] (conj out (f (peek out) x))) [init] coll)))))
 
-(defn eduction "The items of coll through transducer xform, as a seq." [xform coll] (sequence xform coll))
+(defn eduction
+  "The items of coll through transducer xform, as a vector (as sequence
+  gives them). Eager: not for an infinite stream."
+  [xform coll]
+  (sequence xform coll))
 
 (defn prn-str "What prn prints, as a string." [& xs] (with-out-str (apply prn xs)))
 (defn print-str "What print prints, as a string." [& xs] (with-out-str (apply print xs)))
@@ -3355,7 +3704,9 @@
 
 ;; ---- promises ----
 
-(defclass Promise () ((state :initarg :state) (done :initarg :done)))
+(defclass Promise () ((state :initarg :state) (done :initarg :done))
+  (:doc "The class of promises, as promise makes: deliver, deref and realized?
+  work on one. Its slots are internal."))
 
 (defn promise
   "A promise: a value delivered once, later (deliver), which deref waits
@@ -3391,7 +3742,9 @@
 
 ;; ---- delays ----
 
-(defclass Delay () ((thunk :initarg :thunk) (claimed :initarg :claimed) (result :initarg :result)))
+(defclass Delay () ((thunk :initarg :thunk) (claimed :initarg :claimed) (result :initarg :result))
+  (:doc "The class of delays, as delay makes: deref, force and realized? work on
+  one. Its slots are internal."))
 
 (defn %delay [thunk] (make Delay :thunk thunk :claimed (atom nil) :result (promise)))
 
@@ -3423,7 +3776,9 @@
 
 ;; ---- futures ----
 
-(defclass Future () ((fiber :initarg :fiber) (done :initarg :done)))
+(defclass Future () ((fiber :initarg :fiber) (done :initarg :done))
+  (:doc "The class of futures, as future makes: deref, future-cancel and
+  future-done? work on one. Its slots are internal."))
 
 (defn %future [thunk]
   (let [done (chan)]
@@ -3462,7 +3817,9 @@
 
 ;; ---- errors with data ----
 
-(defclass ExInfo (Error) ((data :initform nil) (cause :initform nil)))
+(defclass ExInfo (Error) ((data :initform nil) (cause :initform nil))
+  (:doc "The error ex-info makes: :data (a map) and :cause (the condition that
+  caused it, or nil), which ex-data and ex-cause read."))
 
 (defn ex-info
   "A condition carrying data (a map), and perhaps the condition that caused
@@ -3514,7 +3871,8 @@
 ;;;   (:? pred p)       a value pred is true of, matching p (or anything)
 ;;;   :else             anything (for a last clause)
 
-(defclass MatchError (Error) ((value :initform nil)))
+(defclass MatchError (Error) ((value :initform nil))
+  (:doc "No clause of a match matched: :value is the value matched."))
 
 (defn %pattern-vars
   "The names pattern p binds, in order."
@@ -3632,7 +3990,11 @@
 
 (defclass ContractError (Error)
   ((function :initform nil) (position :initform nil) (expected :initform nil)
-                            (value :initform nil) (blame :initform nil)))
+                            (value :initform nil) (blame :initform nil))
+  (:doc "A contract or signature didn't hold. :function names the function,
+  :position says what was wrong (\"its 2nd argument\", its result),
+  :expected is the contract's name, :value what came, and :blame the side
+  at fault (a module, or \"the function's caller\")."))
 
 ;; check: (fn [v fail] …) gives v (or v wrapped, for a function contract),
 ;; or calls (fail). parts: a function contract's {:args :rest :result}.
@@ -3644,7 +4006,10 @@
                          ;; for one that wraps a function (fn-of, or a combination holding one):
                          ;; check as (fn [v fail giver user] …), giver blamed for the wrapped
                          ;; function's bad results, user for its bad arguments
-                         (blamed :initform nil)))
+                         (blamed :initform nil))
+  (:doc "The class of contracts, as ->contract, fn-of, any-of, vec-of,
+  defcontract and the rest make; contract? tests for one. :name is what
+  messages call it, and (:check c) checks a value against it."))
 
 (def ^:dynamic *check-contracts*
   "Which calls check contracts, when code is expanded: :boundaries
