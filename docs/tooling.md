@@ -117,8 +117,11 @@ dependencies to commits. `norn deps --update` resolves them again.
 An image saves a Norn runtime's heap. You can save a development session with
 `(save-image "dev.nimg")` and start it again with `norn --image dev.nimg`.
 Use `norn image info dev.nimg` to inspect it and `norn image diff A.nimg B.nimg`
-to compare two images. Native handles such as open files and sockets need to
-be reopened or reconnected after restore.
+to compare two images. The diff lists the namespaces and public vars added,
+removed or changed. It compares functions by their code and other values by
+their printed form, but an atom only by being there: what an atom holds is
+state, which changes as a program runs. Native handles such as open files and
+sockets need to be reopened or reconnected after restore.
 
 Build a runnable image from a project with `norn build app.nimg`, or specify
 a source file and entry function explicitly.
@@ -129,8 +132,11 @@ norn --image app.nimg arg1 arg2
 ```
 
 An entry function receives one string argument per command-line argument after
-the image path. An integer return value supplies the process exit status,
-clamped to 0–255. Other successful return values give exit status 0.
+the image path, including a leading `-e`. An integer return value supplies the
+process exit status, clamped to 0–255. Other successful return values give
+exit status 0. To evaluate an expression in an image that has an entry
+function, put `-e` first: `norn -e '(count (all-ns))' --image app.nimg`. An
+image without an entry function also takes `norn --image dev.nimg -e 'EXPR'`.
 
 ## Packaging
 

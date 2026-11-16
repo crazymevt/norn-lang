@@ -5,9 +5,13 @@
 
 (defn- value-hash
   "A hash that changes when a definition changes: for functions, their code
-  and constants; for other values, the value."
+  and constants; for an atom, nothing (what it holds is state, which
+  changes as a program runs: the runtime's own bookkeeping, such as the
+  index of definitions, would differ in any two images); for other values,
+  the value."
   [v]
-  (cond (and (fn? v) (not= :primitive (type v)))
+  (cond (= :atom (type v)) (hash :atom)
+        (and (fn? v) (not= :primitive (type v)))
         (try (hash (mapv (fn [p] (let [pp (%proto-parts p)] [(:code pp) (pr-str (:consts pp))]))
                          (:arities (%template-parts (%closure-template v)))))
              (catch Error _ (hash (pr-str v))))
@@ -40,11 +44,14 @@
 
 (defn diff-text
   "What changed from summary a to summary b: namespaces and vars added,
-  removed or changed."
+  removed or changed. A module's instances at other phases (norn.io$1 and
+  the like, which come and go with the macros a build expands) are left
+  out."
   [a b]
   (let [lines (atom [])
         out (fn [& xs] (swap! lines conj (apply str xs)))]
-    (doseq [n (sort (into (set (keys a)) (keys b)))]
+    (doseq [n (sort (into (set (keys a)) (keys b)))
+            :when (zero? (%ns-shift (symbol n)))]
       (let [va (get a n) vb (get b n)]
         (cond (nil? va) (out "+ namespace " n " (" (count vb) " vars)")
               (nil? vb) (out "- namespace " n " (" (count va) " vars)")

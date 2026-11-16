@@ -13,7 +13,10 @@
 ;;;; - `is` checks a form. For (= expected actual …) a failure shows both
 ;;;;   values; (thrown? Class body…) and (thrown-with-msg? Class re body…)
 ;;;;   check for a condition. An error inside `is` is reported, not raised,
-;;;;   and the test goes on.
+;;;;   and the test goes on. A failure says where the `is` is (file:line).
+;;;; - An error a test's own code doesn't handle ends that test and is
+;;;;   reported as its error: the handlers of whoever runs the tests (a
+;;;;   handler-case around run-ns, say) are set aside while it runs.
 ;;;; - `is` outside any deftest counts toward the file's load (a file can be
 ;;;;   a plain script of checks).
 ;;;; - Assertions in fibers a test spawns report to that test (dynamic
@@ -93,8 +96,6 @@
 (defmacro testing "Run body with string s added to failure reports." [s & body]
   `(binding [*contexts* (cons ~s *contexts*)] ~@body))
 
-(defn %loc [] (%location))
-
 (defn- message-of [e] (if (instance? Condition e) (condition-message e) (str e)))
 
 (defn message-of* [e] (message-of e))
@@ -121,6 +122,14 @@
       (binding [*debugger* (fn [c] (when (identical? (current-fiber) me) (throw-tag tag [:error c])))]
         [:ok (thunk)]))))
 
+(defn- guard-test
+  "%guard for a whole test (or a test file's load): the handlers of
+  whoever runs the tests are set aside meanwhile, so an error the test's
+  own code doesn't handle is the test's, recorded as such, whatever
+  handler-case surrounds the run."
+  [thunk]
+  (%guard (fn [] (binding [norn.core/*handlers* nil] (thunk)))))
+
 (defn %check
   "Run an assertion's thunk (a map with :pass, :expected and :actual) and
   report the outcome."
@@ -135,7 +144,8 @@
 (defmacro is
   "Check form: (= expected actual …) compares, showing both on failure;
   (thrown? Class body…) and (thrown-with-msg? Class regex body…) expect a
-  condition; anything else must be truthy. msg is added to the report."
+  condition; anything else must be truthy. msg is added to the report. A
+  failure says where the is is, as source:line."
   ([form] `(is ~form nil))
   ([form msg]
    (let [head (when (seq? form) (first form))
@@ -156,7 +166,7 @@
 
                  :else
                  `(fn [] (let [v# ~form] (if v# {:pass true} {:pass false :expected '~form :actual v#}))))]
-     `(%check ~thunk '~form ~msg (%loc)))))
+     `(%check ~thunk '~form ~msg ~(%macro-location)))))
 
 (defmacro are
   "One `is` per group of values: (are [x y] (= x (inc y)) 2 1 3 2)."
@@ -178,7 +188,7 @@
   (let [r (empty-report)
         start (nano-time)]
     (binding [*report* r *test* test-name]
-      (let [[k c] (%guard (fn [] ((compose-fixtures each) f)))]
+      (let [[k c] (guard-test (fn [] ((compose-fixtures each) f)))]
         (when (= k :error)
           (%report {:type :error :message "the test raised an error" :error (message-of c)}))))
     (assoc (deref r) :ns ns-name :name (str test-name) :ms (/ (- (nano-time) start) 1e6))))
@@ -221,7 +231,7 @@
         _ (when ns-name (swap! registry dissoc ns-name))
         here (current-ns)
         _ (binding [*report* load-report *test* '<load>]
-            (let [[k c] (%guard (fn [] (%eval-reader (%reader text path))))]
+            (let [[k c] (guard-test (fn [] (%eval-reader (%reader text path))))]
               (in-ns here)
               (when (= k :error)
                 (%report {:type :error :message "loading failed" :error (message-of c)}))))
@@ -265,6 +275,11 @@
 
 ;; ---- reporters ------------------------------------------------------------------------------
 
+(defn- counted
+  "n and word, plural unless n is 1: (counted 1 \"check\") is \"1 check\"."
+  [n word]
+  (str n " " word (when-not (= 1 n) "s")))
+
 (defn- describe-event [{:keys [type form expected actual message error contexts location test]}]
   (str (if (= type :error) "ERROR" "FAIL") " in " test
        (when location (str " (" location ")"))
@@ -281,13 +296,14 @@
   [{:keys [files] :as result}]
   (str (apply str (map describe-event (mapcat :events (mapcat :tests files))))
        (apply str (map (fn [f]
-                         (let [t (totals [f])]
-                           (format "%-40s %4d checks  %s%n" (:file f) (+ (:pass t) (:fail t) (:error t))
-                                   (if (zero? (+ (:fail t) (:error t))) "ok" (format "%d failed, %d errors" (:fail t) (:error t))))))
+                         (let [t (totals [f])
+                               n (+ (:pass t) (:fail t) (:error t))]
+                           (format "%-40s %4d %-6s  %s%n" (:file f) n (if (= 1 n) "check" "checks")
+                                   (if (zero? (+ (:fail t) (:error t))) "ok" (str (:fail t) " failed, " (counted (:error t) "error"))))))
                        files))
        (let [t (:totals result)]
-         (format "%d tests, %d checks: %d passed, %d failed, %d errors%n"
-                 (:tests t) (+ (:pass t) (:fail t) (:error t)) (:pass t) (:fail t) (:error t)))))
+         (str (counted (:tests t) "test") ", " (counted (+ (:pass t) (:fail t) (:error t)) "check") ": "
+              (:pass t) " passed, " (:fail t) " failed, " (counted (:error t) "error") "\n"))))
 
 (defn %tap "TAP version 13: one line per test." [{:keys [files]}]
   (let [ts (vec (mapcat :tests files))]
@@ -317,7 +333,7 @@
                                                "\" time=\"" (format "%.3f" (/ (:ms x) 1000.0)) "\""
                                                (if (zero? (+ (:fail x) (:error x)))
                                                  "/>\n"
-                                                 (str "><failure message=\"" (xml (str (:fail x) " failed, " (:error x) " errors")) "\">"
+                                                 (str "><failure message=\"" (xml (str (:fail x) " failed, " (counted (:error x) "error"))) "\">"
                                                       (xml (apply str (map describe-event (:events x))))
                                                       "</failure></testcase>\n"))))
                                         (:tests f)))

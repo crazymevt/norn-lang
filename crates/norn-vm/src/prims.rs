@@ -272,6 +272,7 @@ prims! {
     "%hash-text" 1 Some(1) => |vm, a| { let t = text(a[0]); let mut h: u64 = 0xcbf2_9ce4_8422_2325; for &b in t.as_bytes() { h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3); } Ok(str_new(&mut vm.m, &format!("{h:016x}"))) };
     "%cache-dir" 0 Some(0) => |vm, _| Ok(match crate::eval::cache_dir() { Some(d) => str_new(&mut vm.m, &d), None => Value::NIL });
     "%reader-text" 1 Some(1) => |_, a| { expect(a[0], Kind::Reader, "%reader-text")?; Ok(a[0].field(0)) };
+    "%next-form-text" 1 Some(1) => |vm, a| { expect(a[0], Kind::Reader, "%next-form-text")?; crate::eval::next_form_text(vm, a[0]) };
     // building and inspecting compiled code (the Norn compiler, lib/compiler)
     "%make-proto" 7 Some(7) => make_proto;
     "%make-template" 3 Some(3) => |vm, a| { let ps = to_vec(vm, a[1])?; let cs = to_vec(vm, a[2])?; let arities = norn_rt::array::array_from(&mut vm.m, &ps); let caps = norn_rt::array::array_from(&mut vm.m, &cs); let t = norn_rt::func::template_new(&mut vm.m, a[0], arities, caps); crate::verify::template(t, false).map_err(|e| Error::new(format!("%make-template: bad code: {e}")))?; Ok(t) };

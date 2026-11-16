@@ -12,7 +12,11 @@
   (let [[h ch] (%signal-listen (vec sigs))]
     {:handle h :signals ch}))
 
-(defn stop "Stop listening; the channel closes." [l]
+(defn stop
+  "Stop listening; the channel closes. Once no listener is left for a
+  signal, it does what it did before anyone listened: :term and :hup end
+  the process again, :winch is ignored, and so on."
+  [l]
   (%io-close (:handle l))
   (close! (:signals l)))
 

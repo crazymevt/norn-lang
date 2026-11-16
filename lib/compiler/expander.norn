@@ -488,7 +488,9 @@
                               (= scopes (syn/syntax-scopes a))))
                  args)
        ;; the usual case: plain data with the call's scopes, in and out
-       (syn/%raw-syntax (apply m (map syn/%raw-e args)) scopes (syn/syntax-loc s))
+       ;; (what the result keeps of the arguments keeps their places)
+       (syn/%raw-syntax-from (apply m (map syn/%raw-e args)) scopes (syn/syntax-loc s)
+                             (filterv syn/%raw? args))
        (precise-step m s args))
      access)))
 
@@ -553,19 +555,21 @@
   (when-let [vs @validators] (get vs (%var-name v))))
 
 (defn- apply-macro
-  "Macro call s's expansion, and the introduction scope it used (or nil)."
+  "Macro call s's expansion, and the introduction scope it used (or nil).
+  While the macro runs, norn.core/*macro-place* is where the call is."
   [v s]
   (when-let [check (validator-for v)] (check s))
   (let [m (var-get v)]
-    ;; (a macro's own error passes through as it is: its condition and
-    ;; restarts are what a handler or the debugger should see)
-    (if (transformer? m)
-      (let [intro (syn/new-scope)
-            out ((slot-value m :f) (syn/add-scope s intro))]
-        (when-not (syn/syntax? out)
-          (fail s "The macro" (pr-str v) "returned" (pr-str out) "where syntax was expected"))
-        [(syn/flip-scope out intro) intro])
-      [(datum-step m s (access-scope (var-ns-of v))) nil])))
+    (binding [norn.core/*macro-place* (syn/syntax-loc s)]
+      ;; (a macro's own error passes through as it is: its condition and
+      ;; restarts are what a handler or the debugger should see)
+      (if (transformer? m)
+        (let [intro (syn/new-scope)
+              out ((slot-value m :f) (syn/add-scope s intro))]
+          (when-not (syn/syntax? out)
+            (fail s "The macro" (pr-str v) "returned" (pr-str out) "where syntax was expected"))
+          [(syn/flip-scope out intro) intro])
+        [(datum-step m s (access-scope (var-ns-of v))) nil]))))
 
 (def ^:private fn-macro "norn.core/fn: its calls' parameter vectors carry their types." (%resolve-in 'norn.core 'fn))
 (def ^:private defn-macro "norn.core/defn, likewise." (%resolve-in 'norn.core 'defn))
@@ -779,13 +783,17 @@
 
 (defn- eval-located
   "Evaluate syntax s read from src, noting where (for errors and the
-  definitions index)."
-  [s src]
-  (let [line (or (syn/syntax-line s) 0)
-        d (syn/syntax->datum s)]
-    (%set-location! (str src ":" line))
-    (%note-definition! d src line)
-    (eval s)))
+  definitions index). text, when given, is the whole source text: a
+  definition typed in (src \"<string>\", \"<editor>\"…) keeps its own."
+  ([s src] (eval-located s src nil))
+  ([s src text]
+   (let [line (or (syn/syntax-line s) 0)
+         d (syn/syntax->datum s)
+         pos (syn/syntax-position s)
+         span (syn/syntax-span s)]
+     (%set-location! (str src ":" line))
+     (%note-definition! d src line (when (and text pos span) (subs text pos (+ pos span))))
+     (eval s))))
 
 ;; ---- the compiled-module cache (8.6) ----
 ;;
@@ -985,13 +993,14 @@
                     (syn/%raw-syntax (apply list 'ns (%shifted (second d) *load-shift*) (drop 2 d)) #{} (syn/syntax-loc s))
                     s)]
             (binding [*strict* (or module? *strict*)]
-              (let [v (eval-located s src)]
+              (let [text (when (contains? #{"<string>" "<editor>" "<repl>"} src) (%reader-text r))
+                    v (eval-located s src text)]
                 (if module?
                   (do (declare-module! (%reader-text r) src d)
                       (load-module-body r src d))
                   (loop [last v]
                     (let [s (syn/read-syntax r)]
-                      (if (= s :eof) last (recur (eval-located s src)))))))))))
+                      (if (= s :eof) last (recur (eval-located s src text)))))))))))
       (finally (%set-location! saved)))))
 
 (defn %install!

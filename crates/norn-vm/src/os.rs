@@ -274,13 +274,62 @@ fn signal_name(n: i32) -> Option<&'static str> {
 struct Listening {
     handle: signal_hook::iterator::Handle,
     root: u64,
+    nums: Vec<i32>,
 }
 
 impl Drop for Listening {
     fn drop(&mut self) {
         self.handle.close();
+        for &n in &self.nums {
+            LISTENERS[n as usize].fetch_sub(1, Ordering::SeqCst);
+        }
         sched::unroot(self.root);
     }
+}
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Signal numbers are below this on every Unix Norn runs on.
+const MAX_SIGNAL: usize = 65;
+
+/// How many norn.signal listeners each signal has.
+static LISTENERS: [AtomicUsize; MAX_SIGNAL] = [const { AtomicUsize::new(0) }; MAX_SIGNAL];
+
+/// The signals whose disposition has been looked at (see `keep_default`).
+static PREPARED: std::sync::Mutex<[bool; MAX_SIGNAL]> = std::sync::Mutex::new([false; MAX_SIGNAL]);
+
+/// signal_hook installs its handler for good: once the last listener for
+/// a signal stops, the signal would be caught and dropped (SIGTERM would
+/// no longer end the process). So the first time Norn listens for a
+/// signal whose disposition is the default, it also registers an action
+/// that does what the default would whenever no listener is left. (A
+/// signal something else already handles, as the norn command does
+/// SIGINT, or ignores, as Rust does SIGPIPE, keeps that: signal_hook
+/// chains to the previous handler.)
+fn keep_default(sig: i32) -> Result<()> {
+    let mut prepared = PREPARED.lock().unwrap_or_else(|e| e.into_inner());
+    if prepared[sig as usize] {
+        return Ok(());
+    }
+    // SAFETY: a null new action only reads the current one into `old`.
+    let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+    if unsafe { libc::sigaction(sig, std::ptr::null(), &mut old) } != 0 {
+        return Err(Error::new(format!("Can't listen for signals: {}", std::io::Error::last_os_error())));
+    }
+    if old.sa_sigaction == libc::SIG_DFL {
+        // SAFETY: the action only loads an atomic and calls
+        // emulate_default_handler, both async-signal-safe.
+        unsafe {
+            signal_hook::low_level::register(sig, move || {
+                if LISTENERS[sig as usize].load(Ordering::SeqCst) == 0 {
+                    let _ = signal_hook::low_level::emulate_default_handler(sig);
+                }
+            })
+        }
+        .map_err(|e| Error::new(format!("Can't listen for signals: {e}")))?;
+    }
+    prepared[sig as usize] = true;
+    Ok(())
 }
 
 /// `(%signal-listen [:usr1 …])`: `[handle channel]`; the channel receives
@@ -298,10 +347,20 @@ pub(crate) fn listen(vm: &mut Vm, names: &[String]) -> Result<Value> {
             None => return Err(Error::new(format!("Unknown signal :{n}"))),
         }
     }
+    for &n in &nums {
+        if n as usize >= MAX_SIGNAL {
+            return Err(Error::new(format!("Can't listen for signal {n}")));
+        }
+        keep_default(n)?;
+    }
     let mut signals = signal_hook::iterator::Signals::new(&nums).map_err(|e| Error::new(format!("Can't listen for signals: {e}")))?;
     let c = norn_rt::conc::chan_new(&mut vm.m, 64);
     let root = sched::root(c);
     let handle = signals.handle();
+    for &n in &nums {
+        LISTENERS[n as usize].fetch_add(1, Ordering::SeqCst);
+    }
+    let listening = Listening { handle: handle.clone(), root, nums };
     std::thread::Builder::new()
         .name("norn-signals".into())
         .spawn(move || {
@@ -310,7 +369,7 @@ pub(crate) fn listen(vm: &mut Vm, names: &[String]) -> Result<Value> {
             }
         })
         .map_err(|e| Error::new(e.to_string()))?;
-    let h = reactor::register(&mut vm.m, Io::Watch(Box::new(Listening { handle, root })), "signals", Value::NIL).map_err(Error::new)?;
+    let h = reactor::register(&mut vm.m, Io::Watch(Box::new(listening)), "signals", Value::NIL).map_err(Error::new)?;
     Ok(vec_from_slice(&mut vm.m, &[h, c]))
 }
 

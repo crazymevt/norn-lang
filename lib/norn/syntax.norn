@@ -30,7 +30,7 @@
    (pending :doc "Scope changes not yet passed to the parts: [[op scope]…], or nil.")
    (raw :doc "True when e is plain data whose parts take this object's scopes and place.")
    (props :doc "Properties: the metadata written on the form (^:private x), or nil.")
-   (tree :doc "For a raw object read from source: the reader's location node, placing its parts."))
+   (tree :doc "For a raw object read from source: the reader's location node, placing its parts. For a raw macro result: {:origins …}, the arguments it may have kept (%raw-syntax-from)."))
   (:doc "A datum with its scopes and the place it came from.")
   (:equality :identity))
 
@@ -45,6 +45,15 @@
   when looked at (d holds no syntax objects)."
   [d scopes loc]
   (%instance Syntax [d scopes loc nil (compound? d) nil nil]))
+
+(defn %raw-syntax-from
+  "Plain data d (a defmacro macro's result) as raw syntax with scopes and
+  place loc, like %raw-syntax, except that its parts that are the very
+  data of one of the raw syntax objects in origins (a vector: the macro's
+  arguments) keep that one's place, and so the places of their own parts:
+  an is in a deftest's body is where it was written."
+  [d scopes loc origins]
+  (%instance Syntax [d scopes loc nil (compound? d) nil (when (and (compound? d) (seq origins)) {:origins origins})]))
 
 (defn %make-syntax
   "A syntax object from its parts (for norn.expander's module cache): e's
@@ -67,8 +76,21 @@
   (let [e (%slot-ref s 0)]
     (if (%slot-ref s 4)
       (let [scopes (%slot-ref s 1) loc (%slot-ref s 2) tree (%slot-ref s 6)]
-        (or (when tree (placed e scopes (nth loc 0) tree))
-            (wrap-parts e (fn [x] (%instance Syntax [x scopes loc nil (compound? x) nil nil])))))
+        (cond (vector? tree)
+              (or (placed e scopes (nth loc 0) tree)
+                  (wrap-parts e (fn [x] (%instance Syntax [x scopes loc nil (compound? x) nil nil]))))
+              tree
+              (let [origins (:origins tree)]
+                (wrap-parts e (fn [x]
+                                (if (compound? x)
+                                  ;; (a part the macro kept takes this object's
+                                  ;; scopes, as any part does, and its own place)
+                                  (or (some (fn [a] (when (identical? (%slot-ref a 0) x)
+                                                      (%instance Syntax [x scopes (%slot-ref a 2) nil true (%slot-ref a 5) (%slot-ref a 6)])))
+                                            origins)
+                                      (%instance Syntax [x scopes loc nil true nil tree]))
+                                  (%instance Syntax [x scopes loc nil false nil nil])))))
+              :else (wrap-parts e (fn [x] (%instance Syntax [x scopes loc nil (compound? x) nil nil])))))
       (let [p (%slot-ref s 3)]
         (if p (wrap-parts e (fn [x] (change-scopes x p))) e)))))
 

@@ -159,6 +159,14 @@ fn build_is_reproducible_and_runs_the_entry_function() {
     let o = norn().arg("--image").arg(&a).args(["x", "y"]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "app got [x y]");
     assert_eq!(o.status.code(), Some(2), "an integer result is the exit status");
+    // Every argument goes to the entry, a leading -e too.
+    let o = norn().arg("--image").arg(&a).args(["-e", "(+ 1 2)"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), r#"app got [-e (+ 1 2)]"#);
+    // -e before --image evaluates in the image, entry or not (as norn image does).
+    let o = norn().args(["-e", "(+ 1 2)", "--image"]).arg(&a).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "3", "{}", text(&o));
+    let o = ok(norn().args(["image", "info"]).arg(&a).output().unwrap());
+    assert!(o.contains("app/main"), "{o}");
 }
 
 #[test]
