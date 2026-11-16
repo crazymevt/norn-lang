@@ -97,6 +97,35 @@
           "an hour along the time line through the repeated one")
       (is (t/before? z (t/shift z :nanos 1))))))
 
+(deftest error-classes
+  ;; (they were SimpleErrors and RuntimeErrors): text that isn't a date,
+  ;; time or zone is a ParseError; values that don't make one a TypeError
+  (let [kind (fn [f] (try (f) nil (catch Error e [(name (class-name (class-of e))) (:source e)])))]
+    (testing "text"
+      (is (= ["ParseError" "RFC 3339"] (kind #(t/parse "nope"))))
+      (is (= ["ParseError" "RFC 3339"] (kind #(t/parse "2026-02-30T00:00:00Z"))) "well formed, but no such day")
+      (is (= ["ParseError" "RFC 3339"] (kind #(t/parse-zoned "nope[UTC]"))))
+      (is (= ["ParseError" "local date"] (kind #(t/parse-local-date "2026-02-30"))))
+      (is (= ["ParseError" "local date"] (kind #(t/parse-local-date "soon"))))
+      (is (= ["ParseError" "local time"] (kind #(t/parse-local-time "25:00"))))
+      (is (= ["ParseError" "local date"] (kind #(t/parse-local-date-time "2026-02-30T10:00"))))
+      (is (= ["ParseError" "time zone"] (kind #(t/zone "../etc/passwd"))))
+      (when have-zones?
+        (is (= ["ParseError" "time zone"] (kind #(t/zone "Mars/Olympus"))) "an unknown zone")
+        (is (= ["ParseError" "time zone"] (kind #(t/fields (t/now) "Mars/Olympus"))))
+        (is (= "ParseError" (first (kind #(t/parse-zoned "2026-03-08T03:30:00-05:00[America/New_York]")))))))
+    (testing "values"
+      (let [c (try (t/local-date 2026 2 30) (catch Error e e))]
+        (is (instance? TypeError c))
+        (is (= [2026 2 30] (:value c))))
+      (is (= "TypeError" (first (kind #(t/local-time 24 0)))))
+      (is (= "TypeError" (first (kind #(t/zone :mars)))))
+      (is (= "TypeError" (first (kind #(t/from-fields {:year 2026 :month 2 :day 30})))))
+      (is (= "TypeError" (first (kind #(t/shift (t/now) :days 1))))))
+    (when have-zones?
+      (is (= "TypeError" (first (kind #(t/zoned (ldt "2026-03-08T02:30") "America/New_York" :resolve :reject))))
+          "a wall-clock time :reject refuses"))))
+
 (p/defproperty epoch-days-round-trip [n (p/integers :min -719528 :max 2932896)]
   (= n (t/epoch-day (t/from-epoch-day n))))
 

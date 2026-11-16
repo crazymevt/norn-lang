@@ -41,7 +41,14 @@
                          "takes 1 parameters, given 2"))
       (is (str/includes? (condition-message (caught (fn [] (sql/query db ["SELECT * FROM people WHERE id = :id" {:x 1}]))))
                          "No value for parameter :id"))
-      (is (str/includes? (condition-message (caught (fn [] (sql/query db "SELECT 1; SELECT 2")))) "One statement at a time")))
+      (is (str/includes? (condition-message (caught (fn [] (sql/query db "SELECT 1; SELECT 2")))) "One statement at a time"))
+      (let [c (caught (fn [] (sql/query db ["SELECT ?" 9223372036854775808])))]
+        (is (= "DatabaseError" (class-name-of c)) "an integer beyond 64 bits")
+        (is (str/includes? (condition-message c) "64-bit")))
+      (is (= [{:a -9223372036854775808 :b 9223372036854775807 :c 4611686018427387904 :d -4611686018427387905}]
+             (sql/query db ["SELECT ? AS a, ? AS b, ? AS c, ? AS d"
+                            -9223372036854775808 9223372036854775807 4611686018427387904 -4611686018427387905]))
+          "every 64-bit integer fits, past the 63-bit fixnums too"))
     (sql/close! db)))
 
 (deftest changes-and-ids
@@ -49,6 +56,11 @@
     (is (= 1 (sql/execute! db ["INSERT INTO people (name) VALUES (?)" "grace"])))
     (is (= 3 (sql/last-insert-id db)))
     (is (= 3 (sql/execute! db "UPDATE people SET age = 50")))
+    (testing "a statement that changes no rows: 0, not the last one's count"
+      (is (= 0 (sql/execute! db "CREATE TABLE other (x)")))
+      (is (= 0 (sql/execute! db "UPDATE people SET age = 1 WHERE id = 99")))
+      (is (= 0 (sql/execute! db "DROP TABLE other")))
+      (is (= {:columns [] :rows [] :more? false :changed 0} (sql/query-table db "CREATE INDEX people_age ON people (age)"))))
     (is (= ["people"] (sql/tables db)))
     (sql/close! db)))
 
@@ -87,6 +99,48 @@
     (testing ":immediate"
       (sql/with-transaction [db :mode :immediate] (sql/execute! db "DELETE FROM people WHERE name = 'kept'"))
       (is (= 3 (n))))
+    (sql/close! db)))
+
+(deftest transactions-end-however-they-end
+  ;; Regression: transact rolled back only on an Error, so anything else
+  ;; unwinding past it left the transaction open, and the next one failed.
+  (let [db (people)
+        n (fn [] (:n (sql/query-one db "SELECT count(*) AS n FROM people")))]
+    (testing "a warning unwinding through handler-case"
+      (is (= :warned (handler-case (sql/with-transaction [db]
+                                     (sql/execute! db "DELETE FROM people")
+                                     (signal (make Warning :message "stop"))
+                                     :done)
+                       (Warning [_] :warned))))
+      (is (= 2 (n)) "rolled back")
+      (is (not (sql/in-transaction? db)))
+      (is (= :next (sql/with-transaction [db] :next)) "the next one starts"))
+    (testing "a restart unwinding past it"
+      (is (= :skipped (restart-case (sql/with-transaction [db]
+                                      (sql/execute! db "DELETE FROM people")
+                                      (invoke-restart 'skip))
+                        (skip [] :skipped))))
+      (is (= 2 (n)))
+      (is (not (sql/in-transaction? db))))
+    (testing "a savepoint, by a warning, inside a transaction that commits"
+      (sql/with-transaction [db]
+        (sql/execute! db "INSERT INTO people (name) VALUES ('kept')")
+        (handler-case (sql/with-transaction [db] (sql/execute! db "DELETE FROM people") (signal (make Warning :message "stop")))
+          (Warning [_] nil)))
+      (is (= 3 (n)))
+      (sql/execute! db "DELETE FROM people WHERE name = 'kept'"))
+    (testing "its fiber cancelled"
+      (let [started (promise)
+            f (spawn-detached (sql/with-transaction [db]
+                                (sql/execute! db "DELETE FROM people")
+                                (deliver started true)
+                                (take! (chan))))]
+        @started
+        (cancel! f)
+        (is (= {:error "Cancelled"} (settle f)))
+        (is (= 2 (n)) "rolled back")
+        (is (not (sql/in-transaction? db)))
+        (is (= :next (sql/with-transaction [db] :next)))))
     (sql/close! db)))
 
 (deftest a-file-and-two-connections

@@ -58,9 +58,16 @@
 
 (defn accept
   "The next connection on a listener (parks until one arrives): a stream.
-  Options: :tls true with :cert-file and :key-file (PEM) for a TLS server."
+  Options: :tls true with :cert-file and :key-file (PEM) for a TLS server.
+  A listener that's closed (before, or while waiting) is a ConnectionError
+  with :reason :closed."
   [listener & {:keys [tls cert-file key-file]}]
-  (let [h (io/auto-close (io/retry-io listener (fn [] (%tcp-accept listener))))]
+  (let [h (io/auto-close
+           (handler-case (io/retry-io listener (fn [] (%tcp-accept listener)))
+             (RuntimeError [e]
+                           (if (and (handle? listener) (%handle-current? listener) (not (%handle-live? listener)))
+                             (error ConnectionError :message "The listener is closed" :reason :closed)
+                             (throw e)))))]
     (if tls
       (io/auto-close (%tls-server h (io/read-bytes cert-file) (io/read-bytes key-file) {:server true}))
       h)))

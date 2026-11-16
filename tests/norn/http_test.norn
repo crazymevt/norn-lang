@@ -4,7 +4,7 @@
 
 (ns http-test
   (:require [norn.test :refer [is deftest testing]] [norn.uri :as uri] [norn.http :as http]
-            [norn.net :as net] [norn.io :as io] [norn.sys :as sys] [norn.string :as str]))
+            [norn.net :as net] [norn.io :as io] [norn.sys :as sys] [norn.string :as str] [norn.process :as proc]))
 
 (defn- message [f] (try (f) nil (catch Error e (condition-message e))))
 
@@ -259,3 +259,14 @@
     (http/stop! s)
     (sleep 50)
     (is (some? (message (fn [] (http/get u :keep-alive false)))) "nothing listens after stop!")))
+
+(deftest the-default-on-error-writes-to-stderr
+  ;; (it printed to stdout, mixing with what a program writes there)
+  (let [script (str "(require '[norn.http :as http])"
+                    "(let [s (http/serve (fn [_] (error \"kaboom\")))]"
+                    "  (print (:status (http/get (str \"http://127.0.0.1:\" (:port s) \"/x\") :keep-alive false)))"
+                    "  (http/stop! s))")
+        r (proc/sh (:executable (sys/info)) "-e" script)]
+    (is (str/starts-with? (:out r) "500") "only what the program printed")
+    (is (not (str/includes? (:out r) "norn.http")))
+    (is (str/includes? (:err r) "norn.http: the handler failed on :get /x - kaboom"))))

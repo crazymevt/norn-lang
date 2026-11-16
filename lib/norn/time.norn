@@ -14,6 +14,11 @@
 ;;;; is resolved by an explicit policy, :resolve, as in JavaScript's
 ;;;; Temporal: :compatible (default: later for a skipped time, earlier for
 ;;;; a repeated one), :earlier, :later, or :reject (an error).
+;;;;
+;;;; Errors: text that isn't a date, time or zone name (an unknown zone
+;;;; among them) is a ParseError; values that don't make one (2026-02-30
+;;;; from numbers, a wall-clock time :reject refuses, the wrong kind of
+;;;; argument) are a TypeError.
 
 (ns norn.time
   (:refer-core :exclude [format])
@@ -34,23 +39,36 @@
 (defn leap-year? "Is year a leap year in the Gregorian calendar?" ^Boolean [^Integer year]
   (and (zero? (mod year 4)) (or (not (zero? (mod year 100))) (zero? (mod year 400)))))
 
+(defn- bad-value [msg expected value]
+  (error TypeError :message (str "norn.time: " msg) :expected expected :value value))
+
+(defn- bad-text [msg source]
+  (error ParseError :message (str "norn.time: " msg) :source source))
+
+(defn- parsing
+  "(f), a ParseError (from source) for an error in it: text s whose parts
+  don't make a date or time."
+  [s source f]
+  (handler-case (f)
+    (Error [_] (bad-text (str "Invalid " source " " (pr-str s)) source))))
+
 (defmethod initialize-instance :after ((date LocalDate) _)
   (let [{:keys [year month day]} (instance->map date)
         days (when (and (integer? month) (<= 1 month 12))
                (if (and (= month 2) (integer? year) (leap-year? year))
                  29 (nth [31 28 31 30 31 30 31 31 30 31 30 31] (dec month))))]
     (when-not (and (integer? year) (<= 0 year 9999) days (integer? day) (<= 1 day days))
-      (error "Invalid local date" year month day))))
+      (bad-value (str "Invalid local date " year " " month " " day) "a date in years 0000–9999" [year month day]))))
 
 (defmethod initialize-instance :after ((clock LocalTime) _)
   (let [{:keys [hour minute second nanos]} (instance->map clock)]
     (when-not (and (every? integer? [hour minute second nanos])
                    (<= 0 hour 23) (<= 0 minute 59) (<= 0 second 59) (<= 0 nanos 999999999))
-      (error "Invalid local time" hour minute second nanos))))
+      (bad-value (str "Invalid local time " hour " " minute " " second " " nanos) "a time of day" [hour minute second nanos]))))
 
 (defmethod initialize-instance :after ((dt LocalDateTime) _)
   (when-not (and (local-date? (:date dt)) (local-time? (:time dt)))
-    (error "LocalDateTime expects a local date and local time")))
+    (bad-value "LocalDateTime expects a local date and local time" "a LocalDate and a LocalTime" [(:date dt) (:time dt)])))
 
 (defn local-date "A Gregorian date without a time zone, in years 0000–9999."
   ^LocalDate [^Integer year ^Integer month ^Integer day]
@@ -66,23 +84,23 @@
   ^LocalDateTime [^LocalDate date ^LocalTime clock]
   (LocalDateTime :date date :time clock))
 
-(defn parse-local-date "Parse YYYY-MM-DD as a local date." ^LocalDate [^String s]
+(defn parse-local-date "Parse YYYY-MM-DD as a local date (a ParseError if it isn't one)." ^LocalDate [^String s]
   (if-let [[_ year month day] (re-matches #"([0-9]{4})-([0-9]{2})-([0-9]{2})" s)]
-    (apply local-date (map parse-long [year month day]))
-    (error "Invalid local date" s)))
+    (parsing s "local date" (fn [] (apply local-date (map parse-long [year month day]))))
+    (bad-text (str "Invalid local date " (pr-str s)) "local date")))
 
 (defn parse-local-time
   "Parse HH:MM, or HH:MM:SS with optional fractional seconds. Truncates precision beyond nanoseconds."
   ^LocalTime [^String s]
   (if-let [[_ hour minute second fraction] (re-matches #"([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]+))?)?" s)]
     (let [digits (or fraction "") nanos (parse-long (subs (str digits "000000000") 0 9))]
-      (local-time (parse-long hour) (parse-long minute) (parse-long (or second "0")) nanos))
-    (error "Invalid local time" s)))
+      (parsing s "local time" (fn [] (local-time (parse-long hour) (parse-long minute) (parse-long (or second "0")) nanos))))
+    (bad-text (str "Invalid local time " (pr-str s)) "local time")))
 
 (defn parse-local-date-time "Parse a local date and time separated by T or a space." ^LocalDateTime [^String s]
   (if-let [[_ date clock] (re-matches #"([0-9]{4}-[0-9]{2}-[0-9]{2})[Tt ](.+)" s)]
     (local-date-time (parse-local-date date) (parse-local-time clock))
-    (error "Invalid local date-time" s)))
+    (bad-text (str "Invalid local date-time " (pr-str s)) "local date-time")))
 
 (defn format-local "Write a local date, local time or local date-time as ISO calendar text."
   ^String [^(U LocalDate LocalTime LocalDateTime) x]
@@ -91,7 +109,7 @@
                              (when (pos? (:nanos x))
                                (str "." (str/replace (norn.core/format "%09d" (:nanos x)) #"0+$" ""))))
         (local-date-time? x) (str (format-local (:date x)) "T" (format-local (:time x)))
-        :else (error "Expected a local date or time" x)))
+        :else (bad-value (str "Expected a local date or time, not " (pr-str x)) "a LocalDate, LocalTime or LocalDateTime" x)))
 
 (defn now "The current instant (wall clock)." ^Instant [] (Instant :nanos (%now-nanos)))
 (defn instant "The instant n nanoseconds after the epoch." ^Instant [^Integer n] (Instant :nanos n))
@@ -243,7 +261,7 @@
   footer rule when the file has them, else the 32-bit data."
   [name bs]
   (when-not (and (>= (count bs) 44) (= "TZif" (bytes->string (subbytes bs 0 4))))
-    (error "norn.time: not a TZif zone file:" name))
+    (bad-text (str "not a TZif zone file: " name) name))
   (let [u (fn [at width] (bytes/read-uint bs at width :be))
         s (fn [at width] (let [v (u at width) half (bit-shift-left 1 (dec (* 8 width)))]
                            (if (>= v half) (- v (* 2 half)) v)))
@@ -314,17 +332,18 @@
 
 (defn- load-zone [name]
   (when-not (re-matches #"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*" name)
-    (error "norn.time: not a zone name:" (pr-str name)))
+    (bad-text (str "not a zone name: " (pr-str name)) "time zone"))
   (if-let [f (first (filter io/file? (map #(io/path % name) (zone-directories))))]
     (tzif name (io/read-bytes f))
     (if (#{"UTC" "Etc/UTC" "GMT" "Etc/GMT"} name)
       (assoc utc :name name)
-      (error "norn.time: unknown time zone" (pr-str name) "(looked in" (str (str/join ", " (zone-directories)) ")")))))
+      (bad-text (str "unknown time zone " (pr-str name) " (looked in " (str/join ", " (zone-directories)) ")") "time zone"))))
 
 (defn zone
   "The zone z names: an IANA name (\"America/New_York\"), \"+05:30\" or
   \"Z\", an offset in seconds, :utc, :local (system-zone), or a Zone
-  (itself). Named zones are read once and kept."
+  (itself). Named zones are read once and kept. A name that isn't a zone
+  here is a ParseError."
   ^Zone [^(U Zone String Integer Keyword) z]
   (cond (zone? z) z
         (= z :utc) utc
@@ -334,7 +353,7 @@
         (and (string? z) (re-matches #"[+-][0-9]{2}:[0-9]{2}(:[0-9]{2})?" z)) (fixed-zone (hms z))
         (string? z) (or (get @zone-cache z)
                         (let [loaded (load-zone z)] (swap! zone-cache assoc z loaded) loaded))
-        :else (error "norn.time: not a zone:" (pr-str z))))
+        :else (bad-value (str "not a zone: " (pr-str z)) "a zone name, an offset in seconds, :utc, :local or a Zone" z)))
 
 (defn zone-name "Zone z's name." ^String [^(U Zone String Integer Keyword) z] (:name (zone z)))
 
@@ -398,12 +417,13 @@
 (defn zoned
   "Local date-time ldt in zone z, as a ZonedDateTime. A wall-clock time the
   zone skips or repeats is resolved by :resolve — :compatible (default;
-  later for skipped, earlier for repeated), :earlier, :later or :reject.
+  later for skipped, earlier for repeated), :earlier, :later or :reject
+  (a TypeError).
   :offset (seconds) picks that offset when it's one of the valid ones."
   ^ZonedDateTime
   [^LocalDateTime ldt ^(U Zone String Integer Keyword) z & {:keys [resolve offset] :or {resolve :compatible}}]
   (when-not (#{:compatible :earlier :later :reject} resolve)
-    (error "norn.time: :resolve is :compatible, :earlier, :later or :reject, not" (pr-str resolve)))
+    (bad-value (str ":resolve is :compatible, :earlier, :later or :reject, not " (pr-str resolve)) ":compatible, :earlier, :later or :reject" resolve))
   (let [z (zone z)
         l (local-nanos ldt)
         secs (floor-div l ns-per-second)
@@ -418,16 +438,24 @@
           (seq valid) (case resolve
                         (:compatible :earlier) (at (first valid))
                         :later (at (peek valid))
-                        :reject (error (str "norn.time: " (local-text ldt) " happens twice in " (:name z)
-                                            " (a clock change repeats it); pass :resolve :earlier or :later")))
+                        :reject (bad-value (str (local-text ldt) " happens twice in " (:name z)
+                                                " (a clock change repeats it); pass :resolve :earlier or :later")
+                                           "a wall-clock time that happens once" ldt))
           :else (case resolve
                   (:compatible :later) (at before)
                   :earlier (at after)
-                  :reject (error (str "norn.time: " (local-text ldt) " doesn't exist in " (:name z)
-                                      " (a clock change skips it); pass :resolve :earlier or :later"))))))
+                  :reject (bad-value (str (local-text ldt) " doesn't exist in " (:name z)
+                                          " (a clock change skips it); pass :resolve :earlier or :later")
+                                     "a wall-clock time that happens once" ldt)))))
 
 (defn to-instant "The instant of a ZonedDateTime (an Instant is itself)." ^Instant [^(U ZonedDateTime Instant) x]
   (if (zoned? x) (:instant x) x))
+
+(defn- parse-iso
+  "[nanos offset] of RFC 3339 text s, or a ParseError."
+  [s]
+  (handler-case (%parse-iso s)
+    (Error [e] (bad-text (condition-message e) "RFC 3339"))))
 
 (defn format-zoned
   "A ZonedDateTime as RFC 9557 text: 2026-03-08T03:30:00-04:00[America/New_York]."
@@ -437,18 +465,19 @@
 (defn parse-zoned
   "The ZonedDateTime written as RFC 9557 text (format-zoned's), or as RFC
   3339 text, whose offset is then its zone. A bracketed zone must have
-  the offset given at that wall-clock time (to the minute)."
+  the offset given at that wall-clock time (to the minute). A ParseError
+  if it isn't one."
   ^ZonedDateTime [^String s]
   (if-let [[_ text zname] (re-matches #"(.*)\[([^\]]+)\]" s)]
     ;; The wall-clock time written, in that zone at the offset given (to
     ;; the minute, as text can't hold an offset's seconds).
-    (let [[n o] (%parse-iso text)
+    (let [[n o] (parse-iso text)
           l (civil->local n o)
           z (zone zname)]
       (or (first (filter #(and (= l (:local %)) (< (abs (- (:offset %) o)) 60))
                          [(zoned l z :resolve :earlier) (zoned l z :resolve :later)]))
-          (error (str "norn.time: " (pr-str s) ": " (:name z) " isn't at offset " (offset-text o) " then"))))
-    (let [[n o] (%parse-iso s)] (in-zone (Instant :nanos n) o))))
+          (bad-text (str (pr-str s) ": " (:name z) " isn't at offset " (offset-text o) " then") "RFC 9557")))
+    (let [[n o] (parse-iso s)] (in-zone (Instant :nanos n) o))))
 
 ;;; ---- calendar arithmetic ----
 
@@ -456,7 +485,7 @@
   (cond (local-date? x) x
         (local-date-time? x) (:date x)
         (zoned? x) (:date (:local x))
-        :else (error "norn.time: expected a date, not" (pr-str x))))
+        :else (bad-value (str "expected a date, not " (pr-str x)) "a LocalDate, LocalDateTime or ZonedDateTime" x)))
 
 (defn epoch-day "Days from 1970-01-01 to the date of x (a date, date-time or zoned date-time)."
   ^Integer [^(U LocalDate LocalDateTime ZonedDateTime) x]
@@ -513,7 +542,7 @@
                 (* (or millis 0) 1000000) (or nanos 0))
         move-date (fn [d] (let [d (plus-months d months)] (if (zero? days) d (from-epoch-day (+ (epoch-day d) days)))))]
     (cond (local-date? x)
-          (do (when-not (zero? span) (error "norn.time/shift: a LocalDate has no time of day to move"))
+          (do (when-not (zero? span) (bad-value "shift: a LocalDate has no time of day to move" "date units only" x))
               (move-date x))
           (local-date-time? x)
           (let [n (+ (time-nanos (:time x)) span)]
@@ -527,9 +556,10 @@
             (if (zero? span) z (in-zone (Instant :nanos (+ (:nanos (:instant z)) span)) (:zone x))))
           (instant? x)
           (do (when-not (and (zero? months) (zero? days))
-                (error "norn.time/shift: an Instant has no calendar; use in-zone first, or :hours"))
+                (bad-value "shift: an Instant has no calendar; use in-zone first, or :hours" "time units only" x))
               (Instant :nanos (+ (:nanos x) span)))
-          :else (error "norn.time/shift: expected a date, date-time, zoned date-time or instant, not" (pr-str x)))))
+          :else (bad-value (str "shift: expected a date, date-time, zoned date-time or instant, not " (pr-str x))
+                           "a LocalDate, LocalDateTime, ZonedDateTime or Instant" x))))
 
 (defn start-of-day
   "The first instant of date d (a LocalDate, or the date of a date-time
@@ -577,11 +607,13 @@
 
 (defn from-fields
   "The instant of {:year :month :day :hour :minute :second :nanos :offset}
-  (missing time fields are 0; :offset in seconds, default 0 = UTC)."
+  (missing time fields are 0; :offset in seconds, default 0 = UTC). Fields
+  that don't make a date-time are a TypeError."
   ^Instant [^Map m]
-  (Instant :nanos (%from-civil [(:year m) (:month m) (:day m) (or (:hour m) 0) (or (:minute m) 0)
-                                (or (:second m) 0) (or (:nanos m) 0)]
-                               (or (:offset m) 0))))
+  (Instant :nanos (handler-case (%from-civil [(:year m) (:month m) (:day m) (or (:hour m) 0) (or (:minute m) 0)
+                                              (or (:second m) 0) (or (:nanos m) 0)]
+                                             (or (:offset m) 0))
+                    (Error [e] (bad-value (condition-message e) "calendar fields of a date-time" m)))))
 
 (defn format
   "RFC 3339 text of instant i, e.g. 2026-11-13T07:05:00Z. zone as for
@@ -592,9 +624,10 @@
 
 (defn parse
   "The instant written as RFC 3339 text (2026-11-13T07:05:00Z,
-  2026-11-13T08:05:00.5+01:00, or a date alone for midnight UTC)."
+  2026-11-13T08:05:00.5+01:00, or a date alone for midnight UTC). A
+  ParseError if it isn't one."
   ^Instant [^String s]
-  (Instant :nanos (first (%parse-iso s))))
+  (Instant :nanos (first (parse-iso s))))
 
 (defn monotonic-nanos
   "A clock for measuring elapsed time: it never jumps, but has no epoch."

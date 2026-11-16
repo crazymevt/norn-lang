@@ -181,6 +181,35 @@ role = \"backend\"
     (is (= "2026-11-14T12:00:00+01:00" (t/format (sch/next-run "0 12 * * *" from :zone 3600) 3600)) "in a zone (11:07 there)"))
   (is (str/includes? (message (fn [] (sch/parse "61 * * * *"))) "outside 0-59"))
   (is (str/includes? (message (fn [] (sch/parse "* * *"))) "five fields"))
+  (is (= ["ParseError" "ParseError" "ParseError"]
+         (mapv (fn [e] (class-of-error #(sch/parse e))) ["61 * * * *" "* * *" "x * * * *"]))
+      "bad cron text (it was a SimpleError)")
+  (when (seq (t/available-zones))
+    (testing "across clock changes (it skipped the skipped time, and ran the repeated one twice)"
+      (let [ny "America/New_York"
+            runs (fn [e from n] (mapv #(t/format % ny) (sch/next-runs e (t/parse from) n :zone ny)))]
+        (is (= ["2026-11-01T01:30:00-04:00" "2026-11-02T01:30:00-05:00" "2026-11-03T01:30:00-05:00"]
+               (runs "30 1 * * *" "2026-10-31T12:00:00Z" 3))
+            "a repeated time runs once, the first time")
+        (is (= ["2026-11-02T01:30:00-05:00"] (runs "30 1 * * *" "2026-11-01T05:45:00Z" 1))
+            "not again, in the repeat")
+        (is (= ["2026-03-08T03:00:00-04:00" "2026-03-09T02:30:00-04:00"] (runs "30 2 * * *" "2026-03-07T12:00:00Z" 2))
+            "a skipped time runs at the change")
+        (is (= ["2026-03-08T03:00:00-04:00" "2026-03-09T02:00:00-04:00"] (runs "0 2,3 * * *" "2026-03-07T12:00:00Z" 2))
+            "once, when the time after it is due too")
+        (is (= ["2026-03-09T00:30:00-04:00"] (runs "30 0 * * 1" "2026-03-08T04:00:00Z" 1)) "the day after a change")
+        (testing "a minute or hour of * follows the clock, as in Vixie cron"
+          (is (= ["2026-11-01T00:00:00-04:00" "2026-11-01T01:00:00-04:00" "2026-11-01T01:00:00-05:00" "2026-11-01T02:00:00-05:00"]
+                 (runs "0 * * * *" "2026-10-31T23:30:00-04:00" 4))
+              "both of a repeated hour")
+          (is (= ["2026-11-01T01:40:00-04:00" "2026-11-01T01:00:00-05:00" "2026-11-01T01:20:00-05:00"]
+                 (runs "*/20 1 * * *" "2026-11-01T05:30:00Z" 3)))
+          (is (= ["2026-03-08T01:30:00-05:00" "2026-03-08T03:30:00-04:00"] (runs "30 * * * *" "2026-03-08T06:00:00Z" 2))
+              "none in a skipped one"))
+        (is (= ["2026-04-05T01:45:00+11:00" "2026-04-05T01:30:00+10:30"]
+               (mapv #(t/format % "Australia/Lord_Howe")
+                     (sch/next-runs "*/15 * * * *" (t/parse "2026-04-04T14:40:00Z") 2 :zone "Australia/Lord_Howe")))
+            "a half-hour change"))))
   (testing "running"
     (let [s (sch/schedule "* * * * *" (fn [] nil))]
       (is (= 0 (sch/runs s)) "not before it's due")
