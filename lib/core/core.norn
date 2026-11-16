@@ -2918,6 +2918,37 @@
 (defmacro source "Print the source of sym's definition." [sym]
   `(println (or (source-text '~sym) (str "No source for " '~sym))))
 
+(defn bound?
+  "Does each of vs, vars, have a value? (def x) makes a var without one;
+  binding gives a dynamic var one only inside the binding."
+  [& vs]
+  (every? %var-bound? vs))
+
+(defmacro defonce
+  "(defonce name expr), or (defonce name \"doc\" expr): def name as expr,
+  unless it has a value already. Reloading a module evaluates its defs
+  again; a defonce keeps what it holds, so state (an atom, a connection)
+  survives a reload. The var, as def gives."
+  [nm & more]
+  (let [[doc expr] (if (and (string? (first more)) (next more)) [(first more) (second more)] [nil (first more)])]
+    `(let [v# (def ~nm)]
+       (when-not (bound? v#) ~(if doc `(def ~nm ~doc ~expr) `(def ~nm ~expr)))
+       v#)))
+
+(defn meta
+  "x's metadata. For a var, what's recorded about its definition: :name,
+  :ns (its namespace's name), :doc, :arglists, :file and :line when known,
+  any attributes it was given (:since, :deprecated, :see-also…), and
+  :macro, :private and :dynamic when they apply. Other values carry none
+  yet: nil."
+  [x]
+  (when (var? x)
+    (let [d (definition x)
+          m (into {} (remove (fn [[k v]] (or (nil? v) (contains? #{:form :text :kind} k)))) d)
+          m (if (macro? x) (assoc m :macro true) m)
+          m (if (private? x) (assoc m :private true) m)]
+      (if (%var-dynamic? x) (assoc m :dynamic true) m))))
+
 (defn apropos
   "The public names, in every loaded namespace, whose name contains s (a
   string) or matches it (a regex): a sorted vector of qualified symbols."

@@ -420,6 +420,8 @@
                   was (when (zero? *phase*) (%resolve-in (ns-sym) nm))
                   extra (concat (when (syn/syntax-property id :private)
                                   [(list 'norn.core/%set-private! (list 'var nm))])
+                                (when (syn/syntax-property id :dynamic)
+                                  [(list 'norn.core/%set-dynamic! (list 'var nm))])
                                 ;; (redefined without its types: no contract now)
                                 (when (and (not typed) was (%contracted? was) (= (str (var-ns-of was)) (str (ns-sym))))
                                   [(list 'norn.core/%drop-contract! (list 'var nm))])
@@ -1084,24 +1086,25 @@
   [form]
   (loop [f form] (if (macro-head f) (recur (macroexpand-1* f)) f)))
 
-(defn- mark-private-defs!
-  "Mark private the vars that core, the compiler, norn.syntax and this file
-  def as ^:private: the compilers that loaded them read plain data, which
-  keeps no metadata. (A scan of the text: reading it all again as syntax
-  would slow every start.)"
+(defn- mark-bootstrap-defs!
+  "Mark the vars that core, the compiler, norn.syntax and this file def as
+  ^:private or ^:dynamic: the compilers that loaded them read plain data,
+  which keeps no metadata. (A scan of the text: reading it all again as
+  syntax would slow every start.)"
   []
   (doseq [[nsym src] [['norn.core (%core-source)] ['norn.compiler (%compiler-source)]
                       ['norn.syntax (first (%find-lib "norn.syntax"))] ['norn.expander (%expander-source)]]
           :when src
-          [_ nm] (re-seq #"(?m)^\(def\s+(?:\^[:\w]+\s+)*\^:private\s+(?:\^[:\w]+\s+)*([^\s()\[\]{}]+)" src)]
+          [_ hints nm] (re-seq #"(?m)^\(def\s+((?:\^[:\w]+\s+)+)([^\s()\[\]{}]+)" src)]
     (when-let [v (%resolve-in nsym (symbol nm))]
-      (%set-private! v))))
+      (when (re-find #"\^:private\b" hints) (%set-private! v))
+      (when (re-find #"\^:dynamic\b" hints) (%set-dynamic! v)))))
 
 (defn %install!
   "Make the expander the way eval (and so load-file, require, the REPL…)
   expands, and modules the way files load."
   []
-  (mark-private-defs!)
+  (mark-bootstrap-defs!)
   (%set-root! (var norn.core/eval) eval)
   (%set-root! (var norn.core/%eval-reader) eval-reader)
   (%set-root! (var norn.core/macroexpand-1) macroexpand-1*)

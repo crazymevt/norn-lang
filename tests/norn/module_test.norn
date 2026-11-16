@@ -192,3 +192,23 @@
   (is (= [] (lint "(ns lm-o (:require [norn.string :as money]))\n(defn k [] ::money/x)\n(defn j [] (money/join []))\n"))
       "the linter reads them with the module's aliases")
   (is (str/includes? (message (fn [] (read-string "::nope/x"))) "nope isn't an alias")))
+
+(deftest defonce-keeps-state-across-a-reload
+  (module! "once" "(ns mt.once)\n(defonce hits \"Requests seen.\" (atom 0))\n(def plain (atom 0))\n")
+  (eval '(require 'mt.once))
+  (eval '(do (swap! mt.once/hits inc) (swap! mt.once/plain inc)))
+  (eval '(require 'mt.once :reload))
+  (is (= [1 0] (eval '[@mt.once/hits @mt.once/plain])) "defonce keeps its value; def evaluates again")
+  (is (= "Requests seen." (:doc (meta (resolve 'mt.once/hits)))))
+  (is (bound? (resolve 'mt.once/hits)))
+  (eval '(def mt-unbound))
+  (is (not (bound? (resolve 'mt-unbound))) "(def x) makes a var without a value"))
+
+(deftest meta-of-a-var
+  (let [m (meta #'map)]
+    (is (= ['map "norn.core"] [(:name m) (:ns m)]))
+    (is (string? (:doc m)))
+    (is (= '([f] [f coll] [f c1 c2] [f c1 c2 c3]) (:arglists m))))
+  (is (:macro (meta #'when)))
+  (is (:dynamic (meta #'*check-contracts*)))
+  (is (nil? (meta [1 2])) "values carry none yet"))
