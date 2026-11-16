@@ -1,0 +1,5 @@
+;; norn.shake's public interface, recorded by norn api-diff --record.
+{
+ "shake-plan" {:arglists ["[entry keeps]"], :kind :function, :signature [{:result "Map", :args ["Any" "Any"]}]}
+ "shake-report" {:arglists ["[path entry keeps whole]"], :kind :function, :signature [{:result "String", :args ["Any" "Any" "Any" "Any"]}]}
+}

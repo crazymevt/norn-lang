@@ -5,6 +5,7 @@
  "*debugger*" {:kind :var}
  "*default-tag-reader*" {:kind :var, :dynamic true}
  "*defined*" {:kind :var}
+ "*evaluated-from*" {:kind :var, :dynamic true}
  "*handlers*" {:kind :var}
  "*inspecting*" {:kind :var}
  "*load-shift*" {:kind :var}
@@ -461,7 +462,7 @@
  "rsubseq" {:arglists ["[sc test key]" "[sc start-test start-key end-test end-key]"], :kind :function}
  "run!" {:arglists ["[f coll]"], :kind :function}
  "satisfies?" {:arglists ["[p x]"], :kind :function}
- "save-image" {:arglists ["[path & {:keys [entry fibers layered]}]"], :kind :function}
+ "save-image" {:arglists ["[path & {:keys [entry fibers layered shake keep]}]"], :kind :function}
  "seal!" {:arglists ["[ns]"], :kind :function}
  "sealed?" {:arglists ["[ns]"], :kind :function}
  "second" {:arglists ["[coll]"], :kind :function}
@@ -532,6 +533,7 @@
  "try" {:arglists ["[& forms]"], :kind :macro}
  "type" {:arglists ["[x]"], :kind :function}
  "unreduced" {:arglists ["[x]"], :kind :function}
+ "unsaved-definitions" {:arglists ["[]"], :kind :function}
  "unseal!" {:arglists ["[ns]"], :kind :function}
  "untrace" {:arglists ["[& syms]"], :kind :macro}
  "untrace-all!" {:arglists ["[]"], :kind :function}

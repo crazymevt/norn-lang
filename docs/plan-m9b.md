@@ -203,3 +203,8 @@ shape and 4's op).
   installed here, and both need an extension to start a language server;
   `docs/editors.md` sets up Emacs (tested), Neovim and Helix (from their
   documentation), and says what the VS Code and Zed extensions need.
+- **Interfaces recorded:** `norn api-diff --record` for the five new
+  modules (`norn.xref`, `norn.shake`, `norn.prof`, `norn.cover`,
+  `norn.lsp`) and M9b's additions to `norn.core` (`unsaved-definitions`,
+  `*evaluated-from*`, `save-image`'s `:shake` and `:keep`) and
+  `norn.image` (`info-text` of a summary): 70 modules in `api/`.
