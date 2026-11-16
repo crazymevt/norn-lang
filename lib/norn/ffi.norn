@@ -42,7 +42,10 @@
 ;;;; nested structs, [:array type n] and bit fields [:bits type width];
 ;;;; defcunion lays out a union. Memory: alloc and free!, mem-get and
 ;;;; mem-set!, struct-get and struct-set! (as maps), field and set-field!,
-;;;; string-at and bytes-at.
+;;;; string-at and bytes-at. A :string in memory (a struct's field) is a
+;;;; char *: it reads and writes as its address (nil for NULL), so a
+;;;; struct round-trips; string-at reads the string, and alloc-string
+;;;; makes one (free! it when C is done with it).
 ;;;;
 ;;;; Callbacks: (callback [:pointer :pointer] :int f) is a C function
 ;;;; pointer that calls f. Called during a (fast) call from Norn, on its
@@ -205,26 +208,31 @@
 
 (defn mem-get
   "The C value of type t at addr (+ offset): a number, an address for
-  :pointer, the string pointed to for :string, a map for a layout, a
+  :pointer or :string (string-at reads the string), a map for a layout, a
   vector for [:array t n]."
   ([^Integer addr ^(U Keyword Map Vector) t] (mem-get addr t 0))
   ([^Integer addr ^(U Keyword Map Vector) t ^Integer offset]
    (cond (layout? t) (struct-get (+ addr offset) t)
          (array-type? t) (let [[_ et n] t s (sizeof et)]
                            (mapv (fn [i] (mem-get addr et (+ offset (* i s)))) (range n)))
-         (= t :string) (%mem-string (%mem-get addr :pointer offset))
+         (= t :string) (%mem-get addr :pointer offset)
          :else (%mem-get addr t offset))))
 
 (defn mem-set!
   "Write v at addr (+ offset) as C type t (a map for a layout, a
-  sequence for an array; :string takes an address). v."
+  sequence for an array; :string, like :pointer, takes an address or nil,
+  as alloc-string gives one). v."
   ([^Integer addr ^(U Keyword Map Vector) t v] (mem-set! addr t 0 v))
   ([^Integer addr ^(U Keyword Map Vector) t ^Integer offset v]
    (cond (layout? t) (struct-set! (+ addr offset) t v)
          (array-type? t) (let [[_ et n] t s (sizeof et)]
                            (when (> (count v) n) (error (str "More than " n " items for " (pr-str t))))
                            (doseq [[i x] (map vector (range) v)] (mem-set! addr et (+ offset (* i s)) x)))
-         (= t :string) (%mem-set! addr :pointer offset v)
+         (= t :string) (if (or (nil? v) (integer? v))
+                         (%mem-set! addr :pointer offset v)
+                         (error TypeError :message (str "A :string in memory takes an address (from alloc-string) or nil, got "
+                                                        (pr-str v))
+                                :expected "an address or nil" :value v))
          :else (%mem-set! addr t offset v))
    v))
 
@@ -252,7 +260,10 @@
       v)
     (mem-set! addr (:type f) (+ base (:offset f)) v)))
 
-(defn struct-get "The struct (or union) at addr, as a map of its fields." ^Map [^Integer addr ^Map layout]
+(defn struct-get
+  "The struct (or union) at addr, as a map of its fields. A :string field
+  is its address, as struct-set! takes it: string-at reads the string."
+  ^Map [^Integer addr ^Map layout]
   (into {} (map (fn [f] [(:name f) (read-field addr 0 f)]) (::fields layout))))
 
 (defn struct-set!

@@ -71,7 +71,32 @@
     (is (integer? r))
     (is (= {:year 72 :mon 8 :mday 27 :hour 0 :yday 270 :wday 3} (select-keys tmv [:year :mon :mday :hour :yday :wday]))
         "a day of 1972")
-    (is (contains? #{"UTC" "GMT"} (:zone tmv)) "a string field")))
+    (is (contains? #{"UTC" "GMT"} (ffi/string-at (:zone tmv))) "a string field: its address")))
+
+(ffi/defcstruct named [id :int label :string])
+(ffi/defcfun c-strlen libc "strlen" [s :string] :usize)
+(ffi/defcfun c-setlocale libc "setlocale" [category :int locale :string] :string)
+(def lc-all "C's LC_ALL" (if (= :macos (sys/os)) 0 6))
+
+(deftest string-fields-and-parameters
+  (testing "a :string field reads as the address it was given, so a struct round-trips"
+    (let [s (ffi/alloc-string "tag")
+          p (ffi/new-struct named {:id 7 :label s})]
+      (is (= {:id 7 :label s} (ffi/struct-get p named)))
+      (ffi/struct-set! p named (ffi/struct-get p named))
+      (is (= "tag" (ffi/string-at (ffi/field p named :label))))
+      (ffi/set-field! p named :label nil)
+      (is (= 0 (ffi/field p named :label)) "nil is NULL")
+      (is (= "TypeError" (name (class-name (class-of (caught (fn [] (ffi/struct-set! p named {:label "text"})))))))
+          "a string isn't copied into C memory behind your back: alloc-string makes one")
+      (ffi/free! p)
+      (ffi/free! s)))
+  (testing "a :string parameter takes a string or nil"
+    (is (= 3 (c-strlen "abc")))
+    (is (string? (c-setlocale lc-all nil)) "nil passes NULL: setlocale(LC_ALL, NULL) asks, changing nothing")
+    (let [c (caught (fn [] (c-strlen :abc)))]
+      (is (= "TypeError" (name (class-name (class-of c)))) "not printed: (strlen :abc) was 4")
+      (is (= :abc (:value c))))))
 
 (ffi/defcfun snprintf libc "snprintf" [buf :out n :usize fmt :string & xs] :int)
 

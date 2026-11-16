@@ -10,7 +10,8 @@
 //!
 //! **Arguments** beyond numbers:
 //! - `:bytes` passes a pointer into a `Bytes` value, which never moves.
-//! - `:string` passes a NUL-terminated copy.
+//! - `:string` passes a NUL-terminated copy (nil passes NULL; anything else
+//!   is a TypeError).
 //! - `:out` takes a size and passes a fresh zeroed buffer, which comes back
 //!   as `Bytes`.
 //! - A struct by value (`[:struct size leaves]`, from `norn.ffi`'s layouts)
@@ -605,14 +606,22 @@ fn prepare(f: &Foreign, args: &[Value]) -> Result<Prepared> {
             Param::Struct => address(a, "a struct argument")? as u64,
             Param::Bytes => {
                 if !a.is(Kind::Bytes) {
-                    return Err(Error::new(format!("Expected bytes, got {}", a.type_name())));
+                    return Err(Error::of("TypeError", format!("Expected bytes, got {}", a.type_name()))
+                        .with("expected", crate::vm::ErrData::Str("bytes".into()))
+                        .with("value", crate::vm::ErrData::Val(a)));
                 }
                 p.keep.push(a);
                 a.as_bytes().as_ptr() as u64
             }
+            // (nil is NULL; anything but a string is refused, not printed)
+            Param::Str if a.is_nil() => 0,
             Param::Str => {
-                let s = if a.is(Kind::String) { a.as_str().to_owned() } else { norn_rt::print::pr_str(a, false) };
-                let c = std::ffi::CString::new(s).map_err(|_| Error::new("A C string can't contain NUL"))?;
+                if !a.is(Kind::String) {
+                    return Err(Error::of("TypeError", format!("A :string argument must be a string or nil, got {}: {}", a.type_name(), norn_rt::print::pr_str(a, true)))
+                        .with("expected", crate::vm::ErrData::Str("a string or nil".into()))
+                        .with("value", crate::vm::ErrData::Val(a)));
+                }
+                let c = std::ffi::CString::new(a.as_str().to_owned()).map_err(|_| Error::new("A C string can't contain NUL"))?;
                 let ptr = c.as_ptr() as u64;
                 p._strings.push(c);
                 ptr
