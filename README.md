@@ -22,5 +22,5 @@ In `browse`: arrows, Page Up/Down, Home and End move; `/` filters by
 description; `c` sets the category (Tab completes); `u` shows only those
 without one; `s` saves; `q` quits.
 
-The HTML report is built with [norn-html](../norn-libs/norn-html), a Git
+The HTML report is built with [norn-html](../../norn-libs/norn-html), a Git
 dependency pinned in `norn.lock`.
