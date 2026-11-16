@@ -24,7 +24,12 @@
                     "(defn own [] (add \"not\" \"checked\"))\n"
                     "(defn halve [x] (/ x 2))\n"
                     "(defcontract halve (fn-of [even?] integer?))\n"
-                    "(defn plain [x] x)\n"))
+                    "(defn plain [x] x)\n"
+                    "(defn misuse ^Integer [^(-> Integer Integer) f] (f \"oops\"))\n"
+                    "(defn give-adder ^(-> Integer Integer) [] (fn [x] (if (= x 0) :zero (inc x))))\n"
+                    "(defn same ^(Vec Integer) [^(Vec Integer) xs] xs)\n"
+                    "(defn same-map ^(Map Keyword Integer) [^(Map Keyword Integer) m] m)\n"
+                    "(defn fns ^(Vec (-> Integer Integer)) [^(Vec (-> Integer Integer)) fs] fs)\n"))
 
 (module! "user" (str "(ns ct2.user\n  (:require [ct2.lib :as lib]))\n"
                      "(defn good [] (lib/add 1 2))\n"
@@ -40,7 +45,12 @@
                      "(defn own [] (lib/own))\n"
                      "(defn halve [] (lib/halve 4))\n"
                      "(defn halve-bad [] (lib/halve 3))\n"
-                     "(defn plain [] (lib/plain :anything))\n"))
+                     "(defn plain [] (lib/plain :anything))\n"
+                     "(defn misuse [] (lib/misuse inc))\n"
+                     "(defn adder [x] ((lib/give-adder) x))\n"
+                     "(defn same [v] (lib/same v))\n"
+                     "(defn same-map [m] (lib/same-map m))\n"
+                     "(defn fns [fs] (lib/fns fs))\n"))
 
 (run '(require 'ct2.user))
 
@@ -68,10 +78,30 @@
   (testing "(-> A R): a function argument, checked when it's called"
     (is (= 3 (run '(ct2.user/twice))))
     (let [c (caught '(ct2.user/twice-bad))]
-      (is (= ["its result" "the function"] [(:position c) (:blame c)]) "the function it was given broke its contract")))
+      (is (= "its result" (:position c)))
+      (is (str/starts-with? (:blame c) "ct2.user (") "the module that gave the function broke its contract"))
+    (is (= ["its 1st argument" "ct2.lib"] ((juxt :position :blame) (caught '(ct2.user/misuse))))
+        "the module calling the function it was given broke the contract"))
+  (testing "(-> A R) as a result: the function given back"
+    (is (= 2 (run '(ct2.user/adder 1))))
+    (is (= ["its result" "ct2.lib"] ((juxt :position :blame) (caught '(ct2.user/adder 0)))) "a bad result blames its giver")
+    (let [c (caught '(ct2.user/adder "a"))]
+      (is (= "its 1st argument" (:position c)))
+      (is (str/starts-with? (:blame c) "ct2.user (") "a bad argument blames its caller")))
   (testing "a name that isn't a type"
     (module! "badtype" "(ns ct2.badtype)\n(defn f [^even? x] x)\n")
     (is (str/includes? (condition-message (caught '(require 'ct2.badtype))) "^even? isn't a type"))))
+
+(deftest collection-contracts-check-in-place
+  (let [v [1 2 3] m {:a 1 :b 2}]
+    (is (identical? v ((run 'ct2.user/same) v)) "(Vec T): the vector itself, not a copy")
+    (is (identical? m ((run 'ct2.user/same-map) m)) "(Map K V): the map itself")
+    (is (= "a map of Keyword to Integer" (:expected (caught (list 'ct2.user/same-map {:a "1"})))))
+    (is (= "a vector of Integer" (:expected (caught (list 'ct2.user/same [1 :x]))))))
+  (testing "a vector of functions is wrapped, item by item"
+    (let [fs (run '(ct2.user/fns [inc dec]))]
+      (is (= [2 0] [((first fs) 1) ((second fs) 1)]))
+      (is (= "ContractError" (name (class-name (class-of (try ((first fs) "x") nil (catch Error e e))))))))))
 
 (deftest boundaries
   (testing "the module's own calls go direct"

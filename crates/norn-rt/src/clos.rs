@@ -50,6 +50,12 @@ pub mod class {
     pub const HOOK_PRINT: u64 = 1;
     pub const HOOK_MAKE: u64 = 2;
     pub const HOOK_SLOT: u64 = 4;
+    /// Flags, read on the class itself: some slot has a :type, so making an
+    /// instance and setting a slot check it; and an instance of the class
+    /// has been made (so a redefinition that adds a slot evaluates its
+    /// initform for the instances that lack it).
+    pub const FLAG_TYPED: u64 = 8;
+    pub const FLAG_MADE: u64 = 16;
     pub const NOT_BUILTIN: u64 = u64::MAX;
     /// Policy flags: instances compare by identity (`(:equality :identity)`,
     /// and every mutable class).
@@ -98,6 +104,17 @@ pub fn class_hook(c: Value, bit: u64) {
     if bit & class::HOOK_PRINT != 0 {
         ANY_PRINT_HOOK.store(true, Ordering::Release);
     }
+}
+
+/// Clear hook or flag bit `bit` on class c.
+pub fn class_unhook(c: Value, bit: u64) {
+    c.atomic_word(class::HOOKS).fetch_and(!bit, Ordering::AcqRel);
+}
+
+/// Is flag `bit` set on class c itself?
+#[inline]
+pub fn class_flag(c: Value, bit: u64) -> bool {
+    c.is(Kind::Class) && c.atomic_word(class::HOOKS).load(Ordering::Relaxed) & bit != 0
 }
 
 /// Has any class a print-object method? (If not, printing needn't look.)
@@ -158,7 +175,7 @@ builtins! {
     Keyword => "keyword", List => "list", Vector => "vector", Map => "map", Set => "set",
     Seq => "seq", Function => "function", Var => "var", Fiber => "fiber", Channel => "channel",
     Atom => "atom", Scope => "scope", Class => "class", Generic => "generic-function",
-    Bytes => "bytes", Handle => "handle", Ratio => "ratio", Regex => "regex", Other => "other",
+    Bytes => "bytes", Handle => "handle", Ratio => "ratio", Regex => "regex", Queue => "queue", Other => "other",
 }
 
 const NBUILTINS: usize = Builtin::Other as usize + 1;
@@ -235,6 +252,7 @@ fn builtin_id(v: Value) -> Builtin {
         Kind::Map => Builtin::Map,
         Kind::Set => Builtin::Set,
         Kind::VecSeq | Kind::Range | Kind::Stream => Builtin::Seq,
+        Kind::Queue => Builtin::Queue,
         Kind::Sorted if v.sorted_is_set() => Builtin::Set,
         Kind::Sorted => Builtin::Map,
         Kind::Regex => Builtin::Regex,
@@ -289,6 +307,11 @@ pub fn layout_index(layout: Value, key: Value) -> Option<usize> {
     layout_keys(layout).iter().position(|&k| k == key)
 }
 
+/// The defaults of a layout (what older instances get for slots they lack).
+pub fn layout_defaults<'a>(layout: Value) -> &'a [Value] {
+    &layout.arr_slice()[layout_len(layout)..]
+}
+
 /// Build a layout from slot keywords and their defaults.
 pub fn layout_new(m: &mut Mutator, keys: &[Value], defaults: &[Value]) -> Value {
     let mut v = keys.to_vec();
@@ -331,6 +354,10 @@ pub fn instance_new(m: &mut Mutator, class: Value, vals: &[Value], owner: Value)
     let layout = class.class_field(class::LAYOUT);
     debug_assert_eq!(layout_len(layout), vals.len());
     let mutable = policy_flags(class) & class::MUTABLE != 0;
+    let hooks = class.atomic_word(class::HOOKS);
+    if hooks.load(Ordering::Relaxed) & class::FLAG_MADE == 0 {
+        hooks.fetch_or(class::FLAG_MADE, Ordering::Relaxed);
+    }
     let o = alloc(m, Kind::Instance, 3 + vals.len() + usize::from(mutable));
     o.set_field(0, class);
     o.set_field(1, layout);

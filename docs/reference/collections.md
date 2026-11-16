@@ -37,8 +37,8 @@ Existing references to the input still see the original collection.
 | Vector | `[1 2]` or `(vector 1 2)` | Appends. |
 | Map | `{:x 1}` or `(hash-map :x 1)` | Adds or replaces the entry from a pair such as `[:x 1]`. |
 | Set | `#{1 2}` or `(hash-set 1 2)` | Adds the member if absent. |
-| Sorted map or set | `(sorted-map :x 1)` or `(sorted-set 2 1)` | Adds in key or member order. |
-| Queue | `(queue 1 2)` | Appends. `peek` and `pop` access the front. |
+| Sorted map or set | `(sorted-map :x 1)` or `(sorted-set 2 1)` | Adds in key or member order. A key or member that `compare` finds equal to one already there (`1` and `1.0`) keeps the one already there. |
+| Queue | `(queue 1 2)` | Appends. `peek` and `pop` access the front. A queue is a `Queue`, `sequential?`, and `=` to a list or vector of the same items. |
 
 ```clojure
 [(conj [1 2] 3)
@@ -76,6 +76,7 @@ Existing references to the input still see the original collection.
 | `(conj! t x)`, `(assoc! t k v)`, `(dissoc! t k)`, `(disj! t x)`, `(pop! t)` | Update a transient of a supported kind. Use the returned builder for subsequent updates. |
 | `(persistent! t)` | Finish the builder and return a persistent value. |
 
+`get`, `nth`, `contains?` and `count` read a transient's items so far.
 A transient belongs to the fiber that created it. Using it from another
 fiber or after `persistent!` signals an error.
 
@@ -126,8 +127,10 @@ create unbounded streams. The forms `(range end)`, `(range start end)`,
 and `(range start end step)` produce finite ranges with an exclusive end.
 `(repeat n x)` produces a vector.
 
-Single-input operations such as `map`, `filter`, and `take` return streams
-when given a stream. Use `first` to read one item or `nth` to reach a specific item, or bound the
+Sequence operations such as `map`, `filter`, `take`, `partition`,
+`partition-all`, `partition-by`, `interpose`, `dedupe`, `reductions` and
+`flatten` return streams when given a stream, and `interleave` and
+`concat` do when any of their inputs is one. Use `first` to read one item or `nth` to reach a specific item, or bound the
 stream with `take` before calling `vec`, `count`, or printing. Those
 operations consume the entire result. Keep lazy bodies free of side effects
 when several fibers may realize the same stream, since more than one fiber

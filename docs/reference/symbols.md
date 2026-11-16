@@ -135,7 +135,7 @@ beginning with `%` are runtime internals.
 
 ## Q
 
-- [`queue`](collections.md#persistent-collections) · `queue?` · `quot` · [`quote`](syntax.md#evaluation-and-quotation)
+- `Queue` · [`queue`](collections.md#persistent-collections) · `queue?` · `quot` · [`quote`](syntax.md#evaluation-and-quotation)
 
 ## R
 

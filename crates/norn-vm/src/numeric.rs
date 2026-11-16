@@ -178,7 +178,11 @@ pub(crate) fn arith(m: &mut Mutator, a: &[Value], op: Op) -> Result<Value> {
     let (init, rest) = match (op, a.len()) {
         (Op::Add, 0) => return Ok(Value::fix(0)),
         (Op::Mul, 0) => return Ok(Value::fix(1)),
-        (Op::Sub, 1) => (Num::I(0), a),
+        // ((- x) negates: for a float, -0.0 from 0.0, as 0 - 0.0 isn't)
+        (Op::Sub, 1) => match num(a[0])? {
+            Num::F(f) => return Ok(float_new(m, -f)),
+            _ => (Num::I(0), a),
+        },
         (Op::Div, 1) => (Num::I(1), a),
         _ => (num(a[0])?, &a[1..]),
     };
@@ -260,7 +264,9 @@ pub(crate) enum IntDiv {
 fn integer(v: Value, op: &str) -> Result<Num> {
     match num(v)? {
         n @ (Num::I(_) | Num::B(_)) => Ok(n),
-        _ => Err(Error::new(format!("{op} expects integers, got {}: {}", v.type_name(), pr_str(v, true)))),
+        _ => Err(Error::of("TypeError", format!("{op} expects integers, got {}: {}", v.type_name(), pr_str(v, true)))
+            .with("expected", crate::vm::ErrData::Str("an integer".into()))
+            .with("value", crate::vm::ErrData::Val(v))),
     }
 }
 

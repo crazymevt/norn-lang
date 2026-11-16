@@ -27,7 +27,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// Version of the root layout below (part of the build fingerprint too).
-const ROOTS_VERSION: i64 = 2;
+const ROOTS_VERSION: i64 = 3;
 
 /// How long a save waits for running fibers to reach a resume point.
 const PAUSE_LIMIT: Duration = Duration::from_secs(10);

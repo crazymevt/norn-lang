@@ -16,6 +16,8 @@
 
 (def here (let [loc (%location)] (io/parent (subs loc 0 (str/last-index-of loc ":")))))
 
+(defclass ErrPoint () ((x)))
+
 (deftest program-mistakes-are-runtime-errors
   (let [c (caught (fn [] (+ 1 :a)))]
     (is (= "TypeError" (class-of-name c)))
@@ -28,7 +30,17 @@
   (is (= "ArithmeticError" (class-of-name (caught (fn [] (/ 1 0))))))
   (testing "they're RuntimeErrors, with the restarts they always had"
     (is (instance? RuntimeError (caught (fn [] (/ 1 0)))))
-    (is (= 42 (handler-bind [ArithmeticError (fn [_] (invoke-restart 'use-value 42))] (/ 1 0))))))
+    (is (= 42 (handler-bind [ArithmeticError (fn [_] (invoke-restart 'use-value 42))] (/ 1 0)))))
+  (testing "the most specific class, where core's primitives used to say RuntimeError"
+    (is (= ["TypeError" "TypeError"] [(class-of-name (caught (fn [] (conj 1 2)))) (class-of-name (caught (fn [] (conj (ErrPoint :x 1) 2))))]))
+    (is (= ["TypeError" "TypeError" "TypeError"]
+           (mapv (fn [f] (class-of-name (caught f))) [(fn [] (first 5)) (fn [] (seq :k)) (fn [] (count 5))])))
+    (let [c (caught (fn [] (quot 7.5 2)))]
+      (is (= ["TypeError" 7.5] [(class-of-name c) (:value c)]) "quot, rem and mod take integers"))
+    (is (= ["TypeError" "TypeError"] [(class-of-name (caught (fn [] (rem 1 2.0)))) (class-of-name (caught (fn [] (mod 1.5 1))))]))
+    (let [c (caught (fn [] (subs "abc" 2 9)))]
+      (is (= ["IndexError" 9] [(class-of-name c) (:index c)]) "as nth says it"))
+    (is (= ["IndexError" -1] ((juxt class-of-name :index) (caught (fn [] (subs "abc" -1))))))))
 
 (deftest the-world-outside-is-io-errors
   (testing "files"

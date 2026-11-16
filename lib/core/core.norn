@@ -566,8 +566,27 @@
     (%class-set! c :slots slots)
     (when (not= keys (%class-get c :layout))
       ;; Instances made before this definition get these values for the
-      ;; slots they lack (initforms evaluated now).
-      (%class-set-layout! c keys (mapv (fn [sd] (let [f (:initform sd)] (if f (f) nil))) slots)))
+      ;; slots they lack. A slot the old layout had keeps its value; a new
+      ;; slot's initform is evaluated now, once, only when instances of the
+      ;; class have been made (when it's first defined, none can have been).
+      (let [old (zipmap (%class-get c :layout) (%class-defaults c))
+            made (%class-flag? c 16)]
+        (%class-set-layout! c keys (mapv (fn [sd]
+                                           (let [k (:name sd)]
+                                             (cond (contains? old k) (get old k)
+                                                   (and made (:initform sd)) ((:initform sd))
+                                                   :else nil)))
+                                         slots))))
+    ;; Slots with a :type: making an instance, and setting a slot, check
+    ;; them (as contracts, their names resolved when first needed, so a
+    ;; slot can name its own class). Without any, flag 8 is clear, and
+    ;; nothing is checked or costs anything.
+    (let [typed (filter :type slots)]
+      (if (seq typed)
+        (do (%class-set! c :meta (assoc (%class-get c :meta)
+                                        ::slot-types [(reduce (fn [m sd] (assoc m (:name sd) (:type sd))) {} typed) (atom nil)]))
+            (%class-hook! c 8))
+        (%class-unhook! c 8)))
     ;; The policy the runtime reads (design §3.4, §4.2): identity equality,
     ;; mutability (inherited from any class in the precedence list), slots
     ;; left out of = and hash, and settable slots.
@@ -629,6 +648,7 @@
 (def List (%defbuiltin 'List [Sequential] "list"))
 (def Vector (%defbuiltin 'Vector [Sequential] "vector"))
 (def Seq (%defbuiltin 'Seq [Sequential] "seq"))
+(def Queue (%defbuiltin 'Queue [Sequential] "queue"))
 (def Map (%defbuiltin 'Map [Collection] "map"))
 (def Set (%defbuiltin 'Set [Collection] "set"))
 (def Function (%defbuiltin 'Function [Object] "function"))
@@ -670,7 +690,11 @@
   Instances are immutable values: build them with (name :k v…) or
   (make name :k v…), read with readers, (:k obj) or slot-value, and update
   with (with obj :k v…). Re-evaluating defclass redefines the class in place;
-  existing instances see the new definition.
+  existing instances see the new definition. An :initform runs when an
+  instance needs it (and once when a redefinition adds its slot to
+  instances made before). A slot's :type (written as a signature's ^T) is
+  checked whenever an instance is made or changed, a ContractError if it
+  doesn't hold.
 
   Equality is structural unless (:equality :identity); a slot with
   :compare false is left out of = and hash. A (:mutable) class's instances
@@ -693,7 +717,7 @@
          ~@readers
          (var ~cname))))
 
-(declare make-instance)
+(declare make-instance %check-slot-types)
 
 (defn %make-from
   "An instance of class c from initargs (a seq of :initarg value pairs),
@@ -722,8 +746,11 @@
   same. Through make-instance (M9 part 9.5) when the class's metaclass or
   its initialize-instance methods ask for it."
   [c & initargs]
-  (if (%class-hooked? c 2)
-    (apply make-instance c initargs)
+  ;; (2: the MOP's make-instance; 8: slots with a :type, checked)
+  (if (%class-hooked? c 10)
+    (if (%class-hooked? c 2)
+      (apply make-instance c initargs)
+      (%check-slot-types (%make-from c initargs)))
     (%make-from c initargs)))
 
 (defn instance->map [o] (zipmap (keys o) (vals o)))
@@ -2525,7 +2552,15 @@
         (let [prev (atom ::none)]
           (fn ([] (rf)) ([acc] (rf acc))
             ([acc x] (let [p @prev] (reset! prev x) (if (= p x) acc (rf acc x))))))))
-  ([coll] (%like coll (%eager (dedupe) coll))))
+  ([coll]
+   (if (stream? coll)
+     (let [step (fn step [s prev]
+                  (lazy-seq (loop [s (seq s)]
+                              (when s
+                                (let [x (first s)]
+                                  (if (= x prev) (recur (next s)) (cons x (step (rest s) x))))))))]
+       (step coll ::none))
+     (%like coll (%eager (dedupe) coll)))))
 
 (defn interpose
   "Items with sep between them. A transducer with one argument."
@@ -2535,7 +2570,11 @@
                ([acc x] (if @started
                           (let [r (rf acc sep)] (if (reduced? r) r (rf r x)))
                           (do (reset! started true) (rf acc x))))))))
-  ([sep coll] (%like-made coll (%eager (interpose sep) coll))))
+  ([sep coll]
+   (if (stream? coll)
+     (lazy-seq (when-let [s (seq coll)]
+                 (cons (first s) (mapcat (fn [x] [sep x]) (rest s)))))
+     (%like-made coll (%eager (interpose sep) coll)))))
 
 (defn partition-all
   "Items in groups of n (the last may be shorter), as vectors. A transducer with one argument."
@@ -2545,20 +2584,39 @@
              ([acc] (let [b @buf] (reset! buf []) (rf (if (empty? b) acc (unreduced (rf acc b))))))
              ([acc x] (let [b (conj @buf x)]
                         (if (= (count b) n) (do (reset! buf []) (rf acc b)) (do (reset! buf b) acc))))))))
-  ([n coll] (%eager (partition-all n) coll)))
+  ([n coll]
+   (if (stream? coll)
+     ;; (reading no further than the group it gives)
+     (lazy-seq (loop [s coll g []]
+                 (if (and (pos? n) (= (count g) n))
+                   (cons g (partition-all n s))
+                   (if-let [s (seq s)]
+                     (recur (rest s) (conj g (first s)))
+                     (when (seq g) (list g))))))
+     (%eager (partition-all n) coll))))
 
 (defn partition
-  "Items in groups of exactly n, as vectors (a short last group is dropped)."
+  "Items in groups of exactly n, as vectors (a short last group is
+  dropped). On a stream, a stream."
   [n coll]
-  (filterv (fn [g] (= (count g) n)) (partition-all n coll)))
+  (if (stream? coll)
+    (filter (fn [g] (= (count g) n)) (partition-all n coll))
+    (filterv (fn [g] (= (count g) n)) (partition-all n coll))))
 
 (defn interleave
-  "The first item of each collection, then the second of each…"
+  "The first item of each collection, then the second of each…, until one
+  runs out: a vector, or a stream if any of them is one."
   [& colls]
-  (loop [ss (mapv seq colls) acc []]
-    (if (every? some? ss)
-      (recur (mapv next ss) (into acc (map first ss)))
-      acc)))
+  (if (some stream? colls)
+    (let [step (fn step [ss]
+                 (lazy-seq (let [ss (map seq ss)]
+                             (when (and (seq ss) (every? some? ss))
+                               (concat (map first ss) (step (map rest ss)))))))]
+      (step (vec colls)))
+    (loop [ss (mapv seq colls) acc []]
+      (if (and (seq ss) (every? some? ss))
+        (recur (mapv next ss) (into acc (map first ss)))
+        acc))))
 
 (defn doall "Realize stream s completely, and return it." [s] (when (stream? s) (count s)) s)
 (defn realize "A stream's items as a vector (anything else is returned as it is)." [x] (if (stream? x) (vec x) x))
@@ -2995,17 +3053,31 @@
   [(take-while pred coll) (drop-while pred coll)])
 
 (defn partition-by
-  "coll split into runs on which (f x) stays the same: a seq of vectors."
+  "coll split into runs on which (f x) stays the same: a seq of vectors
+  (a stream of them, on a stream)."
   [f coll]
-  (seq (reduce (fn [out x]
-                 (let [k (f x) last-run (peek out)]
-                   (if (and last-run (= k (f (first last-run))))
-                     (conj (pop out) (conj last-run x))
-                     (conj out [x]))))
-               [] coll)))
+  (if (stream? coll)
+    (lazy-seq (when-let [s (seq coll)]
+                (let [x (first s) k (f x)]
+                  (loop [r (rest s) run [x]]
+                    (let [s2 (seq r)]
+                      (if (and s2 (= k (f (first s2))))
+                        (recur (rest s2) (conj run (first s2)))
+                        (cons run (partition-by f r))))))))
+    (seq (reduce (fn [out x]
+                   (let [k (f x) last-run (peek out)]
+                     (if (and last-run (= k (f (first last-run))))
+                       (conj (pop out) (conj last-run x))
+                       (conj out [x]))))
+                 [] coll))))
 
-(defn flatten "The items of nested sequential collections, as one seq." [x]
-  (seq (reduce (fn [out y] (if (sequential? y) (into out (flatten y)) (conj out y))) [] (if (sequential? x) x [x]))))
+(defn flatten
+  "The items of nested sequential collections, as one seq (a stream, when
+  x is one)."
+  [x]
+  (if (stream? x)
+    (mapcat (fn [y] (if (sequential? y) (flatten y) [y])) x)
+    (seq (reduce (fn [out y] (if (sequential? y) (into out (flatten y)) (conj out y))) [] (if (sequential? x) x [x])))))
 
 (defn keep-indexed "The non-nil results of (f index x)." [f coll]
   (remove nil? (map-indexed f coll)))
@@ -3065,9 +3137,15 @@
 (defn update-vals "m with (f v) for each value v." [m f] (into {} (map (fn [[k v]] [k (f v)])) m))
 
 (defn reductions
-  "The successive values of (reduce f init coll), init first, as a seq."
+  "The successive values of (reduce f init coll), init first, as a seq (a
+  stream, on a stream)."
   ([f coll] (if (seq coll) (reductions f (first coll) (rest coll)) (list (f))))
-  ([f init coll] (seq (reduce (fn [out x] (conj out (f (peek out) x))) [init] coll))))
+  ([f init coll]
+   (if (stream? coll)
+     (let [step (fn step [acc s]
+                  (cons acc (lazy-seq (when-let [s (seq s)] (step (f acc (first s)) (rest s))))))]
+       (lazy-seq (step init coll)))
+     (seq (reduce (fn [out x] (conj out (f (peek out) x))) [init] coll)))))
 
 (defn eduction "The items of coll through transducer xform, as a seq." [xform coll] (sequence xform coll))
 
@@ -3415,7 +3493,11 @@
   ((name :initarg :name) (check :initarg :check) (parts :initform nil)
                          ;; for a contract that only tests (a class, a predicate): the test, which
                          ;; a checked call uses directly
-                         (test :initform nil)))
+                         (test :initform nil)
+                         ;; for one that wraps a function (fn-of, or a combination holding one):
+                         ;; check as (fn [v fail giver user] …), giver blamed for the wrapped
+                         ;; function's bad results, user for its bad arguments
+                         (blamed :initform nil)))
 
 (def ^:dynamic *check-contracts*
   "Which calls check contracts, when code is expanded: :boundaries
@@ -3460,12 +3542,20 @@
                                 :function (:function ctx) :position (:position ctx) :expected (:name c)
                                 :value v :blame (:blame ctx))))))
 
+(defn- %check-blaming
+  "v checked against contract c, a function it wraps blaming giver for a
+  bad result and user for a bad argument."
+  [c v fail giver user]
+  (if-let [b (:blamed c)] (b v fail giver user) ((:check c) v fail)))
+
 (defn nilable "A contract: nil, or what c says." [c]
   (let [c (->contract c)
-        t (:test c)]
+        t (:test c)
+        b (:blamed c)]
     (make Contract :name (str "nil or " (:name c)) :check (fn [v fail] (if (nil? v) v ((:check c) v fail)))
           ;; (a plain test when c has one, as for a class: cheaper to check)
-          :test (when t (fn [v] (or (nil? v) (t v)))))))
+          :test (when t (fn [v] (or (nil? v) (t v))))
+          :blamed (when b (fn [v fail giver user] (if (nil? v) v (b v fail giver user)))))))
 
 (defn any-of "A contract: what any of cs says (the first that holds)." [& cs]
   (let [cs (mapv ->contract cs)
@@ -3474,34 +3564,89 @@
         test (when (every? :test cs)
                (let [ts (mapv :test cs)]
                  (fn [v] (loop [ts (seq ts)] (cond (nil? ts) false ((first ts) v) true :else (recur (next ts)))))))]
-    (make Contract :name (apply str (interpose " or " (map :name cs)))
+    (let [one-of (fn [v fail giver user]
+                   (loop [cs (seq cs)]
+                     (if (nil? cs)
+                       (fail)
+                       (let [r (catch-tag ::failed (%check-blaming (first cs) v (fn [] (throw-tag ::failed ::failed)) giver user))]
+                         (if (= r ::failed) (recur (next cs)) r)))))]
+      (make Contract :name (apply str (interpose " or " (map :name cs)))
+            :check (if test
+                     (fn [v fail] (if (test v) v (fail)))
+                     (fn [v fail] (one-of v fail nil nil)))
+            :test test
+            :blamed (when (some :blamed cs) one-of)))))
+
+(defn all-of "A contract: what every one of cs says." [& cs]
+  (let [cs (mapv ->contract cs)
+        test (when (every? :test cs)
+               (let [ts (mapv :test cs)] (fn [v] (every? (fn [t] (t v)) ts))))]
+    (make Contract :name (apply str (interpose " and " (map :name cs)))
+          :check (if test
+                   (fn [v fail] (if (test v) v (fail)))
+                   (fn [v fail] (reduce (fn [x c] ((:check c) x fail)) v cs)))
+          :test test
+          :blamed (when (some :blamed cs)
+                    (fn [v fail giver user] (reduce (fn [x c] (%check-blaming c x fail giver user)) v cs))))))
+
+(defn- %vec-checked
+  "Vector v with f applied to each item: v itself when f gives every item
+  back (only a function contract wraps one)."
+  [v f]
+  (let [n (count v)]
+    (loop [i 0 out nil]
+      (if (< i n)
+        (let [x (nth v i) y (f x)]
+          (recur (inc i) (cond out (conj! out y)
+                               (identical? x y) nil
+                               :else (conj! (reduce conj! (transient []) (subvec v 0 i)) y))))
+        (if out (persistent! out) v)))))
+
+(defn- %map-checked
+  "Map m with fk applied to each key and fv to each value: m itself when
+  they give every one back."
+  [m fk fv]
+  (let [r (reduce-kv (fn [acc k x]
+                       (let [k2 (fk k) x2 (fv x)]
+                         [(and (nth acc 0) (identical? k k2) (identical? x x2)) (assoc (nth acc 1) k2 x2)]))
+                     [true {}] m)]
+    (if (nth r 0) m (nth r 1))))
+
+(defn vec-of
+  "A contract: a vector whose every item is what c says. A vector that
+  holds is passed on as it is (checked in place, not copied)."
+  [c]
+  (let [c (->contract c)
+        t (:test c)
+        b (:blamed c)
+        test (when t (fn [v] (and (vector? v) (every? t v))))]
+    (make Contract :name (str "a vector of " (:name c))
+          :check (if test
+                   (fn [v fail] (if (test v) v (fail)))
+                   (fn [v fail] (if (vector? v) (%vec-checked v (fn [x] ((:check c) x fail))) (fail))))
+          :test test
+          :blamed (when b (fn [v fail giver user]
+                            (if (vector? v) (%vec-checked v (fn [x] (b x fail giver user))) (fail)))))))
+
+(defn map-of
+  "A contract: a map whose keys are what kc says, and values vc. A map that
+  holds is passed on as it is (checked in place, not copied)."
+  [kc vc]
+  (let [kc (->contract kc) vc (->contract vc)
+        kt (:test kc) vt (:test vc)
+        test (when (and kt vt)
+               (fn [v] (and (map? v) (reduce-kv (fn [_ k x] (if (and (kt k) (vt x)) true (reduced false))) true v))))]
+    (make Contract :name (str "a map of " (:name kc) " to " (:name vc))
           :check (if test
                    (fn [v fail] (if (test v) v (fail)))
                    (fn [v fail]
-                     (loop [cs (seq cs)]
-                       (if (nil? cs)
-                         (fail)
-                         (let [r (catch-tag ::failed ((:check (first cs)) v (fn [] (throw-tag ::failed ::failed))))]
-                           (if (= r ::failed) (recur (next cs)) r))))))
-          :test test)))
-
-(defn all-of "A contract: what every one of cs says." [& cs]
-  (let [cs (mapv ->contract cs)]
-    (make Contract :name (apply str (interpose " and " (map :name cs)))
-          :check (fn [v fail] (reduce (fn [x c] ((:check c) x fail)) v cs)))))
-
-(defn vec-of "A contract: a vector whose every item is what c says." [c]
-  (let [c (->contract c)]
-    (make Contract :name (str "a vector of " (:name c))
-          :check (fn [v fail] (if (vector? v) (mapv (fn [x] ((:check c) x fail)) v) (fail))))))
-
-(defn map-of "A contract: a map whose keys are what kc says, and values vc." [kc vc]
-  (let [kc (->contract kc) vc (->contract vc)]
-    (make Contract :name (str "a map of " (:name kc) " to " (:name vc))
-          :check (fn [v fail]
-                   (if (map? v)
-                     (into {} (map (fn [[k x]] [((:check kc) k fail) ((:check vc) x fail)])) v)
-                     (fail))))))
+                     (if (map? v) (%map-checked v (fn [k] ((:check kc) k fail)) (fn [x] ((:check vc) x fail))) (fail))))
+          :test test
+          :blamed (when (or (:blamed kc) (:blamed vc))
+                    (fn [v fail giver user]
+                      (if (map? v)
+                        (%map-checked v (fn [k] (%check-blaming kc k fail giver user)) (fn [x] (%check-blaming vc x fail giver user)))
+                        (fail)))))))
 
 (defn- %ordinal [n]
   (str n (cond (and (>= (rem n 100) 11) (<= (rem n 100) 13)) "th"
@@ -3527,12 +3672,14 @@
         rest-c (:rest parts)
         result-c (:result parts)
         n (count arg-cs)
+        ;; (a function passed in: its giver is the caller, its user the
+        ;; provider; a function given back the other way round)
         checked (loop [as (seq args) i 0 out (transient [])]
                   (if as
                     (let [a (first as)
                           c (if (< i n) (nth arg-cs i) rest-c)]
                       (recur (next as) (inc i)
-                             (conj! out (if c ((:check c) a (fn [] (%contract-fail c a who i caller))) a))))
+                             (conj! out (if c (%check-blaming c a (fn [] (%contract-fail c a who i caller)) caller provider) a))))
                     (persistent! out)))
         r (case (count checked)
             0 (f)
@@ -3540,21 +3687,26 @@
             2 (f (nth checked 0) (nth checked 1))
             3 (f (nth checked 0) (nth checked 1) (nth checked 2))
             (apply f checked))]
-    (if result-c ((:check result-c) r (fn [] (%contract-fail result-c r who "its result" provider))) r)))
+    (if result-c (%check-blaming result-c r (fn [] (%contract-fail result-c r who "its result" provider)) provider caller) r)))
 
 (defn fn-of
   "A contract: a function whose arguments are what arg-cs say (a vector)
   and whose result is what result-c says (:rest c: the arguments after
   them). Calling the function it wraps blames the caller for a bad
-  argument and the function's giver for a bad result."
+  argument and the function's giver for a bad result. In a signature
+  those are modules: for a function passed in, the module that passed it
+  is its giver and the function's own module its caller; for one given
+  back, the other way round. (Checked directly, with (:check c), they are
+  \"the function's caller\" and \"the function\".)"
   [arg-cs result-c & {:keys [rest]}]
-  (let [parts {:args (mapv ->contract arg-cs) :result (->contract result-c) :rest (when rest (->contract rest))}]
+  (let [parts {:args (mapv ->contract arg-cs) :result (->contract result-c) :rest (when rest (->contract rest))}
+        wrap (fn [v fail giver user]
+               (if (fn? v)
+                 (fn [& args] (%check-call v args parts (%fn-label v) user giver))
+                 (fail)))]
     (with (make Contract :name (str "(fn-of [" (apply str (interpose " " (map :name (:args parts)))) "] " (:name (:result parts)) ")")
-                :check (fn [v fail]
-                         (if (fn? v)
-                           (fn [& args] (%check-call v args parts (%fn-label v) "the function's caller" "the function"))
-                           (fail))))
-          :parts parts)))
+                :check (fn [v fail] (wrap v fail "the function" "the function's caller")))
+          :parts parts :blamed wrap)))
 
 ;; ---- a function's contract, at module boundaries ----
 
@@ -3590,12 +3742,12 @@
                     c (if (< i (count cs)) (nth cs i) (:rest p))]
                 (cond (nil? c) a
                       (:test c) (if ((:test c) a) a (%contract-fail c a n i caller))
-                      :else ((:check c) a (fn [] (%contract-fail c a n i caller))))))
+                      :else (%check-blaming c a (fn [] (%contract-fail c a n i caller)) caller module))))
         result (fn [p r]
                  (let [c (:result p)]
                    (cond (nil? c) r
                          (:test c) (if ((:test c) r) r (%contract-fail c r n "its result" module))
-                         :else ((:check c) r (fn [] (%contract-fail c r n "its result" module))))))]
+                         :else (%check-blaming c r (fn [] (%contract-fail c r n "its result" module)) module caller))))]
     ;; (the usual arities check their arguments in place: no argument list,
     ;; vector or apply)
     (fn
@@ -3634,6 +3786,51 @@
             -> (if (>= (count t) 2) (fn-of (mapv sub (butlast (rest t))) (sub (last t))) (bad))
             (bad))
           :else (bad))))
+
+;; ---- slot types (defclass's :type) ----
+
+(defn- %slot-contracts
+  "Class c's slot contracts, {slot contract}, made from the slots' :type
+  when first needed (so a slot can name a class defined after it)."
+  [c]
+  (let [[types cell] (::slot-types (%class-get c :meta))]
+    (or @cell
+        (let [cname (class-name c)
+              home (symbol (namespace cname))]
+          (reset! cell (reduce (fn [m [k t]] (assoc m k (%type->contract t home (str cname " slot " k)))) {} types))))))
+
+(defn- %check-slot
+  "A ContractError unless v is what slot k of class c says it is."
+  [c k v]
+  (when-let [ct (get (%slot-contracts c) k)]
+    ;; (a function type checks only that v is a function: the slot keeps v)
+    ((:check ct) v (fn [] (error ContractError
+                                 :message (str (class-name c) ": its slot " k " should be " (:name ct) ", got " (pr-str v))
+                                 :function (str (class-name c)) :position (str "its slot " k) :expected (:name ct) :value v)))))
+
+(defn %check-slot-types
+  "Instance o, its slots checked against their :type (when its class has
+  any)."
+  [o]
+  (let [c (class-of o)]
+    (when (%class-flag? c 8)
+      (doseq [[k _] (%slot-contracts c)] (%check-slot c k (%slot-value-basic o k)))))
+  o)
+
+(defn %with-typed
+  "(with o :k v…) (and assoc) for an instance whose class has slot types:
+  the new values checked first."
+  [o & kvs]
+  (let [c (class-of o)]
+    (loop [s (seq kvs)]
+      (when (next s) (%check-slot c (first s) (second s)) (recur (next (next s)))))
+    (apply %with o kvs)))
+
+(defn %set-slot-typed
+  "set-slot! for an instance whose class has slot types: v checked first."
+  [o k v]
+  (%check-slot (class-of o) k v)
+  (%set-slot-unchecked! o k v))
 
 (defn %signature-parts
   "The contract a function's signature says (sigs: its arities' types, as
@@ -3726,7 +3923,7 @@
   (%pr-plain x))
 
 (defmethod make-instance ((c StandardClass) & initargs)
-  (initialize-instance (%make-from c initargs) (apply hash-map initargs)))
+  (initialize-instance (%check-slot-types (%make-from c initargs)) (apply hash-map initargs)))
 
 (defmethod initialize-instance ((o StandardObject) _initargs) o)
 

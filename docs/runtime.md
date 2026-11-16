@@ -130,9 +130,12 @@ Once the native compiler is good, moving more into Norn is an option.
   order are an error at insertion.
 - `Queue` (`[count][front list][rear vector]`) is a FIFO: `conj` adds at the
   back, `peek` and `pop` work at the front. It prints as `#queue [..]`.
+  Its class is `Queue`, a `Sequential`, so it is `sequential?` and `=`
+  to a list or vector of the same items.
 - `Transient` (`[kind][owner][count][data][done]`) is one fiber's builder
   for a vector, map or set. Use from another fiber is an `OwnershipError`;
-  use after `persistent!` is an error. Transient vectors fill an array in
+  use after `persistent!` is an error. `get`, `nth`, `contains?` and
+  `count` read one, as Clojure lets them. Transient vectors fill an array in
   place; transient maps and sets have the full API but still copy per
   change (in place is later work).
 - Ropes are a Norn library: a height-balanced tree of string chunks
