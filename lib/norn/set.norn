@@ -13,9 +13,9 @@
   (^(? Set) [^(? Set) s1 ^(? Set) s2] (reduce (fn [acc x] (if (contains? s2 x) acc (disj acc x))) s1 s1))
   (^(? Set) [^(? Set) s1 ^(? Set) s2 & ^(? Set) more] (reduce intersection (intersection s1 s2) more)))
 
-(defn difference "What s1 has and the others don't." (^(? Set) [^(? Set) s] s)
-  (^(? Set) [^(? Set) s1 ^(? Set) s2] (reduce disj s1 s2))
-  (^(? Set) [^(? Set) s1 ^(? Set) s2 & ^(? Set) more] (reduce difference (difference s1 s2) more)))
+(defn difference "What s1 has and the others don't (any collections: (difference s (keys m)))." (^(? Set) [^(? Set) s] s)
+  (^(? Set) [^(? Set) s1 s2] (reduce disj s1 s2))
+  (^(? Set) [^(? Set) s1 s2 & more] (reduce difference (difference s1 s2) more)))
 
 (defn subset? "Is every member of a in b?" ^Boolean [^(? Set) a ^(? Set) b] (and (<= (count a) (count b)) (every? (fn [x] (contains? b x)) a)))
 (defn superset? "Is every member of b in a?" ^Boolean [^(? Set) a ^(? Set) b] (subset? b a))

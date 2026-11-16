@@ -62,7 +62,7 @@
       (let [mid (quot n 2)]
         (node (from-string (subs s 0 mid)) (from-string (subs s mid)))))))
 
-(defn rope "A rope of string s (default empty)." (^(U String Vector) [] "") (^(U String Vector) [^String s] (from-string (str s))))
+(defn rope "A rope of string s (default empty)." (^(U String Vector) [] "") (^(U String Vector) [^(? String) s] (from-string (str s))))
 
 (defn- split
   "[before after]: the rope cut at character i."
@@ -91,7 +91,7 @@
     (let [t (str (subs r 0 start) s (subs r end))]
       (if (<= (count t) (* 2 chunk-size)) t (from-string t)))))
 
-(defn insert "s inserted at character i." ^(U String Vector) [^(U String Vector) r ^Integer i ^String s]
+(defn insert "s inserted at character i." ^(U String Vector) [^(U String Vector) r ^Integer i ^(? String) s]
   (let [i (clamp r i) s (str s)]
     ;; (typing and small pastes change one leaf; a big one is split in)
     (or (when (<= (count s) chunk-size) (edit-leaf r i i s))
@@ -103,7 +103,7 @@
         (or (edit-leaf r start end "")
             (let [[a _] (split r start) [_ c] (split r end)] (join a c))))))
 
-(defn replace "The characters from start to end replaced by s." ^(U String Vector) [^(U String Vector) r ^Integer start ^Integer end ^String s]
+(defn replace "The characters from start to end replaced by s." ^(U String Vector) [^(U String Vector) r ^Integer start ^Integer end ^(? String) s]
   (insert (delete r start end) start s))
 
 (defn text "The rope's text, as a string." ^String [^(U String Vector) r]
