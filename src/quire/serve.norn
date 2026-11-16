@@ -49,10 +49,12 @@
   as its files change: {:server :stop}."
   [dir out port]
   (let [listeners (atom #{})
-        _ (rebuild! dir out listeners)
-        server (http/serve (handler out listeners) :port port)
+        ;; (watching before serving: a change made once the server answers
+        ;; is seen)
         watches (vec (for [d ["posts" "static" "site.edn"] :let [p (io/path dir d)] :when (io/exists? p)]
                        (fs/watch p :recursive true)))
+        _ (rebuild! dir out listeners)
+        server (http/serve (handler out listeners) :port port)
         watcher (spawn-detached
                   (loop []
                     (let [[ev _] (alts! (mapv :events watches))]
