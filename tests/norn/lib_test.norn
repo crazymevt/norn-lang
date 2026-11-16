@@ -126,12 +126,13 @@
 (defmethod print-object ((p SpitPoint)) (str "<" (:x p) ">"))
 (spit (f "b.txt") (SpitPoint :x 5))
 (is (= "<5>" (slurp (f "b.txt"))) "and anything else as str does")
-(is (= {:out "nil\n" :err "a :b <1>\nc"}
-       (select-keys (proc/sh (:executable (sys/info)) "-e"
-                             (str "(require '[norn.io :as io]) (defclass P () (x)) (defmethod print-object ((p P)) \"<1>\")"
-                                  " (io/eprintln \"a\" :b (P :x 1)) (io/eprint \"c\")"))
-                    [:out :err]))
-    "eprint and eprintln write to standard error")
+(when (= "norn" (io/file-name (:executable (sys/info)))) ; (under the Rust test harness, the executable is the harness)
+  (is (= {:out "nil\n" :err "a :b <1>\nc"}
+         (select-keys (proc/sh (:executable (sys/info)) "-e"
+                               (str "(require '[norn.io :as io]) (defclass P () (x)) (defmethod print-object ((p P)) \"<1>\")"
+                                    " (io/eprintln \"a\" :b (P :x 1)) (io/eprint \"c\")"))
+                      [:out :err]))
+      "eprint and eprintln write to standard error"))
 
 ;;; an unreachable stream is closed by its cleanup (observed through a
 ;;; cleanup of our own on the same stream, which runs in the same pass:
