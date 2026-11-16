@@ -8,7 +8,7 @@
   receives each signal's keyword as it arrives. Stop with stop. A signal
   this OS doesn't have, or one that can't be caught (:kill :stop :segv
   …), is an error; on Windows only :int (Ctrl-C) is there."
-  [& sigs]
+  ^Map [& ^Keyword sigs]
   (let [[h ch] (%signal-listen (vec sigs))]
     {:handle h :signals ch}))
 
@@ -16,8 +16,8 @@
   "Stop listening; the channel closes. Once no listener is left for a
   signal, it does what it did before anyone listened: :term and :hup end
   the process again, :winch is ignored, and so on."
-  [l]
+  [^Map l]
   (%io-close (:handle l))
   (close! (:signals l)))
 
-(defn raise "Send a signal to this process (one this OS has: else an error)." [sig] (%raise-signal sig))
+(defn raise "Send a signal to this process (one this OS has: else an error)." [^Keyword sig] (%raise-signal sig))

@@ -11,20 +11,20 @@
 
 ;;; ---- whole files ----
 
-(defn read-text "The contents of a file, as UTF-8 text (line endings as they are, on every OS)." [path] (%fs-read (str path) true))
-(defn read-bytes "The contents of a file, as bytes." [path] (%fs-read (str path) false))
-(defn write-text "Replace a file's contents with s (a string, as UTF-8)." [path s] (%fs-write (str path) (str s) false))
-(defn write-bytes "Replace a file's contents with bytes b." [path b] (%fs-write (str path) b false))
-(defn append-text "Add s to the end of a file (creating it)." [path s] (%fs-write (str path) (str s) true))
-(defn lines "The lines of a text file, as a vector (split at \\n or \\r\\n)." [path] (%split-lines (read-text path)))
+(defn read-text "The contents of a file, as UTF-8 text (line endings as they are, on every OS)." ^String [^String path] (%fs-read (str path) true))
+(defn read-bytes "The contents of a file, as bytes." ^Bytes [^String path] (%fs-read (str path) false))
+(defn write-text "Replace a file's contents with s (a string, as UTF-8)." [^String path ^String s] (%fs-write (str path) (str s) false))
+(defn write-bytes "Replace a file's contents with bytes b." [^String path ^Bytes b] (%fs-write (str path) b false))
+(defn append-text "Add s to the end of a file (creating it)." [^String path ^String s] (%fs-write (str path) (str s) true))
+(defn lines "The lines of a text file, as a vector (split at \\n or \\r\\n)." ^Vector [^String path] (%split-lines (read-text path)))
 
 ;;; ---- the file system ----
 
 (defn info
   "{:type :file|:dir|:symlink|:other :size :modified (epoch ms) :readonly}, or nil if path doesn't exist."
-  [path]
+  ^(? Map) [^String path]
   (%fs-info (str path)))
-(defn exists? "Is there a file, folder or other entry at path? (A symbolic link is, even one whose target is gone.)" [path] (some? (info path)))
+(defn exists? "Is there a file, folder or other entry at path? (A symbolic link is, even one whose target is gone.)" ^Boolean [^String path] (some? (info path)))
 (defn- type-of
   "Path's type, a symbolic link's being its target's (nil if it dangles)."
   [path]
@@ -32,33 +32,33 @@
     (if (= :symlink t)
       (when-let [c (%path-part (str path) :canonical)] (:type (info c)))
       t)))
-(defn file? "Is path a file (or a symbolic link to one)?" [path] (= :file (type-of path)))
-(defn directory? "Is path a directory (or a symbolic link to one)?" [path] (= :dir (type-of path)))
-(defn list-dir "The names in a directory, sorted." [path] (%fs-list (str path)))
-(defn mkdirs! "Create a directory and any missing parents." [path] (%fs-mkdirs (str path)))
+(defn file? "Is path a file (or a symbolic link to one)?" ^Boolean [^String path] (= :file (type-of path)))
+(defn directory? "Is path a directory (or a symbolic link to one)?" ^Boolean [^String path] (= :dir (type-of path)))
+(defn list-dir "The names in a directory, sorted." ^Vector [^String path] (%fs-list (str path)))
+(defn mkdirs! "Create a directory and any missing parents." [^(? String) path] (%fs-mkdirs (str path)))
 (defn delete!
   "Delete a file or an empty directory; with :recursive true, a directory and everything in it."
-  [path & {:keys [recursive]}]
+  [^String path & {:keys [recursive]}]
   (%fs-delete (str path) (if recursive true false)))
-(defn rename! "Rename (move) from to to, replacing a file already at to." [from to] (%fs-rename (str from) (str to)))
-(defn copy! "Copy a file; returns the number of bytes copied." [from to] (%fs-copy (str from) (str to)))
+(defn rename! "Rename (move) from to to, replacing a file already at to." [^String from ^String to] (%fs-rename (str from) (str to)))
+(defn copy! "Copy a file; returns the number of bytes copied." ^Integer [^String from ^String to] (%fs-copy (str from) (str to)))
 
 ;;; ---- paths ----
 
-(defn path "Join path parts." [& parts] (%path-join (mapv str parts)))
+(defn path "Join path parts." ^String [& ^String parts] (%path-join (mapv str parts)))
 (defn parent
   "The directory part of a path, or nil when it has none (a bare file
   name, or a root)."
-  [p]
+  ^(? String) [^(? String) p]
   (let [d (%path-part (str p) :parent)] (when-not (= "" d) d)))
-(defn file-name "The last part of a path, or nil." [p] (%path-part (str p) :name))
-(defn extension "The extension (without the dot), or nil." [p] (%path-part (str p) :ext))
-(defn stem "The file name without its extension, or nil." [p] (%path-part (str p) :stem))
-(defn absolute "The path made absolute against the current directory." [p] (%path-part (str p) :absolute))
+(defn file-name "The last part of a path, or nil." ^(? String) [^(? String) p] (%path-part (str p) :name))
+(defn extension "The extension (without the dot), or nil." ^(? String) [^(? String) p] (%path-part (str p) :ext))
+(defn stem "The file name without its extension, or nil." ^(? String) [^(? String) p] (%path-part (str p) :stem))
+(defn absolute "The path made absolute against the current directory." ^String [^String p] (%path-part (str p) :absolute))
 (defn canonical
   "The path made absolute with every symbolic link, . and .. resolved, as
   file-system events report it; nil if it doesn't exist."
-  [p]
+  ^(? String) [^String p]
   (%path-part (str p) :canonical))
 
 ;;; ---- streams ----
@@ -77,13 +77,13 @@
   start, creating the file if it's missing, keeping its contents if not),
   or :create-new (create for writing, signalling FileExists if path exists
   already)."
-  [path mode]
+  ^Handle [^String path ^Keyword mode]
   (auto-close (%fs-open (str path) mode)))
 
 (defn sync!
   "Flush everything written to file handle h to storage, so it survives a
   crash. nil."
-  [h]
+  [^Handle h]
   (%file-sync (ensure-live h)))
 
 (defn retry-io
@@ -117,7 +117,7 @@
 (defn read
   "Up to n bytes from a stream (file, pipe or socket, or an instance with
   a stream-read method), or nil at the end."
-  [h n]
+  [h ^Integer n]
   (if (%instance? h)
     (stream-read h n)
     (let [h (ensure-live h)]
@@ -128,7 +128,7 @@
 (defn write
   "Write all of data (a string, as UTF-8, or bytes) to a stream (or an
   instance with a stream-write method)."
-  [h data]
+  [h ^(U String Bytes) data]
   (let [b (bytes data)]
     (if (%instance? h)
       (stream-write h b)
@@ -183,7 +183,7 @@
 
 (defn read-all
   "Everything left in a stream, as bytes."
-  [h]
+  ^Bytes [h]
   (loop [acc (bytes [])]
     (let [b (read h 65536)]
       (if b (recur (bytes-concat acc b)) acc))))
@@ -201,10 +201,10 @@
 (defn line-reader
   "A reader of lines from stream h, for read-line. It's a stream too:
   read gives the bytes it holds past the last line first, then h's."
-  [h]
+  ^LineReader [h]
   (LineReader :stream h :state (atom {:buf (bytes []) :at 0 :scan 0})))
 
-(defn line-reader? "Is x a line reader?" [x] (instance? LineReader x))
+(defn line-reader? "Is x a line reader?" ^Boolean [x] (instance? LineReader x))
 
 (defn- strip-cr [s]
   (if (and (pos? (count s)) (= \return (nth s (dec (count s))))) (subs s 0 (dec (count s))) s))
@@ -214,8 +214,8 @@
 (defn read-line
   "The next line (without its line ending), or nil at the end. With no
   argument, reads standard input; otherwise a line reader."
-  ([] (%stdin-line))
-  ([r]
+  (^(? String) [] (%stdin-line))
+  (^(? String) [^LineReader r]
    (let [st (:state r)]
      (loop []
        (let [{:keys [buf at scan]} @st
@@ -245,7 +245,7 @@
 (defn read-exactly
   "Exactly n bytes from a stream, or nil if it ends before the first. A
   stream that ends partway signals IOError, with :reason :truncated."
-  [h n]
+  ^(? Bytes) [h ^Integer n]
   (when-not (and (integer? n) (<= 0 n)) (error "read-exactly needs a byte count" n))
   (loop [parts [] left n]
     (if (zero? left)
@@ -259,7 +259,7 @@
 (defn copy-stream!
   "Copy from stream in to stream out until in ends, or, with :limit, until
   that many bytes are copied. The number of bytes copied."
-  [in out & {:keys [limit]}]
+  ^Integer [in out & {:keys [limit]}]
   (when (and limit (not (and (integer? limit) (<= 0 limit)))) (error "copy-stream! :limit is a byte count" limit))
   (loop [total 0]
     (let [want (if limit (min 65536 (- limit total)) 65536)]
@@ -276,16 +276,16 @@
 (defn text-reader
   "A reader of decoded text from stream h, for read-chunk. :encoding is
   :utf-8 (the default), :utf-16le or :utf-16be."
-  [h & {:keys [encoding] :or {encoding :utf-8}}]
+  ^TextReader [h & {:keys [encoding] :or {encoding :utf-8}}]
   (TextReader :stream h :decoder (atom (bytes/decoder encoding))))
 
-(defn text-reader? "Is x a text reader?" [x] (instance? TextReader x))
+(defn text-reader? "Is x a text reader?" ^Boolean [x] (instance? TextReader x))
 
 (defn read-chunk
   "The next piece of text from a text reader, or nil at the end. A
   character split between reads comes whole in the next piece; a stream
   that ends partway through one signals ParseError."
-  [r]
+  ^(? String) [^TextReader r]
   (loop []
     (if-let [data (read (:stream r) 65536)]
       (let [[state text] (bytes/decode-chunk @(:decoder r) data)]
@@ -311,13 +311,13 @@
   "Create a new, empty file with a name no other has, in :dir (the system's
   temporary directory by default), and give its path. :prefix and :suffix
   shape the name. Delete it when done, or use with-temp-file."
-  [& {:keys [dir prefix suffix] :or {prefix "norn-" suffix ".tmp"}}]
+  ^String [& {:keys [dir prefix suffix] :or {prefix "norn-" suffix ".tmp"}}]
   (create-unique (or dir (sys/temp-dir)) prefix suffix (fn [p] (close (open p :create-new)))))
 
 (defn temp-directory
   "Create a new, empty directory with a name no other has, as temp-file
   does, and give its path."
-  [& {:keys [dir prefix suffix] :or {prefix "norn-" suffix ""}}]
+  ^String [& {:keys [dir prefix suffix] :or {prefix "norn-" suffix ""}}]
   (create-unique (or dir (sys/temp-dir)) prefix suffix (fn [p] (%fs-mkdir p))))
 
 (defmacro with-temp-file
@@ -343,7 +343,7 @@
   see the old contents or the new, never a mix, and a crash leaves one of
   them. If f fails, path is untouched. f's result. The new file doesn't
   keep the old one's permissions."
-  [path f]
+  [^String path f]
   (let [path (str path)
         dir (or (parent (absolute path)) ".")
         tmp (temp-file :dir dir :prefix (str "." (file-name path) ".") :suffix ".tmp")
@@ -369,7 +369,7 @@
   "Replace path's contents with data (a string, as UTF-8, or bytes) all at
   once: readers see the old file or the new one, never a mix, and a crash
   leaves one of them."
-  [path data]
+  [^String path ^(U String Bytes) data]
   (call-with-atomic-file path (fn [h] (write h data)))
   nil)
 

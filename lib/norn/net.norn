@@ -10,8 +10,8 @@
 
 (defn resolve
   "The addresses of host, as \"ip:port\" strings (DNS runs on the blocking pool)."
-  ([host] (resolve host 0))
-  ([host port] (%resolve (str host) port)))
+  (^Vector [^String host] (resolve host 0))
+  (^Vector [^String host ^Integer port] (%resolve (str host) port)))
 
 (defn- try-addresses [addrs f]
   (loop [as (seq addrs) last nil]
@@ -33,7 +33,7 @@
 (defn connect
   "Connect to host:port: a stream. Options: :tls true (with :ca-file path to
   trust a private CA, :server-name to check another name than host)."
-  [host port & {:keys [tls ca-file server-name]}]
+  ^Handle [^String host ^Integer port & {:keys [tls ca-file server-name]}]
   (let [info {:host (str host) :port port :tls (if tls true false) :ca-file ca-file :server-name server-name}
         h (try-addresses (resolve host port)
                          (fn [addr]
@@ -52,7 +52,7 @@
 (defn listen
   "Listen for TCP connections on host:port (port 0 picks a free one; see
   local-address). Returns a listener for accept."
-  [host port]
+  ^Handle [^String host ^Integer port]
   (let [info {:host (str host) :port port}]
     (io/auto-close (try-addresses (resolve host port) (fn [addr] (%tcp-listen addr info))))))
 
@@ -61,7 +61,7 @@
   Options: :tls true with :cert-file and :key-file (PEM) for a TLS server.
   A listener that's closed (before, or while waiting) is a ConnectionError
   with :reason :closed."
-  [listener & {:keys [tls cert-file key-file]}]
+  ^Handle [^Handle listener & {:keys [tls cert-file key-file]}]
   (let [h (io/auto-close
            (handler-case (io/retry-io listener (fn [] (%tcp-accept listener)))
              (RuntimeError [e]
@@ -72,29 +72,29 @@
       (io/auto-close (%tls-server h (io/read-bytes cert-file) (io/read-bytes key-file) {:server true}))
       h)))
 
-(defn local-address "The local address of a socket or listener, \"ip:port\"." [h] (%socket-address h false))
-(defn peer-address "The remote address of a connected socket, \"ip:port\"." [h] (%socket-address h true))
-(defn port "The port of an \"ip:port\" address." [addr]
+(defn local-address "The local address of a socket or listener, \"ip:port\"." ^String [^Handle h] (%socket-address h false))
+(defn peer-address "The remote address of a connected socket, \"ip:port\"." ^String [^Handle h] (%socket-address h true))
+(defn port "The port of an \"ip:port\" address." ^Integer [^String addr]
   (let [s (str addr)]
     (loop [i (dec (count s))]
       (if (= (nth s i) \:) (read-string (subs s (inc i))) (recur (dec i))))))
-(defn shutdown-output "Stop sending: the peer reads the end of input; this side can still read." [h] (%shutdown-write h))
+(defn shutdown-output "Stop sending: the peer reads the end of input; this side can still read." [^Handle h] (%shutdown-write h))
 
 ;;; ---- UDP ----
 
 (defn udp
   "A UDP socket bound to host:port (port 0 picks a free one)."
-  [host port]
+  ^Handle [^String host ^Integer port]
   (io/auto-close (try-addresses (resolve host port) (fn [addr] (%udp-bind addr {:host (str host) :port port})))))
 
 (defn send-to
   "Send one datagram (a string or bytes) to host:port."
-  [s data host port]
+  [^Handle s ^(U String Bytes) data ^String host ^Integer port]
   (let [to (first (resolve host port))]
     (io/retry-io s (fn [] (%udp-send s data to)))
     nil))
 
 (defn receive
   "The next datagram (up to n bytes, default 65536): {:data bytes :from \"ip:port\"}."
-  ([s] (receive s 65536))
-  ([s n] (let [[d from] (io/retry-io s (fn [] (%udp-recv s n)))] {:data d :from from})))
+  (^Map [^Handle s] (receive s 65536))
+  (^Map [^Handle s ^Integer n] (let [[d from] (io/retry-io s (fn [] (%udp-recv s n)))] {:data d :from from})))
