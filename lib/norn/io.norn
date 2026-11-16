@@ -192,7 +192,9 @@
 
 ;; A line reader keeps the bytes it has read past the last line: buf, the
 ;; unread part from at, and scan, how far from at a newline was looked for.
-(defclass LineReader () ((stream :required true) (state :required true)))
+(defclass LineReader () ((stream :required true) (state :required true))
+  (:doc "The class of line readers, as line-reader makes: a stream's bytes,
+  read a line at a time with read-line. A line reader is a stream too."))
 
 (defmethod print-object ((_ LineReader)) "#<line-reader>")
 
@@ -265,7 +267,9 @@
         (do (write out part) (recur (+ total (count part))))
         total))))
 
-(defclass TextReader () ((stream :required true) (decoder :required true)))
+(defclass TextReader () ((stream :required true) (decoder :required true))
+  (:doc "The class of text readers, as text-reader makes: a stream's bytes,
+  decoded and read a piece of text at a time with read-chunk."))
 
 (defmethod print-object ((_ TextReader)) "#<text-reader>")
 

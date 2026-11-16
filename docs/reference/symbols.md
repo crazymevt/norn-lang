@@ -13,7 +13,7 @@ beginning with `%` are runtime internals.
 ## Punctuation
 
 - [`*`](collections.md#numbers-and-equality) · `*check-contracts*` · `*debugger*` · `*handlers*` · `*inspecting*` · `*load-shift*`
-- `*loading*` · `*macro-place*` · `*out*` · `*restarts*` · `*trace-depth*` · [`+`](collections.md#numbers-and-equality) · [`-`](collections.md#numbers-and-equality)
+- `*macro-place*` · `*out*` · [`+`](collections.md#numbers-and-equality) · [`-`](collections.md#numbers-and-equality)
 - [`->`](syntax.md#branching-and-sequencing) · [`->>`](syntax.md#branching-and-sequencing) · `->contract` · [`/`](collections.md#numbers-and-equality) · [`<`](collections.md#numbers-and-equality) · [`<!`](concurrency.md#channels)
 - [`<=`](collections.md#numbers-and-equality) · [`=`](collections.md#numbers-and-equality) · [`==`](collections.md#numbers-and-equality) · [`>`](collections.md#numbers-and-equality) · [`>!`](concurrency.md#channels) · [`>=`](collections.md#numbers-and-equality)
 
@@ -146,7 +146,7 @@ beginning with `%` are runtime internals.
 - `regex?` · `register-resource!` · [`release!`](objects.md#construction-and-access) · `rem` · [`remove`](collections.md#eager-transforms) · `remove-after-eval-hook!`
 - `remove-watch` · [`repeat`](collections.md#streams-and-ranges) · `repeatedly` · [`require`](syntax.md#namespaces-and-modules) · [`require-for-syntax`](syntax.md#macros-and-expansion) · [`reset!`](concurrency.md#atoms-and-dynamic-vars)
 - `reset-vals!` · `resolve` · `resource-live?` · `ResourceLost` · [`rest`](collections.md#sequence-traversal) · [`restart-case`](conditions.md#restarts-and-recovery)
-- `reverse` · `reverse*` · `rseq` · `rsubseq` · `run!` · [`RuntimeError`](conditions.md#signaling-conditions)
+- `reverse` · `rseq` · `rsubseq` · `run!` · [`RuntimeError`](conditions.md#signaling-conditions)
 
 ## S
 
