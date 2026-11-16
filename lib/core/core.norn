@@ -243,11 +243,13 @@
        (if s (recur (next s) (f acc (first s))) acc)))))
 
 (defn reduce-kv
-  "Reduce map m with (f acc k v) for each entry, from init. (reduced x)
-  from f stops early with x. m's items must be [k v] pairs: a vector's
-  aren't (there's no index-and-value form, as in Clojure)."
+  "Reduce m with (f acc k v), from init: for a map, each key and value; for
+  a vector, each index and item. (reduced x) from f stops early with x.
+  For anything else, its items must be [k v] pairs."
   [f init m]
-  (reduce (fn [acc e] (f acc (first e) (second e))) init m))
+  (if (vector? m)
+    (reduce (fn [acc i] (f acc i (nth m i))) init (range (count m)))
+    (reduce (fn [acc e] (f acc (first e) (second e))) init m)))
 
 ;; (norn.core's own: reverse may be redefined)
 (defn- reverse* [coll] (reduce (fn [acc x] (cons x acc)) () coll))
@@ -356,9 +358,10 @@
     (loop [s (seq coll)] (if (next s) (recur (next s)) (first s)))))
 
 (defn butlast
-  "All but coll's last item, as a vector: [] for one item, nil for none."
+  "All but coll's last item, as a vector ([] when there's at most one), as
+  drop-last gives it."
   [coll]
-  (let [v (vec coll)] (if (seq v) (pop v) nil)))
+  (let [v (vec coll)] (if (seq v) (pop v) [])))
 
 (defn nthnext
   "coll as a seq without its first n items: (nthnext [1 2 3] 1) is (2 3).
@@ -425,10 +428,13 @@
 (defn assoc-in
   "m with v at path ks in nested maps, making maps for the levels that are
   missing: (assoc-in {} [:a :b] 1) is {:a {:b 1}}. A vector along the
-  path takes an index."
+  path takes an index. An empty path is the whole value, as for get-in:
+  (assoc-in m [] v) is v."
   [m ks v]
-  (let [k (first ks) more (next ks)]
-    (if more (assoc m k (assoc-in (get m k) more v)) (assoc m k v))))
+  (if (seq ks)
+    (let [k (first ks) more (next ks)]
+      (if more (assoc m k (assoc-in (get m k) more v)) (assoc m k v)))
+    v))
 
 (defn update
   "m with key k's value replaced by (f old args…), old nil when k is
@@ -438,7 +444,8 @@
 
 (defn update-in
   "m with the value at path ks in nested maps replaced by (f old args…),
-  making maps for missing levels (old is then nil)."
+  making maps for missing levels (old is then nil). An empty path is the
+  whole value: (update-in m [] f) is (f m)."
   [m ks f & args]
   (assoc-in m ks (apply f (get-in m ks) args)))
 

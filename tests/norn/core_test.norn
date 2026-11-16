@@ -436,3 +436,11 @@
 ;; abs keeps the kind of number, and -0.0's absolute value is 0.0
 (is (= [3 2.5 1/2 1180591620717411303424] [(abs -3) (abs -2.5) (abs -1/2) (abs (- (bit-shift-left 1 70)))]))
 (is (= "0.0" (pr-str (abs -0.0))) "not -0.0")
+
+;; butlast as drop-last gives it; an empty path is the whole value;
+;; reduce-kv takes a vector's index and item
+(is (= [[] [] [] [1 2]] [(butlast [1]) (butlast []) (butlast nil) (butlast [1 2 3])]))
+(is (= 2 (assoc-in {:a 1} [] 2)))
+(is (= {:a 1 :b 2} (update-in {:a 1} [] assoc :b 2)))
+(is (= [[0 :x] [1 :y]] (reduce-kv (fn [acc i x] (conj acc [i x])) [] [:x :y])))
+(is (= [:x] (reduce-kv (fn [acc i x] (if (= i 1) (reduced acc) (conj acc x))) [] [:x :y :z])))
