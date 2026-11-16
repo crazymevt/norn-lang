@@ -2951,13 +2951,17 @@
 
 (defn apropos
   "The public names, in every loaded namespace, whose name contains s (a
-  string) or matches it (a regex): a sorted vector of qualified symbols."
+  string) or matches it (a regex): a sorted vector of qualified symbols.
+  Names starting with % (the runtime's own) and the compile-time copies
+  of modules (namespaces such as norn.io$1) are left out."
   [s]
   (let [match? (if (regex? s) (fn [n] (some? (re-find s n))) (fn [n] (some? (%str-index n s nil false))))]
     (vec (sort-by str
                   (mapcat (fn [ns]
-                            (keep (fn [k] (when (match? (name k)) (symbol (str ns) (name k))))
-                                  (keys (or (ns-publics ns) {}))))
+                            (when-not (%str-index (str ns) "$" nil false)
+                              (keep (fn [k] (when (and (match? (name k)) (not= "%" (subs (name k) 0 1)))
+                                              (symbol (str ns) (name k))))
+                                    (keys (or (ns-publics ns) {})))))
                           (all-ns))))))
 
 (defn find-doc

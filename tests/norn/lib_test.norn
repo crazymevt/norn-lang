@@ -787,6 +787,8 @@
 (is (str/includes? (%doc-text 'norn.uri/resolve) "Checked: (String or Map, String or Map) -> String"))
 (is (contains? (set (apropos "rope")) 'norn.rope/rope))
 (is (= 'norn.core/swap-vals! (first (apropos #"^swap-v"))))
+(is (not-any? (fn [s] (or (str/includes? (str s) "/%") (str/includes? (str s) "$"))) (apropos "reader"))
+    "the runtime's own names and compile-time copies are left out")
 (is (contains? (set (find-doc "grapheme")) 'norn.string/graphemes))
 (is (str/includes? (ndoc/ns-summary "norn.rope") "insert"))
 (is (not (str/includes? (ndoc/ns-summary "norn.rope") "branch?")))
