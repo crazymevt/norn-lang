@@ -39,6 +39,11 @@ The [survey](perf-survey.md) (2026-11-15) found two items that change what calle
 
 - [x] **Give the new libraries checked signatures.** Every public function of the twenty libraries M9a and the stdlib batch added has one, as wide as what it accepts; `contracts_test.norn` checks it and lists the exceptions. `(U …)` and `(? …)` of classes or predicates check with a plain test now, and `ffi/call` has no signature (each `defcfun` function checks its C signature first): SQLite inserts went from 3 times slower to 17% slower. A held-crash test shows a supervisor restarting a child while the crash waits in the debugger. `norn fmt` no longer indents a body under its parameters when a result type comes first. [M9a done-check](plan-m9.md)
 
+### Signatures
+
+- [x] **Sign the rest of the standard library.** 43 libraries carry checked signatures; `contracts_test.norn` checks every public function and lists the few that take nothing a type can say. `ContractError` is a `TypeError` now, so adding a signature never breaks a `TypeError` handler. Checked calls keep a plan of their contract's tests (25–50% cheaper). [Design §8.4](design.md#84-types-decided)
+- [ ] **Sign norn.string, norn.math, norn.regex and norn.bytes with M10.** A checked call costs 0.3–0.4 µs, which made their thinnest functions 3–6 times slower; once M10 inlines the checks at the call site, sign them (and io/auto-close and io/retry-io), as the other libraries are.
+
 ### Windows, before sealing
 
 Reviewed on 2026-11-15 for interfaces whose meaning is POSIX-only. Windows itself is M12; adding Windows-only functions or options later is a minor change, so only these needed settling now.

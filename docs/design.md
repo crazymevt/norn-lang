@@ -706,6 +706,21 @@ As built (M9 parts 9.3 and 9.4):
   checked call from another module costs about 0.6–0.8 µs, against about
   4 µs before. M10 can do better by inlining the checks where the call is
   made, and by dropping checks it can prove hold.
+- **A contract violation is a `TypeError` [decided, 2026-11-16].**
+  `ContractError` is a subclass of `TypeError`: a value of the wrong kind,
+  whoever catches it. So giving a function a signature never stops its old
+  `TypeError`s being caught, and adding one isn't a breaking change.
+- **Which libraries are signed [decided, 2026-11-16].** Every standard
+  library's public functions carry checked signatures, except:
+  - `norn.core`, whose primitives check their arguments natively, and a
+    contract on `map` or `+` would slow every program;
+  - the tools (`fmt`, `lint`, `test`, `doc`, `deps`, `dev`…) and
+    `norn.syntax`, which the expander calls constantly;
+  - until M10 inlines the checks: `norn.string`, `norn.math`, `norn.regex`
+    and `norn.bytes`. A checked call still costs 0.3–0.4 µs, which made
+    their thinnest functions 3–6 times slower, and their primitives
+    already reject wrong types with `TypeError`. Signing them in M10
+    breaks no one, since a `ContractError` is a `TypeError`.
 
 ---
 
