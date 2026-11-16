@@ -24,7 +24,7 @@ fn expect_chan(c: Value, op: &str) -> Result<Value> {
     if c.is(Kind::Chan) {
         Ok(c)
     } else {
-        Err(Error::new(format!("{op} expects a channel, got {}: {}", c.type_name(), pr_str(c, true))))
+        Err(Error::of("TypeError", format!("{op} expects a channel, got {}: {}", c.type_name(), pr_str(c, true))))
     }
 }
 
@@ -252,7 +252,7 @@ fn random(n: usize) -> usize {
 pub fn alts(vm: &mut Vm, args: &[Value]) -> Result<Value> {
     let ops_v = args[0];
     if !ops_v.is(Kind::Vector) || ops_v.vec_count() == 0 {
-        return Err(Error::new("alts! expects a non-empty vector of operations"));
+        return Err(Error::of("TypeError", "alts! expects a non-empty vector of operations"));
     }
     if !(args.len() - 1).is_multiple_of(2) {
         return Err(Error::new("alts! options must be :key value pairs"));
@@ -332,7 +332,7 @@ pub fn await_fiber(vm: &mut Vm, f: Value) -> Result<Value> {
 pub fn wait_fiber(vm: &mut Vm, f: Value, raise: bool) -> Result<Value> {
     use norn_rt::conc::fiber;
     if !f.is(Kind::Fiber) {
-        return Err(Error::new(format!("await expects a fiber, got {}", f.type_name())));
+        return Err(Error::of("TypeError", format!("await expects a fiber, got {}", f.type_name())));
     }
     if f == vm.current {
         return Err(Error::new("A fiber can't await itself"));

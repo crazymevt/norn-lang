@@ -24,7 +24,7 @@ use num_traits::{FromPrimitive, Signed};
 use std::cell::Cell;
 
 fn real(v: Value, op: &str) -> Result<f64> {
-    num(v).map(|n| n.as_f64()).map_err(|_| Error::new(format!("{op} expects a number, got {}", norn_rt::print::pr_str(v, true))))
+    num(v).map(|n| n.as_f64()).map_err(|_| Error::of("TypeError", format!("{op} expects a number, got {}", norn_rt::print::pr_str(v, true))))
 }
 
 /// `(%math1 op x)`: a one-argument floating-point function.
@@ -99,7 +99,7 @@ pub(crate) fn round(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 }
 
 fn integer(v: Value, op: &str) -> Result<BigInt> {
-    norn_rt::numbers::int_of(v).ok_or_else(|| Error::new(format!("{op} expects an integer, got {}", norn_rt::print::pr_str(v, true))))
+    norn_rt::numbers::int_of(v).ok_or_else(|| Error::of("TypeError", format!("{op} expects an integer, got {}", norn_rt::print::pr_str(v, true))))
 }
 
 /// `(%gcd a b)` (non-negative).

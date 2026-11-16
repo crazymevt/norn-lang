@@ -241,7 +241,7 @@ fn regex_arg(v: Value, op: &str) -> Result<regex::Regex> {
     } else if v.is(Kind::String) {
         compile(v.as_str())
     } else {
-        Err(Error::new(format!("{op} expects a regex, got {}: {}", v.type_name(), pr_str(v, true))))
+        Err(Error::of("TypeError", format!("{op} expects a regex, got {}: {}", v.type_name(), pr_str(v, true))))
     }
 }
 

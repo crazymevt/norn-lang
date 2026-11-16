@@ -305,7 +305,7 @@ pub(crate) fn to_int(m: &mut Mutator, v: Value) -> Result<Value> {
     if v.is_char() {
         return Ok(Value::fix(v.as_char() as i64));
     }
-    match num(v).map_err(|_| Error::new(format!("int expects a number or character, got {}", v.type_name())))? {
+    match num(v).map_err(|_| Error::of("TypeError", format!("int expects a number or character, got {}", v.type_name())))? {
         Num::I(_) | Num::B(_) => Ok(v),
         Num::R(r) => Ok(int_value(m, &r.to_integer())),
         Num::F(f) => {
@@ -322,7 +322,7 @@ pub(crate) fn numerator(m: &mut Mutator, v: Value) -> Result<Value> {
     match num(v)? {
         Num::R(r) => Ok(int_value(m, r.numer())),
         Num::I(_) | Num::B(_) => Ok(v),
-        Num::F(_) => Err(Error::new("numerator expects a rational, got a Float")),
+        Num::F(_) => Err(Error::of("TypeError", "numerator expects a rational, got a Float")),
     }
 }
 
@@ -330,7 +330,7 @@ pub(crate) fn denominator(v: Value) -> Result<Value> {
     match num(v)? {
         Num::R(_) => Ok(v.field(norn_rt::numbers::RATIO_DEN)),
         Num::I(_) | Num::B(_) => Ok(Value::fix(1)),
-        Num::F(_) => Err(Error::new("denominator expects a rational, got a Float")),
+        Num::F(_) => Err(Error::of("TypeError", "denominator expects a rational, got a Float")),
     }
 }
 

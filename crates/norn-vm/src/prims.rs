@@ -123,7 +123,7 @@ prims! {
     "nth" 2 Some(3) => nth;
     "get" 2 Some(3) => |vm, a| { crate::owned::check(vm, a[0], false)?; if a[0].is(Kind::Transient) { return transient_get(vm, a); } if a[0].is(Kind::Sorted) { let r = if a[0].sorted_is_set() { crate::sorted::find(a[0].sorted_root(), a[1])?.map(|n| n.field(0)) } else { crate::sorted::get(a[0], a[1])? }; return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))); } Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) };
     // sorted maps and sets, queues, transients (colls.rs, sorted.rs)
-    "sorted-map" 0 VAR => |vm, a| { if a.len() % 2 != 0 { return Err(Error::new("sorted-map expects key/value pairs")); } let mut s = norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, false); for kv in a.chunks(2) { s = crate::sorted::assoc(&mut vm.m, s, kv[0], kv[1])?; } Ok(s) };
+    "sorted-map" 0 VAR => |vm, a| { if a.len() % 2 != 0 { return Err(Error::of("TypeError", "sorted-map expects key/value pairs")); } let mut s = norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, false); for kv in a.chunks(2) { s = crate::sorted::assoc(&mut vm.m, s, kv[0], kv[1])?; } Ok(s) };
     "sorted-set" 0 VAR => |vm, a| { let mut s = norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, true); for &k in a { s = crate::sorted::assoc(&mut vm.m, s, k, k)?; } Ok(s) };
     "subseq" 3 Some(5) => |vm, a| sorted_range(vm, a, false);
     "rsubseq" 3 Some(5) => |vm, a| sorted_range(vm, a, true);
@@ -190,7 +190,9 @@ prims! {
     "ns-publics" 1 Some(1) => |vm, a| { let ns = rt().find_ns(a[0]).ok_or_else(|| Error::new(format!("No namespace: {}", pr_str(a[0], true))))?; let mut m = map_empty(); for (k, v) in ns.mappings() { if v.var_ns() == ns.name && !v.var_is_private() { m = map_assoc(&mut vm.m, m, k, v); } } Ok(m) };
     "%ns-unmap" 2 Some(2) => |_, a| { expect(a[1], Kind::Symbol, "%ns-unmap")?; let ns = rt().find_ns(a[0]).ok_or_else(|| Error::new(format!("No namespace: {}", pr_str(a[0], true))))?; Ok(Value::bool(ns.unmap_own(a[1]))) };
     "ns-interns" 1 Some(1) => |vm, a| { let ns = rt().find_ns(a[0]).ok_or_else(|| Error::new(format!("No namespace: {}", pr_str(a[0], true))))?; let mut m = map_empty(); for (k, v) in ns.mappings() { if v.var_ns() == ns.name { m = map_assoc(&mut vm.m, m, k, v); } } Ok(m) };
-    "resolve" 1 Some(1) => |vm, a| Ok(vm.resolve(a[0]).unwrap_or(Value::NIL));
+    "resolve" 1 Some(1) => |vm, a| {
+        if !a[0].is_symbol() { return Err(Error::of("TypeError", format!("resolve expects a symbol, got {}", pr_str(a[0], true)))); }
+        Ok(vm.resolve(a[0]).unwrap_or(Value::NIL)) };
     "%resolve-in" 2 Some(2) => |vm, a| { expect(a[0], Kind::Symbol, "%resolve-in")?; expect(a[1], Kind::Symbol, "%resolve-in")?; let core = vm.core; Ok(rt().find_ns(a[0]).and_then(|ns| rt().resolve(&mut vm.m, ns, core, a[1])).unwrap_or(Value::NIL)) };
     "%identity-hash" 1 Some(1) => |_, a| Ok(Value::fix(((a[0].0 >> 3) & 0x3fff_ffff_ffff_ffff) as i64));
     "%uninterned-symbol" 1 Some(1) => |vm, a| { let n = text(a[0]); Ok(rt().symbol_uninterned(&mut vm.m, &n)) };
@@ -539,7 +541,9 @@ prims! {
     "%gf-key" 2 Some(2) => |vm, a| { expect(a[0], Kind::Generic, "%gf-key")?; let args = to_vec(vm, a[1])?; let mut key = Vec::new(); norn_rt::clos::dispatch_key(a[0].gf_state(), &args, &mut key); Ok(vec_from_slice(&mut vm.m, &key)) };
     "%gf-cache-get" 2 Some(2) => gf_cache_get;
     "%gf-cache-put!" 4 Some(4) => gf_cache_put;
-    "exit" 0 Some(1) => |_, a| { let _ = std::io::stdout().flush(); std::process::exit(a.first().map(|v| v.as_fixnum() as i32).unwrap_or(0)) };
+    "exit" 0 Some(1) => |_, a| {
+        if let Some(v) = a.first() && !v.is_fixnum() { return Err(Error::of("TypeError", format!("exit expects an integer status, got {}", pr_str(*v, true)))); }
+        let _ = std::io::stdout().flush(); std::process::exit(a.first().map(|v| v.as_fixnum() as i32).unwrap_or(0)) };
 }
 
 /// Bind every primitive to a var in norn.core.
@@ -1275,7 +1279,7 @@ fn deep_unrealized(x: Value) -> Option<Value> {
 fn sorted_range(vm: &mut Vm, a: &[Value], reverse: bool) -> Result<Value> {
     crate::sorted::check(a[0], "subseq")?;
     if a.len() != 3 && a.len() != 5 {
-        return Err(Error::new("subseq expects a sorted collection and one or two test/key pairs"));
+        return Err(Error::of("TypeError", "subseq expects a sorted collection and one or two test/key pairs"));
     }
     let mut bounds = Vec::new();
     for tk in a[1..].chunks(2) {
@@ -1488,7 +1492,7 @@ fn nth(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 
 fn assoc(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     if a.len() % 2 != 1 {
-        return Err(Error::new("assoc expects a collection and key/value pairs"));
+        return Err(Error::of("TypeError", "assoc expects a collection and key/value pairs"));
     }
     if typed(a[0]) {
         return Err(typed_call(vm, "%with-typed", &WITH_TYPED, a));
@@ -1636,7 +1640,7 @@ fn subvec(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let v = a[0];
     let (start, end) = (int(a[1], "subvec")?, int(a[2], "subvec")?);
     if !v.is(Kind::Vector) || start < 0 || end < start || end as usize > v.vec_count() {
-        return Err(Error::new("subvec expects a vector and indexes in range"));
+        return Err(Error::of("TypeError", "subvec expects a vector and indexes in range"));
     }
     if start == 0 && end as usize == v.vec_count() {
         return Ok(v);
@@ -1904,7 +1908,7 @@ fn typed_call(vm: &mut Vm, name: &str, cell: &'static std::sync::OnceLock<Value>
 /// `(with inst :k v …)`, the slots' types checked already (or none).
 fn with_raw(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     if a.len() % 2 != 1 {
-        return Err(Error::new("with expects an instance and slot/value pairs"));
+        return Err(Error::of("TypeError", "with expects an instance and slot/value pairs"));
     }
     crate::owned::check(vm, a[0], false)?;
     Ok(norn_rt::clos::instance_with(&mut vm.m, a[0], &a[1..], vm.current)?)

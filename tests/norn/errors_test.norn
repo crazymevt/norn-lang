@@ -113,3 +113,17 @@
   (testing "a condition of one's own, with its data"
     (let [c (caught (fn [] (await (spawn-detached (error TimeoutError :message "slow" :after 7)))))]
       (is (= ["TimeoutError" 7 "slow"] [(class-of-name c) (:after c) (condition-message c)])))))
+
+(deftest wrong-arguments-are-type-errors-not-crashes
+  ;; (a number where a collection goes read an object's kind from a
+  ;; non-object, and a string as a symbol read a symbol's fields: both
+  ;; crashed the process)
+  (doseq [f [(fn [] (vec 1)) (fn [] (set 1)) (fn [] (apply + 1 2)) (fn [] (resolve "map"))
+             (fn [] (take! 1)) (fn [] (int "a")) (fn [] (numerator 1.5)) (fn [] (exit "a"))]]
+    (is (= "TypeError" (class-of-name (caught f))))))
+
+(deftest every-public-core-name-has-a-docstring
+  (is (= [] (vec (sort (for [[s v] (ns-publics 'norn.core)
+                             :when (and (not= "%" (subs (str s) 0 1)) (nil? (:doc (definition v))))]
+                         s)))))
+  (is (some? (:doc (definition '/))) "/ too, whose name is a slash"))

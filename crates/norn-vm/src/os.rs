@@ -201,7 +201,7 @@ pub(crate) fn pty_resize(h: Value, rows: u16, cols: u16) -> Result<Value> {
         Io::PipeOut(w) => Some(w.as_raw_fd()),
         _ => None,
     })?
-    .ok_or_else(|| Error::new("resize expects a terminal's :in"))?;
+    .ok_or_else(|| Error::of("TypeError", "resize expects a terminal's :in"))?;
     let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
     // SAFETY: TIOCSWINSZ on an open descriptor, with a winsize.
     if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ as _, &ws) } != 0 {

@@ -15,7 +15,7 @@ fn data(v: Value, op: &str) -> Result<Vec<u8>> {
     } else if v.is(Kind::String) {
         Ok(v.as_str().as_bytes().to_vec())
     } else {
-        Err(Error::new(format!("{op} expects bytes or a string, got {}", v.type_name())))
+        Err(Error::of("TypeError", format!("{op} expects bytes or a string, got {}", v.type_name())))
     }
 }
 

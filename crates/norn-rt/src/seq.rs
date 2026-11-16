@@ -164,6 +164,10 @@ pub fn to_vec(m: &mut Mutator, v: Value) -> Result<Vec<Value>, String> {
     if let Some(it) = SeqIter::new(v) {
         return Ok(it.collect());
     }
+    // (a number, character or boolean isn't an object: no kind to read)
+    if !v.is_obj() {
+        return Err(format!("Don't know how to create a seq from {}", v.type_name()));
+    }
     let mut out = Vec::new();
     match v.obj_kind() {
         Kind::Map => {

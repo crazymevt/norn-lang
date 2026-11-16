@@ -763,7 +763,7 @@ fn address(v: Value, op: &str) -> Result<usize> {
     if v.is_nil() {
         return Err(Error::new(format!("{op}: a NULL pointer")));
     }
-    let a = int_arg(v, CType::U64).map_err(|_| Error::new(format!("{op} expects an address (an integer), got {}", v.type_name())))?;
+    let a = int_arg(v, CType::U64).map_err(|_| Error::of("TypeError", format!("{op} expects an address (an integer), got {}", v.type_name())))?;
     if a == 0 {
         return Err(Error::new(format!("{op}: a NULL pointer")));
     }
@@ -871,7 +871,7 @@ pub(crate) fn mem_write_bytes(a: &[Value]) -> Result<Value> {
     } else if a[1].is(Kind::String) {
         a[1].as_str().as_bytes()
     } else {
-        return Err(Error::new(format!("write-bytes! expects bytes or a string, got {}", a[1].type_name())));
+        return Err(Error::of("TypeError", format!("write-bytes! expects bytes or a string, got {}", a[1].type_name())));
     };
     if !data.is_empty() {
         let p = address(a[0], "write-bytes!")?;

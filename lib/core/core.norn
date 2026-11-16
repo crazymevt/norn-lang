@@ -3204,7 +3204,7 @@
   (%ensure-core-indexed!)
   (let [v (if (var? sym) sym (resolve sym))]
     (when v
-      (let [n (%var-name v) i (%str-index n "/" nil true)]
+      (let [n (%var-name v) i (%str-index n "/" nil false)] ; (the first /: norn.core// is /)
         (or (get (deref %definitions) n)
             (%primitive-definition (subs n 0 i) (symbol (subs n (inc i))))
             {:name (symbol (subs n (inc i))) :ns (subs n 0 i)})))))
