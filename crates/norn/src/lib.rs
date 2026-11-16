@@ -543,6 +543,9 @@ fn repl(norn: &'static norn_vm::Norn) {
         if src.trim().is_empty() {
             continue;
         }
+        // (a fiber that entered the debugger before this input is announced;
+        // one that does while the REPL waits for it gets the prompt)
+        announce_debugging(norn, &events, &ns);
         let t = norn.submit(RootTask::Repl(src), &ns);
         let done = wait_root(norn, &events, t, &ns);
         if let Err(e) = done.result {
