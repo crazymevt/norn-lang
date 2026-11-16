@@ -347,8 +347,9 @@ hooks haven't been specialised.
 editor protocol (a subset of §5.1). See [runtime.md §5.4](runtime.md). M9b
 added xref (`norn.xref`, the `:who-calls` and `:calls` ops) and profiling
 (`norn.prof`, the `:profile` op: stacks sampled at safepoints, at either
-tier). Not yet built: who-specialises, source-drift tracking, and output
-capture for editor evaluations.
+tier) and source-drift tracking (`unsaved-definitions`, the `:unsaved`
+op). Not yet built: who-specialises, and output capture for editor
+evaluations.
 
 ### 5.1 The REPL **[decided]**
 

@@ -167,3 +167,19 @@ shape and 4's op).
   library (68 modules, 6,723 of 7,485 lines, 89.8%), every check passing;
   its lcov file is consistent (LF/LH match its DA lines). Not opened in
   an editor's coverage view here (no lcov tools on this machine).
+- **4, source drift: done.** The REPL and the `:eval` op bind
+  `*evaluated-from*` to their reader's name; a definition noted from it is
+  kept in `%evaluated` (name, file, line, text, form) until a file defines
+  it again (`load-file`, `require :reload`, `norn dev`). A definition
+  retyped at the REPL is compared with the file it came from. `(unsaved-
+  definitions)` reads each file now: saved when it has a definition of
+  the name that reads the same (`=` on the forms, so layout doesn't
+  matter), or, failing that (an auto-gensym, a regex), the evaluated text
+  with whitespace squeezed; else `:changed`, `:not-in-file`, `:no-file`
+  or `:file-missing`. The `:unsaved` op gives the same. `defmethod`s
+  aren't tracked (they name no var). Found on the way: editor requests
+  were known by their id alone, though each editor numbers its own, so
+  with two editors connected `:interrupt` could stop the other's
+  evaluation and output could reach the wrong one. The server now numbers
+  its connections and adds `:conn`; requests are `[conn id]`, output
+  events carry `:conn`, and a connection drops others' output.

@@ -1866,6 +1866,18 @@
   → {:name :ns :kind :doc :arglists :file :line …attributes}."
   (atom {}))
 
+(def ^:dynamic *evaluated-from*
+  "While the REPL or an editor evaluates typed code: the name its reader has
+  (\"<repl>\", \"<editor>\", or the file the editor says the code is from).
+  A definition read from it is noted as evaluated (unsaved-definitions)."
+  nil)
+
+(def %evaluated
+  "Definitions evaluated at the REPL or from an editor, until a file defines
+  them again: \"ns/name\" → {:name :ns :file (nil for none) :line :text
+  :form :from (:repl or :editor)}."
+  (atom {}))
+
 (defn %note-definition!
   "Record top-level form f, read from file at line, if it defines something
   (its head starts with def and a name follows). text, when given, is the
@@ -1894,10 +1906,23 @@
                               (cond (vector? params) (list params)
                                     (and (seq? params) (vector? (first params))) (map first more))
                               (= head "defgeneric") (when (or (seq? params) (vector? params)) (list (vec params))))
-               typed? (contains? #{"<repl>" "<string>" "<editor>"} file)]
+               typed? (contains? #{"<repl>" "<string>" "<editor>"} file)
+               k (str (current-ns) "/" nm)
+               ;; (the file it came from before: typed in again, it's that
+               ;; file's definition that changed)
+               before (or (get @%evaluated k)
+                          (let [d (get @%definitions k) was (:file d)]
+                            (when (and (string? was) (not= "<" (subs was 0 (min 1 (count was))))) d)))]
            (swap! %definitions assoc (str (current-ns) "/" nm)
                   (merge attrs {:name nm :ns (str (current-ns)) :kind (first f) :doc doc :arglists arglists
                                 :file file :line line :form (when typed? f) :text (when typed? text)}))
+           ;; (typed at the REPL or evaluated from an editor: noted until a
+           ;; file defines it again, for unsaved-definitions)
+           (cond (and *evaluated-from* (= file *evaluated-from*))
+                 (swap! %evaluated assoc k {:name nm :ns (str (current-ns)) :file (if typed? (:file before) file)
+                                            :line (if typed? (:line before) line)
+                                            :text text :form f :from (if (= file "<repl>") :repl :editor)})
+                 (not typed?) (swap! %evaluated dissoc k))
            ;; (a protocol's functions, each (name [params] "doc"?))
            (when (= head "defprotocol")
              (doseq [m more :when (and (seq? m) (symbol? (first m)) (vector? (second m)))]
@@ -1932,7 +1957,7 @@
 (defn %repl-eval
   "Evaluate each form of s, typed at the terminal REPL, printing its value."
   [s]
-  (binding [*debugger* :park]
+  (binding [*debugger* :park *evaluated-from* "<repl>"]
     (let [r (%reader s "<repl>")]
       (loop []
         (let [f (%repl-read r)]
@@ -1941,26 +1966,30 @@
             (%run-after-eval-hooks)
             (recur)))))))
 
-(declare definition %ensure-core-indexed! *out* %tool-call)
+(declare definition %ensure-core-indexed! *out* %tool-call unsaved-definitions)
 
-(def %requests "Editor requests running now: id → their fiber (for :interrupt)." (atom {}))
+(def %requests
+  "Editor requests running now: [connection id] → their fiber (for
+  :interrupt). The server numbers its connections (:conn), as each editor
+  numbers its own requests."
+  (atom {}))
 
 (defn- %serve-run
   "Run thunk for editor request req: it can be interrupted, and what it
-  prints streams to the editor as {:event :out :id … :text …}."
+  prints streams to its editor as {:event :out :id … :text …}."
   [req thunk]
-  (let [id (:id req)]
-    (swap! %requests assoc id (current-fiber))
+  (let [k [(:conn req) (:id req)]]
+    (swap! %requests assoc k (current-fiber))
     (try
-      (binding [*out* {:out-event id}] (thunk))
-      (finally (swap! %requests dissoc id)))))
+      (binding [*out* {:out-event (:id req) :conn (:conn req)}] (thunk))
+      (finally (swap! %requests dissoc k)))))
 
 (defn- %serve-eval
   "Evaluate :code in :ns. With :file and :line, the code is read as if at
   that line of that file, so errors and definitions point at the source."
   [req]
   (in-ns (symbol (or (:ns req) "user")))
-  (binding [*debugger* :park]
+  (binding [*debugger* :park *evaluated-from* (or (:file req) "<editor>")]
     (restart-case
       (let [line (max 1 (or (:line req) 1))
             code (str (apply str (repeat (dec line) "\n")) (:code req))
@@ -2094,7 +2123,7 @@
                :else
                (handler-case
                  (cond
-                   (= op :interrupt) (if-let [f (get (deref %requests) (:target req))]
+                   (= op :interrupt) (if-let [f (get (deref %requests) [(:conn req) (:target req)])]
                                        (do (%interrupt! f) {:value "true"})
                                        {:value "false"})
                    (= op :doc) {:doc (%serve-definition req)}
@@ -2102,6 +2131,7 @@
                    (= op :who-calls) (%serve-xref req 'callers)
                    (= op :calls) (%serve-xref req 'callees)
                    (= op :profile) (%tool-call 'norn.prof 'for-editor (:code req) (:ns req) (:interval-us req))
+                   (= op :unsaved) {:definitions (mapv (fn [e] (update e :name str)) (unsaved-definitions))}
                    (= op :macroexpand) (do (in-ns (symbol (or (:ns req) "user")))
                                            (let [f (read-string (:code req))]
                                              {:value (pr-str (if (:all req) (macroexpand f) (macroexpand-1 f)))}))
@@ -3454,6 +3484,56 @@
     (%require-lazily 'norn.core-docs)
     (when-let [d (get @(%bound-value 'norn.core-docs/docs) nm)]
       (assoc d :name nm :ns "norn.core" :kind 'primitive))))
+
+(defn- %squeezed
+  "Text s with each run of whitespace one space, trimmed: code as it reads,
+  however it's laid out."
+  [s]
+  (apply str (interpose " " (remove (fn [x] (= x "")) (%re-split #"\s+" s nil)))))
+
+(defn- %file-forms
+  "The top-level forms of file (read as data in the current namespace), or
+  nil when it can't be read."
+  [text file]
+  (try (let [r (%reader text file)]
+         (loop [fs []] (let [f (%read r)] (if (%eof? f) fs (recur (conj fs f))))))
+       (catch Error _ nil)))
+
+(defn- %drift
+  "Why definition e (from %evaluated) isn't what its file holds now, or nil
+  when it is: :no-file (typed at the REPL, or in an editor with no file),
+  :file-missing, :not-in-file, :changed."
+  [e]
+  (let [file (:file e)
+        text (when file (try (slurp file) (catch Error _ nil)))]
+    (cond (nil? file) :no-file
+          (nil? text) :file-missing
+          :else
+          (let [forms (%file-forms text file)
+                same (filter (fn [f] (and (seq? f) (symbol? (first f)) (= (second f) (:name e))
+                                          (let [h (name (first f))] (and (>= (count h) 3) (= "def" (subs h 0 3))))))
+                             (or forms []))]
+            (cond (some (fn [f] (= f (:form e))) same) nil
+                  ;; (as typed, but read differently: an auto-gensym, a regex)
+                  (and (:text e) (%str-index (%squeezed text) (%squeezed (:text e)) nil false)) nil
+                  (empty? same) :not-in-file
+                  :else :changed)))))
+
+(defn unsaved-definitions
+  "The definitions evaluated at the REPL or from an editor that their file
+  doesn't hold now: [{:name :ns :file :line :from :reason}…] (no :file or
+  :line when there's none), :from :repl or :editor, :reason :no-file (typed where there's no file to save to),
+  :file-missing, :not-in-file (never saved) or :changed (saved since, but
+  not as evaluated). A definition loaded from its file again (load-file,
+  require :reload, norn dev) stops being noted. The file is read now; the
+  definition counts as saved when the file has a definition of the name
+  that reads the same, or its text, however it's laid out."
+  ^Vector []
+  (vec (sort-by (fn [e] [(str (:file e)) (or (:line e) 0) (str (:name e))])
+                (keep (fn [[_ e]]
+                        (when-let [why (%drift e)]
+                          (into {:reason why} (filter (fn [kv] (some? (second kv))) (select-keys e [:name :ns :file :line :from])))))
+                      @%evaluated))))
 
 (defn definition
   "What is known about sym's definition (a symbol resolved in the current

@@ -40,8 +40,13 @@ fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
 }
 
+/// Each connection's number: request ids are the editor's own, so a
+/// request is known by its connection and id (`:conn`, added here).
+static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 fn connection(stream: TcpStream) {
     let Ok(loom) = start() else { return };
+    let conn = NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let Ok(mut out) = stream.try_clone() else { return };
     let (tx, rx) = mpsc::channel::<String>();
     // One writer, so responses and events never interleave mid-line.
@@ -56,6 +61,10 @@ fn connection(stream: TcpStream) {
     let etx = tx.clone();
     thread::spawn(move || {
         for e in events {
+            // (another connection's request's output isn't this one's)
+            if event_conn(&e).is_some_and(|c| c != conn) {
+                continue;
+            }
             if etx.send(e).is_err() {
                 break;
             }
@@ -67,6 +76,11 @@ fn connection(stream: TcpStream) {
             continue;
         }
         let tx = tx.clone();
+        // (a request map: tell it which connection it came on)
+        let line = match line.trim_start().strip_prefix('{') {
+            Some(rest) => format!("{{:conn {conn} {rest}"),
+            None => line,
+        };
         thread::spawn(move || {
             let id = request_id(&line);
             let reply = match loom.run(RootTask::Request(line), "user").result {
@@ -80,6 +94,13 @@ fn connection(stream: TcpStream) {
             let _ = tx.send(reply);
         });
     }
+}
+
+/// The `:conn` of an event line (output for one connection's request).
+fn event_conn(line: &str) -> Option<u64> {
+    let at = line.find(":conn ")? + 6;
+    let digits: String = line[at..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
 }
 
 /// The `:id` of a request line, if it's a plain integer.

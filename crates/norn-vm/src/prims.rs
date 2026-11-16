@@ -880,6 +880,12 @@ fn out_to(vm: &mut Vm, s: &str, newline: bool) -> Result<Value> {
             let text = if newline { format!("{s}\n") } else { s.to_owned() };
             let mut line = String::from("{:event :out :id ");
             write_value(&mut line, id, true);
+            // (the connection the request came on: its output goes there)
+            let conn = rt().keyword(&mut vm.m, None, "conn");
+            if let Some(c) = m.map_get(conn).filter(|c| !c.is_nil()) {
+                line.push_str(" :conn ");
+                write_value(&mut line, c, true);
+            }
             line.push_str(" :text ");
             let t = str_new(&mut vm.m, &text);
             write_value(&mut line, t, true);

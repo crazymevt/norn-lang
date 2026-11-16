@@ -1140,7 +1140,8 @@
                     (syn/%raw-syntax (apply list 'ns (%shifted (second d) *load-shift*) (drop 2 d)) #{} (syn/syntax-loc s))
                     s)]
             (binding [*strict* (or module? *strict*)]
-              (let [text (when (contains? #{"<string>" "<editor>" "<repl>"} src) (%reader-text r))
+              (let [text (when (or (contains? #{"<string>" "<editor>" "<repl>"} src) (= src norn.core/*evaluated-from*))
+                           (%reader-text r))
                     v (eval-located s src text)]
                 (if module?
                   (let [nsym (current-ns-sym)]

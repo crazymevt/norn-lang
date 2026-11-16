@@ -192,6 +192,38 @@ fn the_editor_finds_definitions_docs_and_vars() {
 }
 
 #[test]
+fn the_editor_lists_definitions_its_files_dont_hold() {
+    let mut ed = Editor::connect();
+    let dir = std::env::temp_dir().join(format!("norn-unsaved-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("drift.norn");
+    std::fs::write(&file, "(ns drift)\n\n(defn kept [x]\n  (inc x))\n").unwrap();
+    let path = file.display().to_string();
+    let r = ed.request(&format!(":op :load-file :path {}", quote(&path)));
+    assert!(r.contains(":value"), "{r}");
+    // Evaluated from the editor as if at line 3 of the file, changed there
+    // but not saved; and a new one, never saved.
+    let eval = |ed: &mut Editor, line: u32, code: &str| {
+        ed.request(&format!(":op :eval :ns \"drift\" :file {} :line {line} :code {}", quote(&path), quote(code)))
+    };
+    eval(&mut ed, 3, "(defn kept [x]\n  (+ x 1))");
+    eval(&mut ed, 6, "(defn fresh [] :new)");
+    let u = ed.request(":op :unsaved");
+    assert!(u.contains(":name \"kept\"") && u.contains(":reason :changed"), "{u}");
+    assert!(u.contains(":name \"fresh\"") && u.contains(":reason :not-in-file") && u.contains(":from :editor"), "{u}");
+    // Saved (laid out differently): only fresh, still not in the file.
+    std::fs::write(&file, "(ns drift)\n\n(defn kept [x] (+ x 1))\n").unwrap();
+    let u = ed.request(":op :unsaved");
+    assert!(!u.contains(":name \"kept\"") && u.contains(":name \"fresh\""), "{u}");
+    // Saved too, and loaded again: nothing.
+    std::fs::write(&file, "(ns drift)\n\n(defn kept [x] (+ x 1))\n\n(defn fresh [] :new)\n").unwrap();
+    ed.request(&format!(":op :load-file :path {}", quote(&path)));
+    let u = ed.request(":op :unsaved");
+    assert!(!u.contains("drift"), "{u}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn printed_output_streams_and_evaluations_can_be_interrupted() {
     let mut ed = Editor::connect();
     let id = ed.send(&format!(":op :eval :code {}", quote("(dotimes [i 3] (println \"line\" i)) :done")));
@@ -241,4 +273,28 @@ fn the_editor_inspects_loads_files_and_runs_tests() {
     assert!(r.contains(":pass 1") && r.contains(":fail 1"), "{r}");
     assert!(r.contains(":expected \"3\"") && r.contains(":actual \"2\""), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn two_editors_numbering_requests_alike_dont_cross() {
+    // Each editor numbers its own requests: both send id 1 here. An
+    // interrupt stops its own editor's request, and output goes to the
+    // editor whose request printed it.
+    let (mut a, mut b) = (Editor::connect(), Editor::connect());
+    let busy = |ed: &mut Editor, tag: &str| {
+        ed.send(&format!(":op :eval :code {}", quote(&format!("(println \"{tag}\") (loop [n 0] (recur (inc n)))"))))
+    };
+    let (ia, ib) = (busy(&mut a, "from-a"), busy(&mut b, "from-b"));
+    assert_eq!((ia, ib), (1, 1));
+    let out_a = a.wait_for("a's output", |l| l.contains(":event :out"));
+    assert!(out_a.contains("from-a"), "{out_a}");
+    std::thread::sleep(Duration::from_millis(200));
+    let i = a.request(":op :interrupt :target 1");
+    assert!(i.contains(":value \"true\""), "{i}");
+    assert!(a.reply(1).contains("Interrupted"));
+    // b's request is still running, and b never saw a's output.
+    let i = b.request(":op :interrupt :target 1");
+    assert!(i.contains(":value \"true\""), "b's own request was still running: {i}");
+    assert!(b.reply(1).contains("Interrupted"));
+    assert!(!b.backlog.borrow().iter().any(|l| l.contains("from-a")), "{:?}", b.backlog.borrow());
 }

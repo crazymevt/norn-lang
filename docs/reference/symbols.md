@@ -12,7 +12,7 @@ beginning with `%` are runtime internals.
 
 ## Punctuation
 
-- [`*`](collections.md#numbers-and-equality) · `*check-contracts*` · `*debugger*` · `*handlers*` · `*inspecting*` · `*load-shift*`
+- [`*`](collections.md#numbers-and-equality) · `*check-contracts*` · `*debugger*` · `*evaluated-from*` · `*handlers*` · `*inspecting*` · `*load-shift*`
 - `*macro-place*` · `*out*` · [`+`](collections.md#numbers-and-equality) · [`-`](collections.md#numbers-and-equality)
 - [`->`](syntax.md#branching-and-sequencing) · [`->>`](syntax.md#branching-and-sequencing) · `->contract` · [`/`](collections.md#numbers-and-equality) · [`<`](collections.md#numbers-and-equality) · [`<!`](concurrency.md#channels)
 - [`<=`](collections.md#numbers-and-equality) · [`=`](collections.md#numbers-and-equality) · [`==`](collections.md#numbers-and-equality) · [`>`](collections.md#numbers-and-equality) · [`>!`](concurrency.md#channels) · [`>=`](collections.md#numbers-and-equality)
@@ -170,7 +170,7 @@ beginning with `%` are runtime internals.
 
 ## U
 
-- `UnboundVarError` · `unreduced` · `untrace` · `untrace-all!` · `untrace-var!` · [`unwind-protect`](conditions.md#handling-and-cleanup)
+- `UnboundVarError` · `unreduced` · `unsaved-definitions` · `untrace` · `untrace-all!` · `untrace-var!` · [`unwind-protect`](conditions.md#handling-and-cleanup)
 - [`update`](collections.md#lookup-and-update) · [`update-in`](collections.md#lookup-and-update) · `update-keys` · [`update-slot!`](objects.md#construction-and-access) · `update-vals`
 
 ## V

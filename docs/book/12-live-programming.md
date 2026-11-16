@@ -199,6 +199,50 @@ down cleanly ([Chapter 21](21-the-operating-system.md)), gets it too, and
 `norn dev` waits for it to finish. A program that doesn't is stopped where
 it is.
 
+## What you haven't saved
+
+Fixing a function at the REPL, or evaluating it from an editor, changes
+the running program, not the file. It's easy to forget to make the same
+change in the file, and then the fix is lost the next time the program
+starts. `unsaved-definitions` lists the definitions you've evaluated that
+their file doesn't hold. Here `words` from `src/tally/words.norn` was
+changed at the REPL, and `top` is new:
+
+```text
+user=> (load-file "src/tally/words.norn")
+#'tally.words/counts
+user=> (in-ns 'tally.words)
+tally.words
+tally.words=> (defn words [text]
+         ..   (remove str/blank? (str/split (str/lower-case text) #"\s+")))
+#'tally.words/words
+tally.words=> (defn top [text n] (take n (sort-by (comp - val) (counts text))))
+#'tally.words/top
+tally.words=> (unsaved-definitions)
+[{:reason :no-file, :from :repl, :name top, :ns "tally.words"} {:reason :changed, :from :repl, :line 4, :name words, :file "src/tally/words.norn", :ns "tally.words"}]
+```
+
+Each entry says why it's listed:
+
+- **`:changed`** means the file has a definition of that name, but not
+  the one you evaluated. Here, `words` at line 4 hasn't been edited to
+  match yet.
+- **`:not-in-file`** means you evaluated it from an editor for that file,
+  but the file has no definition of the name.
+- **`:no-file`** means there's no file to save it to: it was typed at the
+  REPL, or evaluated in an editor buffer with no file. A function that
+  came from a file and is retyped at the REPL is compared with that file,
+  as `words` was.
+- **`:file-missing`** means the file it came from is gone.
+
+The check reads the file as it is now. A definition counts as saved when
+the file has one of the same name that reads the same, however it's laid
+out, so saving through a formatter doesn't matter. Loading the file again
+with `load-file`, `require :reload`, or `norn dev`'s reload means its
+definitions come from the file again, and they're no longer listed.
+Editors get the same list from the `:unsaved` op, to mark the definitions
+that need saving.
+
 ## When an evaluation fails
 
 At the REPL, an error that no handler takes doesn't end the evaluation. The
@@ -655,8 +699,9 @@ The ops cover the rest of what an editor needs. Among them are `:eval` (with
 source), `:load-file`, `:interrupt`, `:complete`, `:doc`, `:definition`,
 `:who-calls` and `:calls` (`norn.xref`'s callers and callees, each with its
 file and line), `:macroexpand`, `:inspect`, `:ns-vars`, `:format`, `:lint`,
-`:test`, and `:profile` (evaluate `:code` while `norn.prof` samples: the
-value, the report and folded stacks), and
+`:test`, `:profile` (evaluate `:code` while `norn.prof` samples: the
+value, the report and folded stacks), and `:unsaved`
+(`unsaved-definitions`), and
 for the debugger `:debugging`, `:backtrace`, `:eval-in-frame`, `:restart`
 (with `:restart`, a number, and `:args`, a string of arguments),
 `:restart-frame` and `:abort`. Since it's one map per line, you can try the
@@ -720,6 +765,8 @@ snapshot of a session you can return to.
 - `doc`, `source`, `apropos`, `find-doc`, `definition`, `inspect`, `trace`
   and `time` answer questions about the running system, and `norn.xref`'s
   `callers` and `callees` say what refers to what.
+- `unsaved-definitions` lists what you've evaluated that the files don't
+  hold yet.
 - `norn --server` speaks the editor protocol, one Norn map per line, with
   pushed debugger events and a fiber per request.
 - `save-image` saves a session's heap, and `norn --image` resumes it.
