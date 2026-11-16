@@ -44,7 +44,7 @@
     (let [sig (<! (:signals sigs))]
       (log/info "stopping" :signal sig)
       (stop! app)
-      (signal/stop sigs)
+      (signal/stop! sigs)
       (sql/close! db)
       0)))
 
