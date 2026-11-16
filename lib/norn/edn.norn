@@ -12,12 +12,12 @@
 
 (defn read-string
   "The first value in s; nil (or :eof's value) when s holds none."
-  [s & {:keys [eof]}]
+  [^String s & {:keys [eof]}]
   (let [r (%reader s "<edn>")
         v (%read r)]
     (if (%eof? v) eof v)))
 
-(defn read-all "Every value in s, as a vector." [s]
+(defn read-all "Every value in s, as a vector." ^Vector [^String s]
   (let [r (%reader s "<edn>")]
     (loop [out []]
       (let [v (%read r)] (if (%eof? v) out (recur (conj out v)))))))
@@ -41,6 +41,6 @@
   "Text that read-string reads back as an equal value: x, made of the
   values read-string makes. Anything else in it (an atom, a function, an
   instance) signals TypeError naming it; pr-str prints those."
-  [x]
+  ^String [x]
   (check x)
   (pr-str x))

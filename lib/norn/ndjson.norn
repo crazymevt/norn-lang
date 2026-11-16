@@ -21,17 +21,17 @@
   "Reduce JSON Lines from a norn.io line reader. A reduced result finishes
   the reduction and the same reader can continue with the next record.
   :keywords defaults to true."
-  [f init reader & {:keys [keywords] :or {keywords true}}]
+  [f init ^io/LineReader reader & {:keys [keywords] :or {keywords true}}]
   (reduce-lines #(io/read-line reader) f init "JSON Lines" keywords))
 
 (defn read-file "Read a UTF-8 JSON Lines file as a vector. :keywords defaults to true."
-  [path & {:keys [keywords] :or {keywords true}}]
+  ^Vector [^String path & {:keys [keywords] :or {keywords true}}]
   (io/with-open [handle (io/open path :read)]
     (let [reader (io/line-reader handle)]
       (reduce-lines #(io/read-line reader) conj [] (str path) keywords))))
 
 (defn read-string "Read JSON Lines text as a vector. :keywords defaults to true."
-  [s & {:keys [keywords] :or {keywords true}}]
+  ^Vector [^String s & {:keys [keywords] :or {keywords true}}]
   (if (= "" s) []
       (let [lines (vec (str/split s "\n"))
             lines (if (str/ends-with? s "\n") (pop lines) lines)]
@@ -40,9 +40,9 @@
 (defn write-record "Write a JSON value and LF to an open handle." [handle value]
   (io/write handle (str (json/write-string value) "\n")))
 
-(defn write-file "Write one JSON value per line to a UTF-8 file." [path values]
+(defn write-file "Write one JSON value per line to a UTF-8 file." [^String path values]
   (io/with-open [handle (io/open path :write)]
     (doseq [value values] (write-record handle value))))
 
-(defn write-string "Write a sequence of values as JSON Lines text with LF terminators." [values]
+(defn write-string "Write a sequence of values as JSON Lines text with LF terminators." ^String [values]
   (str/join (map #(str (json/write-string %) "\n") values)))

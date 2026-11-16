@@ -313,13 +313,13 @@
   :content is a vector of text strings and child elements in document order.
   Comments and processing instructions are discarded. DTDs are rejected.
   Malformed input signals ParseError with :line and :column."
-  [s]
+  ^Map [^String s]
   (read-document s "XML" nil))
 
 (defn read-file
   "Read an XML 1.0 document from a UTF-8 file or a UTF-16 file with a byte
   order mark, and return its root element."
-  [path]
+  ^Map [^String path]
   (let [source (str path) data (io/read-bytes source)
         encoding (case [(nth data 0 nil) (nth data 1 nil)] [255 254] :utf-16le [254 255] :utf-16be :utf-8)
         text (try (b/decode-text data encoding)
@@ -398,7 +398,7 @@
   :namespaces, the map is the element's whole scope, as read-string returns
   it: leaving out the nil key means no default namespace. XML 1.0 can't
   undeclare a prefix, so inherited prefixes stay available either way."
-  [root]
+  ^String [^Map root]
   (when-not (map? root) (error "XML document root must be an element map"))
   (loop [work (list [root {"xml" xml-uri}]) out (transient [])]
     (if-let [task (first work)]
@@ -417,5 +417,5 @@
                 (recur (next work) (conj! out (str start "/>"))))))))
       (str/join (persistent! out)))))
 
-(defn write-file "Write an element tree as UTF-8 XML." [path root]
+(defn write-file "Write an element tree as UTF-8 XML." [^String path ^Map root]
   (io/write-text path (write-string root)))
