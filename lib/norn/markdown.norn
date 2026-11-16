@@ -80,7 +80,7 @@
 
 (defn inlines
   "The inline elements of text s."
-  [s]
+  ^Vector [^String s]
   (let [cs (vec s)
         n (count cs)]
     (loop [i 0 text "" out []]
@@ -233,7 +233,7 @@
 
 (defn blocks
   "The blocks of a vector of lines."
-  [lines]
+  ^Vector [^Vector lines]
   (let [n (count lines)]
     (loop [i 0 starts [] out []]
       (if (>= i n)
@@ -307,14 +307,14 @@
 
 (defn parse
   "Markdown text as Norn data: [:doc block…] (see the namespace docs)."
-  [text]
+  ^Vector [text]
   (into [:doc] (blocks (vec (str/split-lines (str/replace (str text) "\t" "    "))))))
 
 (defn parse-lines
   "[doc lines]: what parse gives, and the line (0-based) each top-level
   block starts on, in order (an editor's preview follows its caret by
   them)."
-  [text]
+  ^Vector [text]
   (binding [*starts* (atom [])]
     (let [doc (parse text)] [doc @*starts*])))
 
@@ -377,12 +377,12 @@
 
 (defn html
   "Markdown (text, or what parse returns) as HTML."
-  [md]
+  ^String [^(U String Vector) md]
   (html* (if (string? md) (parse md) md)))
 
 (defn text
   "The plain text of Markdown (text or parsed), without its markup."
-  [md]
+  ^String [^(U String Vector) md]
   (let [walk (fn walk [x]
                (cond (string? x) x
                      (vector? x) (let [[tag a & kids] x

@@ -9,11 +9,11 @@
 (def ^:private max-uint 18446744073709551615)
 (def ^:private max-depth 256)
 
-(defn tagged "A tagged CBOR item. Tags 2, 3 and 4 have native Norn representations." [tag value]
+(defn tagged "A tagged CBOR item. Tags 2, 3 and 4 have native Norn representations." ^Tagged [^Integer tag value]
   (when-not (and (integer? tag) (<= 0 tag max-uint)) (error "Invalid CBOR tag" tag))
   (Tagged :tag tag :value value))
 
-(defn simple "A CBOR simple value other than a boolean or null. Code 23 is undefined." [code]
+(defn simple "A CBOR simple value other than a boolean or null. Code 23 is undefined." ^Simple [^Integer code]
   (when-not (and (integer? code) (or (<= 0 code 19) (= code 23) (<= 32 code 255)))
     (error "Invalid CBOR simple code" code))
   (Simple :code code))
@@ -179,10 +179,10 @@
   "Encode one CBOR item as Bytes. Maps may have any encodable key. Floats
   use binary64. The output does not impose deterministic map ordering. A
   value CBOR has no form for signals TypeError."
-  [x]
+  ^Bytes [x]
   (let [out (transient [])]
     (emit! out x 0)
     (apply bytes-concat (persistent! out))))
 
-(defn read-file "Decode one CBOR item from a file." [path] (decode (io/read-bytes path)))
-(defn write-file "Write one CBOR item to a file." [path x] (io/write-bytes path (encode x)))
+(defn read-file "Decode one CBOR item from a file." [^String path] (decode (io/read-bytes path)))
+(defn write-file "Write one CBOR item to a file." [^String path x] (io/write-bytes path (encode x)))
