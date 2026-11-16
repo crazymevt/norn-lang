@@ -99,7 +99,8 @@ come early so the libraries after them are written with signatures, and
 they test them. 9.10, 9.11 and 9.12 fit in when Studio or a library needs
 them.
 
-**Done-check (M9a)** (met on 2026-11-15; see the end of Status):
+**Done-check (M9a)** (met on 2026-11-15, see the end of Status; M9a is
+done, and sealing followed on 2026-11-16):
 
 - Studio's API workbench, terminal and Databases view run on `norn.http`,
   the pty support and SQLite.

@@ -196,9 +196,13 @@ a design against Norn's fibers and conditions.
     - A transition stalled while events kept coming.
     - A dock's tabs that didn't fit shrank and wrapped. Now they scroll
       sideways, and the chosen one comes into view.
-  - **Still to do: the working stretch** — Norn's own development in the
-    editor (editing `lib/` and `tests/`, the REPL, the debugger,
-    formatting and linting), and what it turns up.
+  - **The working stretch: amended (2026-11-16, the user).** M7.6 is done.
+    The done-check's purpose, the stdlib tested by real use before it's
+    sealed, was met by Studio and five test programs (`lang-tests/`:
+    pulse, ledger, quire, chat and loglens) and an interface sweep, whose
+    findings are fixed (the todo lists them). Norn's own development in
+    Studio goes on from here as everyday work, and what it turns up goes
+    in the todo.
 
 On the way:
 - `norn-ui` gained:

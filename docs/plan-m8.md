@@ -10,6 +10,9 @@ one, macros are functions on plain data, and libraries are found on
 and adds packages. These are what sealing needs: a sealed module is a
 compiled unit with known exports, built by a deterministic expander.
 
+**M8 is done (2026-11-16):** modules, packages and the verifier earlier,
+and sealing last, its baseline recorded in `api/` (see Status).
+
 **Sealing comes later** (decided 2026-11-14). It waits until the M7.6
 done-check has been worked through, since sealing freezes the stdlib.
 Three things wait with it, because each needs a baseline taken at sealing
