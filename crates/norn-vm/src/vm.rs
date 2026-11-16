@@ -421,6 +421,8 @@ pub struct Vm {
     key_buf: Vec<Value>,
     budget: i64,
     seen_attention: u64,
+    /// The profiler's sample epoch this carrier last sampled at.
+    prof_seen: u64,
     jit: crate::jit::JitCtx,
     /// The interpreter state of the innermost `run`, so a primitive can save
     /// the stack before a native region (null outside `run`).
@@ -463,6 +465,7 @@ impl Vm {
             key_buf: Vec::new(),
             budget: BUDGET,
             seen_attention: 0,
+            prof_seen: 0,
             cur_st: std::ptr::null_mut(),
             jit: crate::jit::JitCtx {
                 budget: std::ptr::null_mut(),
@@ -568,7 +571,7 @@ impl Vm {
                 st.fp = 0;
             }
             st.enter();
-            self.poll(st)
+            self.poll(st, true)
         }
     }
 
@@ -600,7 +603,7 @@ impl Vm {
                 st.fp = 0;
             }
             st.enter();
-            self.poll(st)
+            self.poll(st, true)
         }
     }
 
@@ -657,20 +660,25 @@ impl Vm {
         }
     }
 
-    /// The safepoint poll at function entry and loop back-edges: one
-    /// decrement and one load on the fast path.
+    /// The safepoint poll at function entry (`entry`) and loop back-edges:
+    /// one decrement and one load on the fast path.
     #[inline]
-    unsafe fn poll(&mut self, st: &mut St) -> Result<Flow> {
+    unsafe fn poll(&mut self, st: &mut St, entry: bool) -> Result<Flow> {
         self.budget -= 1;
         if self.budget > 0 && safepoint::attention() == self.seen_attention {
             return Ok(Flow::Next);
         }
-        self.poll_slow(st)
+        self.poll_slow(st, entry)
     }
 
     #[cold]
-    fn poll_slow(&mut self, st: &mut St) -> Result<Flow> {
+    fn poll_slow(&mut self, st: &mut St, entry: bool) -> Result<Flow> {
         self.seen_attention = safepoint::attention();
+        if crate::prof::due(&mut self.prof_seen) {
+            // (at a function's entry it has run nothing yet: the time since
+            // the sample was asked for was its caller's)
+            crate::prof::sample(st.seg, st.fp, entry);
+        }
         if self.nested == 0 {
             let gc = std::mem::take(&mut self.want_gc) || safepoint::stress_due();
             if gc || safepoint::stop_requested() {
@@ -1509,7 +1517,7 @@ impl Vm {
                     }
                     LOOP => {
                         st.pc = (st.pc as isize + sbx(ins)) as usize;
-                        self.poll(st)
+                        self.poll(st, false)
                     }
                     CALL => {
                         let f = *regs.add(ra);

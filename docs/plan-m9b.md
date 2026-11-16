@@ -124,3 +124,24 @@ shape and 4's op).
   `norn.core` costs most of the saving: 6%). `crates/norn-vm/tests/
   shake.rs` checks every name the Rust side looks up is kept;
   `images.rs` builds and runs shaken images.
+- **2, profiler: done.** `norn.prof`: `profile` (prints the report),
+  `sample`, `start!`/`stop!` (not `profile-start!`: the namespace says
+  it), `hottest`, `report` (self and total, then the call tree, recursion
+  folded) and `folded` (speedscope, inferno, flamegraph.pl); the `:profile`
+  editor op. A timer thread bumps an epoch and the attention word; each
+  carrier samples its own stack on its next poll's slow path (tier 1
+  bails to it too, so both tiers). A sample at a function's entry counts
+  for its caller: native calls have no frames, so otherwise their time
+  went to whatever function was entered next (loglens showed `reset!` at
+  15%, really `norn.io/read-line`'s reading). Anonymous functions' code
+  is now named for where it is (`user/f/fn`), in both compilers: in
+  backtraces and the debugger too (closures still print as `#<fn fn>`);
+  `backtrace`'s `:internal?` covers `norn.core`'s anonymous code as well
+  (Studio picks the first frame that isn't internal, and the REPL's banner
+  hides them, as it hid them when they were bare `fn`); the book's
+  examples are refreshed. Done-check: profiling loglens's
+  report names `loglens.logs/parse-request`, the per-entry parse, at 40%
+  (tier 0) and 37% (tier 1); its folded stacks are the collapsed format
+  speedscope reads (not opened in speedscope here). For M10, the same
+  profile: contract wrappers (`%wrap-for/fn`) are about 10% self,
+  `norn.regex/details` 7–10%.

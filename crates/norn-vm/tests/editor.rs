@@ -181,6 +181,14 @@ fn the_editor_finds_definitions_docs_and_vars() {
     assert!(calls.contains(":name \"area\"") && calls.contains(":name \"reduce\""), "{calls}");
     let none = ed.request(":op :who-calls :ns \"user\" :sym \"nowhere\"");
     assert!(none.contains(":error \"No definition of nowhere\""), "{none}");
+    // Profile an evaluation: its value, the report, and folded stacks.
+    ed.request(&format!(
+        ":op :eval :ns \"user\" :code {}",
+        quote("(defn busy [] (let [end (+ (nano-time) 100000000)] (loop [n 0] (if (< (nano-time) end) (recur (inc n)) n))))")
+    ));
+    let p = ed.request(&format!(":op :profile :ns \"user\" :interval-us 500 :code {}", quote("(do (busy) :done)")));
+    assert!(p.contains(":value \":done\"") && p.contains("samples, about every 500") && p.contains("user/busy"), "{p}");
+    assert!(p.contains(":folded \"") && p.contains("user/busy "), "{p}");
 }
 
 #[test]

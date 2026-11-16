@@ -619,7 +619,7 @@ Error: crash.norn:3: Divide by zero
   at user/f
   at norn.core/%with-bindings*
   at norn.core/%with-bindings*
-  at fn
+  at norn.expander/eval-reader/fn/fn
   at norn.core/%with-bindings*
   at norn.core/%unwind-protect*
   at norn.core/load-file

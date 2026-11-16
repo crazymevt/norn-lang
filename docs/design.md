@@ -344,9 +344,11 @@ hooks haven't been specialised.
 ## 5. Live programming: REPL, conditions, debugger
 
 **Status (M3):** §5.2 and §5.3 are implemented, along with the debugger and an
-editor protocol (a subset of §5.1). See [runtime.md §5.4](runtime.md). Not
-yet built: xref, profiling, source-drift tracking, and output capture for
-editor evaluations.
+editor protocol (a subset of §5.1). See [runtime.md §5.4](runtime.md). M9b
+added xref (`norn.xref`, the `:who-calls` and `:calls` ops) and profiling
+(`norn.prof`, the `:profile` op: stacks sampled at safepoints, at either
+tier). Not yet built: who-specialises, source-drift tracking, and output
+capture for editor evaluations.
 
 ### 5.1 The REPL **[decided]**
 

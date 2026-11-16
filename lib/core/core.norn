@@ -1818,12 +1818,14 @@
 
 (defn backtrace
   "Frames of fiber id (waiting in the debugger), top first:
-  {:fn name :locals {sym value} :internal? bool}."
+  {:fn name :locals {sym value} :internal? bool}. :internal? marks
+  norn.core's own code, its anonymous functions (norn.core/f/fn) too."
   [id]
   (mapv (fn [fr]
-          (let [n (:fn fr)]
+          (let [n (:fn fr)
+                ns (when (symbol? n) (namespace n))]
             {:fn n :locals (:locals fr)
-             :internal? (and (symbol? n) (= (namespace n) "norn.core"))}))
+             :internal? (if (and ns (or (= ns "norn.core") (= "norn.core/" (subs ns 0 (min (count ns) 10))))) true false)}))
         (%frames (:fiber (%debug-entry id)))))
 
 (defn debug-restart
@@ -2099,6 +2101,7 @@
                    (= op :definition) (or (%serve-definition req) {:error (str "No definition of " (:sym req))})
                    (= op :who-calls) (%serve-xref req 'callers)
                    (= op :calls) (%serve-xref req 'callees)
+                   (= op :profile) (%tool-call 'norn.prof 'for-editor (:code req) (:ns req) (:interval-us req))
                    (= op :macroexpand) (do (in-ns (symbol (or (:ns req) "user")))
                                            (let [f (read-string (:code req))]
                                              {:value (pr-str (if (:all req) (macroexpand f) (macroexpand-1 f)))}))

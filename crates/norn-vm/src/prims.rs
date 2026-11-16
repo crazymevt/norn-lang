@@ -94,6 +94,9 @@ prims! {
     "%fn-vars" 1 Some(1) => |vm, a| Ok(fn_vars(vm, a[0]));
     "%fn-captured" 1 Some(1) => |vm, a| Ok(fn_captured(vm, a[0]));
     "%fn-symbols" 1 Some(1) => |vm, a| Ok(fn_symbols(vm, a[0]));
+    "%prof-start!" 1 Some(1) => |_, a| crate::prof::start(int(a[0], "%prof-start!")?);
+    "%prof-stop!" 0 Some(0) => |vm, _| Ok(crate::prof::stop(&mut vm.m));
+    "%prof-active?" 0 Some(0) => |_, _| Ok(Value::bool(crate::prof::active()));
     "list?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is_cons() || a[0].is(Kind::EmptyList)));
     "vector?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Vector)));
     "map?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Map) || (a[0].is(Kind::Sorted) && !a[0].sorted_is_set())));

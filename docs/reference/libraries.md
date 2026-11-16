@@ -612,6 +612,7 @@ transaction example.
 | `norn.test` | Write tests, fixtures, and assertions and run suites. |
 | `norn.property` | Property-based tests: generators, shrinking, and seeds that reproduce failures. |
 | `norn.bench` | Measure code execution. |
+| `norn.prof` | A sampling profiler: `profile`, `sample`, `start!`/`stop!`, and reports as text (`report`) or folded stacks (`folded`). |
 | `norn.fmt`, `norn.lint`, `norn.check` | Format, lint, and check source. |
 | `norn.doc`, `norn.expand` | Inspect documentation or trace macro expansion. |
 | `norn.xref` | Who refers to what, read from compiled code: `callers`, `callees`, `references` and `reachable`. |

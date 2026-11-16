@@ -323,7 +323,12 @@
                      :else (cerr "Too many arguments to def"))
           k (konst! cs v)]
       (when-not (identical? init no-init)
-        (compile! cs init dest NT)
+        ;; (an anonymous function in the value is named after the var: its
+        ;; backtrace and profile frames say whose it is)
+        (let [outer (:def-name @cs)]
+          (swap! cs assoc :def-name (symbol (name (current-ns)) (name sym)))
+          (compile! cs init dest NT)
+          (swap! cs assoc :def-name outer))
         (emit! cs (abx DEFVAR dest k)))
       (emit! cs (abx LOADK dest k))
       (finish! cs dest pos))))
@@ -376,13 +381,18 @@
                                      [(first s) (vec (rest s))]
                                      (cerr "fn* arity must look like ([params] body...)"))))
                                rst))
-        fname (when named (symbol (name (current-ns)) (name self-name)))]
-    (swap! cs update :fns conj {:self-name self-name :upvals [] :ar (new-arity)})
+        ;; (an anonymous one's code is named for where it is: outer/fn, outer
+        ;; the function or def around it, for backtraces and profiles; the
+        ;; function itself still prints as fn)
+        outer (or (:fname (peek (:fns @cs))) (:def-name @cs))
+        fname (cond named (symbol (name (current-ns)) (name self-name))
+                    outer (symbol (str outer) "fn"))]
+    (swap! cs update :fns conj {:self-name self-name :fname fname :upvals [] :ar (new-arity)})
     (let [st (reduce (fn [st sig] (compile-arity! cs sig fname st)) {:protos [] :fixed [] :variadic false} sigs)
           f (peek (:fns @cs))
           _ (swap! cs update :fns pop)
           caps (mapv second (:upvals f))
-          tmpl (%make-template fname (:protos st) caps)]
+          tmpl (%make-template (when named fname) (:protos st) caps)]
       (emit! cs (abx CLOSURE dest (konst! cs tmpl)))
       (finish! cs dest pos)
       caps)))

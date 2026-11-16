@@ -1,0 +1,167 @@
+;;;; norn.prof — a sampling profiler: where the time goes.
+;;;;
+;;;;   (require '[norn.prof :as prof])
+;;;;   (prof/profile (my.app/run "big-input.log"))   ; prints a report
+;;;;
+;;;; While a profile runs, every carrier records the stack of the fiber it's
+;;;; running about every :interval-us microseconds (1000 by default), at its
+;;;; next safepoint (a function's entry or a loop's turn), at either tier: a
+;;;; sample taken as a function is entered counts for its caller, whose
+;;;; time it was (native calls have no frames of their own). A
+;;;; carrier that's idle, or waiting in a native call, records nothing: a
+;;;; profile counts time spent running Norn code, in every fiber, not only
+;;;; the one that started it. A profile is data:
+;;;;
+;;;;   {:samples n :interval-us i :seconds s
+;;;;    :stacks {["outermost" … "innermost"] count}}
+;;;;
+;;;; frames named by their code: ns/name, or outer/fn for an anonymous
+;;;; function inside outer. report makes text of it (the functions with the
+;;;; most samples, by self and by total, then a call tree), and folded the
+;;;; folded stacks flame-graph tools read (speedscope, inferno,
+;;;; flamegraph.pl).
+
+(ns norn.prof)
+
+(defn start!
+  "Start a profile (one at a time). Options: :interval-us, about how often
+  each carrier samples (default 1000, at least 50)."
+  [& {:keys [interval-us] :or {interval-us 1000}}]
+  (%prof-start! interval-us)
+  nil)
+
+(defn running?
+  "Is a profile running?"
+  ^Boolean []
+  (%prof-active?))
+
+(defn stop!
+  "End the profile start! began: the profile (see the namespace doc), or
+  nil when none was running."
+  []
+  (when-let [[interval-us elapsed-us samples names stacks] (%prof-stop!)]
+    {:samples samples
+     :interval-us interval-us
+     :seconds (/ elapsed-us 1e6)
+     :stacks (into {} (map (fn [[ids n]] [(mapv names ids) n]) stacks))}))
+
+(defn- below-sample
+  "Stack s from just under this module's sample (the frames that called it
+  are the same in every one of its samples), or s whole: another fiber's."
+  [s]
+  (let [i (loop [i 0] (cond (= i (count s)) nil (= "norn.prof/sample" (nth s i)) i :else (recur (inc i))))]
+    (if (nil? i)
+      s
+      (let [s (subvec s (inc i))
+            ;; (and the try's frame that runs f)
+            s (if (= "norn.core/%unwind-protect*" (first s)) (subvec s 1) s)]
+        ;; (a sample in sample itself, starting or stopping: its own)
+        (if (empty? s) ["norn.prof/sample"] s)))))
+
+(defn sample
+  "Call f with no arguments while a profile runs: {:value (f's) :profile}.
+  Options as start!'s. The profile ends however f does. In f's fiber the
+  stacks start at f: what called sample is left out."
+  [f & opts]
+  (apply start! opts)
+  (let [p (atom nil)
+        v (try (f) (finally (reset! p (stop!))))
+        trim (fn [stacks] (reduce (fn [m [s n]] (update m (below-sample s) (fnil + 0) n)) {} stacks))]
+    {:value v :profile (when-let [p @p] (update p :stacks trim))}))
+
+(defn- percent [n total]
+  (if (zero? total) "0.0%" (format "%.1f%%" (* 100.0 (/ n total)))))
+
+(defn hottest
+  "The functions in profile p with the most samples: [{:name :self :total}…],
+  most self first. :self counts samples where it was running, :total those
+  where it was on the stack (once a sample however deep it recursed)."
+  ^Vector [p]
+  (let [self (reduce (fn [m [s n]] (update m (peek s) (fnil + 0) n)) {} (:stacks p))
+        total (reduce (fn [m [s n]] (reduce (fn [m f] (update m f (fnil + 0) n)) m (distinct s))) {} (:stacks p))]
+    (vec (sort-by (fn [e] [(- (:self e)) (- (:total e)) (:name e)])
+                  (map (fn [[f t]] {:name f :self (get self f 0) :total t}) total)))))
+
+(defn- fold-recursion
+  "Stack s with each run of one function calling itself as one frame,
+  \"f (recursive)\"."
+  [s]
+  (reduce (fn [out f]
+            (let [last-f (peek out)]
+              (cond (= f last-f) (conj (pop out) (str f " (recursive)"))
+                    (= (str f " (recursive)") last-f) out
+                    :else (conj out f))))
+          [] s))
+
+(defn- tree
+  "The stacks as a tree, recursion folded: {name {:n samples :kids {…}}}."
+  [stacks]
+  (reduce (fn [t [s n]]
+            (loop [t t path [] s (seq (fold-recursion s))]
+              (if s
+                (let [k (conj path (first s))
+                      t (update-in t (conj k :n) (fnil + 0) n)]
+                  (recur t (conj k :kids) (next s)))
+                t)))
+          {} stacks))
+
+(defn- print-tree
+  "Each branch of tree t with at least least samples, by out, depth deep."
+  [t depth total least out]
+  (doseq [[k {:keys [n kids]}] (sort-by (fn [[k v]] [(- (:n v)) k]) t)
+          :when (>= n least)]
+    (out (format "%6s  " (percent n total)) (apply str (repeat depth "  ")) k)
+    (print-tree kids (inc depth) total least out)))
+
+(defn report
+  "Profile p as text: how many samples, the :top functions (default 20) by
+  the time spent in them (self) and under them (total), and the call tree,
+  each branch with at least :min-percent of the samples (default 1)."
+  ^String [p & {:keys [top min-percent] :or {top 20 min-percent 1}}]
+  (let [total (:samples p)
+        lines (atom [])
+        out (fn [& xs] (swap! lines conj (apply str xs)))
+        least (* total (/ min-percent 100.0))]
+    (out (format "%d samples, about every %s µs, in %.2f s" total (:interval-us p) (double (:seconds p))))
+    (if (zero? total)
+      (out "(no Norn code ran while it was profiling)")
+      (do
+        (out "")
+        (out "  self    total   function")
+        (doseq [e (take top (hottest p))]
+          (out (format "%6s  %6s   %s" (percent (:self e) total) (percent (:total e) total) (:name e))))
+        (out "")
+        (out "call tree (branches with at least " min-percent "% of the samples):")
+        (print-tree (tree (:stacks p)) 0 total least out)))
+    (str (apply str (interpose "\n" @lines)) "\n")))
+
+(defn- frame-text
+  "Frame name f for a folded line (a ; in it would split it)."
+  [f]
+  (apply str (map (fn [c] (if (= c \;) \: c)) f)))
+
+(defn folded
+  "Profile p as folded stacks, a line per stack (outermost frame first,
+  joined by ;, then its count), as speedscope, inferno and flamegraph.pl
+  read them."
+  ^String [p]
+  (apply str (map (fn [[s n]] (str (apply str (interpose ";" (map frame-text s))) " " n "\n"))
+                  (sort-by (fn [[s n]] [(- n) s]) (:stacks p)))))
+
+(defmacro profile
+  "(profile body…) or (profile {:interval-us … :top …} body…): evaluate
+  body while a profile runs, print its report, and return body's value."
+  [& body]
+  (let [[opts body] (if (map? (first body)) [(first body) (rest body)] [{} body])]
+    `(let [o# ~opts
+           r# (norn.prof/sample (fn [] ~@body) :interval-us (or (:interval-us o#) 1000))]
+       (print (norn.prof/report (:profile r#) :top (or (:top o#) 20) :min-percent (or (:min-percent o#) 1)))
+       (:value r#))))
+
+(defn for-editor
+  "The editor's :profile op: evaluate code (a string, in namespace ns) while
+  a profile runs: {:value (printed) :report :folded}."
+  [code ns interval-us]
+  (in-ns (symbol (or ns "user")))
+  (let [{:keys [value profile]} (sample (fn [] (load-string code)) :interval-us (or interval-us 1000))]
+    {:value (pr-str value) :report (report profile) :folded (folded profile)}))

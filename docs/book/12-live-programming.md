@@ -89,7 +89,7 @@ Error: Interrupted
   at user/spin
   at norn.core/%with-bindings*
   at norn.core/%with-bindings*
-  at fn
+  at norn.core/%repl-eval/fn
   at norn.core/%with-bindings*
 user=> (+ 1 1)
 2
@@ -216,10 +216,8 @@ Fiber 5 is waiting in the debugger: Divide by zero
     0: [use-value] Return a value from the failed operation instead
     1: [retry] Try the failed operation again (e.g. after defining or fixing something)
   Frames:
-    2: fn {}
     6: user/average {xs []}
     7: user/report {xs [], label "empty"}
-    10: fn {r #<Reader>, f (report "empty" [])}
   :r N [args…]  invoke restart N    :f N  restart frame N (newest definition)
   :bt  frames again    :a  abort    anything else is evaluated (e.g. redefine a function)
 debug[5]>
@@ -235,9 +233,10 @@ The banner has four parts.
   established with `restart-case` in your own code appear here too.
 - **Frames** are the calls on the fiber's stack, innermost first, each with
   its local variables. The numbers have gaps because Norn's internal frames
-  are hidden. `user/average` was running with `xs` bound to `[]`, called
-  from `user/report`. The last frame is the REPL itself, evaluating the form
-  you typed, and frames named `fn` are anonymous functions.
+  are hidden, the REPL's own among them. `user/average` was running with
+  `xs` bound to `[]`, called from `user/report`. An anonymous function's
+  frame is named for the function or definition it's written in: a `fn`
+  inside `user/report` would be `user/report/fn`.
 - **The command line** lists what you can type at the `debug[5]>` prompt.
 
 The prompt changes to `debug[5]>` to show that you're talking to the
@@ -327,9 +326,7 @@ Fiber 5 is waiting in the debugger: Unbound var: #'user/rate
     0: [use-value] Return a value from the failed operation instead
     1: [retry] Try the failed operation again (e.g. after defining or fixing something)
   Frames:
-    2: fn {}
     6: user/total {price 100}
-    9: fn {r #<Reader>, f (total 100)}
   :r N [args…]  invoke restart N    :f N  restart frame N (newest definition)
   :bt  frames again    :a  abort    anything else is evaluated (e.g. redefine a function)
 debug[5]> :r 0 1/10
@@ -367,7 +364,7 @@ Error: Divide by zero
   at <toplevel>
   at norn.core/%with-bindings*
   at norn.core/%with-bindings*
-  at fn
+  at norn.core/%repl-eval/fn
   at norn.core/%with-bindings*
 user=>
 ```
@@ -394,10 +391,7 @@ Fiber 12 is waiting in the debugger: Bad order line: "gadget,x"
     0: [skip-order] Leave this line out.
     1: [use-order] Use this order in its place.
   Frames:
-    2: fn {}
-    5: fn {x "gadget,x", y nil, acc [{:item "widget", :qty 3}]}
     9: orders/parse-orders {lines ["widget,3" "gadget,x" "sprocket,2"]}
-    12: fn {r #<Reader>, f (parse-orders ["widget,3" "gadget,x" "sprocket,2"])}
   :r N [args…]  invoke restart N    :f N  restart frame N (newest definition)
   :bt  frames again    :a  abort    anything else is evaluated (e.g. redefine a function)
 debug[12]> :r 1 {:item "gadget" :qty 1}
@@ -407,8 +401,9 @@ debug[12]> :r 1 {:item "gadget" :qty 1}
 `:r 1` took the argument `{:item "gadget" :qty 1}`, which `use-order`
 returned in place of the bad line, and parsing went on to the third line.
 `parse-order` isn't among the frames because it ended in a tail call to
-`restart-case`; the frame named `fn` with `x` bound to the line is the
-function inside `keep` that called it.
+`restart-case`. Between it and `parse-orders` is the function inside `keep`
+that called it, `norn.core/keep/fn/fn`, one of Norn's own frames: `(backtrace
+12)` lists them all, with `:internal? true`.
 
 This is where restart design pays off. The restarts you write for handlers
 in code are the same ones you pick from by hand at the REPL. The `:report`
@@ -442,7 +437,6 @@ Fiber 5 is waiting in the debugger: Divide by zero
     0: [use-value] Return a value from the failed operation instead
     1: [retry] Try the failed operation again (e.g. after defining or fixing something)
   Frames:
-    2: fn {}
     6: user/crunch {n 0}
   (it keeps waiting; use (debug-restart 5 n), (debug-restart-frame 5 i) or (debug-abort 5))
 nil
@@ -471,7 +465,6 @@ Fiber 6 is waiting in the debugger: Divide by zero
     0: [use-value] Return a value from the failed operation instead
     1: [retry] Try the failed operation again (e.g. after defining or fixing something)
   Frames:
-    2: fn {}
     6: user/crunch {n 0}
   (the evaluation goes on meanwhile)
   :r N [args…]  invoke restart N    :f N  restart frame N (newest definition)
@@ -661,8 +654,9 @@ The ops cover the rest of what an editor needs. Among them are `:eval` (with
 `:ns`, and `:file` and `:line` so errors and definitions point at the
 source), `:load-file`, `:interrupt`, `:complete`, `:doc`, `:definition`,
 `:who-calls` and `:calls` (`norn.xref`'s callers and callees, each with its
-file and line), `:macroexpand`, `:inspect`, `:ns-vars`, `:format`, `:lint`
-and `:test`, and
+file and line), `:macroexpand`, `:inspect`, `:ns-vars`, `:format`, `:lint`,
+`:test`, and `:profile` (evaluate `:code` while `norn.prof` samples: the
+value, the report and folded stacks), and
 for the debugger `:debugging`, `:backtrace`, `:eval-in-frame`, `:restart`
 (with `:restart`, a number, and `:args`, a string of arguments),
 `:restart-frame` and `:abort`. Since it's one map per line, you can try the

@@ -1,0 +1,56 @@
+;;;; norn.prof: a sampling profiler. Profiles are process-wide (other
+;;;; suites run beside this one), so these look for what they ran, not for
+;;;; it alone.
+
+(ns prof-test
+  (:require [norn.prof :as prof]
+            [norn.string :as str]
+            [norn.test :refer [deftest is testing]]))
+
+(defn spin
+  "Busy for about ms milliseconds."
+  [ms]
+  (let [end (+ (nano-time) (* ms 1000000))]
+    (loop [n 0] (if (< (nano-time) end) (recur (inc n)) n))))
+
+(defn deep [n ms] (if (zero? n) (spin ms) (inc (deep (dec n) ms))))
+
+(deftest sampling
+  (let [{:keys [value profile]} (prof/sample (fn [] (spin 150) :done) :interval-us 500)]
+    (is (= :done value))
+    (is (< 10 (:samples profile)) "about two a ms per busy carrier, fewer when the machine is busy")
+    (is (= 500 (:interval-us profile)))
+    (is (some (fn [[s _]] (= "prof-test/spin" (peek s))) (:stacks profile)) "spin was running")
+    (is (not-any? (fn [[s _]] (some #{"norn.prof/sample"} s)) (:stacks profile))
+        "its fiber's stacks start at f: what called sample is left out")
+    (is (= (:samples profile) (reduce + (vals (:stacks profile)))))
+    (let [h (first (filter (fn [e] (= "prof-test/spin" (:name e))) (prof/hottest profile)))]
+      (is (pos? (:self h)))
+      (is (<= (:self h) (:total h))))))
+
+(deftest reports
+  (let [p (:profile (prof/sample (fn [] (deep 30 120))))
+        text (prof/report p :top 100000 :min-percent 0)]
+    (is (str/starts-with? text (str (:samples p) " samples, about every 1000 µs")))
+    (is (str/includes? text "prof-test/spin"))
+    (is (str/includes? text "prof-test/deep (recursive)") "the call tree folds recursion")
+    (testing "folded stacks, as flame-graph tools read them"
+      (let [lines (remove empty? (str/split-lines (prof/folded p)))]
+        (is (every? (fn [l] (re-matches #"[^ ]+ \d+" l)) lines))
+        (is (= (:samples p) (reduce + (map (fn [l] (parse-long (peek (str/split l #" ")))) lines))))
+        (is (some (fn [l] (str/includes? l "prof-test/deep;prof-test/deep;prof-test/deep")) lines)
+            "recursion stays in them")))))
+
+(deftest one-at-a-time
+  (prof/start!)
+  (try
+    (is (prof/running?))
+    (is (thrown-with-msg? Error #"A profile is running already" (prof/start!)))
+    (finally (prof/stop!)))
+  (is (not (prof/running?)))
+  (is (nil? (prof/stop!)) "nothing to stop"))
+
+(deftest the-macro
+  (let [out (with-out-str (is (= 7 (prof/profile {:top 3} (spin 30) 7))))]
+    (is (str/includes? out "samples, about every"))
+    (is (str/includes? out "call tree"))))

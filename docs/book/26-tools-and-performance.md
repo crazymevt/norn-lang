@@ -5,7 +5,8 @@
 This chapter covers the command-line tools you use every day on a project:
 `norn fmt` for layout, `norn lint` for likely mistakes, `norn doc` and
 docstrings, and `norn expand` for macros. Then it turns to speed: how to
-measure with `time` and `norn.bench`, what the two execution tiers do, which
+measure with `time` and `norn.bench`, how to find where the time goes with
+`norn.prof`, what the two execution tiers do, which
 operations are cheap and which are expensive in this release, and the
 habits that keep hot code fast.
 
@@ -358,6 +359,108 @@ The repository has two benchmark suites you can run and read as examples:
 `bench/micro.norn` times single operations, and `bench/workloads.norn`
 times whole jobs.
 
+## Finding where the time goes: `norn.prof`
+
+A benchmark says how long a job takes. A profiler says which code that
+time went to. `norn.prof` samples: about every millisecond, each carrier
+notes the stack of the fiber it's running. The functions that turn up
+most are where the time goes. `profile` runs some code, prints a report,
+and returns the code's value:
+
+<!-- skip -->
+```clojure
+(require '[norn.prof :as prof]
+         '[norn.string :as str])
+
+(defn parse-order [line]
+  (let [[item qty price] (str/split line #",")]
+    {:item item :qty (parse-long qty) :price (parse-double price)}))
+
+(defn order-total [o] (* (:qty o) (:price o)))
+
+(defn revenue [lines]
+  (reduce + (map (fn [line] (order-total (parse-order line))) lines)))
+
+(def lines (vec (for [i (range 200000)]
+                  (str "item" (mod i 50) "," (inc (mod i 7)) "," (+ 1.5 (mod i 13))))))
+
+(prof/profile (revenue lines))
+```
+
+```text
+193 samples, about every 1000 µs, in 0.32 s
+
+  self    total   function
+ 40.4%  100.0%   norn.core/reduce
+ 39.9%   39.9%   user/parse-order
+ 18.1%   59.6%   norn.core/map/fn/fn
+  1.6%   41.5%   user/revenue/fn
+  0.0%   90.2%   norn.core/map
+  0.0%   90.2%   norn.core/transduce
+  0.0%   90.2%   user/revenue
+
+call tree (branches with at least 1% of the samples):
+ 90.2%  user/revenue
+ 90.2%    norn.core/map
+ 90.2%      norn.core/transduce
+ 90.2%        norn.core/reduce
+ 59.6%          norn.core/map/fn/fn
+ 41.5%            user/revenue/fn
+ 39.9%              user/parse-order
+  9.8%  norn.core/reduce
+```
+
+The first table lists functions by **self** time, the samples in which
+each was the one running, and also shows **total** time, the samples in
+which it was anywhere on the stack. Here `parse-order` takes 40% on its
+own. `order-total` is too quick to show. The call tree shows the same
+samples by path from the outside in. A function's line covers everything
+under it, and a function that calls itself shows once, marked
+`(recursive)`.
+
+Reading a profile takes knowing a few things about how it was made:
+
+- **Anonymous functions are named for where they are.** `user/revenue/fn`
+  is the `fn` inside `revenue`, and `norn.core/map/fn/fn` is a function
+  two levels inside `map`. Backtraces name them the same way.
+- **A tail call leaves no frame.** `revenue` calls `reduce` last, so the
+  9.8% spent summing shows under a `norn.core/reduce` of its own, not
+  under `revenue`.
+- **Primitives have no frames.** Time spent in a primitive written in
+  Rust, such as `str/split` or `parse-long`, counts for the Norn function
+  that called it. Samples are taken where code checks in, at a function's
+  entry or a loop's turn, and a sample taken as a function starts counts
+  for its caller, whose time it was.
+- **A profile is of the whole process.** Every carrier samples, so other
+  fibers' work shows too, each from its own outermost frame. In the
+  fiber that called `profile`, stacks start at the code you gave it.
+- **Waiting doesn't count.** A carrier with nothing to run, or one waiting
+  in a native call, takes no samples, so a profile counts time spent
+  running Norn code.
+
+Both tiers profile the same way. Tier 1 keeps the same frames, so
+comparing a profile at each tier shows what the compiler speeds up.
+
+The report is made from data. `(prof/sample f)` calls `f` while a profile
+runs and returns `{:value :profile}`. `prof/start!` and `prof/stop!`
+profile whatever runs between them, such as a server under load. A
+profile is a map of stacks to sample counts. `prof/hottest` returns the
+table as data, `prof/report` returns the text, and `prof/folded` returns
+the stacks as lines that flame-graph tools read:
+
+<!-- skip -->
+```clojure
+(prof/start! :interval-us 500)        ; sample twice as often
+(run-the-server-for-a-while)
+(def p (prof/stop!))
+(spit "server.folded" (prof/folded p)) ; open it in speedscope.app
+```
+
+The folded format, one `outer;…;inner count` line per stack, is the one
+speedscope, inferno and `flamegraph.pl` read. Editors get the same report
+through the editor protocol's `:profile` op, which evaluates `:code` with a
+profile running.
+
 ## Two tiers
 
 Norn compiles your code to bytecode, and runs it in one of two ways:
@@ -551,6 +654,9 @@ variant, compare the GC counts as well as the times.
 - `norn expand --steps` shows macro expansion one step at a time.
 - `time` gives one rough number. `norn.bench` warms up, runs many times,
   and reports the mean, the spread, and the GC count.
+- `norn.prof/profile` samples the stacks while code runs, and reports the
+  functions with the most samples and the call tree. `folded` gives the
+  stacks to flame-graph tools such as speedscope.
 - Tier 0 interprets bytecode and is the default. `NORN_TIER=1` compiles
   functions with Cranelift and speeds up calls, loops and arithmetic by 3–10
   times, but not primitives or the collector.

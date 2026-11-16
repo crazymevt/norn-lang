@@ -51,6 +51,8 @@ struct Arity {
 struct FnCtx {
     /// The fn's own name, bound to the closure inside its body (or nil).
     self_name: Value,
+    /// Its code's name (ns/name, or outer/fn for an anonymous one), or nil.
+    fname: Value,
     /// Upvalues, shared by all arities of the fn.
     upvals: Vec<(Value, Capture)>,
     ar: Arity,
@@ -65,6 +67,9 @@ enum Loc {
 pub struct Compiler<'v> {
     vm: &'v mut Vm,
     fns: Vec<FnCtx>,
+    /// The var a def being compiled defines (anonymous code in its value is
+    /// named after it), or nil.
+    def_name: Value,
 }
 
 fn err<T>(msg: impl Into<String>) -> Result<T> {
@@ -103,8 +108,8 @@ fn is_constant(v: Value) -> bool {
 /// Compile a top-level form into a zero-argument closure.
 pub fn compile_toplevel(vm: &mut Vm, form: Value) -> Result<Value> {
     let name = rt().symbol(&mut vm.m, None, "<toplevel>");
-    let mut c = Compiler { vm, fns: Vec::new() };
-    c.fns.push(FnCtx { self_name: Value::NIL, upvals: Vec::new(), ar: Arity::default() });
+    let mut c = Compiler { vm, fns: Vec::new(), def_name: Value::NIL };
+    c.fns.push(FnCtx { self_name: Value::NIL, fname: Value::NIL, upvals: Vec::new(), ar: Arity::default() });
     let dest = c.alloc()?;
     c.compile(form, dest, Pos { tail: true, recur: false })?;
     let f = c.fns.pop().unwrap();
@@ -583,7 +588,13 @@ impl Compiler<'_> {
         };
         let k = self.konst(var)?;
         if let Some(init) = init {
-            self.compile(init, dest, NT)?;
+            // (anonymous code in the value is named after the var)
+            let outer = self.def_name;
+            let ns = self.vm.ns.name.sym_name().to_owned();
+            self.def_name = rt().symbol(&mut self.vm.m, Some(&ns), sym.sym_name());
+            let r = self.compile(init, dest, NT);
+            self.def_name = outer;
+            r?;
             self.emit(abx(DEFVAR, dest, k));
         }
         self.emit(abx(LOADK, dest, k));
@@ -627,13 +638,20 @@ impl Compiler<'_> {
                 .collect::<Result<_>>()?,
             None => return err("fn* requires a parameter vector"),
         };
+        // (an anonymous one's code is named for where it is, outer/fn, for
+        // backtraces and profiles; the function itself still prints as fn)
+        let outer = self.fns.last().map(|f| f.fname).filter(|n| !n.is_nil()).unwrap_or(self.def_name);
         let name = if self_name.is_symbol() {
             let ns = self.vm.ns.name.sym_name().to_owned();
             rt().symbol(&mut self.vm.m, Some(&ns), self_name.sym_name())
+        } else if outer.is_symbol() {
+            let o = norn_rt::print::pr_str(outer, false);
+            rt().symbol(&mut self.vm.m, Some(&o), "fn")
         } else {
             Value::NIL
         };
-        self.fns.push(FnCtx { self_name, upvals: Vec::new(), ar: Arity::default() });
+        let tname = if self_name.is_symbol() { name } else { Value::NIL };
+        self.fns.push(FnCtx { self_name, fname: name, upvals: Vec::new(), ar: Arity::default() });
         let mut protos = Vec::new();
         let mut seen_fixed = Vec::new();
         let mut seen_variadic = false;
@@ -692,7 +710,7 @@ impl Compiler<'_> {
         let arities = array_from(m, &protos);
         let encoded: Vec<Value> = caps.iter().map(|c| c.encode()).collect();
         let caps_arr = array_from(m, &encoded);
-        let tmpl = template_new(m, name, arities, caps_arr);
+        let tmpl = template_new(m, tname, arities, caps_arr);
         let k = self.konst(tmpl)?;
         self.emit(abx(CLOSURE, dest, k));
         self.finish(dest, pos);

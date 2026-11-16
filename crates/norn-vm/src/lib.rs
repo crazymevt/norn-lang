@@ -22,6 +22,7 @@ pub mod os;
 pub mod owned;
 pub mod pack;
 pub mod prims;
+pub mod prof;
 pub mod reactor;
 pub mod reader;
 pub mod sched;
