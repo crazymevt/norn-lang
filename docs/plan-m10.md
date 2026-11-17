@@ -744,6 +744,21 @@ win back compile time first: done, below.
   own share fell from 2,394 and 5,025 samples to 176 and 158. prof_test's
   where-the-time-goes checks both cases at both tiers (each failed
   before: every sample was the caller's).
+- **Sequence functions over one collection: done (2026-11-17).** Norn's
+  `map`, `filter` and the rest are eager over collections, but went
+  through a transducer (`%eager`: the step closure, `%conj!`, reduce),
+  where `mapv` and `filterv` looped directly. Now `map`, `filter`, `keep`
+  (and `mapv`, `filterv`) share direct loops: by index over a vector,
+  range or string, a walk of the seq for anything else. `complement` has
+  fixed arities (`remove`'s went through `apply` an item), and `for`'s
+  innermost binding gives one value a step (or a skip, or a stop),
+  collected in a transient, not a one-item vector poured into a
+  persistent one. **Measured** (tier 1, an item): `map inc` over a vector
+  40.1 → 17.2 ns, a list 48.8 → 25.7, a range 50.5 → 28.7; `filter`
+  38.4 → 31.9; `remove` 118.5 → 33.6; `keep` 43.0 → 25.9; `for` over a
+  vector 165.0 → 33.8; `(reduce + (map inc v))` 45.0 → 21.2. Test:
+  items_test's sequence-functions (each kind of collection, `for`'s
+  modifiers at each level), passing on the binary before too.
 - **Inlining's limits are untuned:** 24 IR nodes, 96 for a contract
   wrapper, three calls deep, no inlining past 200 registers.
 - **Code size:** part 3's linked calls made tier 1's code 15% larger (4.8

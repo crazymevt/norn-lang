@@ -79,7 +79,8 @@
   ([x] x) ([x y] (if (< x y) x y)) ([x y & more] (apply min (min x y) more)))
 (defn constantly "A function that takes any arguments and returns x." [x] (fn [& _] x))
 (defn complement "A function that returns (not (apply f args)): the opposite of f." [f]
-  (fn [& args] (not (apply f args))))
+  ;; (fixed arities first: remove calls it once an item)
+  (fn ([] (not (f))) ([x] (not (f x))) ([x y] (not (f x y))) ([x y & more] (not (apply f x y more)))))
 
 ;;; ---- control flow ------------------------------------------------------------
 
@@ -3163,6 +3164,43 @@
         (let [r (xf-step (first s))]
           (if (= r ::skip) (recur (next s)) (cons r (%stream-of xf-step (rest s)))))))))
 
+;; The one-collection sequence functions' loops (M10): by index over a
+;; vector, range or string, else a walk of coll's seq, into a transient:
+;; no transducer, no reducing function, no closure called an item beyond f
+;; or pred. (Through %eager, (map f v) cost 40 ns an item against mapv's
+;; 17.)
+(defn- %map-into [f coll]
+  (if (%indexed? coll)
+    (let [n (count coll)]
+      (loop [i 0 out (transient [])]
+        (if (< i n) (recur (inc i) (conj! out (f (nth coll i)))) (persistent! out))))
+    (loop [s (seq coll) out (transient [])]
+      (if s (recur (next s) (conj! out (f (first s)))) (persistent! out)))))
+
+(defn- %filter-into [pred coll]
+  (if (%indexed? coll)
+    (let [n (count coll)]
+      (loop [i 0 out (transient [])]
+        (if (< i n)
+          (let [x (nth coll i)] (recur (inc i) (if (pred x) (conj! out x) out)))
+          (persistent! out))))
+    (loop [s (seq coll) out (transient [])]
+      (if s
+        (let [x (first s)] (recur (next s) (if (pred x) (conj! out x) out)))
+        (persistent! out)))))
+
+(defn- %keep-into [f coll]
+  (if (%indexed? coll)
+    (let [n (count coll)]
+      (loop [i 0 out (transient [])]
+        (if (< i n)
+          (let [y (f (nth coll i))] (recur (inc i) (if (nil? y) out (conj! out y))))
+          (persistent! out))))
+    (loop [s (seq coll) out (transient [])]
+      (if s
+        (let [y (f (first s))] (recur (next s) (if (nil? y) out (conj! out y))))
+        (persistent! out)))))
+
 (defn map
   "Apply f to each item (or, with several collections, to items side by
   side). Type-preserving for vectors, lists and sets; a map gives a vector
@@ -3171,7 +3209,7 @@
   ([f coll]
    (if (stream? coll)
      (%stream-of f coll)
-     (%like-made coll (%eager (map f) coll))))
+     (%like-made coll (%map-into f coll))))
   ([f c1 c2]
    (if (or (stream? c1) (stream? c2))
      (lazy-seq (let [a (seq c1) b (seq c2)]
@@ -3192,12 +3230,7 @@
 
 (defn mapv
   "map, always giving a vector."
-  ([f coll] (if (%indexed? coll)
-              ;; (a vector or range: a loop, into a transient)
-              (let [n (count coll)]
-                (loop [i 0 out (transient [])]
-                  (if (< i n) (recur (inc i) (conj! out (f (nth coll i)))) (persistent! out))))
-              (%eager (map f) coll)))
+  ([f coll] (%map-into f coll))
   ([f c1 c2] (vec (map f c1 c2)))
   ([f c1 c2 & more] (vec (apply map f c1 c2 more))))
 
@@ -3208,16 +3241,9 @@
   ([pred coll]
    (if (stream? coll)
      (%stream-of (fn [x] (if (pred x) x ::skip)) coll)
-     (%like coll (%eager (filter pred) coll)))))
+     (%like coll (%filter-into pred coll)))))
 
-(defn filterv "filter, always giving a vector." [pred coll]
-  (if (%indexed? coll)
-    (let [n (count coll)]
-      (loop [i 0 out (transient [])]
-        (if (< i n)
-          (let [x (nth coll i)] (recur (inc i) (if (pred x) (conj! out x) out)))
-          (persistent! out))))
-    (%eager (filter pred) coll)))
+(defn filterv "filter, always giving a vector." [pred coll] (%filter-into pred coll))
 
 (defn remove
   "The items for which (pred x) is false. (remove pred) is a transducer."
@@ -3230,7 +3256,7 @@
   ([f coll]
    (if (stream? coll)
      (%stream-of (fn [x] (let [y (f x)] (if (nil? y) ::skip y))) coll)
-     (%like-made coll (%eager (keep f) coll)))))
+     (%like-made coll (%keep-into f coll)))))
 
 (defn map-indexed
   "(f index item) for each item. (map-indexed f) is a transducer."
@@ -3856,12 +3882,47 @@
 (defn %for-cat
   "Concatenate (f x) for each x of coll, into a vector."
   [f coll]
-  (reduce (fn [acc x] (into acc (f x))) [] coll))
+  (persistent! (reduce (fn [acc x] (reduce conj! acc (f x))) (transient []) coll)))
 
 (defn %for-cat-while
   "%for-cat, stopping at the first x whose (f x) is %for-stop."
   [f coll]
-  (reduce (fn [acc x] (let [r (f x)] (if (identical? r %for-stop) (reduced acc) (into acc r)))) [] coll))
+  (persistent! (reduce (fn [acc x] (let [r (f x)] (if (identical? r %for-stop) (reduced acc) (reduce conj! acc r)))) (transient []) coll)))
+
+(def %for-skip "What a for's innermost step gives when its :when test fails." (%uninterned-symbol "skip"))
+
+;; (the innermost binding of a for: each step one value, or %for-skip, not
+;; a vector of them: a for over one collection cost 165 ns an item, each
+;; step's one-item vector poured into the result)
+(defn %for-each
+  "(f x) for each x of coll, into a vector, but %for-skip's."
+  [f coll]
+  (persistent! (reduce (fn [acc x] (let [r (f x)] (if (identical? r %for-skip) acc (conj! acc r)))) (transient []) coll)))
+
+(defn %for-each-while
+  "%for-each, stopping at the first x whose (f x) is %for-stop."
+  [f coll]
+  (persistent! (reduce (fn [acc x] (let [r (f x)]
+                                     (cond (identical? r %for-stop) (reduced acc)
+                                           (identical? r %for-skip) acc
+                                           :else (conj! acc r))))
+                       (transient []) coll)))
+
+(defn- %for-last?
+  "Are bindings only modifiers (:let, :when, :while), no collection left?"
+  [bindings]
+  (loop [bs (seq bindings)] (cond (nil? bs) true (keyword? (first bs)) (recur (nnext bs)) :else false)))
+
+(defn- %for-emit-1
+  "The innermost binding's step: body's value, or %for-skip (a :when
+  failed) or %for-stop (a :while)."
+  [bindings body]
+  (if (empty? bindings)
+    `(do ~@body)
+    (let [[a b & more] bindings]
+      (cond (= a :let) `(let ~b ~(%for-emit-1 more body))
+            (= a :when) `(if ~b ~(%for-emit-1 more body) %for-skip)
+            :else `(if ~b ~(%for-emit-1 more body) %for-stop)))))
 
 (defn- %for-emit [bindings body]
   (if (empty? bindings)
@@ -3870,6 +3931,8 @@
       (cond (= a :let) `(let ~b ~(%for-emit more body))
             (= a :when) `(if ~b ~(%for-emit more body) [])
             (= a :while) `(if ~b ~(%for-emit more body) %for-stop)
+            (%for-last? more) `(~(if (%while-follows? more) `%for-each-while `%for-each)
+                                (fn [~a] ~(%for-emit-1 more body)) ~b)
             :else `(~(if (%while-follows? more) `%for-cat-while `%for-cat)
                     (fn [~a] ~(%for-emit more body)) ~b)))))
 

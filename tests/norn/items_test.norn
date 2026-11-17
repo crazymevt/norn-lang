@@ -63,3 +63,31 @@
     (let [a (atom 0)]
       (with-scope [s] (dotimes [_ 8] (spawn s (dotimes [_ 500] (swap! a inc)))))
       (is (= 4000 @a)))))
+
+;; map, filter, keep, remove and for loop directly (M10): each kind of
+;; collection, against fixed answers.
+(deftest sequence-functions
+  (testing "map keeps the kind"
+    (is (= [[2 3] '(2 3) #{2 3} [2 3] [97 98] [] [2 3 4]]
+           [(map inc [1 2]) (map inc '(1 2)) (map inc #{1 2}) (map inc (range 1 3)) (map int "ab") (map inc [])
+            (map inc (cons 1 (lazy-seq [2 3])))]))
+    (is (list? (map inc '(1 2))))
+    (is (= [[:a 1]] (map identity {:a 1})) "a map's entries, as a vector"))
+  (testing "filter, remove and keep"
+    (is (= [[2 4] '(2) #{2} {:b 2} [1 3]]
+           [(filter even? [1 2 3 4]) (filter even? '(1 2 3)) (filter even? #{1 2 3}) (filter (fn [[_ v]] (even? v)) {:a 1 :b 2})
+            (remove even? (range 1 5))]))
+    (is (= [[1 nil false] [3]] [(remove true? [1 true nil false]) (keep (fn [x] (when (> x 2) x)) [1 2 3])]))
+    (is (= [false 0] (keep identity [false nil 0])) "false is kept, nil isn't"))
+  (testing "complement"
+    (is (= [true false true false] [((complement even?) 3) ((complement even?) 2) ((complement =) 1 2) ((complement (constantly true)))])))
+  (testing "for"
+    (is (= [] (for [x []] x)))
+    (is (= [[1 :a] [1 :b] [3 :a] [3 :b]] (for [x [1 2 3] :when (odd? x) y [:a :b]] [x y])))
+    (is (= [0 1 2] (for [x (range) :while (< x 3)] x)) "an infinite range, stopped")
+    (is (= [[1 3] [2 3]] (for [x [1 2] y [3 4] :while (< y 4)] [x y])) "the inner binding stopped")
+    (is (= [[1 3] [1 4]] (for [x [1 2] :while (< x 2) y [3 4]] [x y])) "the outer one")
+    (is (= [4 9] (for [x [1 2 3] :let [y (* x x)] :when (> y 1)] y)))
+    (is (= [3 7] (for [[a b] [[1 2] [3 4]]] (+ a b))) "destructuring")
+    (is (= [nil false] (for [x [nil false]] x)) "nil and false are values")
+    (is (= [[0 0] [1 0] [1 1]] (for [x (range 2) y (range 2) :when (<= y x)] [x y])))))
