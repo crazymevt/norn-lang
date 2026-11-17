@@ -27,7 +27,8 @@
 //! - loop back-edges, with the safepoint check;
 //! - calls to `+ - * / < > <= >= == = inc dec zero?` when the callee *is*
 //!   that primitive (checked at run time, so redefinitions stay live) and
-//!   the arguments are fixnums or floats (part 5.2);
+//!   the arguments are fixnums or floats (part 5.2), and `quot rem mod
+//!   even? odd?` on fixnums (part 7.2);
 //! - making closures (`CLOSURE`, through a helper that allocates);
 //! - calls, tail calls and returns (M10 part 2). A call is a helper
 //!   (crate::vm::jit_call) that works out what the callee is, as
@@ -212,11 +213,12 @@ pub const PENDING_FLAG: u64 = 1 << 61;
 /// the interpreter polls, then carries on at the pc in the other bits.
 pub const POLL_FLAG: u64 = 1 << 62;
 
-pub const NPRIMS: usize = 30;
+pub const NPRIMS: usize = 35;
 /// The primitives with native fast paths, in `JitCtx::prims` order.
 pub const FAST_PRIMS: [&str; NPRIMS] = [
     "+", "-", "<", ">", "<=", ">=", "==", "=", "inc", "dec", "zero?", // (fixnums; floats, M10 part 5.2)
     "*", "/", // (M10 part 5.2)
+    "quot", "rem", "mod", "even?", "odd?", // (fixnums, M10 part 7.2)
     "count", "nth", "first", "identical?", "nil?", "some?", "not", // (M10 part 4)
     "string?", "keyword?", "symbol?", "float?", "vector?", "regex?", "bytes?", "char?", "boolean?", "integer?", // (contracts' checks)
 ];
@@ -1361,6 +1363,7 @@ fn fast_prims(
         .filter(|&k| rb != 3 || matches!(FAST_PRIMS[k], "+" | "-" | "*"))
         .filter(|&k| match FAST_PRIMS[k] {
             "+" | "-" | "*" if rb == 3 => true,
+            "even?" | "odd?" => rb == 1,
             "inc" | "dec" | "zero?" | "count" | "first" | "nil?" | "some?" | "not" | "string?" | "keyword?" | "symbol?"
             | "float?" | "vector?" | "regex?" | "bytes?" | "char?" | "boolean?" | "integer?" => rb == 1,
             _ => rb == 2,
@@ -1448,6 +1451,57 @@ fn fast_prims(
                     _ => b.ins().fdiv(fx, fy),
                 };
                 float_out(b, r);
+            }
+            // (fixnums only: a zero divisor, anything else, the primitive)
+            p @ ("quot" | "rem" | "mod") => {
+                let tags = b.ins().bor(x, y);
+                let tag = b.ins().band_imm_s(tags, 1);
+                let (fix, nz) = (b.create_block(), b.create_block());
+                b.ins().brif(tag, slow, &[], fix, &[]);
+                b.switch_to_block(fix);
+                let zero = b.ins().icmp_imm_s(IntCC::Equal, y, 0);
+                b.ins().brif(zero, slow, &[], nz, &[]);
+                b.switch_to_block(nz);
+                // (on raw 2n values: 2a rem 2b is 2(a rem b), tagged
+                // already; 2a / 2b is a / b, to tag, which overflows only
+                // for the least fixnum over -1)
+                let v = match p {
+                    "quot" => {
+                        let q = b.ins().sdiv(x, y);
+                        let t = b.ins().ishl_imm_u(q, 1);
+                        let back = b.ins().sshr_imm_u(t, 1);
+                        let fits = b.ins().icmp(IntCC::Equal, back, q);
+                        let ok = b.create_block();
+                        b.ins().brif(fits, ok, &[], slow, &[]);
+                        b.switch_to_block(ok);
+                        t
+                    }
+                    "rem" => b.ins().srem(x, y),
+                    _ => {
+                        // (floored: a remainder whose sign isn't the
+                        // divisor's gets the divisor added)
+                        let r = b.ins().srem(x, y);
+                        let differ = b.ins().bxor(r, y);
+                        let neg = b.ins().icmp_imm_s(IntCC::SignedLessThan, differ, 0);
+                        let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, r, 0);
+                        let adjust = b.ins().band(neg, nonzero);
+                        let ry = b.ins().iadd(r, y);
+                        b.ins().select(adjust, ry, r)
+                    }
+                };
+                on_value(b, v);
+            }
+            p @ ("even?" | "odd?") => {
+                let tag = b.ins().band_imm_s(x, 1);
+                let fix = b.create_block();
+                b.ins().brif(tag, slow, &[], fix, &[]);
+                b.switch_to_block(fix);
+                // (n even: bit 1 of the raw 2n clear)
+                let bit = b.ins().band_imm_s(x, 2);
+                let cc = if p == "even?" { IntCC::Equal } else { IntCC::NotEqual };
+                let c0 = b.ins().icmp_imm_s(cc, bit, 0);
+                let v = boolv(b, c0);
+                on_value(b, v);
             }
             "zero?" if unboxed => {
                 let z = b.ins().f64const(0.0);

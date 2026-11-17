@@ -131,6 +131,12 @@ baseline compared.
 13. **Inline caches for generic calls and slot reads** (decided when part
     6 started); var reads stay as part 3 left them (a load and a
     compare).
+14. **Part 7's fast paths first** (decided when it started): the sequence
+    functions build into transients with direct loops over vectors and
+    ranges, and tier 1 runs fixnum `rem`/`quot`/`mod` and calls of closures
+    held in locals natively. Compiling `map`/`filter`/`into` to loops with
+    the step inlined needs norn.core's functions to have IR (the seed
+    compiles core); later, if still needed.
 
 ## Status
 
@@ -460,6 +466,35 @@ baseline compared.
   `binding` 2.96×, making an instance 8.15×, a Buffer's `count` 3.45× and
   `nth` 4.01×: the done-check's 2×, 5× and 3× met. The log report 1.48×,
   the ledger 1.63×.
+
+- **7, sequence functions: started (2026-11-17).** At the start (tier 1,
+  per item): `mapv inc` 75 ns (1.18× the baseline), `into []` with `(comp
+  (map inc) (filter even?))` 114 ns (1.46×), `reduce +` 12.6 ns (1.97×).
+  A direct loop into a transient made `mapv` 17.9 ns. The transducer path
+  spends its time in calls of closures held in locals (the call helper),
+  persistent `conj`'s copying, and `even?`'s `rem` taking the generic
+  division. In steps (decision 14):
+  - **7.1, the library: done.** `%eager` (behind `map`, `filter`,
+    `mapv` and the rest on a collection) and `into` build into a
+    transient when they start from an empty vector (`%conj!`, conj! as a
+    reducing function); `mapv` and `filterv` loop directly over vectors
+    and ranges. **Measured:** `mapv inc` 75 → 18.3 ns an item (4.8×).
+    **Found on the way:** a transient only pays from an empty vector.
+    Norn's `transient` copies a vector into a new buffer (Clojure's
+    shares it), so `into` onto a vector with items costs their count each
+    time: `for`, which `into`s onto what it has built, went quadratic, and
+    the ledger program took 201 ms against 126. A map's or set's transient
+    wraps the persistent one (`conj!` assocs into it), only overhead. So
+    `into` uses one only onto an empty vector.
+  - **7.2, tier 1: done.** `quot`, `rem`, `mod`, `even?` and `odd?` on
+    fixnums natively (on the raw 2n values: `srem` gives the tagged
+    remainder; `mod` adds the divisor when the signs differ; `quot`'s one
+    overflow, the least fixnum over -1, and a zero divisor go to the
+    primitive). arith_test checks them on its edge inputs. **Measured:**
+    `into []` through `(comp (map inc) (filter even?))` 102 → 56 ns an item
+    (2.97×): `even?`'s `rem` had been the generic division.
+  - **7.3, tier 1:** calls of closures held in locals without the helper:
+    not started; the done-check's 2× is met without it.
 
 ## Open after part 4 (2026-11-16)
 

@@ -1251,6 +1251,13 @@ Generic functions' dispatch caches compare and hash class keys by identity
 function whose cache holds one entry to its effective method (a guard on
 the function, the argument's class and both epochs; part 3's inline frame),
 and reads `(:k x)` natively from an instance that isn't mutable or a map.
+
+**Sequence functions, as built in M10 part 7.** `into`, and the eager
+functions behind `map`, `filter` and the rest on a collection, build into a
+transient when they start from an empty vector (`transient` copies a
+vector's items, and a map's or set's transient only wraps it); `mapv` and `filterv`
+loop directly over vectors and ranges. Tier 1 runs `quot`, `rem`, `mod`,
+`even?` and `odd?` on fixnums natively.
 - **Tier 1's fast primitives** grew (behind the same check that the
   callee is the primitive): `count` and `nth` of a vector (the trie
   walked natively), `first` of a list, `identical?`, `nil?`, `some?`,

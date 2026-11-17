@@ -1,5 +1,6 @@
 ;;;; Arithmetic and comparison in native code (M10 part 5): tier 1 runs
-;;;; + - * / inc dec zero? < > <= >= == = itself on fixnums and floats.
+;;;; + - * / inc dec zero? < > <= >= == = itself on fixnums and floats, and
+;;;; quot rem mod even? odd? on fixnums (part 7.2).
 ;;;; Each operator here is called from a function tier 1 has compiled (run
 ;;;; 300 times first: at its default, a function compiles once entered 100
 ;;;; times), on edge inputs, and must give what the primitive gives through
@@ -37,8 +38,8 @@
 (defmacro ^:private one-arg-fns [& ops]
   `[~@(map (fn [op] `[~(str op) (fn [a#] (~op a#)) ~op]) ops)])
 
-(def binary (two-arg-fns + - * / < > <= >= == =))
-(def unary (one-arg-fns inc dec zero?))
+(def binary (two-arg-fns + - * / < > <= >= == = quot rem mod))
+(def unary (one-arg-fns inc dec zero? even? odd?))
 
 (defn- warm [f args] (dotimes [_ 300] (try (apply f args) (catch Error _ nil))))
 

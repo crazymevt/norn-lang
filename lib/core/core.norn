@@ -3071,6 +3071,21 @@
   ([f] (completing f identity))
   ([f cf] (fn ([] (f)) ([x] (cf x)) ([x y] (f x y)))))
 
+(defn- %transientable?
+  "Is building onto coll faster in a transient? An empty vector: its
+  transient is a buffer that grows in place (M10 part 7.1). Making one
+  copies the vector into it, so onto a vector with items already a
+  transient costs their count each time (for, conj'ing onto what it has,
+  went quadratic); a map's or set's wraps the persistent one (conj! assocs
+  into it), so for them it's only overhead."
+  [coll]
+  (and (vector? coll) (zero? (count coll))))
+
+(def ^:private %conj!
+  "conj! as a reducing function (the eager functions' and into's, onto a
+  transient: a persistent conj per item copied the vector's tail)."
+  (fn ([] (transient [])) ([acc] acc) ([acc x] (conj! acc x))))
+
 (defn transduce
   "Reduce coll with (xf f), then complete: (transduce (map inc) + 0 [1 2])."
   ([xf f coll] (transduce xf f (f) coll))
@@ -3082,8 +3097,12 @@
   "conj everything in from onto to; with a transducer, through it."
   ([] [])
   ([to] to)
-  ([to from] (if (and (vector? to) (empty? to) (not (stream? from))) (vec from) (reduce conj to from)))
-  ([to xf from] (transduce xf conj to from)))
+  ([to from] (cond (and (vector? to) (empty? to) (not (stream? from))) (vec from)
+                   (%transientable? to) (persistent! (reduce conj! (transient to) from))
+                   :else (reduce conj to from)))
+  ([to xf from] (if (%transientable? to)
+                  (persistent! (transduce xf %conj! (transient to) from))
+                  (transduce xf conj to from))))
 
 (defn sequence "The items of coll through transducer xf, as a vector." [xf coll] (into [] xf coll))
 
@@ -3108,7 +3127,7 @@
         (set? coll) (into (empty coll) v)
         :else v))
 
-(defn- %eager [xf coll] (transduce xf conj [] coll))
+(defn- %eager [xf coll] (persistent! (transduce xf %conj! (transient []) coll)))
 
 (defn- %stream-of [xf-step coll]
   ;; A lazy stream applying a stateless one-in/at-most-one-out step.
@@ -3147,7 +3166,12 @@
 
 (defn mapv
   "map, always giving a vector."
-  ([f coll] (%eager (map f) coll))
+  ([f coll] (if (%indexed? coll)
+              ;; (a vector or range: a loop, into a transient)
+              (let [n (count coll)]
+                (loop [i 0 out (transient [])]
+                  (if (< i n) (recur (inc i) (conj! out (f (nth coll i)))) (persistent! out))))
+              (%eager (map f) coll)))
   ([f c1 c2] (vec (map f c1 c2)))
   ([f c1 c2 & more] (vec (apply map f c1 c2 more))))
 
@@ -3160,7 +3184,14 @@
      (%stream-of (fn [x] (if (pred x) x ::skip)) coll)
      (%like coll (%eager (filter pred) coll)))))
 
-(defn filterv "filter, always giving a vector." [pred coll] (%eager (filter pred) coll))
+(defn filterv "filter, always giving a vector." [pred coll]
+  (if (%indexed? coll)
+    (let [n (count coll)]
+      (loop [i 0 out (transient [])]
+        (if (< i n)
+          (let [x (nth coll i)] (recur (inc i) (if (pred x) (conj! out x) out)))
+          (persistent! out))))
+    (%eager (filter pred) coll)))
 
 (defn remove
   "The items for which (pred x) is false. (remove pred) is a transducer."
