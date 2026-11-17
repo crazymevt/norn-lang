@@ -1803,7 +1803,7 @@
     (let [cmd (take! ch)]
       (%leave-debugger! id)
       (cond (= (first cmd) :restart) (apply invoke-restart (nth rs (nth cmd 1)) (nth cmd 2))
-            (= (first cmd) :frame) (%restart-frame (nth cmd 1) (nth cmd 2))
+            (= (first cmd) :frame) (%restart-frame (nth cmd 1) (nth cmd 2) (nth cmd 3 nil))
             :else (%abort c)))))
 
 (defn debugging
@@ -1818,13 +1818,14 @@
 
 (defn backtrace
   "Frames of fiber id (waiting in the debugger), top first:
-  {:fn name :locals {sym value} :internal? bool}. :internal? marks
+  {:fn name :locals {sym value} :internal? bool}, and :inlined true for a
+  call the compiler inlined into the frame below. :internal? marks
   norn.core's own code, its anonymous functions (norn.core/f/fn) too."
   [id]
   (mapv (fn [fr]
           (let [n (:fn fr)
                 ns (when (symbol? n) (namespace n))]
-            {:fn n :locals (:locals fr)
+            {:fn n :locals (:locals fr) :inlined (true? (:inlined fr))
              :internal? (if (and ns (or (= ns "norn.core") (= "norn.core/" (subs ns 0 (min (count ns) 10))))) true false)}))
         (%frames (:fiber (%debug-entry id)))))
 
@@ -1836,11 +1837,13 @@
 
 (defn debug-restart-frame
   "Resume fiber id by calling frame i's function again — its newest
-  definition — with the same arguments."
+  definition — with the same arguments. (A call the compiler inlined has
+  a frame here too: restarting it calls the function, and the frame below
+  goes on from that call.)"
   [id i]
   (let [e (%debug-entry id)
         fid (:id (nth (%frames (:fiber e)) i))]
-    (put! (:chan e) [:frame (nth fid 0) (nth fid 1)])
+    (put! (:chan e) [:frame (nth fid 0) (nth fid 1) (nth fid 2 nil)])
     :ok))
 
 (defn debug-abort
@@ -4357,7 +4360,13 @@
                          ;; for one that wraps a function (fn-of, or a combination holding one):
                          ;; check as (fn [v fail giver user] …), giver blamed for the wrapped
                          ;; function's bad results, user for its bad arguments
-                         (blamed :initform nil))
+                         (blamed :initform nil)
+                         ;; (M10 part 4) a norn.core predicate that tests the same, as a
+                         ;; symbol, for a class that has one; and nilable's contract for
+                         ;; the rest: what a call site's checks are written with
+                         (pred :initform nil) (inner :initform nil)
+                         ;; any-of's contracts
+                         (alts :initform nil))
   (:doc "The class of contracts, as ->contract, fn-of, any-of, vec-of,
   defcontract and the rest make; contract? tests for one. :name is what
   messages call it, and (:check c) checks a value against it."))
@@ -4381,6 +4390,16 @@
                 :else (str s ">"))]
     (subs s 0 (dec (count s)))))
 
+;; Classes a norn.core predicate tests for exactly (an instance of the class
+;; or not): a call site checks with it (tier 1 does most natively).
+(def ^:private %class-preds
+  {"norn.core/String" 'norn.core/string? "norn.core/Integer" 'norn.core/integer?
+   "norn.core/Keyword" 'norn.core/keyword? "norn.core/Symbol" 'norn.core/symbol?
+   "norn.core/Boolean" 'norn.core/boolean? "norn.core/Float" 'norn.core/float?
+   "norn.core/Vector" 'norn.core/vector? "norn.core/Map" 'norn.core/map?
+   "norn.core/Number" 'norn.core/number? "norn.core/Character" 'norn.core/char?
+   "norn.core/Regex" 'norn.core/regex? "norn.core/Bytes" 'norn.core/bytes?})
+
 (defn ->contract
   "x as a contract: a contract itself; a class (an instance of it); a
   predicate; nil or :any (anything)."
@@ -4388,8 +4407,11 @@
   (cond (contract? x) x
         (or (nil? x) (= x :any)) (make Contract :name "anything" :check (fn [v _] v))
         (class? x) (let [t (fn [v] (instance? x v))]
-                     (make Contract :name (name (class-name x)) :check (fn [v fail] (if (t v) v (fail))) :test t))
-        (fn? x) (make Contract :name (%after (%fn-label x) "/") :check (fn [v fail] (if (x v) v (fail))) :test x)
+                     (make Contract :name (name (class-name x)) :check (fn [v fail] (if (t v) v (fail))) :test t
+                           :pred (get %class-preds (str (class-name x)))))
+        (fn? x) (make Contract :name (%after (%fn-label x) "/") :check (fn [v fail] (if (x v) v (fail))) :test x
+                      ;; (a norn.core predicate by name, when it's one of those)
+                      :pred (some (fn [s] (when (identical? x (%bound-value s)) s)) (vals %class-preds)))
         :else (error TypeError :message (str "Not a contract: " (pr-str x)) :expected "a contract, class or predicate" :value x)))
 
 (defn contract-name "What contract c says, as text." [c] (:name (->contract c)))
@@ -4415,7 +4437,7 @@
   (let [c (->contract c)
         t (:test c)
         b (:blamed c)]
-    (make Contract :name (str "nil or " (:name c)) :check (fn [v fail] (if (nil? v) v ((:check c) v fail)))
+    (make Contract :name (str "nil or " (:name c)) :check (fn [v fail] (if (nil? v) v ((:check c) v fail))) :inner c
           ;; (a plain test when c has one, as for a class: cheaper to check)
           :test (when t (fn [v] (or (nil? v) (t v))))
           :blamed (when b (fn [v fail giver user] (if (nil? v) v (b v fail giver user)))))))
@@ -4438,7 +4460,8 @@
                      (fn [v fail] (if (test v) v (fail)))
                      (fn [v fail] (one-of v fail nil nil)))
             :test test
-            :blamed (when (some :blamed cs) one-of)))))
+            :blamed (when (some :blamed cs) one-of)
+            :alts cs))))
 
 (defn all-of "A contract: what every one of cs says." [& cs]
   (let [cs (mapv ->contract cs)
@@ -4579,7 +4602,7 @@
   [v]
   (when (%contracted? v) (%bound-value (symbol (str (%var-name v) "%contract")))))
 
-(defn- %arity-parts [parts n]
+(defn %arity-parts [parts n]
   (if (map? parts)
     parts
     (or (some (fn [p] (when (and (not (:variadic p)) (= n (:nfixed p))) p)) parts)
@@ -4666,7 +4689,103 @@
              (%check-call (var-get v) args p n caller module)
              (apply (var-get v) args))))))))
 
-(defn %drop-contract! "Function var v has no contract now." [v] (%set-contracted! v false) nil)
+(defn %drop-contract!
+  "Function var v has no contract now. (Its contract var holds nil, so the
+  checks written for the old one at call sites don't run: %wrapper-source.)"
+  [v]
+  (%set-contracted! v false)
+  (doseq [k ["%contract" "%stamp"]]
+    (when-let [cv (resolve (symbol (str (%var-name v) k)))]
+      (%set-root! cv nil)))
+  nil)
+
+(defn %contract-fail-at
+  "The ContractError a check written at a call site raises (%wrapper-source):
+  v, at position i of the function who (an argument's index, or :result),
+  isn't what its contract (parts, one arity's) says, blaming blame."
+  [parts i v who blame]
+  (if (= i :result)
+    (%contract-fail (:result parts) v who "its result" blame)
+    (%contract-fail (nth (:args parts) i) v who i blame)))
+
+(def ^:private %generic-wrappers (atom {}))
+
+(defn %wrapped-apply
+  "Call var v's function with args, its contract checked for caller as
+  %wrap-for's wrapper does (one made once for v and caller): what a call
+  site's checks fall back on."
+  [v caller args]
+  (let [k [v caller]
+        w (or (get @%generic-wrappers k)
+              (let [w (%wrap-for v caller)] (swap! %generic-wrappers assoc k w) w))]
+    (apply w args)))
+
+;; A check that x (a symbol in the code) is what contract c says, as code
+;; naming only vars (so the code can be cached): nil when there's nothing to
+;; check, ::no when it can't be written so.
+(defn- %test-form [c x]
+  (cond (nil? c) nil
+        (= "anything" (:name c)) nil
+        (:pred c) (list (:pred c) x)
+        (:inner c) (let [t (%test-form (:inner c) x)]
+                     (cond (= t ::no) ::no
+                           (nil? t) nil
+                           :else (list 'if (list 'norn.core/nil? x) true t)))
+        ;; (any of them: the first that holds, as any-of tries them)
+        (:alts c) (let [ts (map (fn [a] (%test-form a x)) (:alts c))]
+                    (cond (some (fn [t] (= t ::no)) ts) ::no
+                          (some nil? ts) nil
+                          :else (reduce (fn [acc t] (list 'if t true acc)) false (reverse ts))))
+        :else ::no))
+
+(defn %stamp-of
+  "Contract parts' stamp (one arity's, or several's: they share it)."
+  [parts]
+  (:stamp (if (map? parts) parts (first parts))))
+
+(defn %wrapper-source
+  "The source of the function named w that another module (caller) calls
+  in var v's place (M10 part 4): v's function with v's contract checked by
+  plain code (its tests are norn.core predicates), so the compiler can
+  inline it at the call site, an arity per arity of the contract. Behind a
+  guard: when v's stamp var holds another stamp (v was redefined with other
+  types) or none, it does what %wrap-for's does. nil when an arity has a
+  rest argument or a check that isn't such a predicate: then the caller
+  uses %wrap-for's."
+  [v caller w]
+  (let [n (%var-name v)
+        csym (symbol (str n "%contract"))
+        ssym (symbol (str n "%stamp"))
+        c (%bound-value csym)
+        ps (if (map? c) [c] c)
+        stamp (when (and (vector? ps) (seq ps)) (%stamp-of ps))]
+    (when (and stamp (= stamp (%bound-value ssym))
+               (every? (fn [p] (and (map? p) (not (:variadic p)) (nil? (:rest p)) (<= (:nfixed p) 6))) ps))
+      (let [module (subs n 0 (%str-index n "/" nil false))
+            r (symbol "r")
+            generic (fn [as] (list 'norn.core/%wrapped-apply (list 'var (symbol n)) caller as))
+            ;; (an arity's clause, or ::no when its checks can't be written)
+            clause (fn [p]
+                     (let [k (:nfixed p)
+                           args (mapv (fn [i] (symbol (str "a" i))) (range k))
+                           tests (mapv (fn [i] (%test-form (nth (:args p) i nil) (nth args i))) (range k))
+                           rtest (%test-form (:result p) r)
+                           ;; (the arity's parts, from the contract var, when a check fails)
+                           pf (if (map? c) csym (list 'norn.core/%arity-parts csym k))]
+                       (if (or (some (fn [t] (= t ::no)) tests) (= rtest ::no))
+                         ::no
+                         (let [checks (keep (fn [i]
+                                              (when-let [t (nth tests i)]
+                                                (list 'if t nil (list 'norn.core/%contract-fail-at pf i (nth args i) n caller))))
+                                            (range k))
+                               call (list 'let* [r (cons (symbol n) args)]
+                                          (if rtest (list 'if rtest r (list 'norn.core/%contract-fail-at pf :result r n module)) r))]
+                           (list args (list 'if (list 'norn.core/identical? ssym stamp)
+                                            (cons 'do (concat checks [call]))
+                                            (generic (cons 'norn.core/list args))))))))
+            clauses (mapv clause ps)]
+        (when-not (some (fn [x] (= x ::no)) clauses)
+          (concat (list 'fn* w) clauses [(list ['& 'more] (generic 'more))]))))))
 
 (defn %type->contract
   "Type t (written as ^t: a class, Any, or (? T) (U A B…) (Vec T) (Map K V)
@@ -4746,7 +4865,11 @@
                       (assoc a
                              :args (mapv (fn [t] (%type->contract t home who)) (:args a))
                              :rest (%type->contract (:rest a) home who)
-                             :result (%type->contract (:result a) home who)))
+                             :result (%type->contract (:result a) home who)
+                             ;; (the same types in the same home, in any process, the
+                             ;; same stamp: what a call site's checks were written
+                             ;; for, %wrapper-source)
+                             :stamp (hash [sigs (str home)])))
                     sigs)]
     (%set-contracted! (%resolve-in home (symbol (%after who "/"))) true)
     (if (= 1 (count parts)) (first parts) parts)))

@@ -473,11 +473,15 @@ otherwise.
 
 ## What checks cost
 
-An unchecked call into another module takes tens of nanoseconds. A call
-through a checked signature takes about 0.6 to 0.8 microseconds. That's
-nothing for a function that reads a file or talks to a database, and
-noticeable for a tiny function called millions of times in a loop. Some
-contracts cost more than others:
+An unchecked call into another module takes a few nanoseconds to tens of
+nanoseconds. When a signature's types are classes or predicates, its
+checks are written into the calling code itself, where the compiler can
+inline them: a checked call then costs about 16 nanoseconds with tier 1
+and 150 without it. Other contracts, such as a collection's or a
+function's, are checked by a wrapper around the call, at about 0.3 to 0.8
+microseconds. That's nothing for a function that reads a file or talks to
+a database, and noticeable for a tiny function called millions of times
+in a loop. Some contracts cost more than others:
 
 - A class or a predicate is one test.
 - `(Vec T)`, `(Map K V)`, `vec-of`, and `map-of` check every element, so
@@ -531,8 +535,10 @@ shows the parameter names but not their types.
   `map-of` builds contracts from predicates. Contracts are values.
 - `*check-contracts*` (`:boundaries`, `:all`, `:none`) is read when code
   is expanded, so bind it around loading a module.
-- A checked call costs well under a microsecond. Collection contracts
-  check every element in place, and function contracts wrap the function.
+- A checked call with plain types costs tens of nanoseconds, its checks
+  inlined where it's called; others well under a microsecond. Collection
+  contracts check every element in place, and function contracts wrap
+  the function.
 
 ---
 

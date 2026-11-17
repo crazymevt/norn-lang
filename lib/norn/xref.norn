@@ -36,11 +36,16 @@
 
 (defn- unwrap
   "The function var a contract wrapper v checks (v when it isn't one), so
-  callers of a checked function are the code that calls it."
+  callers of a checked function are the code that calls it: the var whose
+  wrapper v is named for (the expander names it ns%f%checked for ns/f), in
+  what it captured (%wrap-for's) or its code (a call site's, M10 part 4)."
   [v]
   (or (when (and (wrapper? v) (bound? v))
-        (first (filter (fn [c] (and (var? c) (nil? (re-find #"%contract$" (str c)))))
-                       (%fn-captured (var-get v)))))
+        (let [w (name (symbol (subs (str v) 2)))
+              f (var-get v)]
+          (first (filter (fn [c] (and (var? c) (= w (str (apply str (map (fn [ch] (if (= ch \/) "%" (str ch))) (subs (str c) 2)))
+                                                         "%checked"))))
+                         (concat (%fn-captured f) (%fn-vars f))))))
       v))
 
 (defn refers-to

@@ -50,7 +50,7 @@ prims! {
     "apply" 2 VAR => |_, _| unreachable!("apply is handled by the interpreter");
     "eval" 1 Some(1) => |_, _| unreachable!("eval is handled by the interpreter");
     "%throw" 2 Some(2) => |_, _| Err(Error::new("throw is only possible inside a fiber"));
-    "%restart-frame" 2 Some(2) => |_, _| Err(Error::new("%restart-frame is only possible inside a fiber"));
+    "%restart-frame" 2 Some(3) => |_, _| Err(Error::new("%restart-frame is only possible inside a fiber"));
     "%abort-fiber" 2 Some(3) => |_, a| { let mut e = Error::fatal(pr_str(a[0], false), vec![]); if let Some(&c) = a.get(2) && !c.is_nil() { e.class = Some(crate::vm::ErrClass::Value(c)); } Err(e) };
     // numbers
     "+" 0 VAR => |vm, a| arith(vm, a, Op::Add);
@@ -303,6 +303,7 @@ prims! {
     "%make-closure" 1 Some(1) => |vm, a| { expect(a[0], Kind::FnTemplate, "%make-closure")?; Ok(norn_rt::func::closure_new(&mut vm.m, a[0])) };
     "%ensure-ns" 1 Some(1) => |_, a| { expect(a[0], Kind::Symbol, "%ensure-ns")?; rt().find_or_create_ns(a[0]); Ok(a[0]) };
     "%intern" 2 Some(2) => |vm, a| { let ns = rt().find_or_create_ns(a[0]); Ok(ns.intern(&mut vm.m, a[1])) };
+    "%closure?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::Closure)));
     "%closure-template" 1 Some(1) => |_, a| { expect(a[0], Kind::Closure, "%closure-template")?; Ok(a[0].closure_template()) };
     "%template?" 1 Some(1) => |_, a| Ok(Value::bool(a[0].is(Kind::FnTemplate)));
     "%template-parts" 1 Some(1) => template_parts;
@@ -2080,14 +2081,32 @@ fn frames(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         return Err(Error::new("%frames needs a parked fiber"));
     }
     let k = |vm: &mut Vm, n: &str| rt().keyword(&mut vm.m, None, n);
-    let (kfn, kid, kloc) = (k(vm, "fn"), k(vm, "id"), k(vm, "locals"));
+    let (kfn, kid, kloc, kinl) = (k(vm, "fn"), k(vm, "id"), k(vm, "locals"), k(vm, "inlined"));
     let mut out = Vec::new();
     for (seg, fp) in crate::vm::walk_frames(f.field(fiber::SEG), f.field(fiber::FP).as_fixnum() as usize) {
         // SAFETY: walk_frames yields live frames of a parked fiber.
-        let (func, proto, regs) = unsafe {
+        let (func, proto, regs, resume) = unsafe {
             let fr = seg.seg_data().add(fp);
-            (*fr.add(F_FN), *fr.add(F_PROTO), fr.add(HDR))
+            (*fr.add(F_FN), *fr.add(F_PROTO), fr.add(HDR), *fr.add(norn_rt::func::F_RESUME))
         };
+        // (each call inlined where it is, as a frame of its own: its
+        // locals, the frame's id, and :inlined true)
+        for (k, n, dbg) in crate::vm::inlined_at_k(proto, crate::vm::frame_pc(resume), regs) {
+            let mut locals = map_empty();
+            let pairs: Vec<Value> = (0..dbg.vec_count()).map(|i| dbg.vec_nth(i)).collect();
+            for pair in pairs.chunks(2) {
+                let r = pair[1].as_fixnum() as usize;
+                if r < proto.proto_nregs() {
+                    // SAFETY: r is a register of this frame.
+                    let v = unsafe { *regs.add(r) };
+                    locals = map_assoc(&mut vm.m, locals, pair[0], v);
+                }
+            }
+            // (its id: the frame's, and which inlined call)
+            let id = vec_from_slice(&mut vm.m, &[seg, Value::fix(fp as i64), Value::fix(k as i64)]);
+            let m = hash_map(vm, &[kfn, n, kid, id, kloc, locals, kinl, Value::TRUE])?;
+            out.push(m);
+        }
         let name = proto.proto_name();
         let name = if name.is_nil() { str_new(&mut vm.m, "fn") } else { name };
         let mut locals = map_empty();
@@ -2173,46 +2192,69 @@ fn proto_parts(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 /// and its nested functions'), each once, in the order first met: what
 /// norn.xref's callees are made of. Anything but a closure has none.
 fn fn_vars(vm: &mut Vm, f: Value) -> Value {
-    fn_consts(vm, f, Kind::Var)
+    fn_consts(vm, f, Kind::Var, true)
 }
 
 /// `(%fn-symbols f)`: the symbols function f's code has as constants (quoted
 /// names), nested functions' included, in the order first met, a vector.
 /// norn.shake reads the libraries code loads lazily from them.
 fn fn_symbols(vm: &mut Vm, f: Value) -> Value {
-    fn_consts(vm, f, Kind::Symbol)
+    fn_consts(vm, f, Kind::Symbol, false)
 }
 
 /// The constants of kind `want` in function f's prototypes, nested ones'
-/// included, each once.
-fn fn_consts(vm: &mut Vm, f: Value, want: Kind) -> Value {
-    fn walk(x: Value, want: Kind, seen: &mut Vec<Value>, out: &mut Vec<Value>, depth: usize) {
+/// included, each once. `source`: only those the function's own code uses,
+/// not code inlined into it from functions it calls (M10 part 4), nor an
+/// inlined call's guard (what the source refers to, for norn.xref).
+fn fn_consts(vm: &mut Vm, f: Value, want: Kind, source: bool) -> Value {
+    fn walk(x: Value, want: Kind, source: bool, seen: &mut Vec<Value>, out: &mut Vec<Value>, depth: usize) {
         if depth > 64 || seen.iter().any(|s| s.0 == x.0) {
             return;
         }
         if x.is(Kind::Closure) {
             seen.push(x);
-            walk(x.closure_template(), want, seen, out, depth + 1);
+            walk(x.closure_template(), want, source, seen, out, depth + 1);
         } else if x.is(Kind::FnTemplate) {
             seen.push(x);
             let ar = x.template_arities();
             if ar.is(Kind::Array) {
                 for i in 0..ar.arr_len() {
-                    walk(ar.arr_get(i), want, seen, out, depth + 1);
+                    walk(ar.arr_get(i), want, source, seen, out, depth + 1);
                 }
             }
         } else if x.is(Kind::Proto) {
             seen.push(x);
             let k = x.proto_consts();
+            // (with source: the constants an instruction outside inlined
+            // code names, a guard's not counted)
+            let used: Option<Vec<bool>> = source.then(|| {
+                use crate::bytecode::{CLOSURE, DEFVAR, GETVAR, LOADK, bx, op};
+                let code = x.proto_code();
+                let mut used = vec![false; if k.is(Kind::Array) { k.arr_len() } else { 0 }];
+                // SAFETY: a code object holds code_len instructions.
+                let ins = unsafe { std::slice::from_raw_parts(code.code_ptr(), code.code_len()) };
+                for (pc, &i) in ins.iter().enumerate() {
+                    if matches!(op(i), LOADK | GETVAR | DEFVAR | CLOSURE)
+                        && !crate::vm::in_inlined(x, pc)
+                        && let Some(u) = used.get_mut(bx(i))
+                    {
+                        *u = true;
+                    }
+                }
+                used
+            });
             if k.is(Kind::Array) {
                 for i in 0..k.arr_len() {
+                    if used.as_ref().is_some_and(|u| !u[i]) {
+                        continue;
+                    }
                     let c = k.arr_get(i);
                     if c.is(want) {
                         if !out.iter().any(|o| o.0 == c.0) {
                             out.push(c);
                         }
                     } else {
-                        walk(c, want, seen, out, depth + 1);
+                        walk(c, want, source, seen, out, depth + 1);
                     }
                 }
             }
@@ -2220,7 +2262,7 @@ fn fn_consts(vm: &mut Vm, f: Value, want: Kind) -> Value {
     }
     let mut seen = Vec::new();
     let mut out = Vec::new();
-    walk(f, want, &mut seen, &mut out, 0);
+    walk(f, want, source, &mut seen, &mut out, 0);
     vec_from_slice(&mut vm.m, &out)
 }
 

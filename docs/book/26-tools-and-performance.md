@@ -517,10 +517,13 @@ Tight loops and call-heavy code gain 3 to 10 times. Library-heavy work
 barely moves. Since this survey, calls and returns between compiled
 functions stay in native code, and a call through a var is compiled
 against the function the var holds, behind a check that it still holds
-it: a call of a function defined with `defn` takes 7 ns instead of 18 at
-tier 1, and whole programs (a log report, a ledger, a static site,
-Mandelbrot) run 9–29% faster than they did. Redefining a function at the
-REPL still takes effect at once, in every caller. When this chapter
+it, and a small function is inlined: its body compiled into the caller,
+behind the same check. A call of a small function defined with `defn` is
+gone (5 ns where it was 18 at tier 1), and whole programs (a log
+report, a ledger, a static site, Mandelbrot) run 12–40% faster than they
+did. Redefining a function at the REPL still takes effect at once, in
+every caller, and an inlined call still shows in backtraces and the
+debugger as a frame of its own. When this chapter
 was written, the author measured `(fib 20)` at 2.2 ms at tier 0 and 0.9 ms at tier 1 on the same kind of
 machine, while other work was running; with native, linked calls, on an
 idle machine, it takes 1.2 ms and 0.2 ms. Floats are still boxed, which is why
@@ -616,8 +619,11 @@ Use `into` with a transducer to build a collection the same way:
 A function with a checked signature, such as `^Integer`, is checked when
 code in another module calls it ([Chapter 13](13-contracts.md)). Calls
 within the module aren't checked by default. The check is the point of a
-signature, since it blames the right caller, but at about 0.6–0.8 µs a call
-it adds up in a loop that crosses the boundary once per item. Give the
+signature, since it blames the right caller. Checks of classes and
+predicates are inlined where the call is made, and cost a few tens of
+nanoseconds; a collection's or function contract's go through a wrapper,
+at 0.3–0.8 µs, which adds up in a loop that crosses the boundary once per
+item. Give the
 checked function the whole collection instead of one item at a time, so
 the loop runs inside its module and the check happens once.
 

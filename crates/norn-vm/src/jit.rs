@@ -158,6 +158,11 @@ const PROTO_CODE: i32 = (2 + 5) * W - 1;
 const PROTO_NATIVE: i32 = (2 + 7) * W - 1;
 const ARR_DATA: i32 = (2 + 1) * W - 1;
 const CODE_INS: i32 = (2 + 1) * W - 1;
+// A vector's count and tail (norn-rt's vector.rs: [count][shift][root][tail]).
+const VEC_CNT: i32 = 2 * W - 1;
+const VEC_SHIFT: i32 = (2 + 1) * W - 1;
+const VEC_ROOT: i32 = (2 + 2) * W - 1;
+const VEC_TAIL: i32 = (2 + 3) * W - 1;
 const CTX_SEG_END: i32 = (15 + NPRIMS as i32) * W;
 const CTX_RELINK: i32 = (16 + NPRIMS as i32) * W;
 
@@ -194,9 +199,13 @@ pub const PENDING_FLAG: u64 = 1 << 61;
 /// the interpreter polls, then carries on at the pc in the other bits.
 pub const POLL_FLAG: u64 = 1 << 62;
 
-pub const NPRIMS: usize = 11;
+pub const NPRIMS: usize = 28;
 /// The primitives with native fast paths, in `JitCtx::prims` order.
-pub const FAST_PRIMS: [&str; NPRIMS] = ["+", "-", "<", ">", "<=", ">=", "==", "=", "inc", "dec", "zero?"];
+pub const FAST_PRIMS: [&str; NPRIMS] = [
+    "+", "-", "<", ">", "<=", ">=", "==", "=", "inc", "dec", "zero?", // (fixnums)
+    "count", "nth", "first", "identical?", "nil?", "some?", "not", // (M10 part 4)
+    "string?", "keyword?", "symbol?", "float?", "vector?", "regex?", "bytes?", "char?", "boolean?", "integer?", // (contracts' checks)
+];
 
 /// The trampoline: (native entry, regs, consts, ctx, pc) → pc, in the
 /// platform's convention, calling the entry (Cranelift's `tail`).
@@ -353,6 +362,28 @@ fn compile_inner(proto: Value) -> Option<usize> {
         }
     }
     let cell: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::new(std::sync::atomic::AtomicU64::new(0)));
+    // The fast primitive a call names, when its callee was loaded from that
+    // primitive's norn.core var: only it is tried (still compared at run
+    // time, so a redefinition stays live), not every one in turn.
+    let named_prim: Vec<Option<usize>> = {
+        let cs = proto.proto_consts();
+        ins.iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                if !matches!(op(w), CALL | TAILCALL) {
+                    return None;
+                }
+                let k = (0..i).rev().find(|&k| a(ins[k]) == a(w))?;
+                if op(ins[k]) != GETVAR {
+                    return None;
+                }
+                let var = cs.arr_slice().get(bx(ins[k])).copied()?;
+                let name = norn_rt::print::pr_str(var, true);
+                let name = name.strip_prefix("#'norn.core/")?;
+                FAST_PRIMS.iter().position(|p| *p == name)
+            })
+            .collect()
+    };
 
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -646,18 +677,18 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 goto(&mut b, target(sbx(w)));
             }
             CALL => {
-                // (a linked callee's frame pushed here, when the guard holds
-                // and it fits; else as any call)
-                let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
+                // (a fast primitive's value; a linked callee's frame pushed
+                // here, when the guard holds and it fits; else as any call)
                 if rb == 1 || rb == 2 {
                     let slow = b.create_block();
                     let store_next = |b: &mut FunctionBuilder, v| {
                         b.ins().store(mf, v, regs, ra * W);
                         goto(b, next(i));
                     };
-                    fast_prims(&mut b, mf, ctx, regs, ra, rb, slow, &store_next);
+                    fast_prims(&mut b, mf, ctx, regs, ra, rb, slow, named_prim[i], &store_next);
                     b.switch_to_block(slow);
                 }
+                let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
                 // (one general call, for a failed guard and a full segment)
                 let general = b.create_block();
                 b.ins().jump(general, &[]);
@@ -698,14 +729,14 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 }
             }
             TAILCALL => {
-                let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
-                // (a fixnum primitive's value, returned; a closure's frame in
+                // (a fast primitive's value, returned; a closure's frame in
                 // place of this one; or another primitive's value, returned)
                 if rb == 1 || rb == 2 {
                     let slow = b.create_block();
-                    fast_prims(&mut b, mf, ctx, regs, ra, rb, slow, &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1));
+                    fast_prims(&mut b, mf, ctx, regs, ra, rb, slow, named_prim[i], &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1));
                     b.switch_to_block(slow);
                 }
+                let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
                 let f = b.ins().load(types::I64, mf, ctx, CTX_TAIL);
                 let ra_v = b.ins().iconst(types::I64, ra as i64);
                 let rb_v = b.ins().iconst(types::I64, rb as i64);
@@ -766,6 +797,12 @@ fn compile_inner(proto: Value) -> Option<usize> {
             RETURN => {
                 let v = b.ins().load(types::I64, mf, regs, ra * W);
                 ret_value(&mut b, v, ra, i);
+            }
+            GUARD if i + 2 < n => {
+                let v = b.ins().load(types::I64, mf, regs, ra * W);
+                let k = b.ins().load(types::I64, mf, consts, bx(w) as i32 * W);
+                let same = b.ins().icmp(IntCC::Equal, v, k);
+                b.ins().brif(same, blocks[i + 2], &[], blocks[i + 1], &[]);
             }
             CLOSURE => {
                 // (the helper makes it, as the interpreter does: it
@@ -880,24 +917,48 @@ fn fast_prims(
     ra: i32,
     rb: i32,
     slow: Block,
+    named: Option<usize>,
     on_value: &dyn Fn(&mut FunctionBuilder, cranelift_codegen::ir::Value),
 ) {
-    let (tru, fal) = (Value::TRUE.0 as i64, Value::FALSE.0 as i64);
+    let (tru, fal, nil) = (Value::TRUE.0 as i64, Value::FALSE.0 as i64, Value::NIL.0 as i64);
     let f = b.ins().load(types::I64, mf, regs, ra * W);
     let x = b.ins().load(types::I64, mf, regs, (ra + 1) * W);
     let y = if rb == 2 { b.ins().load(types::I64, mf, regs, (ra + 2) * W) } else { x };
-    // Both fixnums (low bit 0)?
-    let tags = b.ins().bor(x, y);
-    let tag = b.ins().band_imm_s(tags, 1);
-    let checked = b.create_block();
-    b.ins().brif(tag, slow, &[], checked, &[]);
-    b.switch_to_block(checked);
-    let cands: Vec<usize> = if rb == 2 { (0..8).collect() } else { vec![8, 9, 10] };
     let boolv = |b: &mut FunctionBuilder, c| {
         let t = b.ins().iconst(types::I64, tru);
         let ff = b.ins().iconst(types::I64, fal);
         b.ins().select(c, t, ff)
     };
+    // Is v a heap object of kind k (tag 1, and its layout word k's)?
+    let is_kind = |b: &mut FunctionBuilder, v: cranelift_codegen::ir::Value, k: norn_rt::Kind, no: Block| {
+        let tag = b.ins().band_imm_s(v, norn_rt::value::TAG_MASK as i64);
+        let obj = b.ins().icmp_imm_s(IntCC::Equal, tag, norn_rt::value::TAG_OBJ as i64);
+        let ok = b.create_block();
+        b.ins().brif(obj, ok, &[], no, &[]);
+        b.switch_to_block(ok);
+        let layout = b.ins().load(types::I64, mf, v, -(norn_rt::value::TAG_OBJ as i32));
+        let want = b.ins().iconst(types::I64, &norn_rt::object::LAYOUTS[k as usize] as *const norn_rt::object::Layout as i64);
+        let same = b.ins().icmp(IntCC::Equal, layout, want);
+        let yes = b.create_block();
+        b.ins().brif(same, yes, &[], no, &[]);
+        b.switch_to_block(yes);
+    };
+    // Both fixnums (low bit 0)? Else slow.
+    let fixnums = |b: &mut FunctionBuilder| {
+        let tags = b.ins().bor(x, y);
+        let tag = b.ins().band_imm_s(tags, 1);
+        let ok = b.create_block();
+        b.ins().brif(tag, slow, &[], ok, &[]);
+        b.switch_to_block(ok);
+    };
+    let cands: Vec<usize> = (0..NPRIMS)
+        .filter(|&k| named.is_none_or(|n| n == k))
+        .filter(|&k| match FAST_PRIMS[k] {
+            "inc" | "dec" | "zero?" | "count" | "first" | "nil?" | "some?" | "not" | "string?" | "keyword?" | "symbol?"
+            | "float?" | "vector?" | "regex?" | "bytes?" | "char?" | "boolean?" | "integer?" => rb == 1,
+            _ => rb == 2,
+        })
+        .collect();
     for k in cands {
         let pk = b.ins().load(types::I64, mf, ctx, (3 + k as i32) * W);
         let hit = b.ins().icmp(IntCC::Equal, f, pk);
@@ -906,6 +967,7 @@ fn fast_prims(
         b.switch_to_block(h);
         match FAST_PRIMS[k] {
             "+" | "-" | "inc" | "dec" => {
+                fixnums(b);
                 let (lhs, rhs) = match FAST_PRIMS[k] {
                     "inc" | "dec" => (x, b.ins().iconst(types::I64, 2)),
                     _ => (x, y),
@@ -929,11 +991,158 @@ fn fast_prims(
                 on_value(b, r);
             }
             "zero?" => {
+                fixnums(b);
                 let c0 = b.ins().icmp_imm_s(IntCC::Equal, x, 0);
                 let v = boolv(b, c0);
                 on_value(b, v);
             }
+            // (a vector's count is its first word)
+            "count" => {
+                is_kind(b, x, norn_rt::Kind::Vector, slow);
+                let n = b.ins().load(types::I64, mf, x, VEC_CNT);
+                let v = b.ins().ishl_imm_u(n, 1);
+                on_value(b, v);
+            }
+            // (a vector's element in its tail: index ≥ tailoff, below count)
+            "nth" => {
+                is_kind(b, x, norn_rt::Kind::Vector, slow);
+                let fx = b.ins().band_imm_s(y, 1);
+                let ok = b.create_block();
+                b.ins().brif(fx, slow, &[], ok, &[]);
+                b.switch_to_block(ok);
+                let i = b.ins().sshr_imm_u(y, 1);
+                let n = b.ins().load(types::I64, mf, x, VEC_CNT);
+                let inside = b.ins().icmp(IntCC::UnsignedLessThan, i, n); // (a negative i is huge)
+                let ok2 = b.create_block();
+                b.ins().brif(inside, ok2, &[], slow, &[]);
+                b.switch_to_block(ok2);
+                // tailoff = 0 below 32 elements, else ((n - 1) >> 5) << 5
+                let n1 = b.ins().iadd_imm_s(n, -1);
+                let t = b.ins().ushr_imm_u(n1, 5);
+                let t = b.ins().ishl_imm_u(t, 5);
+                let small = b.ins().icmp_imm_s(IntCC::UnsignedLessThan, n, 32);
+                let zero = b.ins().iconst(types::I64, 0);
+                let tailoff = b.ins().select(small, zero, t);
+                let in_tail = b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, tailoff);
+                let (tail_blk, trie_blk, walk, leaf_blk) = (b.create_block(), b.create_block(), b.create_block(), b.create_block());
+                b.append_block_param(walk, types::I64); // node
+                b.append_block_param(walk, types::I64); // level
+                b.append_block_param(leaf_blk, types::I64); // the leaf
+                b.append_block_param(leaf_blk, types::I64); // the index in it
+                b.ins().brif(in_tail, tail_blk, &[], trie_blk, &[]);
+                b.switch_to_block(tail_blk);
+                let tail = b.ins().load(types::I64, mf, x, VEC_TAIL);
+                let j = b.ins().isub(i, tailoff);
+                b.ins().jump(leaf_blk, &[BlockArg::Value(tail), BlockArg::Value(j)]);
+                // (the trie: from the root, a child per 5 bits of i, down
+                // to the leaf, as vec_leaf_for)
+                b.switch_to_block(trie_blk);
+                let root = b.ins().load(types::I64, mf, x, VEC_ROOT);
+                let shift = b.ins().load(types::I64, mf, x, VEC_SHIFT);
+                b.ins().jump(walk, &[BlockArg::Value(root), BlockArg::Value(shift)]);
+                b.switch_to_block(walk);
+                let (node, level) = (b.block_params(walk)[0], b.block_params(walk)[1]);
+                let at_leaf = b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, level, 0);
+                let down = b.create_block();
+                let m = b.ins().band_imm_s(i, 31);
+                b.ins().brif(at_leaf, leaf_blk, &[BlockArg::Value(node), BlockArg::Value(m)], down, &[]);
+                b.switch_to_block(down);
+                let s = b.ins().ushr(i, level);
+                let s = b.ins().band_imm_s(s, 31);
+                let off = b.ins().ishl_imm_u(s, 3);
+                let at = b.ins().iadd(node, off);
+                let child = b.ins().load(types::I64, mf, at, ARR_DATA);
+                let level2 = b.ins().iadd_imm_s(level, -5);
+                b.ins().jump(walk, &[BlockArg::Value(child), BlockArg::Value(level2)]);
+                b.switch_to_block(leaf_blk);
+                let (leaf, j) = (b.block_params(leaf_blk)[0], b.block_params(leaf_blk)[1]);
+                let off = b.ins().ishl_imm_u(j, 3);
+                let at = b.ins().iadd(leaf, off);
+                let v = b.ins().load(types::I64, mf, at, ARR_DATA);
+                on_value(b, v);
+            }
+            // (a list's car; nil's first is nil)
+            "first" => {
+                let is_nil = b.ins().icmp_imm_s(IntCC::Equal, x, nil);
+                let (yes, no) = (b.create_block(), b.create_block());
+                b.ins().brif(is_nil, yes, &[], no, &[]);
+                b.switch_to_block(yes);
+                let nv = b.ins().iconst(types::I64, nil);
+                on_value(b, nv);
+                b.switch_to_block(no);
+                let tag = b.ins().band_imm_s(x, norn_rt::value::TAG_MASK as i64);
+                let cons = b.ins().icmp_imm_s(IntCC::Equal, tag, norn_rt::value::TAG_CONS as i64);
+                let ok = b.create_block();
+                b.ins().brif(cons, ok, &[], slow, &[]);
+                b.switch_to_block(ok);
+                let car = b.ins().load(types::I64, mf, x, W - norn_rt::value::TAG_CONS as i32);
+                on_value(b, car);
+            }
+            "identical?" => {
+                let c0 = b.ins().icmp(IntCC::Equal, x, y);
+                let v = boolv(b, c0);
+                on_value(b, v);
+            }
+            "nil?" | "some?" => {
+                let cc = if FAST_PRIMS[k] == "nil?" { IntCC::Equal } else { IntCC::NotEqual };
+                let c0 = b.ins().icmp_imm_s(cc, x, nil);
+                let v = boolv(b, c0);
+                on_value(b, v);
+            }
+            // (a heap object of the kind: its layout word)
+            p @ ("string?" | "keyword?" | "symbol?" | "float?" | "vector?" | "regex?" | "bytes?") => {
+                use norn_rt::Kind;
+                let k = match p {
+                    "string?" => Kind::String,
+                    "keyword?" => Kind::Keyword,
+                    "symbol?" => Kind::Symbol,
+                    "float?" => Kind::Float,
+                    "vector?" => Kind::Vector,
+                    "regex?" => Kind::Regex,
+                    _ => Kind::Bytes,
+                };
+                let (yes, no) = (b.create_block(), b.create_block());
+                is_kind(b, x, k, no);
+                b.ins().jump(yes, &[]);
+                b.switch_to_block(yes);
+                let t = b.ins().iconst(types::I64, tru);
+                on_value(b, t);
+                b.switch_to_block(no);
+                let ff = b.ins().iconst(types::I64, fal);
+                on_value(b, ff);
+            }
+            // (an immediate whose low byte says char)
+            "char?" => {
+                let low = b.ins().band_imm_s(x, 0xff);
+                let c0 = b.ins().icmp_imm_s(IntCC::Equal, low, Value::char('a').0 as i64 & 0xff);
+                let v = boolv(b, c0);
+                on_value(b, v);
+            }
+            // (a fixnum is; anything else, a bignum or not, the primitive says)
+            "integer?" => {
+                let tag = b.ins().band_imm_s(x, 1);
+                let fx = b.create_block();
+                b.ins().brif(tag, slow, &[], fx, &[]);
+                b.switch_to_block(fx);
+                let t = b.ins().iconst(types::I64, tru);
+                on_value(b, t);
+            }
+            "boolean?" => {
+                let t0 = b.ins().icmp_imm_s(IntCC::Equal, x, tru);
+                let f0 = b.ins().icmp_imm_s(IntCC::Equal, x, fal);
+                let c0 = b.ins().bor(t0, f0);
+                let v = boolv(b, c0);
+                on_value(b, v);
+            }
+            "not" => {
+                let n0 = b.ins().icmp_imm_s(IntCC::Equal, x, nil);
+                let f0 = b.ins().icmp_imm_s(IntCC::Equal, x, fal);
+                let c0 = b.ins().bor(n0, f0);
+                let v = boolv(b, c0);
+                on_value(b, v);
+            }
             cmp => {
+                fixnums(b);
                 let cc = match cmp {
                     "<" => IntCC::SignedLessThan,
                     ">" => IntCC::SignedGreaterThan,

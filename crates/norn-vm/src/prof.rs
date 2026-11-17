@@ -82,22 +82,40 @@ pub(crate) fn due(seen: &mut u64) -> bool {
 /// (a poll comes at a function's entry or a loop's turn, so time spent in
 /// native calls since the last one shows where it was spent, not in the
 /// next function called).
-pub(crate) fn sample(seg: Value, fp: usize, entry: bool) {
+pub(crate) fn sample(seg: Value, fp: usize, entry: bool, pc: usize) {
     if seg.is_nil() {
         return;
     }
     let mut frames = walk_frames(seg, fp);
+    // (the running frame's instruction is pc, not its resume point: what
+    // it has inlined is found from it)
+    let mut top_pc = Some(pc);
     if entry && frames.len() > 1 {
         frames.remove(0);
+        top_pc = None;
     }
+    let top = frames.first().copied();
     let mut guard = PROFILE.lock().unwrap();
     let Some(p) = guard.as_mut() else { return };
     let take = frames.len().min(MAX_DEPTH);
     let mut stack = Vec::with_capacity(take);
     for &(s, f) in frames[..take].iter().rev() {
         // SAFETY: walk_frames yields live frames of the running fiber.
-        let proto = unsafe { *s.seg_data().add(f + F_PROTO) };
+        let (proto, resume) = unsafe { (*s.seg_data().add(f + F_PROTO), *s.seg_data().add(f + norn_rt::func::F_RESUME)) };
         stack.push(p.name_id(if proto.is(Kind::Proto) { proto.proto_name() } else { Value::NIL }));
+        // (the calls inlined where it is, outermost first; for the frame
+        // running, as of its last call or safepoint)
+        if proto.is(Kind::Proto) {
+            let at = match top_pc {
+                Some(pc) if top == Some((s, f)) => pc,
+                _ => crate::vm::frame_pc(resume),
+            };
+            // SAFETY: the frame's registers follow its header.
+            let regs = unsafe { s.seg_data().add(f + norn_rt::func::HDR) };
+            for (n, _) in crate::vm::inlined_at(proto, at, regs).into_iter().rev() {
+                stack.push(p.name_id(n));
+            }
+        }
     }
     p.samples += 1;
     *p.stacks.entry(stack).or_insert(0) += 1;

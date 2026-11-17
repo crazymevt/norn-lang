@@ -26,10 +26,11 @@ pub const LOOP: u8 = 14; //     sbx     safepoint, then pc += sbx (backward)
 pub const CALL: u8 = 15; //     a b     R[a] = R[a](R[a+1] … R[a+b])
 pub const TAILCALL: u8 = 16; // a b     return R[a](R[a+1] … R[a+b])
 pub const RETURN: u8 = 17; //   a       return R[a]
+pub const GUARD: u8 = 18; //    a bx    if R[a] is K[bx] (identical): skip the next instruction
 
 pub const OP_NAMES: &[&str] = &[
     "MOVE", "LOADK", "LOADI", "LOADNIL", "LOADTRUE", "LOADFALSE", "GETVAR", "DEFVAR", "GETUP", "SELF", "CLOSURE",
-    "SETUP", "JMP", "JMPF", "LOOP", "CALL", "TAILCALL", "RETURN",
+    "SETUP", "JMP", "JMPF", "LOOP", "CALL", "TAILCALL", "RETURN", "GUARD",
 ];
 
 pub const SBX_BIAS: i32 = 32768;
@@ -94,7 +95,7 @@ pub fn disassemble_proto(proto: Value) -> String {
         let o = op(i);
         let name = OP_NAMES.get(o as usize).copied().unwrap_or("???");
         let operands = match o {
-            LOADK | GETVAR | DEFVAR | CLOSURE => {
+            LOADK | GETVAR | DEFVAR | CLOSURE | GUARD => {
                 let k = consts.arr_get(bx(i));
                 format!("r{} K{}  ; {}", a(i), bx(i), norn_rt::print::pr_str(k, true))
             }

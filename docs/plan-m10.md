@@ -95,6 +95,15 @@ baseline compared.
    A guard (one compare) makes linking safe for any var, and a
    redefinition takes effect at once; sealing stays for api-diff and
    inlining.
+6. **Inlining, part 4 (decided when it started):** in the compiler's IR,
+   guarded (decision 1), for any small `defn` (as decision 5 for
+   linking), and inlined calls show in backtraces and the debugger as
+   frames of their own.
+7. **Signing norn.string, norn.math, norn.regex and norn.bytes waits for
+   part 5** (decided in part 4): with the checks at the call site,
+   norn.string signed was still 10–25 ns slower a call at tier 1 for its
+   thinnest functions (and 50–90 ns at tier 0); part 5's types are to
+   drop the checks they prove.
 
 ## Status
 
@@ -191,3 +200,25 @@ baseline compared.
   deep recursion at both tiers, and that tier 1 linked and relinked.
   conc_test's debugger check now counts its own fiber's entry, not the
   process's (other suites park fibers in the debugger beside it).
+- **4, inlining: done,** with signing moved to part 5 (decision 7). The
+  compiler inlines calls of small functions (24 IR nodes, a fixed arity,
+  no captures or self-calls) behind `GUARD`, a new instruction; the
+  compiler keeps their IR by var. Inlined calls show in error traces,
+  the debugger (`:inlined` frames, with their locals; restarting one
+  calls the function's newest definition and its caller goes on) and
+  profiles; where the inlined function would have tail-called a closure,
+  it isn't shown, as its frame would have been replaced. Tier 1 gained
+  native paths for `count`, `nth`, `first`, `identical?`, `nil?`,
+  `some?`, `not` and the type predicates. A contract whose tests are
+  classes or predicates is checked by plain code inlined at the call
+  site, guarded by a stamp of its types (`f%stamp`), with %wrap-for's
+  wrapper the fallback. **Measured** (tier 1 against the baseline): a
+  plain call 3.6× (4.8 ns), a checked call across modules 26.7× (15.6
+  ns), the programs 1.12–1.40×, the rope workloads 2.3–2.6×. That meets
+  the done-check's 3× for calls. **Costs:** compiling and loading
+  `http.norn` 67 ms at tier 0 against 45 (51 at tier 1, 0.96× the
+  baseline); the printing workloads (str pieces, JSON write) read
+  0.84–0.9× in the full suite run, but not alone (the same as part 3's
+  binary there), so that is the state the cases before them leave.
+  norn.core isn't inlined (the seed compiles it at boot). Tests:
+  `tests/norn/inline_test.norn`, and prof_test's inlined-calls check.

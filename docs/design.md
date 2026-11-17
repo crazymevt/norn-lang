@@ -729,8 +729,9 @@ As built (M9 parts 9.3 and 9.4):
   opt-out for a build that wants it. The cost belongs to the
   implementation. After the [performance survey](perf-survey.md), a
   checked call from another module costs about 0.6–0.8 µs, against about
-  4 µs before. M10 can do better by inlining the checks where the call is
-  made, and by dropping checks it can prove hold.
+  4 µs before. M10 part 4 inlines checks of classes and predicates where
+  the call is made: about 16 ns a checked call at tier 1, 150 at tier 0.
+  Dropping checks it can prove hold is part 5's.
 - **A contract violation is a `TypeError` [decided, 2026-11-16].**
   `ContractError` is a subclass of `TypeError`: a value of the wrong kind,
   whoever catches it. So giving a function a signature never stops its old
@@ -741,11 +742,12 @@ As built (M9 parts 9.3 and 9.4):
     contract on `map` or `+` would slow every program;
   - the tools (`fmt`, `lint`, `test`, `doc`, `deps`, `dev`…) and
     `norn.syntax`, which the expander calls constantly;
-  - until M10 inlines the checks: `norn.string`, `norn.math`, `norn.regex`
-    and `norn.bytes`. A checked call still costs 0.3–0.4 µs, which made
-    their thinnest functions 3–6 times slower, and their primitives
-    already reject wrong types with `TypeError`. Signing them in M10
-    breaks no one, since a `ContractError` is a `TypeError`.
+  - until M10's part 5 drops the checks types prove: `norn.string`,
+    `norn.math`, `norn.regex` and `norn.bytes`. With the checks inlined
+    (part 4), norn.string signed was still 10–25 ns a call slower at tier
+    1 for its thinnest functions, and their primitives already reject
+    wrong types with `TypeError`. Signing them breaks no one, since a
+    `ContractError` is a `TypeError`.
 
 ---
 

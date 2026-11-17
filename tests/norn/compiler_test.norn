@@ -44,7 +44,8 @@
   (let [r (%reader src "compiler.norn")
         saved (current-ns)
         ev norn.compiler/eval] ; (this stage's, for the whole load)
-    (try (loop [] (let [f (%read r)] (when-not (%eof? f) (ev f) (recur))))
+    ;; (inlining off: stage 1 is the seed's, which doesn't inline)
+    (try (binding [norn.compiler/*inline* false] (loop [] (let [f (%read r)] (when-not (%eof? f) (ev f) (recur)))))
          (finally (in-ns (symbol (str saved)))))))
 
 (def stage1 (snapshot))

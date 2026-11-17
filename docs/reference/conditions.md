@@ -79,4 +79,6 @@ with its stack intact. Use `(debugging)` to list parked fibers and
 `(backtrace id)` to look at one. `(eval-in-frame id index 'expr)` evaluates
 a form with the frame's locals. `debug-restart` invokes an offered
 restart, `debug-restart-frame` retries a selected frame, and `debug-abort`
-ends the parked fiber.
+ends the parked fiber. A call the compiler inlined has a frame there too,
+marked `:inlined true`, with its locals; restarting it calls the
+function's newest definition, and the frame below goes on from that call.

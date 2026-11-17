@@ -54,3 +54,14 @@
   (let [out (with-out-str (is (= 7 (prof/profile {:top 3} (spin 30) 7))))]
     (is (str/includes? out "samples, about every"))
     (is (str/includes? out "call tree"))))
+
+;; A call the compiler inlined (M10 part 4) shows in the stacks, under its
+;; caller, though it has no frame of its own.
+(defn inlined-work [n] (loop [i 0 s 0] (if (= i n) s (recur (inc i) (+ s (rem i 7))))))
+(defn spin-inlining [ms]
+  (let [end (+ (nano-time) (* ms 1000000))] (loop [n 0] (if (< (nano-time) end) (recur (+ n (inlined-work 50))) n))))
+
+(deftest inlined-calls
+  (let [p (:profile (prof/sample (fn [] (spin-inlining 150)) :interval-us 500))]
+    (is (some (fn [[s _]] (= ["prof-test/spin-inlining" "prof-test/inlined-work"] (vec (take-last 2 s)))) (:stacks p))
+        "inlined-work's samples are under spin-inlining")))

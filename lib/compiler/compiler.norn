@@ -26,6 +26,7 @@
 (def MOVE 0) (def LOADK 1) (def LOADI 2) (def LOADNIL 3) (def LOADTRUE 4) (def LOADFALSE 5)
 (def GETVAR 6) (def DEFVAR 7) (def GETUP 8) (def SELF 9) (def CLOSURE 10) (def SETUP 11)
 (def JMP 12) (def JMPF 13) (def LOOP 14) (def CALL 15) (def TAILCALL 16) (def RETURN 17)
+(def GUARD 18)
 
 (defn- abc [o a b c] (bit-or o (bit-shift-left a 8) (bit-shift-left b 16) (bit-shift-left c 24)))
 (defn- abx [o a bx] (bit-or o (bit-shift-left a 8) (bit-shift-left bx 16)))
@@ -43,7 +44,10 @@
 
 ;;; ---- compiler state ------------------------------------------------------------------------
 
-(defn- new-arity [] {:code [] :consts [] :locals [] :debug [] :next 0 :max 0 :recur []})
+;; (:inl: a stack of {:dbg [debug locals] :holes [[from to]…]}, one per call
+;; being inlined; :inlines: [start end fname debug holes] per inlined call,
+;; for backtraces)
+(defn- new-arity [] {:code [] :consts [] :locals [] :debug [] :next 0 :max 0 :recur [] :inl [] :inlines []})
 
 (defn- ar [cs] (:ar (peek (:fns @cs))))
 
@@ -91,7 +95,10 @@
 
 (defn- finish-arity [a fname nfixed variadic dest]
   (let [code (conj (:code a) (abc RETURN dest 0 0))
-        dbg (vec (mapcat (fn [p] [(first p) (second p)]) (:debug a)))
+        ;; (after the name/register pairs, one per inlined call: its record
+        ;; [start end fname debug], with register -1, which no frame has)
+        dbg (vec (concat (mapcat (fn [p] [(first p) (second p)]) (:debug a))
+                         (mapcat (fn [r] [r -1]) (:inlines a))))
         nregs (max (:max a) (+ nfixed (if variadic 1 0)))]
     (%make-proto fname nfixed variadic nregs (:consts a) code dbg)))
 
@@ -335,7 +342,20 @@
 ;; Locals and upvalues are known by their bindings' ids; the debug info
 ;; names them with the plain symbol, for the debugger and eval-in-frame.
 (defn- bind-local! [cs b r]
-  (upd-ar! cs (fn [a] (-> a (update :locals conj [(:id b) r]) (update :debug conj [(symbol (name (:sym b))) r])))))
+  (upd-ar! cs (fn [a]
+                (let [a (update a :locals conj [(:id b) r])
+                      d [(symbol (name (:sym b))) r]]
+                  ;; (a local of a call being inlined is that call's)
+                  (if (seq (:inl a))
+                    (update a :inl (fn [s] (conj (pop s) (update (peek s) :dbg conj d))))
+                    (update a :debug conj d))))))
+
+;; Code from pc from to pc to runs as a tail call of the function being
+;; inlined (pos :itail): it would have replaced that function's frame, so
+;; backtraces there don't show it.
+(defn- inline-hole! [cs pos from to]
+  (when (and (:itail pos) (not (:tail pos)) (seq (:inl (ar cs))))
+    (upd-ar! cs (fn [a] (update a :inl (fn [s] (conj (pop s) (update (peek s) :holes conj [from to]))))))))
 
 (defn- find-pair [pairs id]
   (loop [i (dec (count pairs))]
@@ -369,7 +389,119 @@
                   (swap! cs update-in [:fns level :upvals] conj [id cap])
                   [:up n])))))))
 
-(declare gen! gen-fn!)
+(declare gen! gen-fn! gen-do! truncate-locals!)
+
+;;; ---- inlining (M10 part 4) ------------------------------------------------------------------
+;;;
+;;; A small function defined with def keeps its IR (inlinable, by var, with
+;;; the template it compiled to). A call of a var that holds a closure of
+;;; that template, with as many arguments as it has parameters, compiles
+;;; to the callee's body, its parameters in the argument registers, behind
+;;; a guard: if the var holds another function by then (it was redefined),
+;;; the call goes the ordinary way. The proto records where each inlined
+;;; body is, so backtraces and the debugger show its function.
+
+(def ^:dynamic *inline*
+  "Whether calls of small functions are inlined. The checks against the
+  seed compiler, which doesn't inline, bind it false."
+  true)
+
+(def ^:private inlinable (atom {}))
+
+;; (IR nodes a body may have, a contract's checking wrapper's more; how deep
+;; inlined calls nest; how many registers a function may use before calls
+;; stop being inlined into it)
+(def ^:private inline-budget 24)
+(def ^:private wrapper-budget 96)
+(def ^:private inline-depth 3)
+(def ^:private inline-max-regs 200)
+
+;; Can node (in a function whose locals in scope are bound, ids) be inlined,
+;; within budget n (an atom counting down)? No function, def or letrec in it,
+;; no local from outside (a capture) or of the function itself (a call of
+;; itself), and recur only inside its own loops.
+(defn- inline-ok? [node bound loop? n]
+  (swap! n dec)
+  (and (>= @n 0)
+       (let [op (:op node)]
+         (cond (= op :const) true
+               (= op :global) true
+               (= op :local) (contains? bound (:id (:binding node)))
+               (= op :if) (and (inline-ok? (:test node) bound loop? n) (inline-ok? (:then node) bound loop? n)
+                               (inline-ok? (:else node) bound loop? n))
+               (= op :do) (every? (fn [x] (inline-ok? x bound loop? n)) (:body node))
+               (= op :call) (and (inline-ok? (:f node) bound loop? n)
+                                 (every? (fn [x] (inline-ok? x bound loop? n)) (:args node)))
+               (= op :recur) (and loop? (every? (fn [x] (inline-ok? x bound loop? n)) (:args node)))
+               (= op :let) (let [r (reduce (fn [bound [b init]]
+                                             (if (and bound (inline-ok? init bound loop? n)) (conj bound (:id b)) nil))
+                                           bound (:bindings node))]
+                             (and r (inline-ok? (:body node) r (or (:loop node) false) n)))
+               :else false))))
+
+;; The arities of fn node a call can inline, by parameter count (a call
+;; with that many arguments runs that arity: a fixed one comes first), or
+;; nil.
+(defn- inline-shape [node budget]
+  (let [ok (keep (fn [a]
+                   (when (and (not (:variadic a))
+                              (inline-ok? (:body a) (set (map :id (:params a))) false (atom budget)))
+                     [(:nfixed a) a]))
+                 (:arities node))]
+    (when (seq ok) (into {} ok))))
+
+;; What a call node of a var inlines, if anything: {:params :body :fname},
+;; the arity for its argument count, and the closure the var holds (the
+;; guard's).
+(defn- inline-for [cs node]
+  (let [f (:f node)]
+    (when (and *inline* (= :global (:op f))
+               (< (or (:inline-depth @cs) 0) inline-depth)
+               (< (:next (ar cs)) inline-max-regs))
+      (when-let [e (get @inlinable (:var f))]
+        (let [c (var-get (:var f))
+              a (get (:arities e) (count (:args node)))]
+          (when (and a (%closure? c) (identical? (%closure-template c) (:template e)))
+            [(assoc a :fname (:fname e)) c]))))))
+
+;; Call node, inlined: e what it inlines, c the closure the var holds.
+(defn- gen-inline! [cs node e c dest pos]
+  (let [args (:args node)
+        tail (:tail pos)
+        base (alloc! cs)]
+    (gen! cs (:f node) base NT)
+    (let [regs (mapv (fn [x] (let [r (alloc! cs)] (gen! cs x r NT) r)) args)]
+      (emit! cs (abx GUARD base (konst! cs c)))
+      (let [jslow (emit! cs (asbx JMP 0 0))
+            start (pc cs)
+            nlocals (count (:locals (ar cs)))]
+        (upd-ar! cs (fn [a] (update a :inl conj {:dbg [] :holes []})))
+        (swap! cs update :inline-depth (fn [d] (inc (or d 0))))
+        (doseq [i (range (count regs))] (bind-local! cs (nth (:params e) i) (nth regs i)))
+        ;; (in tail position its returns are the caller's; a recur in it
+        ;; is its own loop's, never the caller's)
+        (gen-do! cs (:body e) dest {:tail tail :recur false :itail true})
+        (swap! cs update :inline-depth dec)
+        (truncate-locals! cs nlocals)
+        (let [{:keys [dbg holes]} (peek (:inl (ar cs)))
+              _ (upd-ar! cs (fn [a] (update a :inl pop)))
+              jdone (when-not tail (emit! cs (asbx JMP 0 0)))]
+          ;; (the record: the inlined code's pcs, the function, its locals,
+          ;; its holes; and the ordinary call after it (its pc, the callee's
+          ;; register, the var, the argument count), which restarting the
+          ;; inlined frame runs: debug-restart-frame)
+          (upd-ar! cs (fn [a] (update a :inlines conj [start (pc cs) (:fname e) (vec (mapcat identity dbg)) holes
+                                                       (pc cs) base (:var (:f node)) (count args)])))
+          (patch-jump! cs jslow (pc cs))
+          (if tail
+            (do (emit! cs (abc TAILCALL base (count args) 0))
+                (emit! cs (abc RETURN base 0 0)))
+            (do (emit! cs (abc CALL base (count args) 0))
+                (when (not= dest base) (emit! cs (abc MOVE dest base 0)))))
+          (when jdone (patch-jump! cs jdone (pc cs)))
+          ;; (this call, a tail call of a function it's inlined into)
+          (inline-hole! cs pos start (pc cs))
+          (free-to! cs base))))))
 
 (defn- gen-call! [cs load-fn args dest pos]
   (when (> (count args) 250) (cerr "Too many arguments in one call (max 250)"))
@@ -380,8 +512,9 @@
     (if (:tail pos)
       (do (emit! cs (abc TAILCALL base (count args) 0))
           (emit! cs (abc RETURN base 0 0)))
-      (do (emit! cs (abc CALL base (count args) 0))
-          (when (not= dest base) (emit! cs (abc MOVE dest base 0)))))
+      (let [at (emit! cs (abc CALL base (count args) 0))]
+        (inline-hole! cs pos at (inc at))
+        (when (not= dest base) (emit! cs (abc MOVE dest base 0)))))
     (free-to! cs base)))
 
 (defn- gen-local! [cs node dest pos]
@@ -427,7 +560,7 @@
         body-pos (if loop?
                    (let [start (pc cs)]
                      (upd-ar! cs (fn [a] (update a :recur conj [start regs])))
-                     {:tail (:tail pos) :recur true})
+                     {:tail (:tail pos) :recur true :itail (:itail pos)})
                    pos)]
     (gen-do! cs (:body node) dest body-pos)
     (when loop? (upd-ar! cs (fn [a] (update a :recur pop))))
@@ -483,6 +616,14 @@
   (let [k (konst! cs (:var node))]
     (when-let [init (:init node)]
       (gen! cs init dest NT)
+      ;; (a small function's IR, for calls of it to inline; or forget the
+      ;; var's old one)
+      (when *inline*
+        (let [wrapper? (%str-index (str (:var node)) "%checked" nil false)
+              ars (when (= :fn (:op init)) (inline-shape init (if wrapper? wrapper-budget inline-budget)))]
+          (if ars
+            (swap! inlinable assoc (:var node) {:arities ars :fname (:fname init) :template (:template @cs)})
+            (when (contains? @inlinable (:var node)) (swap! inlinable dissoc (:var node))))))
       (emit! cs (abx DEFVAR dest k)))
     (emit! cs (abx LOADK dest k))
     (finish! cs dest pos)))
@@ -503,6 +644,7 @@
         _ (swap! cs update :fns pop)
         caps (mapv second (:upvals f))
         tmpl (%make-template (when (:named node) (:fname node)) protos caps)]
+    (swap! cs assoc :template tmpl) ; (the latest, for gen-def!)
     (emit! cs (abx CLOSURE dest (konst! cs tmpl)))
     (finish! cs dest pos)
     caps))
@@ -512,7 +654,9 @@
     (cond (= op :const) (do (load-const! cs dest (:value node)) (finish! cs dest pos))
           (= op :local) (gen-local! cs node dest pos)
           (= op :global) (do (emit! cs (abx GETVAR dest (konst! cs (:var node)))) (finish! cs dest pos))
-          (= op :call) (gen-call! cs (fn [r] (gen! cs (:f node) r NT)) (:args node) dest pos)
+          (= op :call) (if-let [[e c] (inline-for cs node)]
+                         (gen-inline! cs node e c dest pos)
+                         (gen-call! cs (fn [r] (gen! cs (:f node) r NT)) (:args node) dest pos))
           (= op :if) (gen-if! cs node dest pos)
           (= op :do) (gen-do! cs node dest pos)
           (= op :let) (gen-let! cs node dest pos)
@@ -613,5 +757,6 @@
               (do (eval f2) (recur diffs))
               (let [line (%reader-line r)
                     a (try (%signature (%seed-compile f2)) (catch Error e {:error (condition-message e)}))
-                    b (try (%signature (compile-toplevel f2)) (catch Error e {:error (condition-message e)}))]
+                    b (try (binding [*inline* false] (%signature (compile-toplevel f2)))
+                           (catch Error e {:error (condition-message e)}))]
                 (recur (if (= a b) diffs (conj diffs {:form f :line line :seed (:error a) :norn (:error b)})))))))))))

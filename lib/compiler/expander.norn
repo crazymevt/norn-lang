@@ -219,7 +219,8 @@
               caller (str here (when (seq file) (str " (" file ")")))]
           (%intern here w)
           (swap! *wrappers* conj
-                 (list 'do (list 'def w (list 'norn.core/%wrap-for (list 'var (symbol n)) caller))
+                 (list 'do (list 'def w (or (norn.core/%wrapper-source v caller w)
+                                            (list 'norn.core/%wrap-for (list 'var (symbol n)) caller)))
                        (list 'norn.core/%set-private! (list 'var w))))))
       w)))
 
@@ -429,9 +430,14 @@
                                 (when (and (not typed) was (%contracted? was) (= (str (var-ns-of was)) (str (ns-sym))))
                                   [(list 'norn.core/%drop-contract! (list 'var nm))])
                                 (when typed
-                                  (let [c (symbol (str (name nm) "%contract"))]
+                                  (let [c (symbol (str (name nm) "%contract"))
+                                        st (symbol (str (name nm) "%stamp"))]
                                     [(list 'def c (list 'norn.core/%signature-parts (list 'quote sigs) (list 'quote (ns-sym)) (str (ns-sym) "/" nm)))
-                                     (list 'norn.core/%set-private! (list 'var c))])))]
+                                     (list 'norn.core/%set-private! (list 'var c))
+                                     ;; (its stamp, which call sites' checks compare with
+                                     ;; theirs: M10 part 4, norn.core/%wrapper-source)
+                                     (list 'def st (list 'norn.core/%stamp-of c))
+                                     (list 'norn.core/%set-private! (list 'var st))])))]
               (if (seq extra) (apply list 'do d extra) d)))
     "var" (let [id (nth xs 1 nil)]
             (when-not (and id (syn/identifier? id)) (fail s "var takes a symbol"))

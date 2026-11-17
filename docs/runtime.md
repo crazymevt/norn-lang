@@ -1162,6 +1162,62 @@ decision, 2026-11-16, plan-m10.md).
   206 → 172 ms); the rope workloads 1.38×. The code is 15% larger than
   part 2's (4.8 MB for everything at threshold 1).
 
+**Inlining, as built in M10 part 4.** In the compiler (`norn.compiler`),
+so both tiers gain.
+
+- **What's inlined:** a call of a var whose value is a small function
+  defined with `def` (`defn`): an arity with a fixed number of
+  parameters matching the call's arguments, a body of at most 24 IR
+  nodes with no function, `def` or `letrec` in it, no captured local and
+  no call of itself. The compiler keeps such functions' IR, by var, with
+  the template they compiled to; a call compiled later inlines the arity
+  if the var still holds a closure of that template. Calls nest three
+  deep at most. The libraries Norn compiles at boot (norn.core, with the
+  seed compiler) keep no IR, so their functions aren't inlined yet.
+- **The guard:** the callee and its arguments go to registers as for a
+  call, then `GUARD a bx` (a new instruction: if register a holds
+  constant bx, skip the next one) and a jump to the ordinary call after
+  the inlined body. The body's parameters are the argument registers. A
+  redefinition fails the guard, so the new definition is called at once.
+- **Backtraces, the debugger, profiles:** each proto's debug locals end
+  with a record per inlined call `[start end fname locals holes slow-pc
+  callee-register var nargs]` (register -1, which no frame has). Error
+  traces, `%frames` (the debugger's frames, with `:inlined true` and the
+  inlined function's locals) and profile stacks show the inlined
+  function above its caller. A hole is where the inlined function would
+  have tail-called a closure: its frame would be gone, so it isn't shown
+  there. Restarting an inlined frame (`debug-restart-frame`) unwinds to
+  the frame it's in and runs that frame's ordinary call of the function
+  (its newest definition, with the argument registers), the frame going
+  on after it. `norn.xref` reports what the source calls: constants used
+  only by inlined code, and guards' closures, aren't counted.
+- **Contracts at the call site:** a call of another module's function
+  with a contract goes through a checking wrapper in the caller's
+  module, as before; it's now plain code (`%wrapper-source`) when the
+  contract's tests are classes or norn.core predicates (also nilable or
+  either-of), so it's inlined like any small function: the checks are at
+  the call site. It's guarded by the contract's stamp (a hash of the
+  declared types and their module, in a `f%stamp` var): a redefinition
+  with other types, or none, falls back to `%wrap-for`'s generic
+  wrapper. Its code names only vars, so modules stay cacheable. Other
+  contracts (collections, function contracts) use the generic wrapper.
+- **Tier 1's fast primitives** grew (behind the same check that the
+  callee is the primitive): `count` and `nth` of a vector (the trie
+  walked natively), `first` of a list, `identical?`, `nil?`, `some?`,
+  `not`, and the type predicates the checks use (`string?`, `keyword?`,
+  `symbol?`, `float?`, `vector?`, `regex?`, `bytes?`, `char?`,
+  `boolean?`, and `integer?` for a fixnum). A call that names one
+  through its norn.core var tries only that one.
+- **Measured** (tier 1 against the baseline): a plain call 3.6× (4.8
+  ns: the call is gone), a checked call across modules 26.7× (417 →
+  15.6 ns; tier 0 3.8×), `count` and `nth` of a vector 2.6×; the static
+  site 1.40×, the other programs 1.12–1.19×; the rope workloads 2.3–2.6×.
+  **The cost is compile time:** compiling and loading `http.norn` takes
+  67 ms at tier 0 against 45 before inlining (51 ms at tier 1, within
+  5% of the baseline), the compiler generating each inlined copy;
+  `%index-of` in `konst!` and the compiler's state atom are its own
+  overheads.
+
 *Next.* The full design below (inline caches) keeps the same frame layout,
 so it can replace this piece by piece.
 

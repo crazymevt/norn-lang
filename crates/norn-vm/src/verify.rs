@@ -177,6 +177,14 @@ pub fn proto(p: Value, nups: usize, from_image: bool) -> R {
                 reg(a(i))?;
                 target(pc)?;
             }
+            GUARD => {
+                reg(a(i))?;
+                konst(None)?;
+                // (it may skip the next instruction, which must be there)
+                if pc + 2 >= n {
+                    return Err(at("a guard with nothing after the instruction it skips".into()));
+                }
+            }
             CALL | TAILCALL => {
                 if a(i) + b(i) >= nregs {
                     return Err(at(format!("a call of r{} with {} arguments in {nregs} registers", a(i), b(i))));

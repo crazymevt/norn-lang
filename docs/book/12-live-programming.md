@@ -308,8 +308,13 @@ debug[5]> (eval-in-frame 5 7 'label)
 debug[5]> (eval-in-frame 5 6 '(count xs))
 0
 debug[5]> (nth (backtrace 5) 6)
-{:fn user/average, :locals {xs []}, :internal? false}
+{:inlined true, :fn user/average, :locals {xs []}, :internal? false}
 ```
+
+`:inlined true` says the compiler inlined `average` into the code that
+called it: it has no frame of its own on the stack, but the debugger
+shows one, with its locals, and you can evaluate in it and restart it as
+any other.
 
 The form can be any expression. It sees the frame's locals and the current
 namespace's definitions, so you can call your own functions on the values

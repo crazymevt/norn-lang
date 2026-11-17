@@ -293,11 +293,79 @@ static FORCE_VAR: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
 
 pub(crate) enum Target {
     Catch(Value),
-    Frame(Value, usize),
+    /// A frame (segment, offset), and which call inlined into it, if the
+    /// frame to restart is an inlined call's (its record's index).
+    Frame(Value, usize, Option<usize>),
     Bottom,
 }
 
 /// Every frame of a stack, top first: (segment, frame offset).
+/// The calls inlined (M10 part 4) at instruction pc of proto, innermost
+/// first: each function's name and its debug locals ([sym reg …]). The
+/// compiler records them after the debug pairs, as [start end fname debug]
+/// with register -1.
+///
+/// regs: the frame's registers, to tell a tail call of a closure (which
+/// would have replaced the inlined function's frame: a hole) from one of a
+/// primitive (which runs within it).
+pub(crate) fn inlined_at(proto: Value, pc: usize, regs: *const Value) -> Vec<(Value, Value)> {
+    inlined_at_k(proto, pc, regs).into_iter().map(|(_, n, d)| (n, d)).collect()
+}
+
+/// inlined_at, with each call's record index (for restarting it).
+pub(crate) fn inlined_at_k(proto: Value, pc: usize, regs: *const Value) -> Vec<(usize, Value, Value)> {
+    // (holes count only where a closure is being called)
+    let closure_called = {
+        let code = proto.proto_code();
+        pc < code.code_len() && {
+            // SAFETY: pc is an instruction of the proto; regs its frame's.
+            let i = unsafe { *code.code_ptr().add(pc) };
+            matches!(op(i), CALL | TAILCALL) && !regs.is_null() && unsafe { (*regs.add(a(i))).is(Kind::Closure) }
+        }
+    };
+    let mut found: Vec<(usize, usize, Value, Value)> = inline_records(proto)
+        .enumerate()
+        .filter(|(_, r)| covers(*r, pc, closure_called))
+        .map(|(k, r)| (r.vec_nth(1).as_fixnum() as usize - r.vec_nth(0).as_fixnum() as usize, k, r.vec_nth(2), r.vec_nth(3)))
+        .collect();
+    found.sort_by_key(|x| x.0);
+    found.into_iter().map(|(_, k, n, d)| (k, n, d)).collect()
+}
+
+/// Is instruction pc of proto code inlined from another function (holes or
+/// not: see inlined_at)?
+pub(crate) fn in_inlined(proto: Value, pc: usize) -> bool {
+    inline_records(proto).any(|r| covers(r, pc, false))
+}
+
+/// A proto's inline records: [start end fname debug holes], the holes
+/// [[from to]…] where the inlined function would have tail-called (its
+/// frame gone, so it isn't shown).
+fn inline_records(proto: Value) -> impl Iterator<Item = Value> {
+    let dbg = proto.proto_locals();
+    let pairs: &[Value] = if dbg.is(Kind::Array) { dbg.arr_slice() } else { &[] };
+    pairs.chunks(2).map(|p| p[0]).filter(|r| r.is(Kind::Vector) && r.vec_count() >= 5)
+}
+
+fn covers(r: Value, pc: usize, holes: bool) -> bool {
+    let (s, e) = (r.vec_nth(0).as_fixnum() as usize, r.vec_nth(1).as_fixnum() as usize);
+    if pc < s || pc >= e {
+        return false;
+    }
+    let hs = r.vec_nth(4);
+    !(holes
+        && (0..hs.vec_count()).any(|i| {
+            let h = hs.vec_nth(i);
+            (h.vec_nth(0).as_fixnum() as usize..h.vec_nth(1).as_fixnum() as usize).contains(&pc)
+        }))
+}
+
+/// The instruction a frame is at: the one before its resume point (its
+/// call, or the one the top frame was running).
+pub(crate) fn frame_pc(resume: Value) -> usize {
+    (resume.as_fixnum().max(1) - 1) as usize
+}
+
 pub(crate) fn walk_frames(mut seg: Value, mut fp: usize) -> Vec<(Value, usize)> {
     let mut out = Vec::new();
     if seg.is_nil() {
@@ -1050,7 +1118,7 @@ impl Vm {
         if crate::prof::due(&mut self.prof_seen) {
             // (at a function's entry it has run nothing yet: the time since
             // the sample was asked for was its caller's)
-            crate::prof::sample(st.seg, st.fp, entry);
+            crate::prof::sample(st.seg, st.fp, entry, st.pc);
         }
         if self.nested == 0 {
             let gc = std::mem::take(&mut self.want_gc) || safepoint::stress_due();
@@ -1306,7 +1374,8 @@ impl Vm {
                                 return Err(Error::new("%restart-frame expects a frame id"));
                             }
                             let kw = rt().keyword(&mut self.m, None, "call");
-                            let target = Target::Frame(args[0], args[1].as_fixnum() as usize);
+                            let k = args.get(2).filter(|k| k.is_fixnum()).map(|k| k.as_fixnum() as usize);
+                            let target = Target::Frame(args[0], args[1].as_fixnum() as usize, k);
                             return self.unwind(st, target, kw, Value::NIL, Value::NIL);
                         }
                         ABORT_FIBER => {
@@ -1382,9 +1451,15 @@ impl Vm {
         }
         let (mut seg, mut fp) = (st.seg, st.fp);
         unsafe {
-            for _ in 0..64 {
+            for k in 0..64 {
                 let fr = seg.seg_data().add(fp);
-                let name = (*fr.add(F_PROTO)).proto_name();
+                let proto = *fr.add(F_PROTO);
+                // (the calls inlined where it is, as frames of their own)
+                let pc = if k == 0 { st.pc.max(1) - 1 } else { frame_pc(*fr.add(F_RESUME)) };
+                for (n, _) in inlined_at(proto, pc, fr.add(HDR)) {
+                    out.push(pr_str(n, true));
+                }
+                let name = proto.proto_name();
                 out.push(if name.is_nil() { "fn".to_owned() } else { pr_str(name, true) });
                 match (*fr.add(F_PREV)).as_fixnum() {
                     PREV_BOUNDARY => break,
@@ -1428,7 +1503,7 @@ impl Vm {
                 let regs = fr.add(HDR);
                 let hit = match target {
                     Target::Catch(tag) => f == fk.catch && *regs == tag,
-                    Target::Frame(s, p) => s == seg && p == fp,
+                    Target::Frame(s, p, _) => s == seg && p == fp,
                     Target::Bottom => (*fr.add(F_PREV)).as_fixnum() == PREV_BOUNDARY,
                 };
                 // Aborting unwinds the bottom frame too (it may itself be an
@@ -1455,6 +1530,34 @@ impl Vm {
                 });
             };
             let (mut x, mut xargs) = (x, xargs);
+            if let Target::Frame(_, _, Some(k)) = target {
+                // Restart a call inlined into the frame: the frame stays, and
+                // goes on as if its ordinary call of the function (the code
+                // after the inlined one) had been made, to the var's current
+                // definition with the arguments still in its registers: the
+                // call is pushed above it, its value delivered to that call's
+                // register, the frame resuming after it.
+                let fr = seg.seg_data().add(fp);
+                let (proto, regs) = (*fr.add(F_PROTO), fr.add(HDR));
+                let Some(r) = inline_records(proto).nth(k).filter(|r| r.vec_count() == 9) else {
+                    return Err(Error::new("That inlined call can't be restarted"));
+                };
+                let (slow, base, var, n) =
+                    (r.vec_nth(5).as_fixnum() as usize, r.vec_nth(6).as_fixnum() as usize, r.vec_nth(7), r.vec_nth(8).as_fixnum() as usize);
+                let a: Vec<Value> = (0..n).map(|i| *regs.add(base + 1 + i)).collect();
+                x = if var.is(Kind::Var) { var.var_root() } else { *regs.add(base) };
+                xargs = vec_from_slice(&mut self.m, &a);
+                let cl = vec_from_slice(&mut self.m, &cleanups);
+                st.seg = seg;
+                st.base = seg.seg_data();
+                st.fp = fp;
+                st.enter();
+                st.pc = slow + 1;
+                st.set_resume(st.pc);
+                let finish = fk.finish;
+                let proto = select_arity(finish, 5)?;
+                return self.push_frame(st, finish, proto, &[cl, dyn_at, mode, x, xargs]);
+            }
             if let Target::Frame(..) = target {
                 // Restart the frame: its function's *current* definition, with
                 // the arguments it was called with.
@@ -1925,6 +2028,14 @@ impl Vm {
                     }
                     JMP => {
                         st.pc = (st.pc as isize + sbx(ins)) as usize;
+                        continue;
+                    }
+                    GUARD => {
+                        // (an inlined call's: the var still holds the function
+                        // inlined, so skip the jump to the general call)
+                        if *regs.add(ra) == *st.consts.add(bx(ins)) {
+                            st.pc += 1;
+                        }
                         continue;
                     }
                     JMPF => {
