@@ -1,7 +1,8 @@
 # Plan: M10 — the optimising compiler
 
 Drafted 2026-11-16; its proposals were accepted the same day (see
-Decisions, at the end). runtime.md §12's row:
+Decisions, at the end). **Done 2026-11-17** (Status's last entry, "M10:
+done"); what's left for later is listed there. runtime.md §12's row:
 the IR (design §8.3), inlining, direct linking to sealed modules' vars and
 deoptimisation when one is unsealed (moved from M8), type inference from
 M9's signatures, unboxing, escape analysis; tier 1's full calling
@@ -513,7 +514,7 @@ baseline compared.
     link_test's local closure calls (an upvalue, several arities, a rest
     parameter, a primitive, a closure compiled late, past a segment's
     end, an error).
-- **The done-check: met but for decision 2 (2026-11-17).**
+- **The done-check: met (2026-11-17),** decision 2 since too (below).
   - **Speed** (`bench/compare.norn`, tier 1): Mandelbrot 29.1 ms, 10.0×
     the baseline (SBCL and Clojure 2.0 ms: Norn 14×); the empty loop 1.85
     ns a turn, 2.30× (from 1.7×: below); float `*` 9.9×; calls 5.4–7.5×,
@@ -554,7 +555,8 @@ baseline compared.
     cover_test pass at both tiers, and ledger's coverage report is the
     same at both with `--serial` (in parallel, tier 1's hit counts vary
     by one or two run to run with the scheduling; the lines hit don't).
-  - **Decision 2, tier 1 as the default: not yet.** It wins on the
+  - **Decision 2, tier 1 as the default: not yet** (done after
+    background compilation, below). It wins on the
     baseline and agrees everywhere, but starting costs: `norn -e nil`
     takes 1.0 s against 0.10 at tier 0 (258 protos compiled, 2.9 MB), and
     a small project's tests 1.5 s more (ledger 0.43 → 2.05 s, norn-html
@@ -601,11 +603,33 @@ baseline compared.
   ext.rs's GC-stress runs ask for tier 0 by name. The README and book
   chapter 26 say so.
 
-## Open after part 4 (2026-11-16)
+- **M10: done (2026-11-17).** Every part (0–7), the done-check and
+  decision 2: tier 1 is the default, compiled in the background, starting
+  as fast as tier 0 (0.11 s against 0.10 for `norn -e nil`). Against the
+  baseline at tier 1: Mandelbrot 10×, calls 5.4–7.5× (a checked one
+  48×), `try` 2.9×, `binding` 3.4×, making an instance 8.2×, a library
+  collection's `count` and `nth` 3.8× and 4.4×, `mapv` 5.3× an item; the
+  programs 1.5–2.6× (the ledger 2.6×, the site 1.9×, the log report
+  1.65×); nothing slower beyond noise. The suites pass at tier 0, tier 1
+  and with everything compiled from its first call
+  (`NORN_JIT_THRESHOLD=1 NORN_JIT_SYNC=1`: 333 tests, 3,455 checks; in
+  that mode prof_test's rate check failed once, the flake below, and
+  passed alone three times), and so does the whole cargo run. Tier 1 agrees with tier 0 on every sibling project (as at the
+  done-check). **Left for after M10** (each here or in todo.md): the
+  smaller speed items (`next` of a vector, a lazy sequence's step, `nth`
+  of a non-ASCII string, `instance?` and `compare-and-set!` natively,
+  contracts on collections and functions through the generic wrapper);
+  inlining's limits untuned and tier 1's code size; the printing
+  workloads' reading in a full comparison run; a primitive's error inside
+  a nested run skipping `catch` (todo); chat's kicked clients (todo);
+  waking fibers on other carriers (todo); quire's two timing-dependent
+  tests (quire's).
 
-Where to pick up. Parts 0–4 are committed on branch `m10` (not merged,
-not pushed); part 5 is next in the plan. The user chose (2026-11-17) to
-win back compile time first: done, below.
+## After the parts (2026-11-16–17)
+
+Work done after part 4 and alongside parts 5–7, and the gaps found on
+the way: each says whether it's done. M10's close is the last entry of
+Status, above.
 
 - **Compile time: done (2026-11-17).** Inlining had made compiling
   slower: `http.norn` compiled and loaded in 67 ms at tier 0 (45 before

@@ -1,7 +1,9 @@
 # Plan: M9b — after sealing
 
 Drafted 2026-11-16; its proposals were accepted the same day (see
-Decisions, at the end). M9b is the part of M9 that waited for
+Decisions, at the end). **Done 2026-11-17,** with Zed's extension moved
+to todo.md (the user's choice: decision 4 and the done-check's "or Zed"
+are met by VS Code). M9b is the part of M9 that waited for
 sealing (plan-m9.md): what needs a sealed module, and tooling that doesn't
 shape core. runtime.md §12's row lists tree shaking, a sampling profiler,
 source-drift tracking, `norn lsp`, `norn new` and coverage.
@@ -73,7 +75,8 @@ shape and 4's op).
    (`:interval-us`). A Studio panel comes with Studio's own work.
 3. **Coverage runs at tier 0;** tier 1 counters can come with M10.
 4. **`norn lsp` is checked with VS Code and Zed;** Helix and Neovim are
-   documented.
+   documented. (2026-11-17: checked in VS Code; Zed's extension moved to
+   todo.md, the user's choice.)
 5. **Xref** (not asked; the draft's proposal stands): function bodies and
    macros' expansions as compiled, and a generic function counts its
    methods.
@@ -184,7 +187,8 @@ shape and 4's op).
   its connections and adds `:conn`; requests are `[conn id]`, output
   events carry `:conn`, and a connection drops others' output.
 - **5, `norn lsp`: done, checked in VS Code (as Antigravity IDE,
-  2026-11-17: `editors/vscode`, docs/plan-vscode.md) but not yet in Zed.**
+  2026-11-17: `editors/vscode`, docs/plan-vscode.md); Zed's extension
+  moved to todo.md.**
   `norn.lsp` runs in the project's own Norn (`norn lsp`) and answers
   through the editor protocol's ops in-process (`%serve-request`):
   diagnostics from `norn lint` on every change, hover (`:doc`),
