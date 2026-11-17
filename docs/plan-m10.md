@@ -431,9 +431,35 @@ baseline compared.
     **Measured:** `count` of a Buffer 499 → 222 ns (2.85×, short of 3×:
     what's left is the generic function's dispatch, 6.4's), `nth` 1,379 →
     602 ns (3.58×).
-  - **6.4, inline caches:** generic-function dispatch at the call site, and
-    slot reads keyed on the instance's layout.
-  - **6.5, keyword arguments' maps,** if still worth it.
+  - **6.4, generic calls and slot reads: done,** not as per-site caches
+    that change as the program runs (cells written from several carriers
+    at once would need care), but as part 3's linking and a native read:
+    (1) the dispatch cache's probe compared its keys with `equal` and hashed
+    them with `hash`, each setting up a frame (an allocation) every call:
+    classes now by identity first. (2) Tier 1 links a call of a generic
+    function whose dispatch cache holds one entry (one class, one argument
+    position, no eql specializers) to that entry's effective method, behind
+    a guard on the function, the argument being an instance of that class,
+    and the function's method epoch and the class epoch; the frame is
+    pushed inline as part 3's are. A failed guard makes the call the
+    general way and relinks (part 3's limit). (3) `(:k x)` with a keyword
+    constant and one argument reads natively (`kw_get`) from an instance
+    that isn't mutable, or a map; anything else (a mutable instance, whose
+    owner is checked; other values) goes the general way. **Measured**
+    (tier 1 against the baseline): a generic function with one method 53 →
+    11.5 ns (4.5×), with `:before` and `:after` 2.0×, an inherited method
+    (two classes seen: not linked) 1.6×; a slot read 14 → 5.2 ns (2.5×), a
+    map read 31 → 22 ns; a Buffer's `count` 3.06×. Tests: link_test's
+    linked generic calls (methods redefined and added, a :before, the class
+    redefined, other classes at the site) and keyword reads (a mutable
+    instance from another fiber, a class redefined).
+  - **6.5, keyword arguments' maps,** if still worth it: not started.
+    Keyword options take 255 ns with two given (1.06× the baseline), 54
+    with none; no done-check item covers them.
+  **Where it stands** (tier 1, the full comparison): `try` 2.57×,
+  `binding` 2.96×, making an instance 8.15×, a Buffer's `count` 3.45× and
+  `nth` 4.01×: the done-check's 2×, 5× and 3× met. The log report 1.48×,
+  the ledger 1.63×.
 
 ## Open after part 4 (2026-11-16)
 
@@ -525,5 +551,8 @@ win back compile time first: done, below.
   "refused" when the other suites use many sockets).
 - http_test's stale pooled connection (a 100 ms idle timeout racing the
   load).
+- actor_test's supervisor strategies and module_test's cyclic loads
+  (both timing: `eventually`, sleeps and timeouts), once at tier 0 in part
+  6.4's full run; passing alone and in two full runs after.
 - One tier-1 suite failure in part 2 (1 run in 34), never captured or
   seen again.

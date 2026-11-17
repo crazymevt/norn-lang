@@ -1246,6 +1246,11 @@ slot's default constant, recorded from a literal `:initform` as
 `:initvalue`); anything else goes through `%make-from`, which runs
 initforms in the fiber. `count`, and `nth` without a default, of a library
 collection call `collection-count` and `collection-nth` directly.
+Generic functions' dispatch caches compare and hash class keys by identity
+(no frame for `equal`/`hash` per call). Tier 1 links a call of a generic
+function whose cache holds one entry to its effective method (a guard on
+the function, the argument's class and both epochs; part 3's inline frame),
+and reads `(:k x)` natively from an instance that isn't mutable or a map.
 - **Tier 1's fast primitives** grew (behind the same check that the
   callee is the primitive): `count` and `nth` of a vector (the trie
   walked natively), `first` of a list, `identical?`, `nil?`, `some?`,

@@ -175,6 +175,8 @@ const CTX_RELINK: i32 = (16 + NPRIMS as i32) * W;
 const CTX_BOX_FLOAT: i32 = (17 + NPRIMS as i32) * W;
 // A float's value (its first payload word).
 const FLOAT_BITS: i32 = 2 * W - 1;
+// An instance's class (its first field).
+const INST_CLASS: i32 = 2 * W - 1;
 
 // (the offsets above are the fields' places in JitCtx)
 const _: () = {
@@ -379,6 +381,11 @@ fn compile_inner(proto: Value) -> Option<usize> {
         for f in links.iter().flatten().filter_map(|lk| lk.f) {
             set.insert(f.0);
         }
+        // (a generic call's function and class too: the guard compares them)
+        for g in links.iter().flatten().filter_map(|lk| lk.gf.as_ref()) {
+            set.insert(g.gf.0);
+            set.insert(g.class.0);
+        }
     }
     let cell: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::new(std::sync::atomic::AtomicU64::new(0)));
     // The fast primitive a call names, when its callee was loaded from that
@@ -403,7 +410,27 @@ fn compile_inner(proto: Value) -> Option<usize> {
             })
             .collect()
     };
+    // A call whose callee was loaded from a keyword constant, with one
+    // argument: a slot or map read (kw_get), the keyword still compared at
+    // run time.
+    let kw_callee: Vec<Option<Value>> = {
+        let cs = proto.proto_consts();
+        ins.iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                if !matches!(op(w), CALL | TAILCALL) || b_(w) != 1 {
+                    return None;
+                }
+                let k = (0..i).rev().find(|&k| a(ins[k]) == a(w))?;
+                if op(ins[k]) != LOADK {
+                    return None;
+                }
+                cs.arr_slice().get(bx(ins[k])).copied().filter(|v| v.is_keyword())
+            })
+            .collect()
+    };
     let ff = flo_flow(&ins, proto.proto_consts(), &named_prim, &entry_pcs, nregs, ssa && despecs(proto) < DESPEC_LIMIT);
+    let kw_ref = b.import_signature(helper(2));
     let live = live_in(&ins, nregs);
     if std::env::var("NORN_JIT_TRACE_FLO").is_ok() {
         eprintln!("flo {}", norn_rt::print::pr_str(proto, true));
@@ -600,13 +627,48 @@ fn compile_inner(proto: Value) -> Option<usize> {
     // the block for when it doesn't (which first asks for a relink).
     let linked_guard = |b: &mut FunctionBuilder, lk: &Link, ra: i32| -> (Block, cranelift_codegen::ir::Value) {
         let f = b.ins().load(types::I64, mf, regs, ra * W);
-        let want = match lk.f {
-            Some(f) => b.ins().iconst(types::I64, f.0 as i64),
-            None => b.ins().load(types::I64, mf, regs, (F_FN as i32 - HDR as i32) * W),
-        };
-        let hit = b.ins().icmp(IntCC::Equal, f, want);
         let (fast, miss) = (b.create_block(), b.create_block());
-        b.ins().brif(hit, fast, &[], miss, &[]);
+        let f = if let Some(g) = &lk.gf {
+            // (the generic function; its argument an instance of the class;
+            // its methods and the classes as when linked)
+            let gfv = b.ins().iconst(types::I64, g.gf.0 as i64);
+            let hit = b.ins().icmp(IntCC::Equal, f, gfv);
+            let step = |b: &mut FunctionBuilder, c| {
+                let next = b.create_block();
+                b.ins().brif(c, next, &[], miss, &[]);
+                b.switch_to_block(next);
+            };
+            step(b, hit);
+            let x = b.ins().load(types::I64, mf, regs, (ra + 1 + g.pos as i32) * W);
+            let tag = b.ins().band_imm_s(x, norn_rt::value::TAG_MASK as i64);
+            let obj = b.ins().icmp_imm_s(IntCC::Equal, tag, norn_rt::value::TAG_OBJ as i64);
+            step(b, obj);
+            let layout = b.ins().load(types::I64, mf, x, -(norn_rt::value::TAG_OBJ as i32));
+            let inst = b.ins().icmp_imm_s(IntCC::Equal, layout, &norn_rt::object::LAYOUTS[norn_rt::Kind::Instance as usize] as *const norn_rt::object::Layout as i64);
+            step(b, inst);
+            let class = b.ins().load(types::I64, mf, x, INST_CLASS);
+            let same = b.ins().icmp_imm_s(IntCC::Equal, class, g.class.0 as i64);
+            step(b, same);
+            let ep = b.ins().iconst(types::I64, g.gf.atomic_word(norn_rt::clos::generic::EPOCH) as *const std::sync::atomic::AtomicU64 as i64);
+            let e = b.ins().atomic_load(types::I64, mf, ep);
+            let same_e = b.ins().icmp_imm_s(IntCC::Equal, e, g.epoch as i64);
+            step(b, same_e);
+            let cp = b.ins().iconst(types::I64, &norn_rt::clos::CLASS_EPOCH as *const std::sync::atomic::AtomicU64 as i64);
+            let ce = b.ins().atomic_load(types::I64, mf, cp);
+            let same_c = b.ins().icmp_imm_s(IntCC::Equal, ce, g.class_epoch as i64);
+            // (the frame is the effective method's)
+            let em = b.ins().iconst(types::I64, lk.f.map_or(0, |f| f.0) as i64);
+            b.ins().brif(same_c, fast, &[], miss, &[]);
+            em
+        } else {
+            let want = match lk.f {
+                Some(f) => b.ins().iconst(types::I64, f.0 as i64),
+                None => b.ins().load(types::I64, mf, regs, (F_FN as i32 - HDR as i32) * W),
+            };
+            let hit = b.ins().icmp(IntCC::Equal, f, want);
+            b.ins().brif(hit, fast, &[], miss, &[]);
+            f
+        };
         b.switch_to_block(miss);
         if lk.f.is_some() {
             let rf = b.ins().load(types::I64, mf, ctx, CTX_RELINK);
@@ -788,6 +850,26 @@ fn compile_inner(proto: Value) -> Option<usize> {
             let zero = b.ins().iconst(types::I64, 0);
             enter(b, new_regs, zero, true);
         };
+        // A keyword's read of the argument (kw_callee): on_value with what
+        // kw_get gives; the builder is left where it doesn't apply.
+        let kw_read = |b: &mut FunctionBuilder, kw: Value, on_value: &dyn Fn(&mut FunctionBuilder, cranelift_codegen::ir::Value)| {
+            let f = get(b, ra);
+            let same = b.ins().icmp_imm_s(IntCC::Equal, f, kw.0 as i64);
+            let (go, no) = (b.create_block(), b.create_block());
+            b.ins().brif(same, go, &[], no, &[]);
+            b.switch_to_block(go);
+            let x = get(b, ra + 1);
+            let kv = b.ins().iconst(types::I64, kw.0 as i64);
+            let fp = b.ins().iconst(types::I64, kw_get as *const () as i64);
+            let call = b.ins().call_indirect(kw_ref, fp, &[x, kv]);
+            let v = b.inst_results(call)[0];
+            let got = b.ins().icmp_imm_s(IntCC::NotEqual, v, Value::UNBOUND.0 as i64);
+            let yes = b.create_block();
+            b.ins().brif(got, yes, &[], no, &[]);
+            b.switch_to_block(yes);
+            on_value(b, v);
+            b.switch_to_block(no);
+        };
         // A fast primitive's arguments: a float register's f64 for the
         // numeric ones (no box needed), else the value.
         let numeric = named_prim[i].is_some_and(|k| matches!(FAST_PRIMS[k], "+" | "-" | "*" | "/" | "inc" | "dec" | "zero?" | "<" | ">" | "<=" | ">=" | "==" | "="));
@@ -898,7 +980,12 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 // (a fast primitive's value, a float unboxed when assumed
                 // one; a linked callee's frame pushed here, when the guard
                 // holds and it fits; else as any call)
-                if rb == 1 || rb == 2 || (rb == 3 && numeric) {
+                if let Some(kw) = kw_callee[i] {
+                    kw_read(&mut b, kw, &|b: &mut FunctionBuilder, v| {
+                        set(b, ra, v);
+                        goto(b, nextpc);
+                    });
+                } else if rb == 1 || rb == 2 || (rb == 3 && numeric) {
                     let slow = b.create_block();
                     let store_next = |b: &mut FunctionBuilder, v| {
                         set(b, ra, v);
@@ -962,7 +1049,9 @@ fn compile_inner(proto: Value) -> Option<usize> {
             TAILCALL => {
                 // (a fast primitive's value, returned; a closure's frame in
                 // place of this one; or another primitive's value, returned)
-                if rb == 1 || rb == 2 || (rb == 3 && numeric) {
+                if let Some(kw) = kw_callee[i] {
+                    kw_read(&mut b, kw, &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1, fin));
+                } else if rb == 1 || rb == 2 || (rb == 3 && numeric) {
                     let slow = b.create_block();
                     let f = get(&mut b, ra);
                     let x = arg(&mut b, ra + 1);
@@ -1867,6 +1956,21 @@ fn live_in(ins: &[u32], nregs: usize) -> Vec<RegSet> {
     live
 }
 
+/// From native code (M10 part 6.4): `(kw x)` for a keyword kw, when x is an
+/// instance that isn't mutable (no owner to check) or a map; UNBOUND, which
+/// no slot or map holds, for anything else: then the call is made the
+/// general way.
+extern "C" fn kw_get(x: u64, kw: u64) -> u64 {
+    let (x, kw) = (Value(x), Value(kw));
+    if x.is(norn_rt::Kind::Instance) && !x.instance_mutable() {
+        return norn_rt::clos::slot_get(x, kw).unwrap_or(Value::NIL).0;
+    }
+    if x.is(norn_rt::Kind::Map) {
+        return x.map_get(kw).unwrap_or(Value::NIL).0;
+    }
+    Value::UNBOUND.0
+}
+
 /// Is FAST_PRIMS[k] arithmetic that gives a float when an argument is one?
 fn float_arith(k: usize, rb: usize) -> bool {
     match FAST_PRIMS[k] {
@@ -2113,6 +2217,21 @@ struct Link {
     f: Option<Value>,
     proto: Value,
     nregs: usize,
+    /// A generic function's call (M10 part 6.4): f is the effective method
+    /// its one dispatch-cache entry held, and the guard is on the generic
+    /// function, the argument's class and the epochs instead.
+    gf: Option<GfLink>,
+}
+
+/// A linked generic call's guard: the callee register holds `gf`, argument
+/// `pos` is an instance of `class`, and gf's methods and the classes
+/// haven't changed since (`epoch`, `class_epoch`).
+struct GfLink {
+    gf: Value,
+    pos: usize,
+    class: Value,
+    epoch: u64,
+    class_epoch: u64,
 }
 
 /// Linked closures, kept alive so their addresses (in compiled code) are
@@ -2151,7 +2270,7 @@ fn link_for(this: Value, ins: &[u32], consts: Value, i: usize, ra: usize, rb: us
     if op(ins[k]) == SELF {
         let nregs = this.proto_nregs();
         return (!this.proto_variadic() && this.proto_nfixed() == rb && nregs <= LINK_MAX_REGS)
-            .then_some(Link { f: None, proto: this, nregs });
+            .then_some(Link { f: None, proto: this, nregs, gf: None });
     }
     if op(ins[k]) != GETVAR {
         return None;
@@ -2161,13 +2280,27 @@ fn link_for(this: Value, ins: &[u32], consts: Value, i: usize, ra: usize, rb: us
         return None;
     }
     let f = var.var_root();
+    // (a generic function: linked to the effective method its dispatch has
+    // seen, for an instance of that one class; M10 part 6.4)
+    let (f, gf) = if f.is(Kind::Generic) {
+        if f.gf_rest() || f.gf_nreq() != rb {
+            return None;
+        }
+        let (pos, class, em, epoch, class_epoch) = norn_rt::clos::single_dispatch(f)?;
+        if pos >= rb || !class.is(Kind::Class) || class.word(norn_rt::clos::class::BUILTIN) != norn_rt::clos::class::NOT_BUILTIN {
+            return None;
+        }
+        (em, Some(GfLink { gf: f, pos, class, epoch, class_epoch }))
+    } else {
+        (f, None)
+    };
     if !f.is(Kind::Closure) {
         return None;
     }
     let ar = f.closure_template().template_arities();
     let proto = ar.arr_slice().iter().copied().find(|p| !p.proto_variadic() && p.proto_nfixed() == rb)?;
     let nregs = proto.proto_nregs();
-    (nregs <= LINK_MAX_REGS).then_some(Link { f: Some(f), proto, nregs })
+    (nregs <= LINK_MAX_REGS).then_some(Link { f: Some(f), proto, nregs, gf })
 }
 
 /// A linked call's guard failed in the code of proto whose entry is in

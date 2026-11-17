@@ -538,7 +538,12 @@ pub fn dispatch_key(state: Value, args: &[Value], key: &mut Vec<Value>) {
 }
 
 fn key_hash(key: &[Value]) -> u64 {
-    key.iter().fold(0x9e37_79b9_u64, |h, &k| crate::equal::mix64(h ^ hash(k)))
+    // (a class by its identity hash directly: hash would set up a frame for
+    // it; M10 part 6.4. Building and probing both hash this way.)
+    key.iter().fold(0x9e37_79b9_u64, |h, &k| {
+        let kh = if k.is(Kind::Class) { k.identity_hash() } else { hash(k) };
+        crate::equal::mix64(h ^ kh)
+    })
 }
 
 const C_NKEYS: usize = 0;
@@ -564,7 +569,12 @@ pub fn cache_lookup(cache: Value, key: &[Value]) -> Option<Value> {
         if k0 == Value::UNBOUND {
             return None;
         }
-        if (0..nk).all(|j| equal(cache.arr_get(base + j), key[j])) {
+        // (keys are classes, compared by identity, or eql values: identity
+        // first, so the usual hit allocates nothing; M10 part 6.4)
+        if (0..nk).all(|j| {
+            let c = cache.arr_get(base + j);
+            c == key[j] || equal(c, key[j])
+        }) {
             return Some(cache.arr_get(base + nk));
         }
         i = (i + 1) & (cap - 1);
@@ -633,6 +643,37 @@ pub fn cache_put(m: &mut Mutator, gf: Value, epoch: u64, class_epoch: u64, key: 
         {
             return true;
         }
+    }
+}
+
+/// What tier 1 can link a call of generic function gf to (M10 part 6.4):
+/// when its dispatch cache, current under this class epoch, holds one
+/// entry, on one argument position, with no eql specializers and no custom
+/// dispatch: (that position, the class there, the effective method, gf's
+/// method epoch, the class epoch). A call whose argument there is an
+/// instance of that class, with both epochs unchanged, is that method's.
+pub fn single_dispatch(gf: Value) -> Option<(usize, Value, Value, u64, u64)> {
+    if !gf.field(generic::DISPATCH).is_nil() {
+        return None;
+    }
+    let epoch = gf.gf_epoch();
+    let class_epoch = CLASS_EPOCH.load(Ordering::Acquire);
+    let state = gf.gf_state();
+    if state.arr_get(generic::S_CLASS_EPOCH).as_fixnum() as u64 != class_epoch || !state.arr_get(generic::S_EQLS).is_nil() {
+        return None;
+    }
+    let mask = state.arr_get(generic::S_MASK).as_fixnum() as u64;
+    if mask.count_ones() != 1 {
+        return None;
+    }
+    let cache = state.arr_get(generic::S_CACHE);
+    if cache.is_nil() {
+        return None;
+    }
+    let entries = cache_entries(cache);
+    match entries.as_slice() {
+        [(key, em)] if key.len() == 1 => Some((mask.trailing_zeros() as usize, key[0], *em, epoch, class_epoch)),
+        _ => None,
     }
 }
 

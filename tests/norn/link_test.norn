@@ -78,3 +78,60 @@
   (is (= true (many 300 (fn [_] (evens? 1000)))) "mutual, in tail position")
   (is (= 200000 (letfn [(deep [n] (if (zero? n) 0 (inc (deep (dec n)))))] (deep 200000)))
       "deep enough to need more stack segments"))
+
+;;; Generic calls (M10 part 6.4): a call of a generic function whose dispatch
+;;; has seen one class is linked to that class's effective method, behind a
+;;; guard on the function, the argument's class, and its methods' and the
+;;; classes' epochs. Each change below must take effect at once.
+
+(defgeneric describe-it (x))
+(defclass Beast () ((name :initform "beast")))
+(defclass Bird (Beast) ())
+(defmethod describe-it ((b Beast)) [:beast (:name b)])
+(defn via-describe [x] (describe-it x))
+
+(deftest linked-generic-calls-follow-their-changes
+  (let [b (Beast)]
+    (is (= [:beast "beast"] (many 300 (fn [_] (via-describe b)))))
+    (testing "another class at the same call site"
+      (is (= [:beast "beast"] (via-describe (Bird))) "an inherited method")
+      (is (thrown? Error (via-describe 5)) "no applicable method"))
+    (testing "a method redefined"
+      (redefine "(defmethod describe-it ((b Beast)) [:redefined (:name b)])")
+      (is (= [:redefined "beast"] (via-describe b)))
+      (is (= [:redefined "beast"] (many 300 (fn [_] (via-describe b))))))
+    (testing "a more specific method added"
+      (redefine "(defmethod describe-it ((b Bird)) :bird)")
+      (is (= :bird (via-describe (Bird))))
+      (is (= [:redefined "beast"] (via-describe b))))
+    (testing "a :before method added"
+      (redefine "(def before-count (atom 0))")
+      (redefine "(defmethod describe-it :before ((b Beast)) (swap! before-count inc))")
+      (via-describe b)
+      (is (= 1 @(var-get (resolve 'link-test/before-count)))))
+    (testing "the class redefined"
+      (redefine "(defclass Beast () ((name :initform \"beast\") (legs :initform 4)))")
+      (is (= [:redefined "beast"] (via-describe (Beast)))))))
+
+;;; Keyword reads (M10 part 6.4): (:k x) with a keyword constant is read
+;;; natively from an instance that isn't mutable, or a map; anything else
+;;; goes the general way.
+
+(defclass Spot () ((x :initform 1) (y :initform 2)))
+(defclass Box () ((v :initform 0 :mutable true)) (:mutable))
+(defn read-x [o] (:x o))
+(defn read-v [o] (:v o))
+
+(deftest keyword-reads
+  (is (= 1 (many 300 (fn [_] (read-x (Spot))))))
+  (is (= [7 nil nil 5] [(read-x (Spot :x 7)) (read-x nil) (read-x {}) (read-x {:x 5})]))
+  (is (nil? (read-x [1 2])) "a vector's get of a keyword")
+  (testing "a mutable instance: its owner checked as before"
+    (let [b (Box)]
+      (is (= 0 (many 300 (fn [_] (read-v b)))))
+      (is (thrown? Error (await (spawn-detached (read-v b))))
+          "another fiber can't read what this one owns")))
+  (testing "an instance from before its class changed"
+    (let [old (Spot :x 3)]
+      (redefine "(defclass Spot () ((y :initform 2)))")
+      (is (nil? (read-x old)) "a slot the class no longer has"))))
