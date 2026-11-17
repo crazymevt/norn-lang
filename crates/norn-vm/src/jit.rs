@@ -218,7 +218,7 @@ pub const PENDING_FLAG: u64 = 1 << 61;
 /// the interpreter polls, then carries on at the pc in the other bits.
 pub const POLL_FLAG: u64 = 1 << 62;
 
-pub const NPRIMS: usize = 35;
+pub const NPRIMS: usize = 37;
 /// The primitives with native fast paths, in `JitCtx::prims` order.
 pub const FAST_PRIMS: [&str; NPRIMS] = [
     "+", "-", "<", ">", "<=", ">=", "==", "=", "inc", "dec", "zero?", // (fixnums; floats, M10 part 5.2)
@@ -226,6 +226,7 @@ pub const FAST_PRIMS: [&str; NPRIMS] = [
     "quot", "rem", "mod", "even?", "odd?", // (fixnums, M10 part 7.2)
     "count", "nth", "first", "identical?", "nil?", "some?", "not", // (M10 part 4)
     "string?", "keyword?", "symbol?", "float?", "vector?", "regex?", "bytes?", "char?", "boolean?", "integer?", // (contracts' checks)
+    "reduced?", "unreduced", // (reduce's loop, every item)
 ];
 
 /// The trampoline: (native entry, regs, consts, ctx, pc) → pc, in the
@@ -1614,7 +1615,7 @@ fn fast_prims(
             "+" | "-" | "*" if rb == 3 => true,
             "even?" | "odd?" => rb == 1,
             "inc" | "dec" | "zero?" | "count" | "first" | "nil?" | "some?" | "not" | "string?" | "keyword?" | "symbol?"
-            | "float?" | "vector?" | "regex?" | "bytes?" | "char?" | "boolean?" | "integer?" => rb == 1,
+            | "float?" | "vector?" | "regex?" | "bytes?" | "char?" | "boolean?" | "integer?" | "reduced?" | "unreduced" => rb == 1,
             _ => rb == 2,
         })
         .collect();
@@ -1869,9 +1870,10 @@ fn fast_prims(
                 on_value(b, v);
             }
             // (a heap object of the kind: its layout word)
-            p @ ("string?" | "keyword?" | "symbol?" | "float?" | "vector?" | "regex?" | "bytes?") => {
+            p @ ("string?" | "keyword?" | "symbol?" | "float?" | "vector?" | "regex?" | "bytes?" | "reduced?") => {
                 use norn_rt::Kind;
                 let k = match p {
+                    "reduced?" => Kind::Reduced,
                     "string?" => Kind::String,
                     "keyword?" => Kind::Keyword,
                     "symbol?" => Kind::Symbol,
@@ -1889,6 +1891,17 @@ fn fast_prims(
                 b.switch_to_block(no);
                 let ff = b.ins().iconst(types::I64, fal);
                 on_value(b, ff);
+            }
+            // (a reduced value's payload; anything else, itself)
+            "unreduced" => {
+                let (yes, no) = (b.create_block(), b.create_block());
+                is_kind(b, x, norn_rt::Kind::Reduced, no);
+                b.ins().jump(yes, &[]);
+                b.switch_to_block(yes);
+                let v = b.ins().load(types::I64, mf, x, 2 * W - 1);
+                on_value(b, v);
+                b.switch_to_block(no);
+                on_value(b, x);
             }
             // (an immediate whose low byte says char)
             "char?" => {

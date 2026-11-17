@@ -641,7 +641,20 @@ win back compile time first: done, below.
   core.norn after boot.
 
 **Deferred to part 5 (with the user's agreement):**
-
+  **Measured (2026-11-17): not worth it now.** An experiment recorded IR
+  for core's 157 small functions after boot (expanded and analyzed, kept
+  against the closures the vars hold: 257 ms), so code compiled after
+  could inline them: the programs didn't move (log report and ledger 2%
+  either way, site 1%). Their time isn't in calls of small core
+  functions. A profile shows where it is: `reduce`'s loop (whose
+  per-item primitives, `reduced?`, `unreduced`, `seq`, `next`, a string's
+  `nth`, went through tier 1's general call: `reduced?` and `unreduced`
+  are now native, and `reduce` over a vector went 11.2 → 4.6 ns an item,
+  though the programs reduce over strings and lazy sequences) and the
+  generic contract wrapper (`%wrap-for/fn`, 10–18% of the log report's
+  and the ledger's samples by itself). The profiler also charges a
+  function without a loop to its caller (samples are taken at entries
+  and loop turns), so a step function's time shows as `reduce`'s.
 - **Signing norn.string, norn.math, norn.regex and norn.bytes** (todo).
   norn.string was signed in part 4 and reverted: a probe of 1,519 calls
   on edge inputs showed no change in behaviour (with `replace`'s pattern
