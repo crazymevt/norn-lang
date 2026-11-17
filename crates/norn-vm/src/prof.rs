@@ -27,6 +27,11 @@ use std::time::{Duration, Instant};
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Bumped once per interval; a carrier samples once per value it sees.
 static EPOCH: AtomicU64 = AtomicU64::new(0);
+/// Which profile is running: each has its own timer thread, which stops
+/// when this moves on. (Testing ACTIVE alone, a thread whose profile
+/// stopped and another started within its sleep went on, and every later
+/// profile sampled at twice the rate, three times…)
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 static PROFILE: Mutex<Option<Profile>> = Mutex::new(None);
 
 /// A stack this deep is cut, keeping its innermost frames.
@@ -142,10 +147,11 @@ pub(crate) fn start(interval_us: i64) -> Result<Value> {
         by_symbol: HashMap::new(),
         stacks: HashMap::new(),
     });
+    let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     std::thread::Builder::new()
         .name("norn-profiler".into())
         .spawn(move || {
-            while ACTIVE.load(Ordering::Acquire) {
+            while ACTIVE.load(Ordering::Acquire) && GENERATION.load(Ordering::Acquire) == generation {
                 std::thread::sleep(Duration::from_micros(interval_us));
                 EPOCH.fetch_add(1, Ordering::AcqRel);
                 norn_rt::safepoint::bump_attention();

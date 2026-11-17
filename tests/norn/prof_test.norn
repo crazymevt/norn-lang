@@ -93,9 +93,24 @@
     (if (zero? n) 0 (/ ending (double n)))))
 
 (deftest where-the-time-goes
+  ;; (compiled first: compiling isn't sampled, and with NORN_JIT_SYNC=1 and
+  ;; NORN_JIT_THRESHOLD=1 straight's would take much of the profile)
+  (renders 5)
+  (straights 5)
   (testing "a primitive's time, under its caller"
     (let [p (:profile (prof/sample (fn [] (renders 200)) :interval-us 500))]
       (is (< 0.6 (share-of p "prof-test/renders" ["prof-test/render"])) (pr-str (:stacks p)))))
   (testing "a function without a loop gets its own time"
     (let [p (:profile (prof/sample (fn [] (straights 200)) :interval-us 500))]
       (is (< 0.6 (share-of p "prof-test/straights" ["prof-test/straight"])) (pr-str (:stacks p))))))
+
+(deftest profiles-one-after-another
+  ;; (each at its own rate: a profile's timer thread stops with it, even
+  ;; when the next starts at once. Counted in spin's stacks alone, its
+  ;; carrier's: the process's other carriers, running other suites beside
+  ;; this one, sample too.)
+  (let [rate (fn [] (let [{:keys [profile]} (prof/sample (fn [] (spin 100)) :interval-us 1000)]
+                      (reduce + 0 (for [[s n] (:stacks profile) :when (some #{"prof-test/spin"} s)] n))))
+        rates (vec (repeatedly 4 rate))]
+    (is (< (apply max rates) 200) (pr-str rates))
+    (is (< 10 (apply min rates)) (pr-str rates))))

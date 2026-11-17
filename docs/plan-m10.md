@@ -759,6 +759,24 @@ win back compile time first: done, below.
   vector 165.0 → 33.8; `(reduce + (map inc v))` 45.0 → 21.2. Test:
   items_test's sequence-functions (each kind of collection, `for`'s
   modifiers at each level), passing on the binary before too.
+- **A hang seen once (2026-11-17), not reproduced.** In a full `cargo
+  test` run, images.rs's shaken-image test hung: its `norn --image
+  full.nimg` printed its first line, then spun at about 700% CPU for 17
+  minutes, and SIGQUIT printed no fiber dump. Run by hand right after, the
+  same image hung once more, then ran correctly 45 times; 120 runs eight
+  at a time, three runs of images.rs and a full cargo run didn't hang.
+  A guess, unconfirmed (no native sample was taken): a stop-the-world
+  collection waiting for the background compile thread, which is a
+  running participant while it compiles, with a compile that doesn't end
+  (a fixpoint that doesn't converge?), the collector's workers spinning.
+  Next time: `sample PID` before killing it (todo).
+- **The profiler's timer threads: fixed (2026-11-17).** A profile's timer
+  thread ran while any profile was active; one whose profile stopped and
+  another started within its sleep went on too, so every later profile
+  in a process sampled faster (prof_test's own run: 394, 473, 552, 621
+  samples for the same 100 ms). Each thread now stops when its profile's
+  generation passes. prof_test's profiles-one-after-another checks the
+  rate stays put; where-the-time-goes compiles its functions first.
 - **Inlining's limits are untuned:** 24 IR nodes, 96 for a contract
   wrapper, three calls deep, no inlining past 200 registers.
 - **Code size:** part 3's linked calls made tier 1's code 15% larger (4.8
