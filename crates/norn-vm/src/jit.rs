@@ -68,7 +68,7 @@ use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{AbiParam, Block, BlockArg, Function, InstBuilder, JumpTableData, MemFlagsData, Signature, UserFuncName, types};
 use cranelift_codegen::isa::OwnedTargetIsa;
 use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use norn_rt::Value;
 use norn_rt::func::{F_FN, F_PREV, F_PROTO, F_RESUME, HDR, VAR_DYNBOUND};
 use std::sync::{Mutex, OnceLock};
@@ -345,6 +345,12 @@ fn compile_inner(proto: Value) -> Option<usize> {
     // Linked calls (link_for), their closures kept alive; and a cell for
     // this code's entry, which a failed guard passes to relink.
     let my_nregs = proto.proto_nregs() as i32;
+    let nregs = my_nregs as usize;
+    if !regs_in_range(&ins, nregs) {
+        return None;
+    }
+    let ssa = ssa_enabled();
+    let fl = reg_flow(&ins, ssa);
     let links: Vec<Option<Link>> = if relinks(proto) < RELINK_LIMIT {
         let cs = proto.proto_consts();
         ins.iter()
@@ -391,15 +397,51 @@ fn compile_inner(proto: Value) -> Option<usize> {
     let exit = b.create_block(); // param: pc to hand back
     b.append_block_param(exit, types::I64);
 
+    // A Cranelift variable per register (see reg_flow): an entry loads them
+    // from the frame (those nothing reads are dropped).
+    let vars: Vec<Variable> = (0..nregs).map(|_| b.declare_var(types::I64)).collect();
+
     b.switch_to_block(entry);
     let p = b.block_params(entry).to_vec();
     let (regs, consts, ctx, pc) = (p[0], p[1], p[2], p[3]);
     let pc32 = b.ins().ireduce(types::I32, pc);
     let exit_pc = [BlockArg::Value(pc)];
     let default = b.func.dfg.block_call(exit, &exit_pc);
-    let table: Vec<_> = blocks.iter().map(|&blk| b.func.dfg.block_call(blk, &[])).collect();
+    // (a pc that isn't an entry stops at once: the interpreter runs on)
+    let stubs: Vec<Option<Block>> = (0..n).map(|k| fl.entries[k].then(|| b.create_block())).collect();
+    let table: Vec<_> = stubs
+        .iter()
+        .map(|s| match s {
+            Some(blk) => b.func.dfg.block_call(*blk, &[]),
+            None => b.func.dfg.block_call(exit, &exit_pc),
+        })
+        .collect();
     let jt = b.create_jump_table(JumpTableData::new(default, &table));
     b.ins().br_table(pc32, jt);
+    for (k, s) in stubs.iter().enumerate() {
+        if let Some(blk) = *s {
+            b.switch_to_block(blk);
+            for (r, &var) in vars.iter().enumerate() {
+                let v = b.ins().load(types::I64, mf, regs, r as i32 * W);
+                b.def_var(var, v);
+            }
+            b.ins().jump(blocks[k], &[]);
+        }
+    }
+    // A register's value; set one (written through to the frame: storing is
+    // cheap, reloading what was just stored isn't, and the frame stays
+    // exact); write back a set of deferred ones (none yet: see reg_flow).
+    let get = |b: &mut FunctionBuilder, r: i32| b.use_var(vars[r as usize]);
+    let set = |b: &mut FunctionBuilder, r: i32, v: cranelift_codegen::ir::Value| {
+        b.def_var(vars[r as usize], v);
+        b.ins().store(mf, v, regs, r * W);
+    };
+    let spill = |b: &mut FunctionBuilder, s: &RegSet| {
+        for r in s.iter() {
+            let v = b.use_var(vars[r]);
+            b.ins().store(mf, v, regs, r as i32 * W);
+        }
+    };
 
     let nil = Value::NIL.0 as i64;
     let tru = Value::TRUE.0 as i64;
@@ -505,20 +547,30 @@ fn compile_inner(proto: Value) -> Option<usize> {
         stop(b, 0);
     };
 
-    // Every return goes through one block (params: v, the register's byte
-    // offset, the pc for the interpreter): see ret_value, and its body
-    // after the instructions.
-    let ret = b.create_block();
+    // Every return goes through two shared blocks: ret_inline (param: v),
+    // when the caller's frame is below this one, and ret_helper (params: v,
+    // the register's byte offset, the pc for the interpreter) otherwise:
+    // see ret_value, and their bodies after the instructions.
+    let ret_inline = b.create_block();
+    b.append_block_param(ret_inline, types::I64);
+    let ret_helper = b.create_block();
     for _ in 0..3 {
-        b.append_block_param(ret, types::I64);
+        b.append_block_param(ret_helper, types::I64);
     }
 
     for (i, &w) in ins.iter().enumerate() {
         b.switch_to_block(blocks[i]);
         let (o, ra, rb) = (op(w), a(w) as i32, b_(w) as i32);
-        let bail = |b: &mut FunctionBuilder| {
+        let (din, dout) = (&fl.din[i], &fl.dout[i]);
+        // Stop at this instruction, the frame already written back; or write
+        // it back first (bail).
+        let stop_here = |b: &mut FunctionBuilder| {
             let v = b.ins().iconst(types::I64, i as i64);
             b.ins().jump(exit, &[BlockArg::Value(v)]);
+        };
+        let bail = |b: &mut FunctionBuilder| {
+            spill(b, din);
+            stop_here(b);
         };
         // Stop at this instruction with PENDING_FLAG: a primitive called
         // natively failed or asked to park (the Vm says which).
@@ -526,19 +578,31 @@ fn compile_inner(proto: Value) -> Option<usize> {
             let v = b.ins().iconst(types::I64, (i as u64 | PENDING_FLAG) as i64);
             b.ins().jump(exit, &[BlockArg::Value(v)]);
         };
-        // Return v from this frame (the shared block `ret`). `ra`: the
-        // register v goes back to if the interpreter must return it; at
-        // `fail_pc` it does: this RETURN, or the `RETURN ra` after a
-        // TAILCALL whose call has been made (re-running the TAILCALL would
-        // call the primitive twice).
-        let ret_value = |b: &mut FunctionBuilder, v: cranelift_codegen::ir::Value, ra: i32, fail_pc: usize| {
+        // Return v from this frame: inline when the caller's frame is below
+        // this one in the segment (not a run's bottom, not across segments)
+        // and v isn't a retry, this frame then gone; else through the helper,
+        // with registers `dirty` written back first (it may fail, and the
+        // interpreter return from here). `ra`: the register v goes back to
+        // if the interpreter must return it; at `fail_pc` it does: this
+        // RETURN, or the `RETURN ra` after a TAILCALL whose call has been
+        // made (re-running the TAILCALL would call the primitive twice).
+        let ret_value = |b: &mut FunctionBuilder, v: cranelift_codegen::ir::Value, ra: i32, fail_pc: usize, dirty: &RegSet| {
+            let is_retry = b.ins().icmp_imm_s(IntCC::Equal, v, Value::RETRY.0 as i64);
+            let prev = b.ins().load(types::I64, mf, regs, (F_PREV as i32 - HDR as i32) * W);
+            let below = b.ins().icmp_imm_s(IntCC::SignedLessThan, prev, 0);
+            let slow = b.ins().bor(is_retry, below);
+            let site_slow = b.create_block();
+            b.ins().brif(slow, site_slow, &[], ret_inline, &[BlockArg::Value(v)]);
+            b.switch_to_block(site_slow);
+            spill(b, dirty);
             let off = b.ins().iconst(types::I64, (ra * W) as i64);
             let fp = b.ins().iconst(types::I64, fail_pc as i64);
-            b.ins().jump(ret, &[BlockArg::Value(v), BlockArg::Value(off), BlockArg::Value(fp)]);
+            b.ins().jump(ret_helper, &[BlockArg::Value(v), BlockArg::Value(off), BlockArg::Value(fp)]);
         };
-        // A call of what's in register ra with rb arguments: the helper
-        // pushes a closure's frame (this one resumes after the call when
-        // it returns) or calls a primitive; or the interpreter does it.
+        // A call of what's in register ra with rb arguments, the frame
+        // written back: the helper pushes a closure's frame (this one
+        // resumes after the call when it returns) or calls a primitive; or
+        // the interpreter does it.
         let call_any = |b: &mut FunctionBuilder, ra: i32, rb: i32, i: usize| {
             let f = b.ins().load(types::I64, mf, ctx, CTX_CALL);
             let ra_v = b.ins().iconst(types::I64, ra as i64);
@@ -558,17 +622,18 @@ fn compile_inner(proto: Value) -> Option<usize> {
             let is_pending = b.ins().icmp_imm_s(IntCC::Equal, status, PENDING as i64);
             b.ins().brif(is_pending, pend, &[], other, &[]);
             b.switch_to_block(other);
-            bail(b);
+            stop_here(b);
             b.switch_to_block(pend);
             pending(b);
             b.switch_to_block(value);
             let v = b.ins().load(types::I64, mf, ctx, CTX_VALUE);
-            b.ins().store(mf, v, regs, ra * W);
+            set(b, ra, v);
             match next(i) {
                 Some(blk) => {
                     b.ins().jump(blk, &[]);
                 }
                 None => {
+                    spill(b, dout);
                     let v = b.ins().iconst(types::I64, (i + 1) as i64);
                     b.ins().jump(exit, &[BlockArg::Value(v)]);
                 }
@@ -583,6 +648,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 b.ins().jump(blk, &[]);
             }
             None => {
+                spill(b, dout);
                 let v = b.ins().iconst(types::I64, (i + 1) as i64);
                 b.ins().jump(exit, &[BlockArg::Value(v)]);
             }
@@ -593,13 +659,13 @@ fn compile_inner(proto: Value) -> Option<usize> {
         };
         match o {
             MOVE => {
-                let v = b.ins().load(types::I64, mf, regs, rb * W);
-                b.ins().store(mf, v, regs, ra * W);
+                let v = get(&mut b, rb);
+                set(&mut b, ra, v);
                 goto(&mut b, next(i));
             }
             LOADK => {
                 let v = b.ins().load(types::I64, mf, consts, bx(w) as i32 * W);
-                b.ins().store(mf, v, regs, ra * W);
+                set(&mut b, ra, v);
                 goto(&mut b, next(i));
             }
             LOADI | LOADNIL | LOADTRUE | LOADFALSE => {
@@ -610,7 +676,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
                     _ => fal,
                 };
                 let v = b.ins().iconst(types::I64, bits);
-                b.ins().store(mf, v, regs, ra * W);
+                set(&mut b, ra, v);
                 goto(&mut b, next(i));
             }
             GETVAR => {
@@ -630,14 +696,14 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 b.switch_to_block(s);
                 bail(&mut b);
                 b.switch_to_block(ok);
-                b.ins().store(mf, root, regs, ra * W);
+                set(&mut b, ra, root);
                 goto(&mut b, next(i));
             }
             GETUP | SELF => {
                 // The frame's closure is at regs - HDR (+F_FN = 0).
                 let clo = b.ins().load(types::I64, mf, regs, -(HDR as i32) * W);
                 let v = if o == SELF { clo } else { b.ins().load(types::I64, mf, clo, (2 + 2 + rb) * W - 1) };
-                b.ins().store(mf, v, regs, ra * W);
+                set(&mut b, ra, v);
                 goto(&mut b, next(i));
             }
             // (the interpreter runs it: its closure is only known at run
@@ -645,7 +711,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
             SETUP => bail(&mut b),
             JMP => goto(&mut b, target(sbx(w))),
             JMPF => {
-                let v = b.ins().load(types::I64, mf, regs, ra * W);
+                let v = get(&mut b, ra);
                 let is_nil = b.ins().icmp_imm_s(IntCC::Equal, v, nil);
                 let is_false = b.ins().icmp_imm_s(IntCC::Equal, v, fal);
                 let falsey = b.ins().bor(is_nil, is_false);
@@ -682,12 +748,17 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 if rb == 1 || rb == 2 {
                     let slow = b.create_block();
                     let store_next = |b: &mut FunctionBuilder, v| {
-                        b.ins().store(mf, v, regs, ra * W);
+                        set(b, ra, v);
                         goto(b, next(i));
                     };
-                    fast_prims(&mut b, mf, ctx, regs, ra, rb, slow, named_prim[i], &store_next);
+                    let (f, x) = (get(&mut b, ra), get(&mut b, ra + 1));
+                    let y = if rb == 2 { get(&mut b, ra + 2) } else { x };
+                    fast_prims(&mut b, mf, ctx, f, x, y, rb, slow, named_prim[i], &store_next);
                     b.switch_to_block(slow);
                 }
+                // (from here the frame is written back: the helpers and a
+                // linked callee's frame read it)
+                spill(&mut b, din);
                 let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
                 // (one general call, for a failed guard and a full segment)
                 let general = b.create_block();
@@ -733,9 +804,12 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 // place of this one; or another primitive's value, returned)
                 if rb == 1 || rb == 2 {
                     let slow = b.create_block();
-                    fast_prims(&mut b, mf, ctx, regs, ra, rb, slow, named_prim[i], &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1));
+                    let (f, x) = (get(&mut b, ra), get(&mut b, ra + 1));
+                    let y = if rb == 2 { get(&mut b, ra + 2) } else { x };
+                    fast_prims(&mut b, mf, ctx, f, x, y, rb, slow, named_prim[i], &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1, din));
                     b.switch_to_block(slow);
                 }
+                spill(&mut b, din);
                 let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
                 let f = b.ins().load(types::I64, mf, ctx, CTX_TAIL);
                 let ra_v = b.ins().iconst(types::I64, ra as i64);
@@ -755,12 +829,12 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 let is_pending = b.ins().icmp_imm_s(IntCC::Equal, status, PENDING as i64);
                 b.ins().brif(is_pending, pend, &[], other, &[]);
                 b.switch_to_block(other);
-                bail(&mut b);
+                stop_here(&mut b);
                 b.switch_to_block(pend);
                 pending(&mut b);
                 b.switch_to_block(value);
                 let v = b.ins().load(types::I64, mf, ctx, CTX_VALUE);
-                ret_value(&mut b, v, ra, i + 1);
+                ret_value(&mut b, v, ra, i + 1, &RegSet::default());
                 b.switch_to_block(pushed);
                 let new_regs = b.ins().load(types::I64, mf, ctx, CTX_NEXT_REGS);
                 let zero = b.ins().iconst(types::I64, 0);
@@ -776,7 +850,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
                     let (push, full) = (b.create_block(), b.create_block());
                     b.ins().brif(fits, push, &[], full, &[]);
                     b.switch_to_block(full);
-                    bail(&mut b);
+                    stop_here(&mut b);
                     b.switch_to_block(push);
                     for k in 0..rb {
                         let v = b.ins().load(types::I64, mf, regs, (ra + 1 + k) * W);
@@ -795,11 +869,11 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 }
             }
             RETURN => {
-                let v = b.ins().load(types::I64, mf, regs, ra * W);
-                ret_value(&mut b, v, ra, i);
+                let v = get(&mut b, ra);
+                ret_value(&mut b, v, ra, i, din);
             }
             GUARD if i + 2 < n => {
-                let v = b.ins().load(types::I64, mf, regs, ra * W);
+                let v = get(&mut b, ra);
                 let k = b.ins().load(types::I64, mf, consts, bx(w) as i32 * W);
                 let same = b.ins().icmp(IntCC::Equal, v, k);
                 b.ins().brif(same, blocks[i + 2], &[], blocks[i + 1], &[]);
@@ -807,35 +881,27 @@ fn compile_inner(proto: Value) -> Option<usize> {
             CLOSURE => {
                 // (the helper makes it, as the interpreter does: it
                 // allocates, which never collects)
+                spill(&mut b, din);
                 let f = b.ins().load(types::I64, mf, ctx, CTX_CLOSURE);
                 let ra_v = b.ins().iconst(types::I64, ra as i64);
                 let bx_v = b.ins().iconst(types::I64, bx(w) as i64);
                 b.ins().call_indirect(closure_ref, f, &[ctx, regs, ra_v, bx_v]);
+                let v = b.ins().load(types::I64, mf, regs, ra * W);
+                b.def_var(vars[ra as usize], v);
                 goto(&mut b, next(i));
             }
             _ => bail(&mut b),
         }
     }
 
-    // The return (ret_value). Inline, as Vm::do_return, when the caller's
-    // frame is below this one in the segment (not a run's bottom, not
-    // across segments) and v isn't a retry: write v to the register the
-    // caller's CALL names, and go on in the caller's code (or the
-    // interpreter, if it has none yet). Else the helper (jit_return).
+    // The return (ret_value). Inline, as Vm::do_return (ret_inline): write
+    // v to the register the caller's CALL names, and go on in the caller's
+    // code (or the interpreter, if it has none yet). Else the helper
+    // (jit_return, ret_helper).
     {
-        b.switch_to_block(ret);
-        let ps = b.block_params(ret).to_vec();
-        let (v, ra_off, fail_pc) = (ps[0], ps[1], ps[2]);
-        let helper_blk = b.create_block();
-        let try1 = b.create_block();
-        let is_retry = b.ins().icmp_imm_s(IntCC::Equal, v, Value::RETRY.0 as i64);
-        b.ins().brif(is_retry, helper_blk, &[], try1, &[]);
-        b.switch_to_block(try1);
+        b.switch_to_block(ret_inline);
+        let v = b.block_params(ret_inline)[0];
         let prev = b.ins().load(types::I64, mf, regs, (F_PREV as i32 - HDR as i32) * W);
-        let below = b.ins().icmp_imm_s(IntCC::SignedLessThan, prev, 0);
-        let inline = b.create_block();
-        b.ins().brif(below, helper_blk, &[], inline, &[]);
-        b.switch_to_block(inline);
         let base = b.ins().load(types::I64, mf, ctx, CTX_SEG_BASE);
         let off = b.ins().ishl_imm_u(prev, 2); // (prev = fp tagged: fp·2; fp·8 bytes)
         let cfr = b.ins().iadd(base, off);
@@ -864,7 +930,9 @@ fn compile_inner(proto: Value) -> Option<usize> {
         b.switch_to_block(ci);
         b.ins().store(mf, cregs, ctx, CTX_CUR_REGS);
         b.ins().return_(&[cpc]);
-        b.switch_to_block(helper_blk);
+        b.switch_to_block(ret_helper);
+        let ps = b.block_params(ret_helper).to_vec();
+        let (v, ra_off, fail_pc) = (ps[0], ps[1], ps[2]);
         let f = b.ins().load(types::I64, mf, ctx, CTX_RET);
         let call = b.ins().call_indirect(ret_ref, f, &[ctx, regs, v]);
         let caller = b.inst_results(call)[0];
@@ -904,8 +972,8 @@ fn b_(w: u32) -> usize {
     b(w)
 }
 
-/// The fixnum fast paths of a call (CALL or TAILCALL ra with rb = 1 or 2
-/// arguments) of one of FAST_PRIMS: when the callee is that primitive and
+/// The fixnum fast paths of a call (CALL or TAILCALL of f with rb = 1 or 2
+/// arguments, x and y; y is x when rb is 1) of one of FAST_PRIMS: when the callee is that primitive and
 /// the arguments are fixnums, the value goes to on_value; anything else
 /// (another callee, other arguments, an overflow) jumps to slow.
 #[allow(clippy::too_many_arguments)]
@@ -913,17 +981,15 @@ fn fast_prims(
     b: &mut FunctionBuilder,
     mf: MemFlagsData,
     ctx: cranelift_codegen::ir::Value,
-    regs: cranelift_codegen::ir::Value,
-    ra: i32,
+    f: cranelift_codegen::ir::Value,
+    x: cranelift_codegen::ir::Value,
+    y: cranelift_codegen::ir::Value,
     rb: i32,
     slow: Block,
     named: Option<usize>,
     on_value: &dyn Fn(&mut FunctionBuilder, cranelift_codegen::ir::Value),
 ) {
     let (tru, fal, nil) = (Value::TRUE.0 as i64, Value::FALSE.0 as i64, Value::NIL.0 as i64);
-    let f = b.ins().load(types::I64, mf, regs, ra * W);
-    let x = b.ins().load(types::I64, mf, regs, (ra + 1) * W);
-    let y = if rb == 2 { b.ins().load(types::I64, mf, regs, (ra + 2) * W) } else { x };
     let boolv = |b: &mut FunctionBuilder, c| {
         let t = b.ins().iconst(types::I64, tru);
         let ff = b.ins().iconst(types::I64, fal);
@@ -1158,6 +1224,149 @@ fn fast_prims(
         b.switch_to_block(miss);
     }
     b.ins().jump(slow, &[]);
+}
+
+// ---- registers in SSA (M10 part 5.1) ------------------------------------------------------
+
+/// Enter native code only at some instructions (reg_flow)? (`NORN_JIT_SSA=0`:
+/// anywhere, as before part 5, for comparison.)
+fn ssa_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("NORN_JIT_SSA").as_deref() != Ok("0"))
+}
+
+/// A set of registers (at most 256).
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct RegSet([u64; 4]);
+
+impl RegSet {
+    fn insert(&mut self, r: usize) {
+        self.0[r >> 6] |= 1 << (r & 63);
+    }
+    fn union(&self, o: &RegSet) -> RegSet {
+        RegSet([self.0[0] | o.0[0], self.0[1] | o.0[1], self.0[2] | o.0[2], self.0[3] | o.0[3]])
+    }
+    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..256).filter(|&r| self.0[r >> 6] & (1 << (r & 63)) != 0)
+    }
+}
+
+/// What compile_inner needs to keep registers in SSA values: where native
+/// code may be entered (`entries`), and the registers whose writes are
+/// deferred that may hold values the frame doesn't yet (written since the
+/// last entry or write-back) as each instruction starts (`din`) and ends
+/// (`dout`). Every way out of native code writes those back first, so the
+/// frame is exact wherever it stops. Other registers' writes go through to
+/// the frame at once. (Nothing is deferred yet: unboxed floats will be.)
+///
+/// Between entries a register's value is an SSA value: reads don't go
+/// back to the frame. The fewer entries, the more an analysis of the code
+/// between them knows (at an entry, the interpreter may have left
+/// anything in any register).
+///
+/// Entries: the first instruction; the one after each instruction native
+/// code can stop at (the interpreter runs that one, then comes back), which
+/// includes every call (its frame resumes after it); and a loop's head
+/// (after the safepoint at its back-edge stopped). At any other pc native
+/// code stops at once, and the interpreter runs on to an entry.
+struct RegFlow {
+    entries: Vec<bool>,
+    din: Vec<RegSet>,
+    dout: Vec<RegSet>,
+}
+
+/// Instruction i's jump target, if inside the code.
+fn jump_target(i: usize, w: u32, n: usize) -> Option<usize> {
+    let t = i as isize + 1 + sbx(w);
+    (t >= 0 && (t as usize) < n).then_some(t as usize)
+}
+
+/// The register an instruction writes natively, if any (CLOSURE's helper
+/// writes it in the frame).
+fn defines(w: u32) -> Option<usize> {
+    match op(w) {
+        MOVE | LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF | CALL => Some(a(w)),
+        _ => None,
+    }
+}
+
+/// Every register an instruction reads or writes natively is below nregs?
+/// (else it isn't compiled)
+fn regs_in_range(ins: &[u32], nregs: usize) -> bool {
+    ins.iter().enumerate().all(|(i, &w)| match op(w) {
+        MOVE => a(w) < nregs && b(w) < nregs,
+        LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF | CLOSURE | JMPF | RETURN => a(w) < nregs,
+        GUARD if i + 2 < ins.len() => a(w) < nregs,
+        CALL | TAILCALL => a(w) + b(w) < nregs,
+        _ => true,
+    })
+}
+
+fn reg_flow(ins: &[u32], ssa: bool) -> RegFlow {
+    let n = ins.len();
+    if !ssa {
+        return RegFlow { entries: vec![true; n], din: vec![RegSet::default(); n], dout: vec![RegSet::default(); n] };
+    }
+    let mut entries = vec![false; n];
+    if n > 0 {
+        entries[0] = true;
+    }
+    for (i, &w) in ins.iter().enumerate() {
+        match op(w) {
+            MOVE | LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETUP | SELF | CLOSURE | JMP | JMPF | RETURN => {}
+            GUARD if i + 2 < n => {}
+            LOOP => {
+                if let Some(t) = jump_target(i, w, n) {
+                    entries[t] = true;
+                }
+            }
+            // (GETVAR's slow path, calls, and what the interpreter runs)
+            _ => {
+                if i + 1 < n {
+                    entries[i + 1] = true;
+                }
+            }
+        }
+    }
+    let succ = |i: usize, w: u32| -> [Option<usize>; 2] {
+        let next = (i + 1 < n).then_some(i + 1);
+        match op(w) {
+            JMP | LOOP => [jump_target(i, w, n), None],
+            JMPF => [jump_target(i, w, n), next],
+            GUARD if i + 2 < n => [next, Some(i + 2)],
+            MOVE | LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF | CLOSURE | CALL => [next, None],
+            _ => [None, None],
+        }
+    };
+    // (whether instruction i's write to its register is deferred: never yet)
+    let deferred = |_i: usize, _w: u32| false;
+    let mut din = vec![RegSet::default(); n];
+    let mut dout = vec![RegSet::default(); n];
+    loop {
+        let mut changed = false;
+        for (i, &w) in ins.iter().enumerate() {
+            // (CLOSURE writes everything back for its helper, which writes
+            // its register in the frame: then nothing differs)
+            let mut o = if op(w) == CLOSURE { RegSet::default() } else { din[i] };
+            if let Some(r) = defines(w)
+                && deferred(i, w)
+            {
+                o.insert(r);
+            }
+            dout[i] = o;
+            for s in succ(i, w).into_iter().flatten() {
+                let u = din[s].union(&o);
+                if u != din[s] {
+                    din[s] = u;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    RegFlow { entries, din, dout }
 }
 
 /// Native functions' signature: (regs, consts, ctx, pc) → pc, in

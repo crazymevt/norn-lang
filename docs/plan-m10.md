@@ -104,6 +104,17 @@ baseline compared.
    norn.string signed was still 10–25 ns slower a call at tier 1 for its
    thinnest functions (and 50–90 ns at tier 0); part 5's types are to
    drop the checks they prove.
+8. **Signatures are speculation, part 5 (decided when it started):**
+   within its module a function's signature isn't checked, so tier 1
+   assumes its parameters' types, checks them once on entry, and when a
+   check fails stops there and compiles the function again without the
+   assumption. No change in behaviour.
+9. **Slot reads of known classes move to part 6** (decided when part 5
+   started), with its inline caches keyed on layout, which cover known
+   and unknown classes alike.
+10. **Signing's "no slower" is measured at tier 1** (decided when part 5
+    started), the default when M10 ends: at tier 0 the checks types can't
+    prove still cost a primitive call each.
 
 ## Status
 
@@ -222,6 +233,54 @@ baseline compared.
   binary there), so that is the state the cases before them leave.
   norn.core isn't inlined (the seed compiles it at boot). Tests:
   `tests/norn/inline_test.norn`, and prof_test's inlined-calls check.
+- **5, types and unboxing: started (2026-11-17).** At the start, tier 1:
+  Mandelbrot 255 ms (125× SBCL), a float `*` 30 ns, the empty loop 4.7
+  ns a turn. Tier 1 can be entered at any instruction (the interpreter
+  goes back into native code after each one it runs), so every
+  instruction loads and stores the frame's registers: values can't stay
+  in machine registers, and floats can't stay unboxed. In four steps:
+  - **5.1, registers in SSA: done.** Native code is entered only at some
+    instructions (the first, the one after each that can stop native
+    code, a loop's head after a safepoint stop); at any other pc it stops
+    at once and the interpreter runs on to one (`reg_flow` in jit.rs).
+    Between entries a register's value is a Cranelift variable: reads
+    don't go back to the frame. Writes still go through to it: deferring
+    them (each stop writing back what changed) was tried, and was slower
+    where loops call generic code (Mandelbrot 273 ms against 251: every
+    float operation's call wrote back a dozen registers), while a store is
+    cheap and reloading what was just stored is what cost. So the frame
+    stays exact (GC, debugger, backtraces as before); the write-back
+    machinery stays for 5.2's unboxed floats, the one kind of register
+    whose writes are deferred. `NORN_JIT_SSA=0` enters anywhere, as
+    before, for comparison. **Measured** (tier 1): the empty loop 4.7 →
+    2.5 ns a turn (1.7× the baseline), a plain call 4.8 → 2.9 ns (5.9×),
+    the programs 1.2–1.47× (Mandelbrot unchanged: its floats are 5.2's).
+    The suites pass at tier 1, at `NORN_JIT_THRESHOLD=1` and with
+    `NORN_JIT_SSA=0`. **Costs:** code 10% larger (16.1 MB for
+    everything at `NORN_JIT_THRESHOLD=1`), and compiling everything 10%
+    longer (5.2 → 5.7 s): entry stubs, and Cranelift building the SSA.
+  - **5.2, types in tier 1, floats unboxed.** A forward analysis of the
+    bytecode gives each register a type at each instruction (fixnum,
+    float, boolean, nil, a heap kind, anything) from literals, the fast
+    primitives' results and the checks already passed. Float arithmetic
+    and comparisons run natively; a register known to hold a float is
+    an f64, boxed only when written back or passed on; checks the types
+    prove go.
+  - **5.3, types in the IR.** compiler.norn infers types from literals,
+    primitives' result types, signatures (results: the callee's contract
+    checks them; parameters: speculation, decision 8), `(declare (type
+    …))` and tests passed (`(if (string? x) …)`). A contract check at an
+    inlined call site that the types prove is dropped (both tiers; a test
+    of a literal is decided when compiling), and the facts tier 1 can't
+    see in the bytecode (parameters' speculated types, calls' result
+    types) go with the proto.
+  - **5.4, signing** norn.string, norn.math, norn.regex and norn.bytes,
+    with part 4's probe as a test.
+  **Done-check (proposed):** Mandelbrot at tier 1 10× its baseline or
+  better (under 30 ms); float arithmetic 5×; the empty loop 2×; the four
+  libraries signed with their thinnest functions no slower at tier 1
+  (decision 10); the tiers agree on every suite; the debugger,
+  backtraces, `restart-frame`, the profiler and coverage as before.
 
 ## Open after part 4 (2026-11-16)
 
