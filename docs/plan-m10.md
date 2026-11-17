@@ -89,6 +89,12 @@ baseline compared.
    recompile (part 3).
 4. **M9b stays open** until `norn lsp` has VS Code and Zed extensions,
    checked in those editors (todo).
+5. **Every var is linked, behind a guard** (part 3, decided when it
+   started): sealing is a set of namespace names, and code at the REPL or in
+   a script is never sealed, though the done-check's call rows measure it.
+   A guard (one compare) makes linking safe for any var, and a
+   redefinition takes effect at once; sealing stays for api-diff and
+   inlining.
 
 ## Status
 
@@ -163,3 +169,25 @@ baseline compared.
   only, which gave fast native code a fraction of a loaded carrier's time
   (prof_test missed its busy fiber about one run in four in the full
   suite): a slice now also lasts at least 0.5 ms (runtime.md §5.1).
+- **3, direct linking: done,** for every var behind a guard (decision 5),
+  not only sealed modules' with recorded dependents. Tier 1 compiles a call
+  whose callee was loaded by `GETVAR` (or `SELF`) against the closure the
+  var holds then: a guard compares the register with it, and native code
+  writes the callee's frame itself and jumps into its code. Returns pop
+  inline. A redefinition fails the guard, so the new function is called at
+  once (a loop already running too), and the caller recompiles against it
+  (`relink`; 8 at most per proto). The interpreter's state lags behind
+  inline frames; every helper syncs it first. **Measured** (tier 1 against
+  the baseline): a plain call 2.4× (17.5 → 7.2 ns), another module's 3.6×,
+  `(fib 27)` 11.5 → 5.3 ms; the programs 1.09–1.29×; the rope workloads
+  1.38×; compiling and loading `http.norn` 1.43×. That meets the
+  done-check's 3× for calls across modules, not yet for calls within one
+  (2.4×): the rest is inlining (part 4) and the arguments' boxing (part 5).
+  The code is 15% larger than part 2's, and compiling takes longer: at
+  `NORN_JIT_THRESHOLD=1` the full suite starves prof_test's busy fiber now
+  and then (compiles aren't preemptible), which the default threshold
+  avoids. `tests/norn/link_test.norn` checks redefinition (in a running
+  loop too, and of a sealed module's function), arities, tail calls and
+  deep recursion at both tiers, and that tier 1 linked and relinked.
+  conc_test's debugger check now counts its own fiber's entry, not the
+  process's (other suites park fibers in the debugger beside it).

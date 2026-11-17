@@ -515,12 +515,15 @@ M4:
 
 Tight loops and call-heavy code gain 3 to 10 times. Library-heavy work
 barely moves. Since this survey, calls and returns between compiled
-functions stay in native code: a call to a closure takes 17 ns instead of
-24, and whole programs (a log report, a ledger, a static site,
-Mandelbrot) run 4–17% faster at tier 1 than they did. When this chapter
+functions stay in native code, and a call through a var is compiled
+against the function the var holds, behind a check that it still holds
+it: a call of a function defined with `defn` takes 7 ns instead of 18 at
+tier 1, and whole programs (a log report, a ledger, a static site,
+Mandelbrot) run 9–29% faster than they did. Redefining a function at the
+REPL still takes effect at once, in every caller. When this chapter
 was written, the author measured `(fib 20)` at 2.2 ms at tier 0 and 0.9 ms at tier 1 on the same kind of
-machine, while other work was running; with native calls, on an idle
-machine, it takes 1.2 ms and 0.45 ms. Floats are still boxed, which is why
+machine, while other work was running; with native, linked calls, on an
+idle machine, it takes 1.2 ms and 0.2 ms. Floats are still boxed, which is why
 float arithmetic gains less than fixnum arithmetic.
 
 Tier 0 stays the default until tier 1 has seen more use. Try tier 1 on your

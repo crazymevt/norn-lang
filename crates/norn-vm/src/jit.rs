@@ -39,6 +39,21 @@
 //!   PENDING_FLAG at its instruction, and the interpreter handles it as if
 //!   it had made the call (Vm::jit_pending), without calling it again.
 //!
+//! - linked calls and inline returns (M10 part 3). A CALL or TAILCALL whose
+//!   callee register was last loaded by GETVAR, of a var then holding a
+//!   closure with an arity for its arguments, or by SELF, is compiled
+//!   against that closure (link_for). A guard compares the register with it
+//!   (one compare); when it holds and the frame fits in the segment, native
+//!   code writes the frame itself, exactly as `push_frame` would, and goes
+//!   into the callee's code (or stops for the interpreter, if the callee
+//!   has none yet). Linked closures are kept alive (LINKED), so their
+//!   addresses can't be reused. A failed guard (the var was redefined)
+//!   makes the call the general way at once, and asks for the caller to be
+//!   compiled again (relink). A return pops its frame inline when the
+//!   caller's is below it in the segment. The interpreter's state (`St`)
+//!   then lags behind: every helper first syncs it from the registers it's
+//!   given, and run_inner from where native code stopped.
+//!
 //! Everything else (`apply`, `eval`, `throw`, `def`, a stack overflow,
 //! failed guards) goes back to the interpreter. When native code stops,
 //! `JitCtx::cur_regs` says which frame it stopped in.
@@ -55,7 +70,7 @@ use cranelift_codegen::isa::OwnedTargetIsa;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use norn_rt::Value;
-use norn_rt::func::{HDR, VAR_DYNBOUND};
+use norn_rt::func::{F_FN, F_PREV, F_PROTO, F_RESUME, HDR, VAR_DYNBOUND};
 use std::sync::{Mutex, OnceLock};
 
 /// What native code needs from its carrier. `repr(C)`: offsets are baked
@@ -84,6 +99,13 @@ pub struct JitCtx {
     pub vm: u64,
     /// CLOSURE's helper (crate::vm::jit_closure).
     pub closure_fn: u64,
+    /// The current stack segment's frames: from seg_base up to seg_end (a
+    /// linked call pushes its frame inline when it fits; a return pops
+    /// inline within it). The Vm keeps them (Vm::run_inner, jit_next).
+    pub seg_base: u64,
+    pub seg_end: u64,
+    /// A linked call's guard failed (relink).
+    pub relink_fn: u64,
 }
 
 impl JitCtx {
@@ -104,6 +126,9 @@ impl JitCtx {
             next_regs: 0,
             vm: 0,
             closure_fn: crate::vm::jit_closure as *const () as u64,
+            seg_base: 0,
+            seg_end: 0,
+            relink_fn: relink as *const () as u64,
         }
     }
 }
@@ -124,6 +149,17 @@ const CTX_RET: i32 = (9 + NPRIMS as i32) * W;
 const CTX_VALUE: i32 = (10 + NPRIMS as i32) * W;
 const CTX_NEXT_REGS: i32 = (11 + NPRIMS as i32) * W;
 const CTX_CLOSURE: i32 = (13 + NPRIMS as i32) * W;
+const CTX_SEG_BASE: i32 = (14 + NPRIMS as i32) * W;
+// Offsets into heap objects from their tagged pointers (tag 1, two header
+// words): a proto's code, constants and native word; an array's first
+// element; a code object's first instruction.
+const PROTO_CONSTS: i32 = (2 + 4) * W - 1;
+const PROTO_CODE: i32 = (2 + 5) * W - 1;
+const PROTO_NATIVE: i32 = (2 + 7) * W - 1;
+const ARR_DATA: i32 = (2 + 1) * W - 1;
+const CODE_INS: i32 = (2 + 1) * W - 1;
+const CTX_SEG_END: i32 = (15 + NPRIMS as i32) * W;
+const CTX_RELINK: i32 = (16 + NPRIMS as i32) * W;
 
 // (the offsets above are the fields' places in JitCtx)
 const _: () = {
@@ -137,6 +173,9 @@ const _: () = {
     assert!(std::mem::offset_of!(JitCtx, value) as i32 == CTX_VALUE);
     assert!(std::mem::offset_of!(JitCtx, next_regs) as i32 == CTX_NEXT_REGS);
     assert!(std::mem::offset_of!(JitCtx, closure_fn) as i32 == CTX_CLOSURE);
+    assert!(std::mem::offset_of!(JitCtx, seg_base) as i32 == CTX_SEG_BASE);
+    assert!(std::mem::offset_of!(JitCtx, seg_end) as i32 == CTX_SEG_END);
+    assert!(std::mem::offset_of!(JitCtx, relink_fn) as i32 == CTX_RELINK);
 };
 
 /// What the call helpers say happened (crate::vm::jit_call, jit_tail).
@@ -166,6 +205,10 @@ pub type Trampoline = unsafe extern "C" fn(usize, *mut Value, *const Value, *mut
 pub static COMPILED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub static REJECTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub static CODE_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Call sites compiled linked, and protos compiled again after a linked
+/// call's guard failed (jit-stats).
+pub static LINKED_SITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub static RELINKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Is tier 1 on? (`NORN_TIER=1`; tier 0 is the default for now.)
 pub fn enabled() -> bool {
@@ -288,6 +331,28 @@ fn compile_inner(proto: Value) -> Option<usize> {
     let tail_ref = b.import_signature(helper(5));
     let ret_ref = b.import_signature(helper(3));
     let closure_ref = b.import_signature(helper(4));
+    let relink_ref = b.import_signature(helper(2));
+
+    // Linked calls (link_for), their closures kept alive; and a cell for
+    // this code's entry, which a failed guard passes to relink.
+    let my_nregs = proto.proto_nregs() as i32;
+    let links: Vec<Option<Link>> = if relinks(proto) < RELINK_LIMIT {
+        let cs = proto.proto_consts();
+        ins.iter()
+            .enumerate()
+            .map(|(i, &w)| if matches!(op(w), CALL | TAILCALL) { link_for(proto, &ins, cs, i, a(w), b_(w)) } else { None })
+            .collect()
+    } else {
+        (0..n).map(|_| None).collect()
+    };
+    if links.iter().any(Option::is_some) {
+        let mut g = LINKED.lock().unwrap();
+        let set = g.get_or_insert_with(Default::default);
+        for f in links.iter().flatten().filter_map(|lk| lk.f) {
+            set.insert(f.0);
+        }
+    }
+    let cell: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::new(std::sync::atomic::AtomicU64::new(0)));
 
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -350,6 +415,73 @@ fn compile_inner(proto: Value) -> Option<usize> {
         stop(b, pcv);
     };
 
+    // A linked call's guard: the callee register holds the linked closure.
+    // Returns the block that goes on when it does; the builder is left in
+    // the block for when it doesn't (which first asks for a relink).
+    let linked_guard = |b: &mut FunctionBuilder, lk: &Link, ra: i32| -> (Block, cranelift_codegen::ir::Value) {
+        let f = b.ins().load(types::I64, mf, regs, ra * W);
+        let want = match lk.f {
+            Some(f) => b.ins().iconst(types::I64, f.0 as i64),
+            None => b.ins().load(types::I64, mf, regs, (F_FN as i32 - HDR as i32) * W),
+        };
+        let hit = b.ins().icmp(IntCC::Equal, f, want);
+        let (fast, miss) = (b.create_block(), b.create_block());
+        b.ins().brif(hit, fast, &[], miss, &[]);
+        b.switch_to_block(miss);
+        if lk.f.is_some() {
+            let rf = b.ins().load(types::I64, mf, ctx, CTX_RELINK);
+            let pv = b.ins().iconst(types::I64, proto.0 as i64);
+            let cv = b.ins().iconst(types::I64, cell as *const std::sync::atomic::AtomicU64 as i64);
+            b.ins().call_indirect(relink_ref, rf, &[pv, cv]);
+        }
+        (fast, f)
+    };
+    // Go into a linked callee whose frame is at new_regs, at pc 0: its entry
+    // safepoint (as `enter`), then its code, or the interpreter if it has
+    // none yet (which counts the entry towards compiling it).
+    let enter_linked = |b: &mut FunctionBuilder, new_regs: cranelift_codegen::ir::Value, lk: &Link| {
+        let stop = |b: &mut FunctionBuilder, r: i64| {
+            b.ins().store(mf, new_regs, ctx, CTX_CUR_REGS);
+            let rv = b.ins().iconst(types::I64, r);
+            b.ins().return_(&[rv]);
+        };
+        let bp = b.ins().load(types::I64, mf, ctx, 0);
+        let budget = b.ins().load(types::I64, mf, bp, 0);
+        let budget = b.ins().iadd_imm_s(budget, -1);
+        b.ins().store(mf, budget, bp, 0);
+        let ap = b.ins().load(types::I64, mf, ctx, W);
+        let att = b.ins().atomic_load(types::I64, mf, ap);
+        let sp = b.ins().load(types::I64, mf, ctx, 2 * W);
+        let seen = b.ins().load(types::I64, mf, sp, 0);
+        let fresh = b.ins().icmp(IntCC::Equal, att, seen);
+        let left = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, budget, 0);
+        let go = b.ins().band(fresh, left);
+        let (ok, due) = (b.create_block(), b.create_block());
+        b.ins().brif(go, ok, &[], due, &[]);
+        b.switch_to_block(due);
+        stop(b, POLL_FLAG as i64);
+        b.switch_to_block(ok);
+        let naddr = b.ins().iconst(types::I64, lk.proto.atomic_word(7) as *const std::sync::atomic::AtomicU64 as i64);
+        let nat = b.ins().atomic_load(types::I64, mf, naddr);
+        let compiled = b.ins().icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, nat, MIN_ENTRY as i64);
+        let (native, interp) = (b.create_block(), b.create_block());
+        b.ins().brif(compiled, native, &[], interp, &[]);
+        b.switch_to_block(native);
+        let cs = b.ins().iconst(types::I64, lk.proto.proto_consts().arr_ptr() as i64);
+        let zero = b.ins().iconst(types::I64, 0);
+        b.ins().return_call_indirect(native_ref, nat, &[new_regs, cs, ctx, zero]);
+        b.switch_to_block(interp);
+        stop(b, 0);
+    };
+
+    // Every return goes through one block (params: v, the register's byte
+    // offset, the pc for the interpreter): see ret_value, and its body
+    // after the instructions.
+    let ret = b.create_block();
+    for _ in 0..3 {
+        b.append_block_param(ret, types::I64);
+    }
+
     for (i, &w) in ins.iter().enumerate() {
         b.switch_to_block(blocks[i]);
         let (o, ra, rb) = (op(w), a(w) as i32, b_(w) as i32);
@@ -363,31 +495,15 @@ fn compile_inner(proto: Value) -> Option<usize> {
             let v = b.ins().iconst(types::I64, (i as u64 | PENDING_FLAG) as i64);
             b.ins().jump(exit, &[BlockArg::Value(v)]);
         };
-        // Return v from this frame: the helper pops it and delivers v to the
-        // caller, which goes on natively (or the interpreter returns).
-        // `tail`: v is the value of the TAILCALL here, whose call has been
-        // made, so when the interpreter must return it, it does so from
-        // the `RETURN ra` that follows (re-running the TAILCALL would call
-        // the primitive twice).
-        let ret_value = |b: &mut FunctionBuilder, v: cranelift_codegen::ir::Value, tail: Option<i32>| {
-            let f = b.ins().load(types::I64, mf, ctx, CTX_RET);
-            let call = b.ins().call_indirect(ret_ref, f, &[ctx, regs, v]);
-            let caller = b.inst_results(call)[0];
-            let failed = b.ins().icmp_imm_s(IntCC::Equal, caller, 0);
-            let (no, yes) = (b.create_block(), b.create_block());
-            b.ins().brif(failed, no, &[], yes, &[]);
-            b.switch_to_block(no);
-            match tail {
-                Some(ra) => {
-                    b.ins().store(mf, v, regs, ra * W);
-                    let next_pc = b.ins().iconst(types::I64, (i + 1) as i64);
-                    b.ins().jump(exit, &[BlockArg::Value(next_pc)]);
-                }
-                None => bail(b),
-            }
-            b.switch_to_block(yes);
-            let pcv = b.ins().load(types::I64, mf, ctx, CTX_NEXT_PC);
-            enter(b, caller, pcv, false);
+        // Return v from this frame (the shared block `ret`). `ra`: the
+        // register v goes back to if the interpreter must return it; at
+        // `fail_pc` it does: this RETURN, or the `RETURN ra` after a
+        // TAILCALL whose call has been made (re-running the TAILCALL would
+        // call the primitive twice).
+        let ret_value = |b: &mut FunctionBuilder, v: cranelift_codegen::ir::Value, ra: i32, fail_pc: usize| {
+            let off = b.ins().iconst(types::I64, (ra * W) as i64);
+            let fp = b.ins().iconst(types::I64, fail_pc as i64);
+            b.ins().jump(ret, &[BlockArg::Value(v), BlockArg::Value(off), BlockArg::Value(fp)]);
         };
         // A call of what's in register ra with rb arguments: the helper
         // pushes a closure's frame (this one resumes after the call when
@@ -529,23 +645,65 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 b.switch_to_block(t);
                 goto(&mut b, target(sbx(w)));
             }
-            CALL if rb == 1 || rb == 2 => {
-                let slow = b.create_block();
-                let store_next = |b: &mut FunctionBuilder, v| {
-                    b.ins().store(mf, v, regs, ra * W);
-                    goto(b, next(i));
-                };
-                fast_prims(&mut b, mf, ctx, regs, ra, rb, slow, &store_next);
-                b.switch_to_block(slow);
+            CALL => {
+                // (a linked callee's frame pushed here, when the guard holds
+                // and it fits; else as any call)
+                let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
+                if rb == 1 || rb == 2 {
+                    let slow = b.create_block();
+                    let store_next = |b: &mut FunctionBuilder, v| {
+                        b.ins().store(mf, v, regs, ra * W);
+                        goto(b, next(i));
+                    };
+                    fast_prims(&mut b, mf, ctx, regs, ra, rb, slow, &store_next);
+                    b.switch_to_block(slow);
+                }
+                // (one general call, for a failed guard and a full segment)
+                let general = b.create_block();
+                b.ins().jump(general, &[]);
+                b.switch_to_block(general);
                 call_any(&mut b, ra, rb, i);
+                if let (Some(lk), Some((fast, fv))) = (links[i].as_ref(), linked) {
+                    b.switch_to_block(fast);
+                    let new_regs = b.ins().iadd_imm_s(regs, ((my_nregs + HDR as i32) * W) as i64);
+                    let end = b.ins().iadd_imm_s(new_regs, (lk.nregs as i32 * W) as i64);
+                    let seg_end = b.ins().load(types::I64, mf, ctx, CTX_SEG_END);
+                    let fits = b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, seg_end);
+                    let push = b.create_block();
+                    b.ins().brif(fits, push, &[], general, &[]);
+                    b.switch_to_block(push);
+                    // (as Vm::push_frame: this frame resumes after the call)
+                    let resume = b.ins().iconst(types::I64, Value::fix(i as i64 + 1).0 as i64);
+                    b.ins().store(mf, resume, regs, (F_RESUME as i32 - HDR as i32) * W);
+                    let base = b.ins().load(types::I64, mf, ctx, CTX_SEG_BASE);
+                    let fr = b.ins().iadd_imm_s(regs, -(HDR as i64) * W as i64);
+                    let rel = b.ins().isub(fr, base);
+                    let prev = b.ins().ushr_imm_u(rel, 2); // (fp tagged: bytes / 8 · 2)
+                    let hdr = (my_nregs) * W; // (the new frame's header, from regs)
+                    b.ins().store(mf, fv, regs, hdr + F_FN as i32 * W);
+                    let pv = b.ins().iconst(types::I64, lk.proto.0 as i64);
+                    b.ins().store(mf, pv, regs, hdr + F_PROTO as i32 * W);
+                    let zero = b.ins().iconst(types::I64, Value::fix(0).0 as i64);
+                    b.ins().store(mf, zero, regs, hdr + F_RESUME as i32 * W);
+                    b.ins().store(mf, prev, regs, hdr + F_PREV as i32 * W);
+                    for k in 0..rb {
+                        let v = b.ins().load(types::I64, mf, regs, (ra + 1 + k) * W);
+                        b.ins().store(mf, v, new_regs, k * W);
+                    }
+                    let nilv = b.ins().iconst(types::I64, nil);
+                    for k in rb..lk.nregs as i32 {
+                        b.ins().store(mf, nilv, new_regs, k * W);
+                    }
+                    enter_linked(&mut b, new_regs, lk);
+                }
             }
-            CALL => call_any(&mut b, ra, rb, i),
             TAILCALL => {
+                let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
                 // (a fixnum primitive's value, returned; a closure's frame in
                 // place of this one; or another primitive's value, returned)
                 if rb == 1 || rb == 2 {
                     let slow = b.create_block();
-                    fast_prims(&mut b, mf, ctx, regs, ra, rb, slow, &|b: &mut FunctionBuilder, v| ret_value(b, v, Some(ra)));
+                    fast_prims(&mut b, mf, ctx, regs, ra, rb, slow, &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1));
                     b.switch_to_block(slow);
                 }
                 let f = b.ins().load(types::I64, mf, ctx, CTX_TAIL);
@@ -571,15 +729,43 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 pending(&mut b);
                 b.switch_to_block(value);
                 let v = b.ins().load(types::I64, mf, ctx, CTX_VALUE);
-                ret_value(&mut b, v, Some(ra));
+                ret_value(&mut b, v, ra, i + 1);
                 b.switch_to_block(pushed);
                 let new_regs = b.ins().load(types::I64, mf, ctx, CTX_NEXT_REGS);
                 let zero = b.ins().iconst(types::I64, 0);
                 enter(&mut b, new_regs, zero, true);
+                if let (Some(lk), Some((fast, fv))) = (links[i].as_ref(), linked) {
+                    // (as Vm::tail_frame: the callee's frame in place of
+                    // this one; the arguments move down, never onto one
+                    // not yet moved)
+                    b.switch_to_block(fast);
+                    let end = b.ins().iadd_imm_s(regs, (lk.nregs as i32 * W) as i64);
+                    let seg_end = b.ins().load(types::I64, mf, ctx, CTX_SEG_END);
+                    let fits = b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, seg_end);
+                    let (push, full) = (b.create_block(), b.create_block());
+                    b.ins().brif(fits, push, &[], full, &[]);
+                    b.switch_to_block(full);
+                    bail(&mut b);
+                    b.switch_to_block(push);
+                    for k in 0..rb {
+                        let v = b.ins().load(types::I64, mf, regs, (ra + 1 + k) * W);
+                        b.ins().store(mf, v, regs, k * W);
+                    }
+                    let nilv = b.ins().iconst(types::I64, nil);
+                    for k in rb..lk.nregs as i32 {
+                        b.ins().store(mf, nilv, regs, k * W);
+                    }
+                    b.ins().store(mf, fv, regs, (F_FN as i32 - HDR as i32) * W);
+                    let pv = b.ins().iconst(types::I64, lk.proto.0 as i64);
+                    b.ins().store(mf, pv, regs, (F_PROTO as i32 - HDR as i32) * W);
+                    let zero = b.ins().iconst(types::I64, Value::fix(0).0 as i64);
+                    b.ins().store(mf, zero, regs, (F_RESUME as i32 - HDR as i32) * W);
+                    enter_linked(&mut b, regs, lk);
+                }
             }
             RETURN => {
                 let v = b.ins().load(types::I64, mf, regs, ra * W);
-                ret_value(&mut b, v, None);
+                ret_value(&mut b, v, ra, i);
             }
             CLOSURE => {
                 // (the helper makes it, as the interpreter does: it
@@ -592,6 +778,69 @@ fn compile_inner(proto: Value) -> Option<usize> {
             }
             _ => bail(&mut b),
         }
+    }
+
+    // The return (ret_value). Inline, as Vm::do_return, when the caller's
+    // frame is below this one in the segment (not a run's bottom, not
+    // across segments) and v isn't a retry: write v to the register the
+    // caller's CALL names, and go on in the caller's code (or the
+    // interpreter, if it has none yet). Else the helper (jit_return).
+    {
+        b.switch_to_block(ret);
+        let ps = b.block_params(ret).to_vec();
+        let (v, ra_off, fail_pc) = (ps[0], ps[1], ps[2]);
+        let helper_blk = b.create_block();
+        let try1 = b.create_block();
+        let is_retry = b.ins().icmp_imm_s(IntCC::Equal, v, Value::RETRY.0 as i64);
+        b.ins().brif(is_retry, helper_blk, &[], try1, &[]);
+        b.switch_to_block(try1);
+        let prev = b.ins().load(types::I64, mf, regs, (F_PREV as i32 - HDR as i32) * W);
+        let below = b.ins().icmp_imm_s(IntCC::SignedLessThan, prev, 0);
+        let inline = b.create_block();
+        b.ins().brif(below, helper_blk, &[], inline, &[]);
+        b.switch_to_block(inline);
+        let base = b.ins().load(types::I64, mf, ctx, CTX_SEG_BASE);
+        let off = b.ins().ishl_imm_u(prev, 2); // (prev = fp tagged: fp·2; fp·8 bytes)
+        let cfr = b.ins().iadd(base, off);
+        let cregs = b.ins().iadd_imm_s(cfr, HDR as i64 * W as i64);
+        let rt = b.ins().load(types::I64, mf, cfr, F_RESUME as i32 * W);
+        let cproto = b.ins().load(types::I64, mf, cfr, F_PROTO as i32 * W);
+        let code = b.ins().load(types::I64, mf, cproto, PROTO_CODE);
+        let cpc = b.ins().ushr_imm_u(rt, 1);
+        let ioff = b.ins().ishl_imm_u(cpc, 2);
+        let iaddr = b.ins().iadd(code, ioff);
+        let call_ins = b.ins().uload32(mf, iaddr, CODE_INS - 4);
+        let dst = b.ins().ushr_imm_u(call_ins, 8);
+        let dst = b.ins().band_imm_s(dst, 0xff);
+        let doff = b.ins().ishl_imm_u(dst, 3);
+        let daddr = b.ins().iadd(cregs, doff);
+        b.ins().store(mf, v, daddr, 0);
+        let naddr = b.ins().iadd_imm_s(cproto, PROTO_NATIVE as i64);
+        let cnat = b.ins().atomic_load(types::I64, mf, naddr);
+        let compiled = b.ins().icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, cnat, MIN_ENTRY as i64);
+        let (cn, ci) = (b.create_block(), b.create_block());
+        b.ins().brif(compiled, cn, &[], ci, &[]);
+        b.switch_to_block(cn);
+        let carr = b.ins().load(types::I64, mf, cproto, PROTO_CONSTS);
+        let cconsts = b.ins().iadd_imm_s(carr, ARR_DATA as i64);
+        b.ins().return_call_indirect(native_ref, cnat, &[cregs, cconsts, ctx, cpc]);
+        b.switch_to_block(ci);
+        b.ins().store(mf, cregs, ctx, CTX_CUR_REGS);
+        b.ins().return_(&[cpc]);
+        b.switch_to_block(helper_blk);
+        let f = b.ins().load(types::I64, mf, ctx, CTX_RET);
+        let call = b.ins().call_indirect(ret_ref, f, &[ctx, regs, v]);
+        let caller = b.inst_results(call)[0];
+        let failed = b.ins().icmp_imm_s(IntCC::Equal, caller, 0);
+        let (no, yes) = (b.create_block(), b.create_block());
+        b.ins().brif(failed, no, &[], yes, &[]);
+        b.switch_to_block(no);
+        let raddr = b.ins().iadd(regs, ra_off);
+        b.ins().store(mf, v, raddr, 0);
+        b.ins().jump(exit, &[BlockArg::Value(fail_pc)]);
+        b.switch_to_block(yes);
+        let pcv = b.ins().load(types::I64, mf, ctx, CTX_NEXT_PC);
+        enter(&mut b, caller, pcv, false);
     }
 
     b.switch_to_block(exit);
@@ -607,7 +856,10 @@ fn compile_inner(proto: Value) -> Option<usize> {
         return None;
     }
     CODE_BYTES.fetch_add(compiled.code_buffer().len(), std::sync::atomic::Ordering::Relaxed);
-    install_code(compiled.code_buffer())
+    let entry = install_code(compiled.code_buffer())?;
+    cell.store(entry as u64, std::sync::atomic::Ordering::Release);
+    LINKED_SITES.fetch_add(links.iter().flatten().count(), std::sync::atomic::Ordering::Relaxed);
+    Some(entry)
 }
 
 #[inline]
@@ -800,4 +1052,91 @@ pub fn entry_for(proto: Value) -> usize {
             return 1;
         }
     }
+}
+
+// ---- linked calls (M10 part 3) ----
+
+/// What a CALL or TAILCALL ra rb is linked to: the closure the var whose
+/// root its register was last loaded from (GETVAR) held when the caller was
+/// compiled, and that closure's arity for rb arguments. Native code checks
+/// that the register holds this closure (a guard), and then pushes the
+/// frame itself and goes straight into the callee.
+/// `f` is None for a call of the running closure itself (SELF), whose
+/// arity is this proto when rb is its fixed count: the guard compares with
+/// the frame's own function.
+struct Link {
+    f: Option<Value>,
+    proto: Value,
+    nregs: usize,
+}
+
+/// Linked closures, kept alive so their addresses (in compiled code) are
+/// never reused by another object: the guard compares addresses. Code is
+/// never freed either.
+static LINKED: Mutex<Option<std::collections::HashSet<u64>>> = Mutex::new(None);
+
+/// How many times each proto (by address) has been recompiled because a
+/// linked call's guard failed. Past RELINK_LIMIT, it compiles unlinked: its
+/// var keeps changing.
+static RELINKS: Mutex<Option<std::collections::HashMap<u64, u32>>> = Mutex::new(None);
+const RELINK_LIMIT: u32 = 8;
+
+/// Registers a linked callee may have: its nils are stored one by one.
+const LINK_MAX_REGS: usize = 64;
+
+/// Every linked closure (GC roots: sched's for_each_root).
+pub fn for_each_linked(f: &mut dyn FnMut(Value)) {
+    if let Some(s) = LINKED.lock().unwrap().as_ref() {
+        s.iter().for_each(|&v| f(Value(v)));
+    }
+}
+
+fn relinks(proto: Value) -> u32 {
+    RELINKS.lock().unwrap().as_ref().and_then(|m| m.get(&proto.0).copied()).unwrap_or(0)
+}
+
+/// The link for CALL/TAILCALL i (callee register ra, rb arguments) of
+/// a proto with instructions ins and constants consts, if any.
+fn link_for(this: Value, ins: &[u32], consts: Value, i: usize, ra: usize, rb: usize) -> Option<Link> {
+    use norn_rt::Kind;
+    // (the last instruction before it that names ra: by the compiler's
+    // layout, the GETVAR or SELF that loaded the callee; if not, the guard
+    // fails at run time and the call goes the general way)
+    let k = (0..i).rev().find(|&k| a(ins[k]) == ra)?;
+    if op(ins[k]) == SELF {
+        let nregs = this.proto_nregs();
+        return (!this.proto_variadic() && this.proto_nfixed() == rb && nregs <= LINK_MAX_REGS)
+            .then_some(Link { f: None, proto: this, nregs });
+    }
+    if op(ins[k]) != GETVAR {
+        return None;
+    }
+    let var = consts.arr_slice().get(bx(ins[k])).copied()?;
+    if !var.is(Kind::Var) {
+        return None;
+    }
+    let f = var.var_root();
+    if !f.is(Kind::Closure) {
+        return None;
+    }
+    let ar = f.closure_template().template_arities();
+    let proto = ar.arr_slice().iter().copied().find(|p| !p.proto_variadic() && p.proto_nfixed() == rb)?;
+    let nregs = proto.proto_nregs();
+    (nregs <= LINK_MAX_REGS).then_some(Link { f: Some(f), proto, nregs })
+}
+
+/// A linked call's guard failed in the code of proto whose entry is in
+/// cell: the var holds another function now. Make proto compile again
+/// (counting entries from 0), against what its vars hold then, unless it
+/// has been compiled again already or too often.
+extern "C" fn relink(proto: u64, cell: u64) -> u64 {
+    let proto = Value(proto);
+    // SAFETY: cell is the compiled code's own entry cell (leaked).
+    let entry = unsafe { (*(cell as *const std::sync::atomic::AtomicU64)).load(std::sync::atomic::Ordering::Acquire) } as usize;
+    if entry >= MIN_ENTRY && proto.proto_native_cas(entry, 0) {
+        let mut g = RELINKS.lock().unwrap();
+        *g.get_or_insert_with(Default::default).entry(proto.0).or_insert(0) += 1;
+        RELINKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    0
 }

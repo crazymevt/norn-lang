@@ -133,14 +133,17 @@
                                    (cancel! f)
                                    :ok))))))
 ;; Cancelling a fiber that waits in the debugger takes it off the list.
+;; (The list is the process's: other suites, running beside this one, park
+;; fibers in the debugger too, so this counts f's entry only.)
 (is (= [1 0] (binding [*debugger* :park]
                (with-scope [s]
-                 (let [f (spawn s (error "x"))]
-                   (loop [i 0] (when (and (empty? (debugging)) (< i 1000)) (sleep 1) (recur (inc i))))
-                   (let [before (count (debugging))]
+                 (let [f (spawn s (error "x"))
+                       listed (fn [] (count (filter (fn [d] (= (fiber-id f) (:fiber d))) (debugging))))]
+                   (loop [i 0] (when (and (zero? (listed)) (< i 1000)) (sleep 1) (recur (inc i))))
+                   (let [before (listed)]
                      (cancel! f)
                      (settle f)
-                     [before (count (debugging))]))))))
+                     [before (listed)]))))))
 ;; with-scope wants [name] (book finding 11).
 (doseq [form ['(with-scope (dotimes [i 1]) :ok) '(with-scope [a b] :ok) '(with-scope [] :ok) '(with-scope [:s] :ok)]]
   (is (re-find #"^with-scope: expected a binding vector \[name\]"

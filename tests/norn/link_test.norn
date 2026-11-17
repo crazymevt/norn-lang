@@ -1,0 +1,80 @@
+;;;; Linked calls (M10 part 3): tier 1 compiles a call through a var (or of
+;;;; the running function itself) against the closure it holds then, behind
+;;;; a guard, and pushes the callee's frame itself. Run at both tiers, these
+;;;; check that what's linked behaves as a call through the var: a
+;;;; redefinition takes effect at once, in a loop already running too.
+;;;; (Calls run 300 times or more, so tier 1 has compiled them: at its
+;;;; default, a function compiles once entered 100 times.)
+
+(ns link-test
+  (:require [norn.test :refer [is deftest testing]] [norn.string :as str]))
+
+(defn- many [n f] (loop [i 0 v nil] (if (= i n) v (recur (inc i) (f i)))))
+
+(defn- redefine
+  "Define again in this namespace, as at the REPL (a string, so the
+  definition isn't one inside a function)."
+  [src]
+  (load-string (str "(in-ns 'link-test) " src)))
+
+(defn twice [x] (* 2 x))
+(defn via-twice [x] (twice x))
+
+(deftest a-redefinition-takes-effect-in-linked-callers
+  (is (= 10 (many 300 (fn [_] (via-twice 5)))))
+  (redefine "(defn twice [x] (* 3 x))")
+  (is (= 15 (via-twice 5)) "the caller, compiled against the old twice, calls the new one")
+  (is (= 15 (many 300 (fn [_] (via-twice 5)))) "and again once it has compiled again")
+  (testing "a var that comes to hold something else callable"
+    (redefine "(def twice {5 :five})")
+    (is (= :five (via-twice 5)))
+    (redefine "(def twice (fn [x] (* 4 x)))")
+    (is (= 20 (via-twice 5))))
+  (when (= 1 (:tier (jit-stats)))
+    (is (pos? (:linked (jit-stats))) "tier 1 linked calls")
+    (is (pos? (:relinked (jit-stats))) "and compiled callers again after a redefinition")))
+
+(defn step [i] 1)
+(defn- count-steps [n] (loop [i 0 s 0] (if (= i n) s (recur (inc i) (+ s (step i))))))
+
+(deftest a-redefinition-reaches-a-loop-already-running
+  (let [steps (spawn-detached (loop [i 0] (let [s (step i)] (if (or (= s 2) (> i 100000000)) s (recur (inc i))))))]
+    (sleep 30)
+    (redefine "(defn step [i] 2)")
+    (is (= 2 (await steps)) "the loop sees the new step")
+    (is (= 2000 (count-steps 1000)))))
+
+(deftest redefining-a-sealed-modules-function
+  (load-string "(ns link-demo) (defn f [x] (+ x 1))")
+  (load-string "(ns link-user) (defn call-f [x] (link-demo/f x))")
+  (seal! 'link-demo)
+  (let [call-f (resolve 'link-user/call-f)]
+    (is (= 6 (many 300 (fn [_] (call-f 5)))))
+    (let [warned (atom [])]
+      (handler-bind [Warning (fn [w] (swap! warned conj (condition-message w)) (muffle-warning))]
+        (load-string "(in-ns 'link-demo) (defn f [x] (+ x 100)) (in-ns 'link-test)"))
+      (is (str/includes? (first @warned) "unseals link-demo") "with the warning")
+      (is (= 105 (call-f 5)) "its linked caller calls the new one"))))
+
+(defn arities ([] :none) ([a] [:one a]) ([a b] [:two a b]) ([a b & more] [:more a b more]))
+(defn wide [a b c d e f g h] [a b c d e f g h])
+(defn- locals [x] (let [y (if (pos? x) x nil) z (when y (inc y))] [x y z]))
+
+(deftest arities-arguments-and-registers
+  (is (= [:none [:one 1] [:two 1 2] [:more 1 2 '(3)]]
+         (many 300 (fn [_] [(arities) (arities 1) (arities 1 2) (arities 1 2 3)]))))
+  (is (= [1 2 3 4 5 6 7 8] (many 300 (fn [i] (wide 1 2 3 4 5 6 7 8)))))
+  (is (= [[3 3 4] [-1 nil nil]] (many 300 (fn [_] [(locals 3) (locals -1)])))))
+
+(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(defn down [n acc] (if (zero? n) acc (down (dec n) (conj acc n))))
+(defn evens? [n] (if (zero? n) true (odds? (dec n))))
+(defn odds? [n] (if (zero? n) false (evens? (dec n))))
+
+(deftest recursion
+  (is (= 6765 (many 30 (fn [_] (fib 20)))) "itself (SELF)")
+  (is (= [3 2 1] (many 300 (fn [_] (down 3 [])))) "in tail position")
+  (is (= 100000 (count (down 100000 []))) "a tail call in place: the stack doesn't grow")
+  (is (= true (many 300 (fn [_] (evens? 1000)))) "mutual, in tail position")
+  (is (= 200000 (letfn [(deep [n] (if (zero? n) 0 (inc (deep (dec n)))))] (deep 200000)))
+      "deep enough to need more stack segments"))

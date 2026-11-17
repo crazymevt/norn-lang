@@ -388,6 +388,17 @@ impl St {
             self.native = 0;
         }
     }
+    /// Make this the frame whose registers are at `regs` (in this segment)
+    /// if it isn't: tier-1 code pushes and pops frames inline, within the
+    /// segment, without telling the interpreter (jit.rs, linked calls).
+    #[inline]
+    unsafe fn sync(&mut self, regs: *mut Value) {
+        unsafe {
+            if regs != self.regs() || (*regs.sub(HDR).add(F_PROTO)).proto_code().code_ptr() != self.code {
+                self.switch_to(regs);
+            }
+        }
+    }
     #[inline]
     unsafe fn set_resume(&self, pc: usize) {
         unsafe { *self.frame().add(F_RESUME) = Value::fix(pc as i64) }
@@ -542,6 +553,16 @@ unsafe fn jit_next(ctx: *mut crate::jit::JitCtx, st: &St) {
         (*ctx).next_native = crate::jit::entry_for(st.slot(F_PROTO)) as u64;
         (*ctx).next_consts = st.consts as u64;
         (*ctx).next_pc = st.pc as u64;
+        jit_segment(ctx, st);
+    }
+}
+
+/// The current segment's bounds, for tier-1 code's inline frames.
+#[inline]
+unsafe fn jit_segment(ctx: *mut crate::jit::JitCtx, st: &St) {
+    unsafe {
+        (*ctx).seg_base = st.base as u64;
+        (*ctx).seg_end = st.base.add(st.seg.seg_capacity()) as u64;
     }
 }
 
@@ -557,6 +578,7 @@ unsafe fn jit_next(ctx: *mut crate::jit::JitCtx, st: &St) {
 pub(crate) unsafe extern "C" fn jit_call(ctx: *mut crate::jit::JitCtx, regs: *mut Value, ra: u64, argc: u64, resume: u64) -> u64 {
     unsafe {
         let (vm, st) = jit_vm(ctx);
+        st.sync(regs);
         let (ra, argc) = (ra as usize, argc as usize);
         let args = std::slice::from_raw_parts(regs.add(ra + 1), argc);
         let f = *regs.add(ra);
@@ -624,6 +646,7 @@ pub(crate) unsafe extern "C" fn jit_closure(ctx: *mut crate::jit::JitCtx, regs: 
 pub(crate) unsafe extern "C" fn jit_tail(ctx: *mut crate::jit::JitCtx, regs: *mut Value, ra: u64, argc: u64, resume: u64) -> u64 {
     unsafe {
         let (vm, st) = jit_vm(ctx);
+        st.sync(regs);
         let (ra, argc) = (ra as usize, argc as usize);
         let args = std::slice::from_raw_parts(regs.add(ra + 1), argc);
         let f = *regs.add(ra);
@@ -662,9 +685,10 @@ pub(crate) unsafe extern "C" fn jit_tail(ctx: *mut crate::jit::JitCtx, regs: *mu
 ///
 /// # Safety
 /// As jit_call's.
-pub(crate) unsafe extern "C" fn jit_return(ctx: *mut crate::jit::JitCtx, _regs: *mut Value, v: u64) -> u64 {
+pub(crate) unsafe extern "C" fn jit_return(ctx: *mut crate::jit::JitCtx, regs: *mut Value, v: u64) -> u64 {
     unsafe {
         let (vm, st) = jit_vm(ctx);
+        st.sync(regs);
         let v = Value(v);
         if v == Value::RETRY {
             return 0;
@@ -707,6 +731,8 @@ unsafe fn jit_call_value(ctx: *mut crate::jit::JitCtx, f: Value, args: &[Value],
                     return crate::jit::PENDING;
                 }
                 (*ctx).value = v.0;
+                // (a nested run on this carrier has set the bounds to its own)
+                jit_segment(ctx, st);
                 crate::jit::VALUE
             }
             Err(e) => {
@@ -1771,6 +1797,7 @@ impl Vm {
                         self.jit.budget = &mut self.budget;
                         self.jit.seen = &self.seen_attention;
                         self.jit.vm = self as *mut Vm as u64;
+                        jit_segment(&mut self.jit, st);
                         let r = crate::jit::enter(st.native, st.regs(), st.consts, &mut self.jit, st.pc as u64);
                         // (calls and returns made natively: the frame it stopped
                         // in; a tail call's is where its caller's was)

@@ -1122,8 +1122,48 @@ The core test session compiled 627 protos (516 KB of code), none rejected.
   the two helper calls are most of it. Pushing frames inline, for callees
   known at compile time, belongs with direct linking (M10 part 3).
 
-*Next.* The full design below (inline caches, frames pushed inline) keeps
-the same frame layout, so it can replace this piece by piece.
+**Linked calls, as built in M10 part 3.** A call through a var is
+compiled against the function the var holds when the caller compiles,
+behind a guard, for every var (not only sealed modules': the user's
+decision, 2026-11-16, plan-m10.md).
+
+- **What's linked:** a `CALL` or `TAILCALL` whose callee register was last
+  loaded by `GETVAR` of a var holding a closure with a fixed arity for the
+  call's arguments, or by `SELF` (a function calling itself, when the
+  count is its own arity's).
+- **The guard:** the register must hold that closure (one compare; for
+  `SELF`, the frame's own function). Then native code writes the callee's
+  frame itself, exactly as `push_frame` does, when it fits in the segment,
+  checks the entry safepoint and jumps into the callee's code, or stops
+  for the interpreter if the callee isn't compiled yet. Otherwise the call
+  goes the general way.
+- **Redefinition:** a var redefined fails its callers' guards at once, so
+  the new function is called even by a loop already running. The failed
+  guard also resets the caller's entry, so it compiles again (after 100
+  more entries) against what the var holds now; a proto relinked 8 times
+  compiles unlinked from then on. Sealing isn't needed for any of this; it
+  stays for api-diff and for inlining (part 4).
+- **Keeping addresses valid:** the heap doesn't move objects, and linked
+  closures stay alive (the JIT reports them as roots), so a linked address
+  is never reused by another object. Their protos and constants are
+  reachable from them.
+- **Returns** pop inline when the caller's frame is below in the same
+  segment: the value goes to the register the caller's `CALL` names, and
+  native code goes on in the caller's code at its resume point.
+- **The interpreter's state** lags behind inline pushes and pops; every
+  helper first syncs it from the registers native code passes, and
+  `run_inner` from where native code stopped. `JitCtx` carries the
+  segment's bounds for the fit check.
+- `jit-stats` counts linked call sites (`:linked`) and protos compiled again
+  after a redefinition (`:relinked`).
+- **Measured** (tier 1 against the baseline): a plain call 17.5 → 7.2 ns
+  (2.4×), another module's function 38 → 10.6 ns (3.6×), `(fib 27)` 11.5 →
+  5.3 ms; the programs 1.09–1.29× (the static site 43 → 34 ms, the ledger
+  206 → 172 ms); the rope workloads 1.38×. The code is 15% larger than
+  part 2's (4.8 MB for everything at threshold 1).
+
+*Next.* The full design below (inline caches) keeps the same frame layout,
+so it can replace this piece by piece.
 
 **Full design:**
 
@@ -1318,7 +1358,7 @@ each part needs from the runtime:
 | M8 ✅ | Hygiene, modules/phases, sealing (after M7.6's done-check; `#lang` was dropped on 2026-11-14); then packages: a project file, dependency resolution, and `norn build` across dependencies, starting with Git and path dependencies only, with a registry later (perhaps its own milestone); module-aware lint rules (unused or missing requires, private access, phase errors, redefining sealed vars); `norn api-diff` (a snapshot of each module's public interface, taken when it is first sealed, and breaking-change detection between versions); a macro stepper that shows hygiene's renaming; a bytecode verifier for compiled code from packages (and crafted images) | Stdlib built as sealed modules |
 | M9a ✅ | Before sealing (plan-m9.md): `norn.uri` and `norn.http` (HTTP/1.1 client and server), condition classes for the runtime's errors (raised from Rust with their data), `delay`, `future`, promises and `ex-info`, `match` (pattern matching on data, in core), checked type signatures and `declare`, contracts with blame at module boundaries, the full MOP (`print-object`, `initialize-instance`, `define-method-combination`, protocol sugar, slot readers as generic functions), processes/supervisors, the `norn.stm` library, the full FFI (callbacks from C, struct layouts, typed signatures, unsafe modules), SQLite on it, pseudo-terminals in `norn.process`, a binary format for Norn values, and as needed `norn.uuid`, `norn.csv`, TOML, compression, `norn.zip`, `norn.crypto`, `norn.schedule`, `norn.data` (structural diff); Studio's API workbench, terminal and Databases panels as their libraries land | Studio's API workbench, terminal and Databases view run on them; the new libraries' public functions have checked signatures; a contract violation across modules blames the right side; a supervisor restarts a crashed process while the debugger holds the crash; tier 0 and tier 1 agree on every suite |
 | M9b | After sealing: tree shaking for images (`:shake`, using sealing to prove code unused), and tooling that doesn't shape core: a sampling profiler, source-drift tracking (design §5.1), `norn lsp` (a Language Server Protocol adapter over the editor protocol), `norn new` (project scaffolding), and code coverage if M7 didn't get it | — |
-| M10 | The optimising compiler: the IR (design §8.3), inlining, direct linking to sealed modules' vars and deoptimisation when one is unsealed (moved from M8, 2026-11-16), type inference from M9's signatures, unboxing, escape analysis; tier 1's full calling convention (push-frame and `return_call`), inline caches, and native compilation of every `defn` | Measured wins on `bench/` with tier 0 and tier 1 still agreeing on every suite |
+| M10 | The optimising compiler: the IR (design §8.3), inlining, direct linking of calls through vars, guarded, with recompilation when one is redefined (moved from M8, 2026-11-16; every var, not only sealed modules', since part 3), type inference from M9's signatures, unboxing, escape analysis; tier 1's full calling convention (push-frame and `return_call`), inline caches, and native compilation of every `defn` | Measured wins on `bench/` with tier 0 and tier 1 still agreeing on every suite |
 | M11 | GC maturity: generational collection (write barriers), opportunistic defragmentation (the M1 fragmentation finding), concurrent collection; deadlock detection for fibers nothing can wake (open question 4: a deadlock event, and the fiber kept in the debugger with a `Deadlock` condition); complex numbers as a library type | Bounded pause times and heap overhead under the M1 stress workloads |
 | M12 | Platforms and distribution: Linux first, then Windows (JIT memory, signals), CI on all three, release builds and installers, `norn` shipped with a base image (bootstrap step 6); WASM as a second target (design §9, open) | Every suite passes on macOS, Linux and Windows; `norn` starts from its bundled image |
 
