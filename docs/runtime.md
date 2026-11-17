@@ -1296,7 +1296,14 @@ seq directly (`%kw-get`), making no map.
   `not`, and the type predicates the checks use (`string?`, `keyword?`,
   `symbol?`, `float?`, `vector?`, `regex?`, `bytes?`, `char?`,
   `boolean?`, and `integer?` for a fixnum). A call that names one
-  through its norn.core var tries only that one.
+  through its norn.core var tries only that one. Later in M10, the
+  primitives code calls once an item: `reduced?` and `unreduced`
+  (`reduce`'s loop); `count` and `nth` of an all-ASCII string (its length
+  word's top bit, then a byte); `seq` and `next` of a list (nil, the cell
+  itself, its cdr when that's a list or nil); `deref` of an atom (an
+  acquire load); and `=` of the same value (true), of two immediates or
+  two keywords that differ (false: keywords are interned). Anything else
+  goes to the primitive.
 - **Measured** (tier 1 against the baseline): a plain call 3.6× (4.8
   ns: the call is gone), a checked call across modules 26.7× (417 →
   15.6 ns; tier 0 3.8×), `count` and `nth` of a vector 2.6×; the static

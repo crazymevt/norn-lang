@@ -1,0 +1,65 @@
+;;;; Per-item primitives at tier 1 (M10): count and nth of an all-ASCII
+;;;; string, = of immediates and keywords, seq and next of lists, deref of
+;;;; an atom, natively; anything else as the primitive does. And swap!'s
+;;;; arities without apply. Run at both tiers and at
+;;;; NORN_JIT_THRESHOLD=1 (with NORN_JIT_SYNC=1, compiled from the first
+;;;; call), against fixed answers.
+
+(ns items-test
+  (:require [norn.test :refer [is deftest testing]]))
+
+(defn- nth-of [s i] (nth s i))
+(defn- count-of [s] (count s))
+(defn- eq [a b] (= a b))
+(defn- seq-of [x] (seq x))
+(defn- next-of [x] (next x))
+(defn- deref-of [x] (deref x))
+(defn- failed? [f] (try (f) false (catch Error _ true)))
+
+(deftest strings
+  (is (= [3 \a \c] [(count-of "abc") (nth-of "abc" 0) (nth-of "abc" 2)]))
+  (is (= [0 2 \é \x] [(count-of "") (count-of "éx") (nth-of "éx" 0) (nth-of "éx" 1)]) "not all ASCII")
+  (is (failed? #(nth-of "abc" 3)) "past the end")
+  (is (failed? #(nth-of "abc" -1)) "a negative index")
+  (is (failed? #(nth-of "abc" 1.0)) "not an integer")
+  (is (= [3 2 \b] [(count-of [1 2 3]) (count-of {:a 1 :b 2}) (nth-of [\a \b] 1)]) "other collections"))
+
+(deftest equality
+  (is (= [true false true false] [(eq \a \a) (eq \a \b) (eq nil nil) (eq nil false)]))
+  (is (= [true false true false] [(eq :a :a) (eq :a :b) (eq true true) (eq true false)]))
+  (is (= [false false false] [(eq :a "a") (eq 1 \a) (eq \a 1)]) "different kinds")
+  (is (= [true true false] [(eq "ab" (str "a" "b")) (eq [1 2] [1 2]) (eq 1 1.0)]) "by value")
+  (is (eq ##NaN ##NaN) "NaN equals NaN under =")
+  (let [x ##NaN] (is (eq x x)))
+  (is (= [true false] [(eq 2.5 2.5) (eq 2.5 3.5)])))
+
+(deftest lists
+  (is (= [nil nil] [(seq-of nil) (next-of nil)]))
+  (let [l (list 1 2 3)]
+    (is (identical? l (seq-of l)))
+    (is (= [[2 3] [3] nil] [(vec (next-of l)) (vec (next-of (next-of l))) (next-of (next-of (next-of l)))])))
+  (is (= [nil nil] [(seq-of '()) (next-of '(1))]) "the empty list")
+  (is (= [1 2] (seq-of [1 2])) "a vector")
+  (is (= [2 3] (next-of (cons 1 (lazy-seq (list 2 3))))) "a lazy tail")
+  (is (= [2] (next-of (range 1 3)))))
+
+(deftest dereferencing
+  (is (= [5 6 7] [(deref-of (atom 5)) (deref-of (volatile! 6)) (deref-of (delay 7))]))
+  (is (= 8 (deref-of (doto (promise) (deliver 8))))))
+
+(deftest swapping
+  (let [a (atom 0)]
+    (is (= [1 3 6 10 15] [(swap! a inc) (swap! a + 2) (swap! a + 1 2) (swap! a + 1 2 1) (swap! a + 1 1 1 1 1)])))
+  (let [v (volatile! [])]
+    (is (= [[1] [1 2] [1 2 3 4] [1 2 3 4 5 6 7]]
+           [(vswap! v conj 1) (vswap! v conj 2) (vswap! v conj 3 4) (vswap! v conj 5 6 7)])))
+  (testing "watches see each change"
+    (let [a (atom 0) seen (atom [])]
+      (add-watch a :w (fn [_ _ old new] (swap! seen conj [old new])))
+      (swap! a inc)
+      (swap! a + 10)
+      (is (= [[0 1] [1 11]] @seen))))
+  (testing "contended: no change lost"
+    (let [a (atom 0)]
+      (with-scope [s] (dotimes [_ 8] (spawn s (dotimes [_ 500] (swap! a inc)))))
+      (is (= 4000 @a)))))

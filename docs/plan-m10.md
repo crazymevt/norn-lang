@@ -709,6 +709,26 @@ win back compile time first: done, below.
   reached the next safepoint.
   inline_test checks a class contract, nil-or-a-class, keyword arguments
   with and without more, and a count no arity takes.
+- **Per-item primitives: done (2026-11-17).** Primitives code calls once
+  an item went through tier 1's general call: now native are `count` and
+  `nth` of an all-ASCII string, `seq` and `next` of a list, `deref` of an
+  atom, and `=` of identical values, of differing immediates
+  (characters, booleans, nil) and of keywords. `swap!` and `vswap!` have
+  fixed arities up to two arguments for f (each went through `apply`
+  twice). **Measured** (tier 1, an item): `vswap!` 234 → 25 ns, `swap!`
+  78 → 22, a `first`/`next` loop over a list 11.4 → 2.6, `nth` over an
+  ASCII string 40.6 → 4.6, `=` of keywords 41 → 18, `reduce` over a list
+  19.6 → 14.2 and over a string 28.5 → 18.3. The programs: the ledger
+  117 → 79 ms (1.75 → 2.60× the baseline), the site 28.6 → 23.4 (1.52 →
+  1.86×), chat 1.48×, the log report level (1.65×); the rope workloads
+  3.0 → 4.95× and 2.9 → 4.4×, `swap!` 5.0×, `vswap!` 6.1×. `norn
+  api-diff` now counts a variadic arity split into fixed ones and a later
+  variadic one (as `swap!`'s) as taking every count it took. Still general: `next` of a
+  vector (a seq made each step: 29 ns), a lazy sequence's step (44 ns
+  for `(map inc v)`), `nth` of a non-ASCII string. Test:
+  tests/norn/items_test.norn (edges against fixed answers: non-ASCII,
+  out of range, mixed kinds, NaN, lazy tails, swap!'s arities, watches,
+  contention).
 - **Inlining's limits are untuned:** 24 IR nodes, 96 for a contract
   wrapper, three calls deep, no inlining past 200 registers.
 - **Code size:** part 3's linked calls made tier 1's code 15% larger (4.8

@@ -181,6 +181,10 @@ const CTX_RELINK: i32 = (16 + NPRIMS as i32) * W;
 const CTX_BOX_FLOAT: i32 = (17 + NPRIMS as i32) * W;
 // A float's value (its first payload word).
 const FLOAT_BITS: i32 = 2 * W - 1;
+/// A string's length word (its top bit: all ASCII), and its bytes, from
+/// its tagged pointer.
+const STR_LEN: i32 = 2 * W - 1;
+const STR_BYTES: i32 = 3 * W - 1;
 // An instance's class (its first field).
 const INST_CLASS: i32 = 2 * W - 1;
 
@@ -218,7 +222,7 @@ pub const PENDING_FLAG: u64 = 1 << 61;
 /// the interpreter polls, then carries on at the pc in the other bits.
 pub const POLL_FLAG: u64 = 1 << 62;
 
-pub const NPRIMS: usize = 37;
+pub const NPRIMS: usize = 40;
 /// The primitives with native fast paths, in `JitCtx::prims` order.
 pub const FAST_PRIMS: [&str; NPRIMS] = [
     "+", "-", "<", ">", "<=", ">=", "==", "=", "inc", "dec", "zero?", // (fixnums; floats, M10 part 5.2)
@@ -227,6 +231,7 @@ pub const FAST_PRIMS: [&str; NPRIMS] = [
     "count", "nth", "first", "identical?", "nil?", "some?", "not", // (M10 part 4)
     "string?", "keyword?", "symbol?", "float?", "vector?", "regex?", "bytes?", "char?", "boolean?", "integer?", // (contracts' checks)
     "reduced?", "unreduced", // (reduce's loop, every item)
+    "seq", "next", "deref", // (a list's walk; an atom's value)
 ];
 
 /// The trampoline: (native entry, regs, consts, ctx, pc) → pc, in the
@@ -1556,6 +1561,17 @@ fn fast_prims(
         b.ins().brif(same, yes, &[], no, &[]);
         b.switch_to_block(yes);
     };
+    // An all-ASCII string's length (its length word, less the flag); to
+    // `slow` for anything else.
+    let ascii_len = |b: &mut FunctionBuilder, v: cranelift_codegen::ir::Value| {
+        is_kind(b, v, norn_rt::Kind::String, slow);
+        let w = b.ins().load(types::I64, mf, v, STR_LEN);
+        let ascii = b.ins().icmp_imm_s(IntCC::SignedLessThan, w, 0); // (the flag is the top bit)
+        let ok = b.create_block();
+        b.ins().brif(ascii, ok, &[], slow, &[]);
+        b.switch_to_block(ok);
+        b.ins().band_imm_s(w, i64::MAX)
+    };
     // A number as an f64 (M10 part 5.2): a fixnum converted (with `exact`,
     // only within 2^53, where the conversion is exact), a float's value;
     // anything else, slow.
@@ -1615,7 +1631,8 @@ fn fast_prims(
             "+" | "-" | "*" if rb == 3 => true,
             "even?" | "odd?" => rb == 1,
             "inc" | "dec" | "zero?" | "count" | "first" | "nil?" | "some?" | "not" | "string?" | "keyword?" | "symbol?"
-            | "float?" | "vector?" | "regex?" | "bytes?" | "char?" | "boolean?" | "integer?" | "reduced?" | "unreduced" => rb == 1,
+            | "float?" | "vector?" | "regex?" | "bytes?" | "char?" | "boolean?" | "integer?" | "reduced?" | "unreduced" | "seq"
+            | "next" | "deref" => rb == 1,
             _ => rb == 2,
         })
         .collect();
@@ -1778,14 +1795,21 @@ fn fast_prims(
             }
             // (a vector's count is its first word)
             "count" => {
-                is_kind(b, x, norn_rt::Kind::Vector, slow);
+                let not_vec = b.create_block();
+                is_kind(b, x, norn_rt::Kind::Vector, not_vec);
                 let n = b.ins().load(types::I64, mf, x, VEC_CNT);
+                let v = b.ins().ishl_imm_u(n, 1);
+                on_value(b, v);
+                // (an all-ASCII string: its length word, less the flag)
+                b.switch_to_block(not_vec);
+                let n = ascii_len(b, x);
                 let v = b.ins().ishl_imm_u(n, 1);
                 on_value(b, v);
             }
             // (a vector's element in its tail: index ≥ tailoff, below count)
             "nth" => {
-                is_kind(b, x, norn_rt::Kind::Vector, slow);
+                let not_vec = b.create_block();
+                is_kind(b, x, norn_rt::Kind::Vector, not_vec);
                 let fx = b.ins().band_imm_s(y, 1);
                 let ok = b.create_block();
                 b.ins().brif(fx, slow, &[], ok, &[]);
@@ -1839,6 +1863,67 @@ fn fast_prims(
                 let off = b.ins().ishl_imm_u(j, 3);
                 let at = b.ins().iadd(leaf, off);
                 let v = b.ins().load(types::I64, mf, at, ARR_DATA);
+                on_value(b, v);
+                // (an all-ASCII string's i-th byte, as a character)
+                b.switch_to_block(not_vec);
+                let n = ascii_len(b, x);
+                let fx = b.ins().band_imm_s(y, 1);
+                let ok = b.create_block();
+                b.ins().brif(fx, slow, &[], ok, &[]);
+                b.switch_to_block(ok);
+                let i = b.ins().sshr_imm_u(y, 1);
+                let inside = b.ins().icmp(IntCC::UnsignedLessThan, i, n);
+                let ok2 = b.create_block();
+                b.ins().brif(inside, ok2, &[], slow, &[]);
+                b.switch_to_block(ok2);
+                let at = b.ins().iadd(x, i);
+                let byte = b.ins().uload8(types::I64, mf, at, STR_BYTES);
+                let c = b.ins().ishl_imm_u(byte, 8);
+                let v = b.ins().bor_imm_s(c, Value::char('\0').0 as i64);
+                on_value(b, v);
+            }
+            // (nil, or a list: itself)
+            "seq" => {
+                let tag = b.ins().band_imm_s(x, norn_rt::value::TAG_MASK as i64);
+                let cons = b.ins().icmp_imm_s(IntCC::Equal, tag, norn_rt::value::TAG_CONS as i64);
+                let is_nil = b.ins().icmp_imm_s(IntCC::Equal, x, nil);
+                let (yes, maybe) = (b.create_block(), b.create_block());
+                b.ins().brif(cons, yes, &[], maybe, &[]);
+                b.switch_to_block(maybe);
+                b.ins().brif(is_nil, yes, &[], slow, &[]);
+                b.switch_to_block(yes);
+                on_value(b, x);
+            }
+            // (nil's is nil; a list's cdr, when that's nil or a list too)
+            "next" => {
+                let is_nil = b.ins().icmp_imm_s(IntCC::Equal, x, nil);
+                let (none, some) = (b.create_block(), b.create_block());
+                b.ins().brif(is_nil, none, &[], some, &[]);
+                b.switch_to_block(none);
+                let nv = b.ins().iconst(types::I64, nil);
+                on_value(b, nv);
+                b.switch_to_block(some);
+                let tag = b.ins().band_imm_s(x, norn_rt::value::TAG_MASK as i64);
+                let cons = b.ins().icmp_imm_s(IntCC::Equal, tag, norn_rt::value::TAG_CONS as i64);
+                let ok = b.create_block();
+                b.ins().brif(cons, ok, &[], slow, &[]);
+                b.switch_to_block(ok);
+                let d = b.ins().load(types::I64, mf, x, 2 * W - norn_rt::value::TAG_CONS as i32);
+                let dtag = b.ins().band_imm_s(d, norn_rt::value::TAG_MASK as i64);
+                let dcons = b.ins().icmp_imm_s(IntCC::Equal, dtag, norn_rt::value::TAG_CONS as i64);
+                let dnil = b.ins().icmp_imm_s(IntCC::Equal, d, nil);
+                let (yes, maybe) = (b.create_block(), b.create_block());
+                b.ins().brif(dcons, yes, &[], maybe, &[]);
+                b.switch_to_block(maybe);
+                b.ins().brif(dnil, yes, &[], slow, &[]);
+                b.switch_to_block(yes);
+                on_value(b, d);
+            }
+            // (an atom's value, as atom_get: an acquire)
+            "deref" => {
+                is_kind(b, x, norn_rt::Kind::Atom, slow);
+                let at = b.ins().iadd_imm_s(x, 2 * W as i64 - norn_rt::value::TAG_OBJ as i64);
+                let v = b.ins().atomic_load(types::I64, mf, at);
                 on_value(b, v);
             }
             // (a list's car; nil's first is nil)
@@ -1993,6 +2078,37 @@ fn fast_prims(
                 bool_out(b, c0);
                 b.switch_to_block(other);
                 if cmp == "=" {
+                    // (=: the same value is equal, NaN too; two immediates that
+                    // differ (characters, booleans, nil) aren't; nor two
+                    // keywords that differ: they're interned)
+                    let same = b.ins().icmp(IntCC::Equal, x, y);
+                    let (eq_blk, differ) = (b.create_block(), b.create_block());
+                    b.ins().brif(same, eq_blk, &[], differ, &[]);
+                    b.switch_to_block(eq_blk);
+                    let t = b.ins().iconst(types::I8, 1);
+                    bool_out(b, t);
+                    b.switch_to_block(differ);
+                    let xt = b.ins().band_imm_s(x, norn_rt::value::TAG_MASK as i64);
+                    let yt = b.ins().band_imm_s(y, norn_rt::value::TAG_MASK as i64);
+                    let ximm = b.ins().icmp_imm_s(IntCC::Equal, xt, norn_rt::value::TAG_IMM as i64);
+                    let yimm = b.ins().icmp_imm_s(IntCC::Equal, yt, norn_rt::value::TAG_IMM as i64);
+                    let both = b.ins().band(ximm, yimm);
+                    let (ne_blk, objs) = (b.create_block(), b.create_block());
+                    b.ins().brif(both, ne_blk, &[], objs, &[]);
+                    b.switch_to_block(ne_blk);
+                    let f = b.ins().iconst(types::I8, 0);
+                    bool_out(b, f);
+                    b.switch_to_block(objs);
+                    let (xkw, kws, not_kws) = (b.create_block(), b.create_block(), b.create_block());
+                    is_kind(b, x, norn_rt::Kind::Keyword, not_kws);
+                    b.ins().jump(xkw, &[]);
+                    b.switch_to_block(xkw);
+                    is_kind(b, y, norn_rt::Kind::Keyword, not_kws);
+                    b.ins().jump(kws, &[]);
+                    b.switch_to_block(kws);
+                    let f = b.ins().iconst(types::I8, 0);
+                    bool_out(b, f);
+                    b.switch_to_block(not_kws);
                     // (=: two floats are equal as numbers, or both NaN; a
                     // fixnum never equals a float; anything else, the slow
                     // path)

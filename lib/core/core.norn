@@ -584,13 +584,33 @@
   "Set atom a to (f old args…) atomically, and return the new value. If
   another change lands first, f is called again with the newer value, so
   it shouldn't have side effects. Calls a's watches."
-  [a f & args]
-  (loop []
-    (let [old (deref a)
-          new (apply f old args)]
-      (if (compare-and-set! a old new)
-        (do (when (pos? (deref %watched)) (%fire-watches a old new)) new)
-        (recur)))))
+  ;; (up to two arguments for f without apply: a counter's (swap! a inc),
+  ;; (swap! a + n) and (swap! a assoc k v) cost no list)
+  ([a f]
+   (loop []
+     (let [old (deref a) new (f old)]
+       (if (compare-and-set! a old new)
+         (do (when (pos? (deref %watched)) (%fire-watches a old new)) new)
+         (recur)))))
+  ([a f x]
+   (loop []
+     (let [old (deref a) new (f old x)]
+       (if (compare-and-set! a old new)
+         (do (when (pos? (deref %watched)) (%fire-watches a old new)) new)
+         (recur)))))
+  ([a f x y]
+   (loop []
+     (let [old (deref a) new (f old x y)]
+       (if (compare-and-set! a old new)
+         (do (when (pos? (deref %watched)) (%fire-watches a old new)) new)
+         (recur)))))
+  ([a f x y & args]
+   (loop []
+     (let [old (deref a)
+           new (apply f old x y args)]
+       (if (compare-and-set! a old new)
+         (do (when (pos? (deref %watched)) (%fire-watches a old new)) new)
+         (recur))))))
 
 (def >!
   "(>! ch x): put!, under the name core.async gives it. Send x on channel
@@ -4055,7 +4075,12 @@
 (defn print-str "What print prints, as a string." [& xs] (with-out-str (apply print xs)))
 
 (defn volatile! "A mutable box (an atom here)." [x] (atom x))
-(defn vswap! "Swap a volatile's value with f." [v f & args] (apply swap! v f args))
+(defn vswap!
+  "Swap a volatile's value with f."
+  ([v f] (swap! v f))
+  ([v f x] (swap! v f x))
+  ([v f x y] (swap! v f x y))
+  ([v f x y & args] (apply swap! v f x y args)))
 (defn vreset! "Set a volatile's value." [v x] (reset! v x))
 
 (defn find "The entry [k v] of map m, or nil when m hasn't key k." [m k] (when (contains? m k) [k (get m k)]))
