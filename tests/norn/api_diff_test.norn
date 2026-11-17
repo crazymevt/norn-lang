@@ -40,6 +40,8 @@
   (testing "breaking"
     (is (= [["g" "removed (a function)"]] (breaking (dissoc before "g"))))
     (is (= [["f" "no longer takes [a b]"]] (breaking (assoc-in before ["f" :arglists] ["[a]"]))))
+    (is (= [["g" "no longer takes [x & more]"]] (breaking (assoc-in before ["g" :arglists] ["[x]" "[x y z & more]"])))
+        "a variadic arity split, a count left out")
     (is (= [["m" "was a macro, is a function"]] (breaking (assoc-in before ["m" :kind] :function))))
     (is (= [["C" "slot b removed"]] (breaking (assoc-in before ["C" :slots] ["a"]))))
     (is (= [["C" "no longer a norn.core/Error"]] (breaking (assoc-in before ["C" :supers] ["norn.core/Object"]))))
@@ -49,6 +51,8 @@
     (is (= [["h" "added (a function)"]] (compatible (assoc before "h" {:kind :function :arglists ["[]"]}))))
     (is (= [] (breaking (assoc-in before ["f" :arglists] ["[a]" "[a b]" "[a b c]"]))) "a new arity")
     (is (= [] (breaking (assoc-in before ["g" :arglists] ["[& more]"]))) "taking more than before")
+    (is (= [] (breaking (assoc-in before ["g" :arglists] ["[x]" "[x y]" "[x y z & more]"])))
+        "a variadic arity split into fixed ones and a later variadic one: every count still")
     (is (= [] (breaking (assoc-in before ["C" :slots] ["a" "b" "c"]))) "a new slot")
     (is (= [] (breaking (assoc-in before ["g" :signature] [{:args [] :rest "Any" :result "Any"}]))) "a first signature")))
 

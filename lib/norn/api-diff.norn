@@ -84,10 +84,20 @@
         amp (some (fn [[i p]] (when (= '& p) i)) (map-indexed vector ps))]
     [(or amp (count ps)) (some? amp)]))
 
+(defn- accepts?
+  "Does an arity in news take k arguments?"
+  [news k]
+  (some (fn [[m v]] (if v (<= m k) (= m k))) news))
+
 (defn- takes?
-  "Does an arity in news accept every call old (an arity) did?"
+  "Do the arities news, between them, accept every call old (an arity) did?
+  (A variadic arity split into fixed ones and a later variadic one, as
+  (swap! a f x) for speed, still takes every count.)"
   [news [n variadic?]]
-  (some (fn [[m v]] (if variadic? (and v (<= m n)) (or (= m n) (and v (<= m n))))) news))
+  (if variadic?
+    (when-let [m (some (fn [[m v]] (when v m)) news)]
+      (every? (fn [k] (accepts? news k)) (range n (inc (max n m)))))
+    (accepts? news n)))
 
 (defn changes
   "How interface new differs from old (both from interface): a vector of
