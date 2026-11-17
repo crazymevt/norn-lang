@@ -1,0 +1,22 @@
+(ns ledger.rules
+  "Categories by rule: the first rule whose pattern finds the description.
+
+    [[rules]]
+    match = \"(?i)whole foods|trader joe\"
+    category = \"Groceries\"")
+
+(defn compile-rules
+  "Rules from the config ([{:match :category}…]) with their patterns
+  compiled."
+  [rules]
+  (mapv (fn [r] (assoc r :pattern (re-pattern (:match r)))) rules))
+
+(defn category-for
+  "The category the first matching rule gives description, or nil."
+  [rules description]
+  (some (fn [r] (when (re-find (:pattern r) description) (:category r))) rules))
+
+(defn categorize
+  "txs with a category from rules wherever they have none."
+  [rules txs]
+  (mapv (fn [tx] (if (:category tx) tx (assoc tx :category (category-for rules (:description tx))))) txs))

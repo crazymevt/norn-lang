@@ -1,0 +1,39 @@
+(ns ledger.money
+  "Amounts of money as exact decimals, to the cent: read from the ways banks
+  write them, written back the way people read them."
+  (:require [norn.decimal :as d]
+            [norn.string :as str]))
+
+(def zero "No money." (d/decimal 0 2))
+
+(defn cents
+  "x (a Decimal) to two places, rounding half to even."
+  [x]
+  (d/quantize x 2))
+
+(defn parse-amount
+  "The amount in text s as a Decimal to the cent: $1,234.56, -12.30,
+  (12.30) and 12.30- are all read; nil for a blank field. A ParseError
+  for anything else."
+  [s]
+  (let [t (str/trim (str s))]
+    (when-not (str/blank? t)
+      (let [negative (or (str/starts-with? t "-") (str/starts-with? t "(") (str/ends-with? t "-"))
+            digits (str/replace t #"[^0-9.]" "")]
+        (when-not (re-matches #"\d*\.?\d+|\d+\." digits)
+          (error ParseError :message (str "Not an amount: " (pr-str s)) :source "amount"))
+        (let [x (cents (d/parse digits))]
+          (if negative (d/subtract zero x) x))))))
+
+(defn plus "The sum of amounts." [& xs] (reduce d/add zero xs))
+
+(defn negative? "Is x below zero?" [x] (neg? (d/compare x zero)))
+
+(defn format-amount
+  "x as text with a thousands separator: -1,234.56."
+  [x]
+  (let [t (d/text (cents x))
+        neg (str/starts-with? t "-")
+        [whole frac] (str/split (if neg (subs t 1) t) #"\." 2)
+        groups (reverse (map (fn [g] (apply str (reverse g))) (partition-all 3 (reverse whole))))]
+    (str (when neg "-") (str/join "," groups) "." frac)))

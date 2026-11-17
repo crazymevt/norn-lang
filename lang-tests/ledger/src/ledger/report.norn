@@ -1,0 +1,47 @@
+(ns ledger.report
+  "Spending by month and category, as a text table or an HTML page."
+  (:require [ledger.dates :as dates]
+            [ledger.money :as money]
+            [norn.decimal :as d]
+            [norn.html :as html]
+            [norn.string :as str]))
+
+(def uncategorized "The category of a transaction without one." "(none)")
+
+(defn summarize
+  "Totals of txs by month and category: {:months [m…] :categories [c…]
+  :totals {[m c] amount} :month-totals {m amount}}, months and categories
+  sorted."
+  [txs]
+  (let [key-of (fn [tx] [(dates/month-of (:date tx)) (or (:category tx) uncategorized)])
+        totals (reduce (fn [acc tx] (update acc (key-of tx) (fnil d/add money/zero) (:amount tx))) {} txs)]
+    {:months (vec (sort (distinct (map first (keys totals)))))
+     :categories (vec (sort (distinct (map second (keys totals)))))
+     :totals totals
+     :month-totals (reduce (fn [acc [[m _] x]] (update acc m (fnil d/add money/zero) x)) {} totals)}))
+
+(defn text-table
+  "Summary s as a text table: a row per category, a column per month."
+  [{:keys [months categories totals month-totals]}]
+  (let [cell (fn [x] (if x (money/format-amount x) "-"))
+        rows (concat [(cons "" months)]
+                     (for [c categories] (cons c (for [m months] (cell (get totals [m c])))))
+                     [(cons "total" (for [m months] (cell (get month-totals m))))])
+        widths (apply map (fn [& col] (reduce max 0 (map str/width col))) rows)]
+    (str/join "\n" (for [r rows]
+                     (str/trimr (str/join "  " (map-indexed (fn [i [w x]] (if (zero? i) (str/pad-right x w) (str/pad-left x w)))
+                                                            (map vector widths r))))))))
+
+(defn html-page
+  "Summary s as a whole HTML page, titled title."
+  [title {:keys [months categories totals month-totals]}]
+  (let [cell (fn [x] [:td {:class (when (and x (money/negative? x)) "out")} (if x (money/format-amount x) "–")])]
+    (html/document
+     {:title title
+      :head [:style "body{font:15px system-ui;margin:2em}td,th{padding:.3em .8em;text-align:right}"
+             "td:first-child,th:first-child{text-align:left}.out{color:#b3261e}tfoot td{font-weight:600}"]}
+     [:h1 title]
+     [:table
+      [:thead [:tr [:th "category"] (for [m months] [:th m])]]
+      [:tbody (for [c categories] [:tr [:td c] (for [m months] (cell (get totals [m c])))])]
+      [:tfoot [:tr [:td "total"] (for [m months] (cell (get month-totals m)))]]])))

@@ -1,0 +1,25 @@
+(ns ledger.money-test
+  (:require [ledger.dates :as dates]
+            [ledger.money :as m]
+            [norn.decimal :as d]
+            [norn.property :as p :refer [defproperty]]
+            [norn.test :refer [deftest is]]
+            [norn.time :as t]))
+
+(deftest amounts
+  (is (= ["1,234.56" "-12.30" "-12.30" "-12.30" "0.00" "1,000,000.00" "0.10"]
+         (mapv (comp m/format-amount m/parse-amount) ["$1,234.56" "-12.3" "(12.30)" "12.30-" "0.005" "1000000" ".1"])))
+  (is (nil? (m/parse-amount "  ")))
+  (is (thrown? ParseError (m/parse-amount "twelve")))
+  (is (= "0.30" (d/text (m/plus (m/parse-amount "0.10") (m/parse-amount "0.20")))) "exact, unlike 0.1 + 0.2"))
+
+(defproperty formatting-reads-back {:runs 200} [cents (p/integers :min -100000000 :max 100000000)]
+  (let [x (d/decimal cents 2)]
+    (zero? (d/compare x (m/parse-amount (m/format-amount x))))))
+
+(deftest dates
+  (is (= (t/local-date 2026 11 3) (dates/parse-date "2026-11-03" :iso) (dates/parse-date "11/03/2026" :us)
+         (dates/parse-date "03.11.26" "%d.%m.%y") (dates/parse-date "3 Nov 2026" :text) (dates/parse-date "03 november 2026" :text)))
+  (is (thrown? ParseError (dates/parse-date "11-03-2026" :us)))
+  (is (thrown? ParseError (dates/parse-date "Wed 3 Nov 2026" "%a %d %b %Y")) "the weekday is checked")
+  (is (= "2026-11" (dates/month-of (t/local-date 2026 11 30)))))

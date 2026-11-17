@@ -1,0 +1,41 @@
+(ns ledger.store
+  "The ledger: transactions in an EDN file, written atomically. Amounts and
+  dates are EDN's tagged literals, #norn/decimal and #norn/date."
+  (:require [norn.crypto :as crypto]
+            [norn.decimal :as d]
+            [norn.edn :as edn]
+            [norn.io :as io]
+            [norn.time :as t]))
+
+(defn transaction-id
+  "A transaction's id: the same for the same date, description, amount and
+  account, so importing a file twice adds nothing."
+  [{:keys [date description amount account]}]
+  (subs (crypto/hex (crypto/sha256 (str (t/format-local date) "|" description "|" (d/text amount) "|" account))) 0 16))
+
+(defn load-ledger
+  "The ledger in file path: {:transactions [tx…]} by date, an empty one if
+  there's no file."
+  [path]
+  (if (io/exists? path)
+    (edn/read-string (io/read-text path))
+    {:transactions []}))
+
+(defn save-ledger!
+  "Write ledger to file path, all at once."
+  [path ledger]
+  (io/write-atomic! path (str (edn/write-string ledger :pretty true) "\n")))
+
+(defn add-transactions
+  "ledger with txs added, those already in it left out, kept by date:
+  [ledger added]."
+  [ledger txs]
+  (let [have (set (map :id (:transactions ledger)))
+        new (vec (vals (into {} (for [tx txs :let [tx (assoc tx :id (transaction-id tx))] :when (not (have (:id tx)))] [(:id tx) tx]))))]
+    [(assoc ledger :transactions (vec (sort-by (juxt (comp t/format-local :date) :id) (concat (:transactions ledger) new))))
+     (count new)]))
+
+(defn set-category
+  "ledger with transaction id's category set to category (nil for none)."
+  [ledger id category]
+  (update ledger :transactions (fn [txs] (mapv (fn [tx] (if (= id (:id tx)) (assoc tx :category category) tx)) txs))))

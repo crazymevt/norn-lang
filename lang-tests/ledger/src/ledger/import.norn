@@ -1,0 +1,49 @@
+(ns ledger.import
+  "Bank exports (CSV) as transactions. An account's profile, from the
+  config file, names its columns:
+
+    [accounts.checking]
+    date = \"Date\"            # the column of each part
+    description = \"Description\"
+    amount = \"Amount\"        # or debit = \"…\" and credit = \"…\"
+    date-format = \"us\"       # iso, us, eu, text, or a pattern: \"%d.%m.%y\""
+  (:require [ledger.dates :as dates]
+            [ledger.money :as money]
+            [norn.csv :as csv]
+            [norn.decimal :as d]
+            [norn.string :as str]))
+
+(defn- column [row profile k]
+  (when-let [c (get profile k)]
+    (if (contains? row c)
+      (get row c)
+      (error ParseError :message (str "No column " (pr-str c) " (" (name k) ") in the file: it has "
+                                      (str/join ", " (map pr-str (sort (keys row)))))
+             :source "import"))))
+
+(defn- amount
+  "The row's amount: its amount column, or its credit less its debit."
+  [row profile]
+  (if (:amount profile)
+    (money/parse-amount (column row profile :amount))
+    (d/subtract (or (money/parse-amount (column row profile :credit)) money/zero)
+                (or (money/parse-amount (column row profile :debit)) money/zero))))
+
+(defn read-transactions
+  "The transactions in CSV text from account (its name), read as its
+  profile says: [{:date :description :amount :account}…]. A ParseError
+  names the line of a row it can't read."
+  [text account profile]
+  (let [rows (csv/read-maps text :keys identity :strict false)
+        f (or (:date-format profile) "iso")
+        format (if (contains? dates/formats (keyword f)) (keyword f) f)]
+    (vec (map-indexed
+          (fn [i row]
+            (try
+              {:date (dates/parse-date (column row profile :date) format)
+               :description (str/trim (column row profile :description))
+               :amount (amount row profile)
+               :account account}
+              (catch ParseError e
+                (error ParseError :message (str "line " (+ i 2) ": " (condition-message e)) :source "import"))))
+          rows))))
