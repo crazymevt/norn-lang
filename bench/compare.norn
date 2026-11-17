@@ -1,9 +1,9 @@
 ;;;; Run the benchmark suites at both tiers and compare them with the
 ;;;; recorded baseline (bench/baseline.edn): M10's measuring stick
 ;;;; (docs/plan-m10.md, part 0). Each suite runs in a process of its own,
-;;;; with this norn, one tier at a time. With sbcl on the PATH, the
-;;;; Mandelbrot program is also compared with the same kernel in SBCL
-;;;; (bench/mandelbrot.lisp).
+;;;; with this norn, one tier at a time. With sbcl or clojure on the PATH,
+;;;; the Mandelbrot program is also compared with the same kernel in SBCL
+;;;; (bench/mandelbrot.lisp) and Clojure (bench/mandelbrot.clj).
 ;;;;
 ;;;;   norn bench/compare.norn                  (against the baseline)
 ;;;;   norn bench/compare.norn --record         (run, and record it as the baseline:
@@ -54,6 +54,15 @@
          (when (zero? (:exit r)) (parse-double (first (str/split (str/trim (:out r)) #" ")))))
        (catch Error _ nil)))
 
+(defn- clojure-mandelbrot
+  "Clojure's Mandelbrot time in ms (bench/mandelbrot.clj, on the JVM), or
+  nil without clojure."
+  []
+  (try (let [r (proc/sh "clojure" "-M" "bench/mandelbrot.clj")]
+         (when (zero? (:exit r))
+           (parse-double (first (str/split (last (str/split-lines (str/trim (:out r)))) #" ")))))
+       (catch Error _ nil)))
+
 (defn- run-all [names only]
   ;; (sorted, so a recorded baseline reads and diffs in order)
   (into (sorted-map) (for [n names]
@@ -70,9 +79,9 @@
     "     -"))
 
 (defn report
-  "This run's results against the baseline's, as text (lisp: SBCL's
-  Mandelbrot time this run, or nil)."
-  [base now lisp]
+  "This run's results against the baseline's, as text (lisp, clj: SBCL's
+  and Clojure's Mandelbrot times this run, or nil)."
+  [base now lisp clj]
   (str/join
    "\n"
    (concat
@@ -97,7 +106,14 @@
         [(str "SBCL, the same Mandelbrot (bench/mandelbrot.lisp): " (format "%.2f ms" lisp)
               (when t0 (format "; Norn is %.0f× slower at tier 0" (/ t0 lisp)))
               (when t1 (format ", %.0f× at tier 1" (/ t1 lisp)))
-              (when-let [b (get-in base [:sbcl])] (format " (baseline's SBCL: %.2f ms)" b)))])))))
+              (when-let [b (get-in base [:sbcl])] (format " (baseline's SBCL: %.2f ms)" b)))]))
+    (when clj
+      (let [label "mandelbrot: 200×125 pixels, escape time, floats"
+            [t0 t1] [(get-in now ["programs" "0" label]) (get-in now ["programs" "1" label])]]
+        [(str "Clojure, the same Mandelbrot (bench/mandelbrot.clj): " (format "%.2f ms" clj)
+              (when t0 (format "; Norn is %.0f× slower at tier 0" (/ t0 clj)))
+              (when t1 (format ", %.0f× at tier 1" (/ t1 clj)))
+              (when-let [b (get-in base [:clojure])] (format " (baseline's Clojure: %.2f ms)" b)))])))))
 
 (defn -main [& args]
   (let [opts (loop [args args o {}]
@@ -110,7 +126,8 @@
                  o))
         names (or (:suites opts) (sort (keys suites)))
         results (run-all names (:only opts))
-        lisp (when (some #{"programs"} names) (sbcl-mandelbrot))]
+        lisp (when (some #{"programs"} names) (sbcl-mandelbrot))
+        clj (when (some #{"programs"} names) (clojure-mandelbrot))]
     (if (:record opts)
       (let [old (when (io/exists? baseline-file) (edn/read-string (io/read-text baseline-file)))]
         (spit baseline-file
@@ -120,7 +137,8 @@
                                       :norn (str/trim (:out (proc/sh "git" "rev-parse" "--short" "HEAD")))
                                       ;; (the suites not run this time keep theirs)
                                       :results (into (into (sorted-map) (:results old)) results)
-                                      :sbcl (or lisp (:sbcl old))}
+                                      :sbcl (or lisp (:sbcl old))
+                                      :clojure (or clj (:clojure old))}
                                      :pretty true)
                    "\n"))
         (println "recorded" baseline-file))
@@ -129,6 +147,6 @@
                    (do (println "(no baseline yet: norn bench/compare.norn --record)") {}))]
         (when (:recorded base)
           (println (str "baseline: " (:recorded base) ", at " (:norn base) ", " (get-in base [:machine :cores]) " cores")))
-        (println (report base results lisp))))))
+        (println (report base results lisp clj))))))
 
 (apply -main (sys/program-args))
