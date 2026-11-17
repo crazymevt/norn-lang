@@ -1,0 +1,63 @@
+# Every push to main and every pull request: build, the Rust tests (with
+# 37 Norn suites at both tiers), every Norn suite, the lang-tests at three
+# tiers against their recorded outputs, and norn check. On macOS and Linux,
+# both arm64: tier 1 hasn't run on x86-64 yet (M12).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # (no window opens for norn.ui's tests)
+  NORN_UI_HEADLESS: "1"
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-15
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        # SQLite for norn.sqlite (loaded at run time), zsh for terminal_test
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-0 zsh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked --release
+
+      - name: Rust tests
+        run: cargo test --locked --release --workspace --no-fail-fast
+
+      - name: Every Norn suite
+        run: target/release/norn test tests/norn
+
+      - name: lang-tests
+        run: target/release/norn lang-tests/run.norn
+
+      - name: norn check
+        run: target/release/norn check

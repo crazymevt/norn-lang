@@ -1,0 +1,64 @@
+# Every night (and on demand): every Norn suite in the modes too slow for
+# each push, which are what catch tier-1 and collector bugs: tier 0 alone,
+# everything compiled from its first call, and a collection forced every
+# 50th slow-path poll (NORN_GC_STRESS). Scheduled runs use main.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NORN_UI_HEADLESS: "1"
+
+jobs:
+  suites:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-15
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-0 zsh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked --release
+
+      - name: Tier 0
+        if: ${{ !cancelled() }}
+        run: target/release/norn test tests/norn
+        env:
+          NORN_TIER: "0"
+
+      - name: Everything compiled from its first call
+        if: ${{ !cancelled() }}
+        run: target/release/norn test tests/norn
+        env:
+          NORN_TIER: "1"
+          NORN_JIT_THRESHOLD: "1"
+          NORN_JIT_SYNC: "1"
+
+      - name: GC stress
+        if: ${{ !cancelled() }}
+        run: target/release/norn test tests/norn
+        env:
+          NORN_GC_STRESS: "50"
