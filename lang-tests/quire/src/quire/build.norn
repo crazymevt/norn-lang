@@ -45,6 +45,10 @@
     (into {} (for [f (fs/glob (str root "/**/*")) :when (io/file? f)]
                [(subs f (inc (count root))) (io/read-bytes f)]))))
 
+(def ^:private zip-time
+  "When site.zip's entries say they were made: 2000-01-01, UTC (epoch ms)."
+  946684800000)
+
 (defn build!
   "Build the site in folder dir into folder out. Options: :drafts (include
   drafts), :zip (also write out/site.zip of it all), :on-bad-post (:skip,
@@ -73,7 +77,9 @@
                      pages
                      (static-files dir))
         files (assoc files "sitemap.xml" (render/sitemap site (filter (fn [k] (str/ends-with? k ".html")) (keys files))))
-        files (if zip (assoc files "site.zip" (zip/zip (into (sorted-map) files))) files)
+        ;; (its entries dated at a fixed time, not the build's: the same site
+        ;; makes the same zip, so a build that changes nothing writes nothing)
+        files (if zip (assoc files "site.zip" (zip/zip (into (sorted-map) files) :modified zip-time)) files)
         written (vec (for [[path data] (sort-by key files) :when (write-if-changed! (io/path out path) data)] path))
         stale (for [f (if (io/directory? out) (fs/glob (str out "/**/*")) [])
                     :when (io/file? f)

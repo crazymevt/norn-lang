@@ -61,6 +61,19 @@
           (> n 200) false
           :else (do (sleep 50) (recur (inc n))))))
 
+;; (A rebuild can come before the edit's: the watch may report the site's
+;; files copied just before it began. So the test waits for the edit to
+;; show, not for the first reload after it.)
+(defn- eventually?
+  "Does (f) come to be true within 10 s?"
+  [f]
+  (loop [n 0]
+    (cond (f) true
+          (> n 200) false
+          :else (do (sleep 50) (recur (inc n))))))
+
+(defn- reloads [seen] (count (re-seq #"data: reload" @seen)))
+
 (deftest serving
   (let [dir (copy-site!) out (io/path dir "_site")
         s (serve/serve! dir out 0)
@@ -74,9 +87,10 @@
         (http/with-response [resp {:url (url "/__reload") :timeout 5000}]
           (let [seen (reader-of (io/text-reader (:body resp)))]
             (is (shows? seen ": listening"))
-            (io/write-text (io/path dir "posts" "rain.md")
-                           (str/replace (io/read-text (io/path dir "posts" "rain.md")) "title: Rain" "title: Downpour"))
-            (is (shows? seen "data: reload")))))
-      (is (str/includes? (:body (http/get (url "/"))) "Downpour") "the new title")
+            (let [before (reloads seen)]
+              (io/write-text (io/path dir "posts" "rain.md")
+                             (str/replace (io/read-text (io/path dir "posts" "rain.md")) "title: Rain" "title: Downpour"))
+              (is (eventually? #(str/includes? (:body (http/get (url "/"))) "Downpour")) "the new title")
+              (is (eventually? #(> (reloads seen) before)) "browsers told")))))
       (finally ((:stop s))
                (io/delete! dir :recursive true)))))
