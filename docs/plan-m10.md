@@ -593,6 +593,13 @@ baseline compared.
   client's commands (it still hears the room) — at tier 0 too (1 round in
   30 of a probe of that test at each tier); tier 1 only moves the timing.
   The test passes regardless. Chat's or the runtime's (todo).
+- **Decision 2: tier 1 is the default (2026-11-17, the user's go-ahead).**
+  It won on the baseline, agrees with tier 0 on every suite and sibling
+  project, and with background compilation starts as fast. `enabled()`
+  in jit.rs now reads `NORN_TIER=0` as the way off, and anything else as
+  on. The benchmark scripts print the tier they ran at (`jit-stats`), and
+  ext.rs's GC-stress runs ask for tier 0 by name. The README and book
+  chapter 26 say so.
 
 ## Open after part 4 (2026-11-16)
 

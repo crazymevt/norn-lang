@@ -4,8 +4,8 @@
 ;;;; and core data operations for comparison. Each case runs an operation
 ;;;; 1,000 times in a loop; the loop alone is the first row.
 ;;;;
-;;;;   norn bench/micro.norn               (tier 0)
-;;;;   NORN_TIER=1 norn bench/micro.norn   (tier 1)
+;;;;   norn bench/micro.norn               (tier 1, the default)
+;;;;   NORN_TIER=0 norn bench/micro.norn   (tier 0)
 ;;;;   norn bench/micro.norn calls         (only cases whose name has "calls")
 ;;;;   norn bench/micro.norn --edn         (results as data, for bench/compare.norn)
 
@@ -122,7 +122,7 @@
 (defn -main [& args]
   (let [edn? (some #{"--edn"} args)
         only (first (remove #{"--edn"} args))]
-    (when-not edn? (println (str "tier " (or (sys/getenv "NORN_TIER") "0") ", ns per operation (1,000 per run)")))
+    (when-not edn? (println (str "tier " (:tier (jit-stats)) ", ns per operation (1,000 per run)")))
     (let [results (into {} (for [[label f] cases
                                  :when (or (nil? only) (str/includes? label only))]
                              (let [ns (/ (:mean-ns (bench/run f :warmup-ms 100 :ms 300)) n)]

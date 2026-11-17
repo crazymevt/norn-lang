@@ -23,7 +23,7 @@ const RECEIVE: &str = "(let [ch (chan 64)] (norn.demo/subscribe ch 20000) \
 
 #[test]
 fn the_main_thread_feeds_a_channel_in_order_under_gc_stress() {
-    for env in [&[("NORN_GC_STRESS", "2")][..], &[("NORN_GC_STRESS", "2"), ("NORN_THREADS", "2")][..], &[("NORN_TIER", "1")][..]] {
+    for env in [&[("NORN_GC_STRESS", "2"), ("NORN_TIER", "0")][..], &[("NORN_GC_STRESS", "2"), ("NORN_THREADS", "2"), ("NORN_TIER", "0")][..], &[][..]] {
         let (ok, out, err) = demo(&["-e", RECEIVE], env);
         assert!(ok, "{env:?}: {err}");
         assert_eq!(out, "[20000 20000 true 20000]", "{env:?}");

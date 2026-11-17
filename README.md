@@ -17,8 +17,9 @@ plus CLOS-style classes and generic functions (multiple dispatch, method
 combination, live redefinition across all cores), and a Common Lisp-style
 condition system with a debugger: an unhandled error parks the fiber with its
 stack intact, you fix the code, and resume it from the REPL or an editor
-(`norn --server`). The compiler is written in Norn and compiles itself; set `NORN_TIER=1`
-for Cranelift-generated native code (2–9× faster on the benchmarks so far).
+(`norn --server`). The compiler is written in Norn and compiles itself, and hot functions are
+compiled to native code with Cranelift in the background (2–10× faster on
+the benchmarks; `NORN_TIER=0` runs the interpreter alone).
 Images save the running heap, parked fibers included (even one waiting in
 the debugger), and start in about 35 ms. I/O never blocks a carrier: files
 on a blocking pool, sockets (TCP, UDP, TLS) and pipes on a reactor, and C

@@ -2,8 +2,8 @@
 ;;;; network and concurrency. The baseline M10's optimiser is measured
 ;;;; against, and the survey before sealing (docs/perf-survey.md).
 ;;;;
-;;;;   norn bench/workloads.norn               (tier 0)
-;;;;   NORN_TIER=1 norn bench/workloads.norn   (tier 1)
+;;;;   norn bench/workloads.norn               (tier 1, the default)
+;;;;   NORN_TIER=0 norn bench/workloads.norn   (tier 0)
 ;;;;   norn bench/workloads.norn json          (only workloads named so)
 ;;;;   norn bench/workloads.norn --edn         (results as data, for bench/compare.norn)
 
@@ -72,7 +72,7 @@
 (defn -main [& args]
   (let [edn? (some #{"--edn"} args)
         only (first (remove #{"--edn"} args))]
-    (when-not edn? (println (str "tier " (or (sys/getenv "NORN_TIER") "0") ", ms per run (best of the runs in about 2 s)")))
+    (when-not edn? (println (str "tier " (:tier (jit-stats)) ", ms per run (best of the runs in about 2 s)")))
     (let [results (into {} (for [[label f] workloads
                                  :when (or (nil? only) (str/includes? label only))]
                              (let [ms (/ (:min-ns (bench/run f :warmup-ms 300 :ms 1500)) 1e6)]

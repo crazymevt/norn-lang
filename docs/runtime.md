@@ -1083,12 +1083,12 @@ reused, and a later delta can recognise them by address.
   values.
 
 *Compilation.*
-- When `NORN_TIER=1`, once a proto has been entered 100 times (calls and
+- At tier 1 (the default since M10; `NORN_TIER=0` turns it off), once a
+  proto has been entered 100 times (calls and
   loop turns, counted in its native word; `NORN_JIT_THRESHOLD` sets it, 1
   to 4000). Until M10 it was on first execution, which compiled all the
   code that runs once: `norn -e` started in 1.07 s at tier 1 against 0.11
-  s at tier 0, and 0.54 s at 100. Tier 0 stays the default until tier 1
-  has seen more use. At M10's end compiling is slower than that, the code
+  s at tier 0, and 0.54 s at 100. At M10's end compiling is slower than that, the code
   doing more: `norn -e nil` compiles 258 protos (2.9 MB), which took 1.0
   s on the carriers that reached the threshold, waiting for each.
 - **On a thread of its own** (background compilation, M10): reaching the

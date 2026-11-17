@@ -5,8 +5,8 @@
 ;;;; decimals, sequence functions, generic dispatch, channels. A baseline
 ;;;; for M10 (docs/plan-m10.md, part 0).
 ;;;;
-;;;;   norn bench/programs.norn               (tier 0)
-;;;;   NORN_TIER=1 norn bench/programs.norn   (tier 1)
+;;;;   norn bench/programs.norn               (tier 1, the default)
+;;;;   NORN_TIER=0 norn bench/programs.norn   (tier 0)
 ;;;;   norn bench/programs.norn log           (only programs named so)
 ;;;;   norn bench/programs.norn --edn         (results as data, for bench/compare.norn)
 
@@ -187,7 +187,7 @@
         only (first (remove #{"--edn"} args))
         chosen (filter (fn [[label _]] (or (nil? only) (str/includes? label only))) programs)]
     (when-not edn?
-      (println (str "tier " (or (sys/getenv "NORN_TIER") "0") ", ms per run (best of the runs in about 2 s)")))
+      (println (str "tier " (:tier (jit-stats)) ", ms per run (best of the runs in about 2 s)")))
     (let [results (into {} (for [[label f] chosen]
                              (let [ms (/ (:min-ns (bench/run f :warmup-ms 300 :ms 1500)) 1e6)]
                                (when-not edn? (println (format "%9.2f  %s" ms label)))

@@ -243,10 +243,13 @@ pub static RELINKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicU
 /// :pending: tests wait for it to be 0 before checking compiled code).
 pub static COMPILES_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Is tier 1 on? (`NORN_TIER=1`; tier 0 is the default for now.)
+/// Is tier 1 on? It's the default since M10 (decision 2: it won on the
+/// baseline, agreed with tier 0 on every suite and sibling project, and,
+/// compiling in the background, starts as fast); `NORN_TIER=0` runs the
+/// interpreter alone.
 pub fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("NORN_TIER").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("NORN_TIER").as_deref() != Ok("0"))
 }
 
 pub(crate) fn isa() -> Option<&'static OwnedTargetIsa> {

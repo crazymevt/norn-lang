@@ -470,18 +470,22 @@ profile running.
 
 Norn compiles your code to bytecode, and runs it in one of two ways:
 
-- **Tier 0**, the default, is a bytecode interpreter. It starts running
-  code at once, with nothing to compile, and it runs everywhere, including
-  platforms that forbid generating code at run time.
-- **Tier 1** compiles a function to native code with Cranelift once it
-  has run 100 times (calls and loop turns together), so code that runs
-  once, such as start-up and loading a module, isn't worth the compile.
-  Turn it on with the environment variable `NORN_TIER=1`, and set the
-  count with `NORN_JIT_THRESHOLD` (1 compiles everything the first time
-  it runs). Tier 1 targets 64-bit ARM macOS and 64-bit ARM and x86 Linux.
+- **Tier 0** is a bytecode interpreter. It starts running code at once,
+  with nothing to compile, and it runs everywhere, including platforms
+  that forbid generating code at run time.
+- **Tier 1**, the default, compiles a function to native code with
+  Cranelift once it has run 100 times (calls and loop turns together), so
+  code that runs once, such as start-up and loading a module, isn't worth
+  the compile. It compiles on a thread of its own, the busiest function
+  first, while the interpreter goes on running the function; the next
+  call or loop turn after that runs the native code. Set the count with
+  `NORN_JIT_THRESHOLD` (1 compiles everything the first time it runs),
+  and turn tier 1 off with the environment variable `NORN_TIER=0`. Tier 1
+  targets 64-bit ARM macOS and 64-bit ARM and x86 Linux; elsewhere the
+  interpreter runs everything.
 
 ```sh
-NORN_TIER=1 norn bench/workloads.norn
+NORN_TIER=0 norn bench/workloads.norn    # the interpreter alone, to compare
 ```
 
 Both tiers lay out stack frames the same way. Tier-1 code can hand any
@@ -678,9 +682,9 @@ variant, compare the GC counts as well as the times.
 - `norn.prof/profile` samples the stacks while code runs, and reports the
   functions with the most samples and the call tree. `folded` gives the
   stacks to flame-graph tools such as speedscope.
-- Tier 0 interprets bytecode and is the default. `NORN_TIER=1` compiles
-  functions with Cranelift and speeds up calls, loops and arithmetic by 3–10
-  times, but not primitives or the collector.
+- Tier 1, the default, compiles hot functions with Cranelift in the
+  background, which speeds up calls, loops and arithmetic by 2–10 times,
+  but not primitives or the collector. `NORN_TIER=0` interprets only.
 - In hot code: build with transients, fuse steps with transducers, keep
   checked boundaries, `try` and `binding` out of inner loops, and prefer
   maps for short-lived records.
