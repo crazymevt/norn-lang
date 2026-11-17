@@ -12,18 +12,22 @@
 //! The interpreter enters it through a trampoline (`enter`), since it uses
 //! Cranelift's `tail` calling convention.
 //!
-//! Registers stay in the heap frame, so at every exit the frame is exactly
+//! Registers live in the heap frame, so at every exit the frame is exactly
 //! what the interpreter expects:
 //! - mixed tier-0/tier-1 stacks, the GC, the debugger and backtraces need
 //!   nothing new;
 //! - "deoptimising" is just interpreting from the current pc.
 //!
+//! Between entries (M10 part 5.1: `entries`) native code keeps registers in
+//! SSA values, writing through to the frame, except floats it keeps
+//! unboxed (part 5.2: FloFlow), which it boxes when it stops.
+//!
 //! Handled natively:
 //! - moves, constants, var reads (fast path), upvalues, branches;
 //! - loop back-edges, with the safepoint check;
-//! - calls to `+ - < > <= >= == = inc dec zero?` when the callee *is* that
-//!   primitive (checked at run time, so redefinitions stay live) and the
-//!   arguments are fixnums;
+//! - calls to `+ - * / < > <= >= == = inc dec zero?` when the callee *is*
+//!   that primitive (checked at run time, so redefinitions stay live) and
+//!   the arguments are fixnums or floats (part 5.2);
 //! - making closures (`CLOSURE`, through a helper that allocates);
 //! - calls, tail calls and returns (M10 part 2). A call is a helper
 //!   (crate::vm::jit_call) that works out what the callee is, as
@@ -64,7 +68,7 @@
 use crate::bytecode::*;
 use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{AbiParam, Block, BlockArg, Function, InstBuilder, JumpTableData, MemFlagsData, Signature, UserFuncName, types};
 use cranelift_codegen::isa::OwnedTargetIsa;
 use cranelift_codegen::settings::{self, Configurable};
@@ -106,6 +110,8 @@ pub struct JitCtx {
     pub seg_end: u64,
     /// A linked call's guard failed (relink).
     pub relink_fn: u64,
+    /// Box a float (crate::vm::jit_box_float).
+    pub box_float_fn: u64,
 }
 
 impl JitCtx {
@@ -129,6 +135,7 @@ impl JitCtx {
             seg_base: 0,
             seg_end: 0,
             relink_fn: relink as *const () as u64,
+            box_float_fn: crate::vm::jit_box_float as *const () as u64,
         }
     }
 }
@@ -165,6 +172,9 @@ const VEC_ROOT: i32 = (2 + 2) * W - 1;
 const VEC_TAIL: i32 = (2 + 3) * W - 1;
 const CTX_SEG_END: i32 = (15 + NPRIMS as i32) * W;
 const CTX_RELINK: i32 = (16 + NPRIMS as i32) * W;
+const CTX_BOX_FLOAT: i32 = (17 + NPRIMS as i32) * W;
+// A float's value (its first payload word).
+const FLOAT_BITS: i32 = 2 * W - 1;
 
 // (the offsets above are the fields' places in JitCtx)
 const _: () = {
@@ -181,6 +191,7 @@ const _: () = {
     assert!(std::mem::offset_of!(JitCtx, seg_base) as i32 == CTX_SEG_BASE);
     assert!(std::mem::offset_of!(JitCtx, seg_end) as i32 == CTX_SEG_END);
     assert!(std::mem::offset_of!(JitCtx, relink_fn) as i32 == CTX_RELINK);
+    assert!(std::mem::offset_of!(JitCtx, box_float_fn) as i32 == CTX_BOX_FLOAT);
 };
 
 /// What the call helpers say happened (crate::vm::jit_call, jit_tail).
@@ -199,10 +210,11 @@ pub const PENDING_FLAG: u64 = 1 << 61;
 /// the interpreter polls, then carries on at the pc in the other bits.
 pub const POLL_FLAG: u64 = 1 << 62;
 
-pub const NPRIMS: usize = 28;
+pub const NPRIMS: usize = 30;
 /// The primitives with native fast paths, in `JitCtx::prims` order.
 pub const FAST_PRIMS: [&str; NPRIMS] = [
-    "+", "-", "<", ">", "<=", ">=", "==", "=", "inc", "dec", "zero?", // (fixnums)
+    "+", "-", "<", ">", "<=", ">=", "==", "=", "inc", "dec", "zero?", // (fixnums; floats, M10 part 5.2)
+    "*", "/", // (M10 part 5.2)
     "count", "nth", "first", "identical?", "nil?", "some?", "not", // (M10 part 4)
     "string?", "keyword?", "symbol?", "float?", "vector?", "regex?", "bytes?", "char?", "boolean?", "integer?", // (contracts' checks)
 ];
@@ -341,6 +353,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
     let ret_ref = b.import_signature(helper(3));
     let closure_ref = b.import_signature(helper(4));
     let relink_ref = b.import_signature(helper(2));
+    let box_ref = b.import_signature(helper(2));
 
     // Linked calls (link_for), their closures kept alive; and a cell for
     // this code's entry, which a failed guard passes to relink.
@@ -350,7 +363,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
         return None;
     }
     let ssa = ssa_enabled();
-    let fl = reg_flow(&ins, ssa);
+    let entry_pcs = entries(&ins, ssa);
     let links: Vec<Option<Link>> = if relinks(proto) < RELINK_LIMIT {
         let cs = proto.proto_consts();
         ins.iter()
@@ -390,6 +403,15 @@ fn compile_inner(proto: Value) -> Option<usize> {
             })
             .collect()
     };
+    let ff = flo_flow(&ins, proto.proto_consts(), &named_prim, &entry_pcs, nregs, ssa && despecs(proto) < DESPEC_LIMIT);
+    let live = live_in(&ins, nregs);
+    if std::env::var("NORN_JIT_TRACE_FLO").is_ok() {
+        eprintln!("flo {}", norn_rt::print::pr_str(proto, true));
+        for i in 0..n {
+            eprintln!("  {i:3} entry={} spec={} fin={:?} live={:?}", entry_pcs[i], ff.spec[i], ff.fin[i].iter().collect::<Vec<_>>(), live[i].iter().collect::<Vec<_>>());
+        }
+    }
+    let despec_ref = b.import_signature(helper(2));
 
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -397,9 +419,13 @@ fn compile_inner(proto: Value) -> Option<usize> {
     let exit = b.create_block(); // param: pc to hand back
     b.append_block_param(exit, types::I64);
 
-    // A Cranelift variable per register (see reg_flow): an entry loads them
-    // from the frame (those nothing reads are dropped).
+    // Cranelift variables per register (see `entries`): its value, which an
+    // entry loads from the frame (those nothing reads are dropped); and
+    // while it surely holds a float (FloFlow), the f64, and whether `vars`
+    // and the frame hold it boxed (1) or not yet (0).
     let vars: Vec<Variable> = (0..nregs).map(|_| b.declare_var(types::I64)).collect();
+    let fvars: Vec<Variable> = (0..nregs).map(|_| b.declare_var(types::F64)).collect();
+    let bvars: Vec<Variable> = (0..nregs).map(|_| b.declare_var(types::I8)).collect();
 
     b.switch_to_block(entry);
     let p = b.block_params(entry).to_vec();
@@ -408,7 +434,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
     let exit_pc = [BlockArg::Value(pc)];
     let default = b.func.dfg.block_call(exit, &exit_pc);
     // (a pc that isn't an entry stops at once: the interpreter runs on)
-    let stubs: Vec<Option<Block>> = (0..n).map(|k| fl.entries[k].then(|| b.create_block())).collect();
+    let stubs: Vec<Option<Block>> = (0..n).map(|k| entry_pcs[k].then(|| b.create_block())).collect();
     let table: Vec<_> = stubs
         .iter()
         .map(|s| match s {
@@ -418,6 +444,20 @@ fn compile_inner(proto: Value) -> Option<usize> {
         .collect();
     let jt = b.create_jump_table(JumpTableData::new(default, &table));
     b.ins().br_table(pc32, jt);
+    let float_layout = &norn_rt::object::LAYOUTS[norn_rt::Kind::Float as usize] as *const norn_rt::object::Layout as i64;
+    // (v is a float: tag 1 and the float layout; else to `no`)
+    let check_float = |b: &mut FunctionBuilder, v: cranelift_codegen::ir::Value, no: Block| {
+        let tag = b.ins().band_imm_s(v, norn_rt::value::TAG_MASK as i64);
+        let obj = b.ins().icmp_imm_s(IntCC::Equal, tag, norn_rt::value::TAG_OBJ as i64);
+        let ok = b.create_block();
+        b.ins().brif(obj, ok, &[], no, &[]);
+        b.switch_to_block(ok);
+        let layout = b.ins().load(types::I64, mf, v, -(norn_rt::value::TAG_OBJ as i32));
+        let same = b.ins().icmp_imm_s(IntCC::Equal, layout, float_layout);
+        let yes = b.create_block();
+        b.ins().brif(same, yes, &[], no, &[]);
+        b.switch_to_block(yes);
+    };
     for (k, s) in stubs.iter().enumerate() {
         if let Some(blk) = *s {
             b.switch_to_block(blk);
@@ -425,21 +465,89 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 let v = b.ins().load(types::I64, mf, regs, r as i32 * W);
                 b.def_var(var, v);
             }
-            b.ins().jump(blocks[k], &[]);
+            // (the registers assumed floats here: checked, unboxed; when one
+            // isn't, refuse, and have the code compiled again with fewer
+            // assumptions)
+            if !ff.fin[k].is_empty() {
+                let refuse = b.create_block();
+                for r in ff.fin[k].iter() {
+                    let v = b.use_var(vars[r]);
+                    check_float(&mut b, v, refuse);
+                    let f = b.ins().load(types::F64, mf, v, FLOAT_BITS);
+                    b.def_var(fvars[r], f);
+                    let one = b.ins().iconst(types::I8, 1);
+                    b.def_var(bvars[r], one);
+                }
+                b.ins().jump(blocks[k], &[]);
+                b.switch_to_block(refuse);
+                let fp = b.ins().iconst(types::I64, despecialise as *const () as i64);
+                let pv = b.ins().iconst(types::I64, proto.0 as i64);
+                let cv = b.ins().iconst(types::I64, cell as *const std::sync::atomic::AtomicU64 as i64);
+                b.ins().call_indirect(despec_ref, fp, &[pv, cv]);
+                let kv = b.ins().iconst(types::I64, k as i64);
+                b.ins().jump(exit, &[BlockArg::Value(kv)]);
+            } else {
+                b.ins().jump(blocks[k], &[]);
+            }
         }
     }
-    // A register's value; set one (written through to the frame: storing is
+    // A float register's value boxed: the box it has, or a new one (the
+    // helper allocates, which never collects), written to the frame; its
+    // copies (the registers of `floats` with its label) get the same box.
+    let materialize = |b: &mut FunctionBuilder, r: usize, labels: &[u32], floats: &RegSet| -> cranelift_codegen::ir::Value {
+        let flag = b.use_var(bvars[r]);
+        let (has, make, join) = (b.create_block(), b.create_block(), b.create_block());
+        b.append_block_param(join, types::I64);
+        b.ins().brif(flag, has, &[], make, &[]);
+        b.switch_to_block(has);
+        let t = b.use_var(vars[r]);
+        b.ins().jump(join, &[BlockArg::Value(t)]);
+        b.switch_to_block(make);
+        let f = b.use_var(fvars[r]);
+        let bits = b.ins().bitcast(types::I64, MemFlagsData::new(), f);
+        let fp = b.ins().load(types::I64, mf, ctx, CTX_BOX_FLOAT);
+        let call = b.ins().call_indirect(box_ref, fp, &[ctx, bits]);
+        let t = b.inst_results(call)[0];
+        b.ins().store(mf, t, regs, r as i32 * W);
+        b.ins().jump(join, &[BlockArg::Value(t)]);
+        b.switch_to_block(join);
+        let t = b.block_params(join)[0];
+        let one = b.ins().iconst(types::I8, 1);
+        for q in floats.iter().filter(|&q| q == r || labels[q] == labels[r]) {
+            b.def_var(vars[q], t);
+            b.def_var(bvars[q], one);
+            if q != r {
+                b.ins().store(mf, t, regs, q as i32 * W);
+            }
+        }
+        t
+    };
+    // Set a register to a value (written through to the frame: storing is
     // cheap, reloading what was just stored isn't, and the frame stays
-    // exact); write back a set of deferred ones (none yet: see reg_flow).
-    let get = |b: &mut FunctionBuilder, r: i32| b.use_var(vars[r as usize]);
+    // exact); to a float, unboxed (not yet in the frame); write back a set
+    // of float registers (boxed); a float register's f64.
     let set = |b: &mut FunctionBuilder, r: i32, v: cranelift_codegen::ir::Value| {
         b.def_var(vars[r as usize], v);
         b.ins().store(mf, v, regs, r * W);
     };
-    let spill = |b: &mut FunctionBuilder, s: &RegSet| {
+    let setf = |b: &mut FunctionBuilder, r: i32, f: cranelift_codegen::ir::Value| {
+        b.def_var(fvars[r as usize], f);
+        let zero = b.ins().iconst(types::I8, 0);
+        b.def_var(bvars[r as usize], zero);
+    };
+    let spill = |b: &mut FunctionBuilder, s: &RegSet, labels: &[u32], floats: &RegSet| {
         for r in s.iter() {
-            let v = b.use_var(vars[r]);
-            b.ins().store(mf, v, regs, r as i32 * W);
+            materialize(b, r, labels, floats);
+        }
+    };
+    let getf = |b: &mut FunctionBuilder, r: i32| b.use_var(fvars[r as usize]);
+    // After a call, the float registers `floats` (all boxed for it) but
+    // `except`: their f64s from their boxes.
+    let reload_floats = |b: &mut FunctionBuilder, floats: &RegSet, except: usize| {
+        for r in floats.iter().filter(|&r| r != except) {
+            let t = b.use_var(vars[r]);
+            let f = b.ins().load(types::F64, mf, t, FLOAT_BITS);
+            b.def_var(fvars[r], f);
         }
     };
 
@@ -447,7 +555,6 @@ fn compile_inner(proto: Value) -> Option<usize> {
     let tru = Value::TRUE.0 as i64;
     let fal = Value::FALSE.0 as i64;
     let unbound = Value::UNBOUND.0 as i64;
-    let next = |i: usize| if i + 1 < n { Some(blocks[i + 1]) } else { None };
 
     // Go into the frame whose registers are new_regs, at pc (a value): its
     // native code if it has some (a tail call), else back to the
@@ -561,15 +668,21 @@ fn compile_inner(proto: Value) -> Option<usize> {
     for (i, &w) in ins.iter().enumerate() {
         b.switch_to_block(blocks[i]);
         let (o, ra, rb) = (op(w), a(w) as i32, b_(w) as i32);
-        let (din, dout) = (&fl.din[i], &fl.dout[i]);
+        // (the registers surely floats as this instruction starts and ends:
+        // FloFlow)
+        let (fin, fout) = (&ff.fin[i], &ff.fout[i]);
+        let (ain, aout) = (&ff.ain[i][..], &ff.aout[i][..]);
+        // A register's value (a float's, boxed if it isn't yet).
+        let get = |b: &mut FunctionBuilder, r: i32| if fin.contains(r as usize) { materialize(b, r as usize, ain, fin) } else { b.use_var(vars[r as usize]) };
         // Stop at this instruction, the frame already written back; or write
         // it back first (bail).
-        let stop_here = |b: &mut FunctionBuilder| {
-            let v = b.ins().iconst(types::I64, i as i64);
+        let stop_at = |b: &mut FunctionBuilder, pc: usize| {
+            let v = b.ins().iconst(types::I64, pc as i64);
             b.ins().jump(exit, &[BlockArg::Value(v)]);
         };
+        let stop_here = |b: &mut FunctionBuilder| stop_at(b, i);
         let bail = |b: &mut FunctionBuilder| {
-            spill(b, din);
+            spill(b, fin, ain, fin);
             stop_here(b);
         };
         // Stop at this instruction with PENDING_FLAG: a primitive called
@@ -578,12 +691,35 @@ fn compile_inner(proto: Value) -> Option<usize> {
             let v = b.ins().iconst(types::I64, (i as u64 | PENDING_FLAG) as i64);
             b.ins().jump(exit, &[BlockArg::Value(v)]);
         };
+        // Go on at instruction `to` (the floats it doesn't know of, and
+        // will read, boxed first); past the end, stop there.
+        let goto = |b: &mut FunctionBuilder, to: Option<usize>| match to {
+            Some(s) => {
+                // (and copies that stop being known as copies there)
+                let keep = fout.intersect(&live[s]);
+                let mut need = fout.minus(&ff.fin[s]).intersect(&live[s]);
+                for r in keep.iter() {
+                    for q in keep.iter().filter(|&q| q > r && aout[q] == aout[r]) {
+                        if !(ff.fin[s].contains(r) && ff.fin[s].contains(q) && ff.ain[s][r] == ff.ain[s][q]) {
+                            need.insert(r);
+                        }
+                    }
+                }
+                spill(b, &need, aout, fout);
+                b.ins().jump(blocks[s], &[]);
+            }
+            None => {
+                spill(b, fout, aout, fout);
+                stop_at(b, i + 1);
+            }
+        };
+        let nextpc = (i + 1 < n).then_some(i + 1);
         // Return v from this frame: inline when the caller's frame is below
         // this one in the segment (not a run's bottom, not across segments)
         // and v isn't a retry, this frame then gone; else through the helper,
-        // with registers `dirty` written back first (it may fail, and the
-        // interpreter return from here). `ra`: the register v goes back to
-        // if the interpreter must return it; at `fail_pc` it does: this
+        // with float registers `dirty` written back first (it may fail, and
+        // the interpreter return from here). `ra`: the register v goes back
+        // to if the interpreter must return it; at `fail_pc` it does: this
         // RETURN, or the `RETURN ra` after a TAILCALL whose call has been
         // made (re-running the TAILCALL would call the primitive twice).
         let ret_value = |b: &mut FunctionBuilder, v: cranelift_codegen::ir::Value, ra: i32, fail_pc: usize, dirty: &RegSet| {
@@ -594,7 +730,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
             let site_slow = b.create_block();
             b.ins().brif(slow, site_slow, &[], ret_inline, &[BlockArg::Value(v)]);
             b.switch_to_block(site_slow);
-            spill(b, dirty);
+            spill(b, dirty, ain, fin);
             let off = b.ins().iconst(types::I64, (ra * W) as i64);
             let fp = b.ins().iconst(types::I64, fail_pc as i64);
             b.ins().jump(ret_helper, &[BlockArg::Value(v), BlockArg::Value(off), BlockArg::Value(fp)]);
@@ -602,8 +738,9 @@ fn compile_inner(proto: Value) -> Option<usize> {
         // A call of what's in register ra with rb arguments, the frame
         // written back: the helper pushes a closure's frame (this one
         // resumes after the call when it returns) or calls a primitive; or
-        // the interpreter does it.
-        let call_any = |b: &mut FunctionBuilder, ra: i32, rb: i32, i: usize| {
+        // the interpreter does it. With `spec`, the call is assumed to give
+        // a float (FloFlow): when its value isn't one, stop after it.
+        let call_any = |b: &mut FunctionBuilder, ra: i32, rb: i32, i: usize, spec: bool| {
             let f = b.ins().load(types::I64, mf, ctx, CTX_CALL);
             let ra_v = b.ins().iconst(types::I64, ra as i64);
             let rb_v = b.ins().iconst(types::I64, rb as i64);
@@ -628,45 +765,57 @@ fn compile_inner(proto: Value) -> Option<usize> {
             b.switch_to_block(value);
             let v = b.ins().load(types::I64, mf, ctx, CTX_VALUE);
             set(b, ra, v);
-            match next(i) {
-                Some(blk) => {
-                    b.ins().jump(blk, &[]);
-                }
-                None => {
-                    spill(b, dout);
-                    let v = b.ins().iconst(types::I64, (i + 1) as i64);
-                    b.ins().jump(exit, &[BlockArg::Value(v)]);
-                }
+            // (the floats were boxed for the call: their f64s again from
+            // their boxes, so that none is live across a call, which would
+            // keep it in memory on the fast paths too: no float register is
+            // kept across a call)
+            reload_floats(b, fin, ra as usize);
+            if spec {
+                let not_float = b.create_block();
+                check_float(b, v, not_float);
+                let f = b.ins().load(types::F64, mf, v, FLOAT_BITS);
+                b.def_var(fvars[ra as usize], f);
+                let one = b.ins().iconst(types::I8, 1);
+                b.def_var(bvars[ra as usize], one);
+                goto(b, nextpc);
+                b.switch_to_block(not_float);
+                stop_at(b, i + 1);
+            } else {
+                goto(b, nextpc);
             }
             b.switch_to_block(pushed);
             let new_regs = b.ins().load(types::I64, mf, ctx, CTX_NEXT_REGS);
             let zero = b.ins().iconst(types::I64, 0);
             enter(b, new_regs, zero, true);
         };
-        let goto = |b: &mut FunctionBuilder, to: Option<Block>| match to {
-            Some(blk) => {
-                b.ins().jump(blk, &[]);
-            }
-            None => {
-                spill(b, dout);
-                let v = b.ins().iconst(types::I64, (i + 1) as i64);
-                b.ins().jump(exit, &[BlockArg::Value(v)]);
-            }
-        };
-        let target = |off: isize| -> Option<Block> {
-            let t = i as isize + 1 + off;
-            if t >= 0 && (t as usize) < n { Some(blocks[t as usize]) } else { None }
-        };
+        // A fast primitive's arguments: a float register's f64 for the
+        // numeric ones (no box needed), else the value.
+        let numeric = named_prim[i].is_some_and(|k| matches!(FAST_PRIMS[k], "+" | "-" | "*" | "/" | "inc" | "dec" | "zero?" | "<" | ">" | "<=" | ">=" | "==" | "="));
+        let arg = |b: &mut FunctionBuilder, r: i32| if numeric && fin.contains(r as usize) { Arg::F(getf(b, r)) } else { Arg::T(get(b, r)) };
         match o {
             MOVE => {
-                let v = get(&mut b, rb);
-                set(&mut b, ra, v);
-                goto(&mut b, next(i));
+                if fin.contains(rb as usize) {
+                    // (a float: its f64, its box if it has one, its flag)
+                    let (f, t, fl) = (b.use_var(fvars[rb as usize]), b.use_var(vars[rb as usize]), b.use_var(bvars[rb as usize]));
+                    b.def_var(fvars[ra as usize], f);
+                    b.def_var(bvars[ra as usize], fl);
+                    set(&mut b, ra, t);
+                } else {
+                    let v = get(&mut b, rb);
+                    set(&mut b, ra, v);
+                }
+                goto(&mut b, nextpc);
             }
             LOADK => {
                 let v = b.ins().load(types::I64, mf, consts, bx(w) as i32 * W);
                 set(&mut b, ra, v);
-                goto(&mut b, next(i));
+                if fout.contains(ra as usize) {
+                    let f = b.ins().load(types::F64, mf, v, FLOAT_BITS);
+                    b.def_var(fvars[ra as usize], f);
+                    let one = b.ins().iconst(types::I8, 1);
+                    b.def_var(bvars[ra as usize], one);
+                }
+                goto(&mut b, nextpc);
             }
             LOADI | LOADNIL | LOADTRUE | LOADFALSE => {
                 let bits = match o {
@@ -677,7 +826,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 };
                 let v = b.ins().iconst(types::I64, bits);
                 set(&mut b, ra, v);
-                goto(&mut b, next(i));
+                goto(&mut b, nextpc);
             }
             GETVAR => {
                 // var = consts[bx] (tagged object pointer): root at payload
@@ -697,19 +846,21 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 bail(&mut b);
                 b.switch_to_block(ok);
                 set(&mut b, ra, root);
-                goto(&mut b, next(i));
+                goto(&mut b, nextpc);
             }
             GETUP | SELF => {
                 // The frame's closure is at regs - HDR (+F_FN = 0).
                 let clo = b.ins().load(types::I64, mf, regs, -(HDR as i32) * W);
                 let v = if o == SELF { clo } else { b.ins().load(types::I64, mf, clo, (2 + 2 + rb) * W - 1) };
                 set(&mut b, ra, v);
-                goto(&mut b, next(i));
+                goto(&mut b, nextpc);
             }
             // (the interpreter runs it: its closure is only known at run
             // time, and it checks the upvalue is there; letrec only)
             SETUP => bail(&mut b),
-            JMP => goto(&mut b, target(sbx(w))),
+            JMP => goto(&mut b, jump_target(i, w, n)),
+            // (a float is true)
+            JMPF if fin.contains(ra as usize) => goto(&mut b, nextpc),
             JMPF => {
                 let v = get(&mut b, ra);
                 let is_nil = b.ins().icmp_imm_s(IntCC::Equal, v, nil);
@@ -718,9 +869,9 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 let (t, f) = (b.create_block(), b.create_block());
                 b.ins().brif(falsey, t, &[], f, &[]);
                 b.switch_to_block(t);
-                goto(&mut b, target(sbx(w)));
+                goto(&mut b, jump_target(i, w, n));
                 b.switch_to_block(f);
-                goto(&mut b, next(i));
+                goto(&mut b, nextpc);
             }
             LOOP => {
                 // Safepoint: budget and attention, as in Vm::poll.
@@ -740,31 +891,40 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 b.switch_to_block(s);
                 bail(&mut b);
                 b.switch_to_block(t);
-                goto(&mut b, target(sbx(w)));
+                goto(&mut b, jump_target(i, w, n));
             }
             CALL => {
-                // (a fast primitive's value; a linked callee's frame pushed
-                // here, when the guard holds and it fits; else as any call)
-                if rb == 1 || rb == 2 {
+                let spec = ff.spec[i];
+                // (a fast primitive's value, a float unboxed when assumed
+                // one; a linked callee's frame pushed here, when the guard
+                // holds and it fits; else as any call)
+                if rb == 1 || rb == 2 || (rb == 3 && numeric) {
                     let slow = b.create_block();
                     let store_next = |b: &mut FunctionBuilder, v| {
                         set(b, ra, v);
-                        goto(b, next(i));
+                        goto(b, nextpc);
                     };
-                    let (f, x) = (get(&mut b, ra), get(&mut b, ra + 1));
-                    let y = if rb == 2 { get(&mut b, ra + 2) } else { x };
-                    fast_prims(&mut b, mf, ctx, f, x, y, rb, slow, named_prim[i], &store_next);
+                    let float_next = |b: &mut FunctionBuilder, f| {
+                        setf(b, ra, f);
+                        goto(b, nextpc);
+                    };
+                    let f = get(&mut b, ra);
+                    let x = arg(&mut b, ra + 1);
+                    let y = if rb >= 2 { arg(&mut b, ra + 2) } else { x };
+                    let z = (rb == 3).then(|| arg(&mut b, ra + 3));
+                    let on_float: Option<OnValue> = if spec { Some(&float_next) } else { None };
+                    fast_prims(&mut b, mf, ctx, f, x, y, z, rb, slow, named_prim[i], box_ref, &store_next, on_float);
                     b.switch_to_block(slow);
                 }
                 // (from here the frame is written back: the helpers and a
                 // linked callee's frame read it)
-                spill(&mut b, din);
+                spill(&mut b, fin, ain, fin);
                 let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
                 // (one general call, for a failed guard and a full segment)
                 let general = b.create_block();
                 b.ins().jump(general, &[]);
                 b.switch_to_block(general);
-                call_any(&mut b, ra, rb, i);
+                call_any(&mut b, ra, rb, i, spec);
                 if let (Some(lk), Some((fast, fv))) = (links[i].as_ref(), linked) {
                     b.switch_to_block(fast);
                     let new_regs = b.ins().iadd_imm_s(regs, ((my_nregs + HDR as i32) * W) as i64);
@@ -802,14 +962,16 @@ fn compile_inner(proto: Value) -> Option<usize> {
             TAILCALL => {
                 // (a fast primitive's value, returned; a closure's frame in
                 // place of this one; or another primitive's value, returned)
-                if rb == 1 || rb == 2 {
+                if rb == 1 || rb == 2 || (rb == 3 && numeric) {
                     let slow = b.create_block();
-                    let (f, x) = (get(&mut b, ra), get(&mut b, ra + 1));
-                    let y = if rb == 2 { get(&mut b, ra + 2) } else { x };
-                    fast_prims(&mut b, mf, ctx, f, x, y, rb, slow, named_prim[i], &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1, din));
+                    let f = get(&mut b, ra);
+                    let x = arg(&mut b, ra + 1);
+                    let y = if rb >= 2 { arg(&mut b, ra + 2) } else { x };
+                    let z = (rb == 3).then(|| arg(&mut b, ra + 3));
+                    fast_prims(&mut b, mf, ctx, f, x, y, z, rb, slow, named_prim[i], box_ref, &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1, fin), None);
                     b.switch_to_block(slow);
                 }
-                spill(&mut b, din);
+                spill(&mut b, fin, ain, fin);
                 let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
                 let f = b.ins().load(types::I64, mf, ctx, CTX_TAIL);
                 let ra_v = b.ins().iconst(types::I64, ra as i64);
@@ -870,25 +1032,31 @@ fn compile_inner(proto: Value) -> Option<usize> {
             }
             RETURN => {
                 let v = get(&mut b, ra);
-                ret_value(&mut b, v, ra, i, din);
+                ret_value(&mut b, v, ra, i, fin);
             }
             GUARD if i + 2 < n => {
                 let v = get(&mut b, ra);
                 let k = b.ins().load(types::I64, mf, consts, bx(w) as i32 * W);
                 let same = b.ins().icmp(IntCC::Equal, v, k);
-                b.ins().brif(same, blocks[i + 2], &[], blocks[i + 1], &[]);
+                let (skip, on) = (b.create_block(), b.create_block());
+                b.ins().brif(same, skip, &[], on, &[]);
+                b.switch_to_block(skip);
+                goto(&mut b, Some(i + 2));
+                b.switch_to_block(on);
+                goto(&mut b, Some(i + 1));
             }
             CLOSURE => {
                 // (the helper makes it, as the interpreter does: it
                 // allocates, which never collects)
-                spill(&mut b, din);
+                spill(&mut b, fin, ain, fin);
                 let f = b.ins().load(types::I64, mf, ctx, CTX_CLOSURE);
                 let ra_v = b.ins().iconst(types::I64, ra as i64);
                 let bx_v = b.ins().iconst(types::I64, bx(w) as i64);
                 b.ins().call_indirect(closure_ref, f, &[ctx, regs, ra_v, bx_v]);
                 let v = b.ins().load(types::I64, mf, regs, ra * W);
                 b.def_var(vars[ra as usize], v);
-                goto(&mut b, next(i));
+                reload_floats(&mut b, fin, ra as usize);
+                goto(&mut b, nextpc);
             }
             _ => bail(&mut b),
         }
@@ -956,7 +1124,16 @@ fn compile_inner(proto: Value) -> Option<usize> {
     b.finalize(isa.frontend_config());
 
     let mut cctx = cranelift_codegen::Context::for_function(func);
+    // (NORN_JIT_DUMP=text: print the machine code of what's compiled whose
+    // name has text in it)
+    let dump = std::env::var("NORN_JIT_DUMP").ok().filter(|t| norn_rt::print::pr_str(proto, true).contains(t.as_str()));
+    if dump.is_some() {
+        cctx.set_disasm(true);
+    }
     let compiled = cctx.compile(&**isa, &mut ControlPlane::default()).ok()?;
+    if dump.is_some() {
+        eprintln!("{}\n{}", norn_rt::print::pr_str(proto, true), compiled.vcode.as_deref().unwrap_or(""));
+    }
     if !compiled.buffer.relocs().is_empty() {
         return None;
     }
@@ -972,23 +1149,58 @@ fn b_(w: u32) -> usize {
     b(w)
 }
 
-/// The fixnum fast paths of a call (CALL or TAILCALL of f with rb = 1 or 2
-/// arguments, x and y; y is x when rb is 1) of one of FAST_PRIMS: when the callee is that primitive and
-/// the arguments are fixnums, the value goes to on_value; anything else
-/// (another callee, other arguments, an overflow) jumps to slow.
+/// Where a fast primitive's value goes (fast_prims).
+type OnValue<'a> = &'a dyn Fn(&mut FunctionBuilder, cranelift_codegen::ir::Value);
+
+/// An argument of a fast primitive: a value, or a float register's f64
+/// (M10 part 5.2).
+#[derive(Clone, Copy)]
+enum Arg {
+    T(cranelift_codegen::ir::Value),
+    F(cranelift_codegen::ir::Value),
+}
+
+impl Arg {
+    /// The value, for the paths that take one (an f64 stands for itself:
+    /// those paths aren't tried with one).
+    fn value(self) -> cranelift_codegen::ir::Value {
+        match self {
+            Arg::T(v) | Arg::F(v) => v,
+        }
+    }
+}
+
+/// The fixnum and float fast paths of a call (CALL or TAILCALL of f with
+/// rb = 1 or 2 arguments, x and y; y is x when rb is 1; a float register's
+/// as its f64 for the numeric ones) of one of FAST_PRIMS: when the callee is that primitive and
+/// the arguments are fixnums (or floats, for the numeric ones), the value
+/// goes to on_value (a float result to on_float unboxed, when given);
+/// anything else (another callee, other arguments, an overflow) jumps to
+/// slow.
 #[allow(clippy::too_many_arguments)]
 fn fast_prims(
     b: &mut FunctionBuilder,
     mf: MemFlagsData,
     ctx: cranelift_codegen::ir::Value,
     f: cranelift_codegen::ir::Value,
-    x: cranelift_codegen::ir::Value,
-    y: cranelift_codegen::ir::Value,
+    xa: Arg,
+    ya: Arg,
+    za: Option<Arg>,
     rb: i32,
     slow: Block,
     named: Option<usize>,
+    box_ref: cranelift_codegen::ir::SigRef,
     on_value: &dyn Fn(&mut FunctionBuilder, cranelift_codegen::ir::Value),
+    on_float: Option<OnValue>,
 ) {
+    // (an unboxed argument is only given for the numeric primitives, named)
+    let unboxed = matches!(xa, Arg::F(_)) || matches!(ya, Arg::F(_));
+    // (three arguments: + - * only, when x or y is an unboxed float)
+    if rb == 3 && !unboxed {
+        b.ins().jump(slow, &[]);
+        return;
+    }
+    let (x, y) = (xa.value(), ya.value());
     let (tru, fal, nil) = (Value::TRUE.0 as i64, Value::FALSE.0 as i64, Value::NIL.0 as i64);
     let boolv = |b: &mut FunctionBuilder, c| {
         let t = b.ins().iconst(types::I64, tru);
@@ -1009,17 +1221,57 @@ fn fast_prims(
         b.ins().brif(same, yes, &[], no, &[]);
         b.switch_to_block(yes);
     };
-    // Both fixnums (low bit 0)? Else slow.
-    let fixnums = |b: &mut FunctionBuilder| {
-        let tags = b.ins().bor(x, y);
-        let tag = b.ins().band_imm_s(tags, 1);
-        let ok = b.create_block();
-        b.ins().brif(tag, slow, &[], ok, &[]);
-        b.switch_to_block(ok);
+    // A number as an f64 (M10 part 5.2): a fixnum converted (with `exact`,
+    // only within 2^53, where the conversion is exact), a float's value;
+    // anything else, slow.
+    let to_f64 = |b: &mut FunctionBuilder, v: cranelift_codegen::ir::Value, exact: bool| {
+        let (fx, ob, join) = (b.create_block(), b.create_block(), b.create_block());
+        b.append_block_param(join, types::F64);
+        let tag = b.ins().band_imm_s(v, 1);
+        b.ins().brif(tag, ob, &[], fx, &[]);
+        b.switch_to_block(fx);
+        let i = b.ins().sshr_imm_u(v, 1);
+        if exact {
+            let biased = b.ins().iadd_imm_s(i, 1i64 << 53);
+            let ok = b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, biased, 1i64 << 54);
+            let c = b.create_block();
+            b.ins().brif(ok, c, &[], slow, &[]);
+            b.switch_to_block(c);
+        }
+        let f = b.ins().fcvt_from_sint(types::F64, i);
+        b.ins().jump(join, &[BlockArg::Value(f)]);
+        b.switch_to_block(ob);
+        is_kind(b, v, norn_rt::Kind::Float, slow);
+        let f = b.ins().load(types::F64, mf, v, FLOAT_BITS);
+        b.ins().jump(join, &[BlockArg::Value(f)]);
+        b.switch_to_block(join);
+        b.block_params(join)[0]
+    };
+    // A float, boxed (the helper allocates, which never collects).
+    let box_float = |b: &mut FunctionBuilder, f: cranelift_codegen::ir::Value| {
+        let bits = b.ins().bitcast(types::I64, MemFlagsData::new(), f);
+        let fp = b.ins().load(types::I64, mf, ctx, CTX_BOX_FLOAT);
+        let call = b.ins().call_indirect(box_ref, fp, &[ctx, bits]);
+        b.inst_results(call)[0]
+    };
+    // A numeric argument's f64: an unboxed float's, or as to_f64.
+    let num = |b: &mut FunctionBuilder, a: Arg, exact: bool| match a {
+        Arg::F(f) => f,
+        Arg::T(v) => to_f64(b, v, exact),
+    };
+    let float_out = |b: &mut FunctionBuilder, r: cranelift_codegen::ir::Value| match on_float {
+        Some(of) => of(b, r),
+        None => {
+            let v = box_float(b, r);
+            on_value(b, v);
+        }
     };
     let cands: Vec<usize> = (0..NPRIMS)
         .filter(|&k| named.is_none_or(|n| n == k))
+        .filter(|&k| !unboxed || matches!(FAST_PRIMS[k], "+" | "-" | "*" | "/" | "inc" | "dec" | "zero?" | "<" | ">" | "<=" | ">=" | "==" | "="))
+        .filter(|&k| rb != 3 || matches!(FAST_PRIMS[k], "+" | "-" | "*"))
         .filter(|&k| match FAST_PRIMS[k] {
+            "+" | "-" | "*" if rb == 3 => true,
             "inc" | "dec" | "zero?" | "count" | "first" | "nil?" | "some?" | "not" | "string?" | "keyword?" | "symbol?"
             | "float?" | "vector?" | "regex?" | "bytes?" | "char?" | "boolean?" | "integer?" => rb == 1,
             _ => rb == 2,
@@ -1032,33 +1284,102 @@ fn fast_prims(
         b.ins().brif(hit, h, &[], miss, &[]);
         b.switch_to_block(h);
         match FAST_PRIMS[k] {
-            "+" | "-" | "inc" | "dec" => {
-                fixnums(b);
-                let (lhs, rhs) = match FAST_PRIMS[k] {
-                    "inc" | "dec" => (x, b.ins().iconst(types::I64, 2)),
-                    _ => (x, y),
+            "+" | "-" | "*" | "/" | "inc" | "dec" if unboxed => {
+                // (an argument is a float: float arithmetic, the other
+                // converted, as numeric.rs's arith2)
+                let p = FAST_PRIMS[k];
+                let fx = num(b, xa, false);
+                let fy = if matches!(p, "inc" | "dec") { b.ins().f64const(1.0) } else { num(b, ya, false) };
+                let fop = |b: &mut FunctionBuilder, l, r| match p {
+                    "+" | "inc" => b.ins().fadd(l, r),
+                    "-" | "dec" => b.ins().fsub(l, r),
+                    "*" => b.ins().fmul(l, r),
+                    _ => b.ins().fdiv(l, r),
                 };
-                let add = matches!(FAST_PRIMS[k], "+" | "inc");
-                let r = if add { b.ins().iadd(lhs, rhs) } else { b.ins().isub(lhs, rhs) };
-                // Signed overflow of the raw (2n) values = fixnum overflow.
-                let ovf = if add {
-                    let a1 = b.ins().bxor(lhs, r);
-                    let a2 = b.ins().bxor(rhs, r);
-                    b.ins().band(a1, a2)
+                let mut r = fop(b, fx, fy);
+                if let Some(z) = za {
+                    let fz = num(b, z, false);
+                    r = fop(b, r, fz);
+                }
+                float_out(b, r);
+            }
+            "+" | "-" | "*" | "/" | "inc" | "dec" => {
+                let p = FAST_PRIMS[k];
+                let (fix, flo) = (b.create_block(), b.create_block());
+                let tags = b.ins().bor(x, y);
+                let tag = b.ins().band_imm_s(tags, 1);
+                b.ins().brif(tag, flo, &[], fix, &[]);
+                // (two fixnums: as raw 2n values, overflow to the slow path;
+                // a fixnum quotient may be a ratio: the slow path)
+                b.switch_to_block(fix);
+                if p == "/" {
+                    b.ins().jump(slow, &[]);
                 } else {
-                    let a1 = b.ins().bxor(lhs, rhs);
-                    let a2 = b.ins().bxor(lhs, r);
-                    b.ins().band(a1, a2)
+                    let r = if p == "*" {
+                        let xs = b.ins().sshr_imm_u(x, 1);
+                        let (r, ovf) = b.ins().smul_overflow(xs, y);
+                        let ok = b.create_block();
+                        b.ins().brif(ovf, slow, &[], ok, &[]);
+                        b.switch_to_block(ok);
+                        r
+                    } else {
+                        let (lhs, rhs) = match p {
+                            "inc" | "dec" => (x, b.ins().iconst(types::I64, 2)),
+                            _ => (x, y),
+                        };
+                        let add = matches!(p, "+" | "inc");
+                        let r = if add { b.ins().iadd(lhs, rhs) } else { b.ins().isub(lhs, rhs) };
+                        // Signed overflow of the raw (2n) values = fixnum overflow.
+                        let ovf = if add {
+                            let a1 = b.ins().bxor(lhs, r);
+                            let a2 = b.ins().bxor(rhs, r);
+                            b.ins().band(a1, a2)
+                        } else {
+                            let a1 = b.ins().bxor(lhs, rhs);
+                            let a2 = b.ins().bxor(lhs, r);
+                            b.ins().band(a1, a2)
+                        };
+                        let neg = b.ins().icmp_imm_s(IntCC::SignedLessThan, ovf, 0);
+                        let ok = b.create_block();
+                        b.ins().brif(neg, slow, &[], ok, &[]);
+                        b.switch_to_block(ok);
+                        r
+                    };
+                    on_value(b, r);
+                }
+                // (a float and a float or fixnum: as numeric.rs's arith2, the
+                // fixnum converted; anything else, the slow path)
+                b.switch_to_block(flo);
+                let fx = to_f64(b, x, false);
+                let fy = if matches!(p, "inc" | "dec") { b.ins().f64const(1.0) } else { to_f64(b, y, false) };
+                let r = match p {
+                    "+" | "inc" => b.ins().fadd(fx, fy),
+                    "-" | "dec" => b.ins().fsub(fx, fy),
+                    "*" => b.ins().fmul(fx, fy),
+                    _ => b.ins().fdiv(fx, fy),
                 };
-                let neg = b.ins().icmp_imm_s(IntCC::SignedLessThan, ovf, 0);
-                let ok = b.create_block();
-                b.ins().brif(neg, slow, &[], ok, &[]);
-                b.switch_to_block(ok);
-                on_value(b, r);
+                float_out(b, r);
+            }
+            "zero?" if unboxed => {
+                let z = b.ins().f64const(0.0);
+                let c0 = b.ins().fcmp(FloatCC::Equal, xa.value(), z);
+                let v = boolv(b, c0);
+                on_value(b, v);
             }
             "zero?" => {
-                fixnums(b);
+                let (fix, flo) = (b.create_block(), b.create_block());
+                let tag = b.ins().band_imm_s(x, 1);
+                b.ins().brif(tag, flo, &[], fix, &[]);
+                b.switch_to_block(fix);
                 let c0 = b.ins().icmp_imm_s(IntCC::Equal, x, 0);
+                let v = boolv(b, c0);
+                on_value(b, v);
+                // (a float: -0.0 is zero, NaN isn't)
+                b.switch_to_block(flo);
+                is_kind(b, x, norn_rt::Kind::Float, slow);
+                let f = b.ins().load(types::F64, mf, x, FLOAT_BITS);
+                let z = b.ins().f64const(0.0);
+                let c0 = b.ins().fcmp(FloatCC::Equal, f, z);
                 let v = boolv(b, c0);
                 on_value(b, v);
             }
@@ -1207,8 +1528,57 @@ fn fast_prims(
                 let v = boolv(b, c0);
                 on_value(b, v);
             }
+            "=" if unboxed => {
+                // (a float register against a float: as numbers, or both
+                // NaN; against a fixnum: never; else the slow path)
+                let fx = match (xa, ya) {
+                    (Arg::F(f), _) => f,
+                    (_, Arg::F(f)) => f,
+                    _ => unreachable!(),
+                };
+                let fy = match (xa, ya) {
+                    (Arg::F(_), Arg::F(g)) => g,
+                    (Arg::F(_), Arg::T(v)) | (Arg::T(v), Arg::F(_)) => {
+                        let (fixb, objb) = (b.create_block(), b.create_block());
+                        let t = b.ins().band_imm_s(v, 1);
+                        b.ins().brif(t, objb, &[], fixb, &[]);
+                        b.switch_to_block(fixb);
+                        let ff = b.ins().iconst(types::I64, fal);
+                        on_value(b, ff);
+                        b.switch_to_block(objb);
+                        is_kind(b, v, norn_rt::Kind::Float, slow);
+                        b.ins().load(types::F64, mf, v, FLOAT_BITS)
+                    }
+                    _ => unreachable!(),
+                };
+                let eq = b.ins().fcmp(FloatCC::Equal, fx, fy);
+                let xn = b.ins().fcmp(FloatCC::Unordered, fx, fx);
+                let yn = b.ins().fcmp(FloatCC::Unordered, fy, fy);
+                let nan2 = b.ins().band(xn, yn);
+                let c0 = b.ins().bor(eq, nan2);
+                let v = boolv(b, c0);
+                on_value(b, v);
+            }
+            cmp if unboxed => {
+                let fx = num(b, xa, true);
+                let fy = num(b, ya, true);
+                let cc = match cmp {
+                    "<" => FloatCC::LessThan,
+                    ">" => FloatCC::GreaterThan,
+                    "<=" => FloatCC::LessThanOrEqual,
+                    ">=" => FloatCC::GreaterThanOrEqual,
+                    _ => FloatCC::Equal,
+                };
+                let c0 = b.ins().fcmp(cc, fx, fy);
+                let v = boolv(b, c0);
+                on_value(b, v);
+            }
             cmp => {
-                fixnums(b);
+                let (fix, other) = (b.create_block(), b.create_block());
+                let tags = b.ins().bor(x, y);
+                let tag = b.ins().band_imm_s(tags, 1);
+                b.ins().brif(tag, other, &[], fix, &[]);
+                b.switch_to_block(fix);
                 let cc = match cmp {
                     "<" => IntCC::SignedLessThan,
                     ">" => IntCC::SignedGreaterThan,
@@ -1219,6 +1589,54 @@ fn fast_prims(
                 let c0 = b.ins().icmp(cc, x, y);
                 let v = boolv(b, c0);
                 on_value(b, v);
+                b.switch_to_block(other);
+                if cmp == "=" {
+                    // (=: two floats are equal as numbers, or both NaN; a
+                    // fixnum never equals a float; anything else, the slow
+                    // path)
+                    let (xfix, xobj) = (b.create_block(), b.create_block());
+                    let xt = b.ins().band_imm_s(x, 1);
+                    b.ins().brif(xt, xobj, &[], xfix, &[]);
+                    b.switch_to_block(xfix);
+                    is_kind(b, y, norn_rt::Kind::Float, slow);
+                    let ff = b.ins().iconst(types::I64, fal);
+                    on_value(b, ff);
+                    b.switch_to_block(xobj);
+                    is_kind(b, x, norn_rt::Kind::Float, slow);
+                    let (yfix, yobj) = (b.create_block(), b.create_block());
+                    let yt = b.ins().band_imm_s(y, 1);
+                    b.ins().brif(yt, yobj, &[], yfix, &[]);
+                    b.switch_to_block(yfix);
+                    let ff = b.ins().iconst(types::I64, fal);
+                    on_value(b, ff);
+                    b.switch_to_block(yobj);
+                    is_kind(b, y, norn_rt::Kind::Float, slow);
+                    let fx = b.ins().load(types::F64, mf, x, FLOAT_BITS);
+                    let fy = b.ins().load(types::F64, mf, y, FLOAT_BITS);
+                    let eq = b.ins().fcmp(FloatCC::Equal, fx, fy);
+                    let xn = b.ins().fcmp(FloatCC::Unordered, fx, fx);
+                    let yn = b.ins().fcmp(FloatCC::Unordered, fy, fy);
+                    let nan2 = b.ins().band(xn, yn);
+                    let c0 = b.ins().bor(eq, nan2);
+                    let v = boolv(b, c0);
+                    on_value(b, v);
+                } else {
+                    // (as floats, NaN unordered: false; a fixnum converted
+                    // only where that's exact, as numeric.rs's partial_cmp
+                    // compares)
+                    let fx = to_f64(b, x, true);
+                    let fy = to_f64(b, y, true);
+                    let cc = match cmp {
+                        "<" => FloatCC::LessThan,
+                        ">" => FloatCC::GreaterThan,
+                        "<=" => FloatCC::LessThanOrEqual,
+                        ">=" => FloatCC::GreaterThanOrEqual,
+                        _ => FloatCC::Equal,
+                    };
+                    let c0 = b.ins().fcmp(cc, fx, fy);
+                    let v = boolv(b, c0);
+                    on_value(b, v);
+                }
             }
         }
         b.switch_to_block(miss);
@@ -1228,7 +1646,8 @@ fn fast_prims(
 
 // ---- registers in SSA (M10 part 5.1) ------------------------------------------------------
 
-/// Enter native code only at some instructions (reg_flow)? (`NORN_JIT_SSA=0`:
+/// Enter native code only at some instructions (`entries`), keeping
+/// registers in SSA values and floats unboxed in between? (`NORN_JIT_SSA=0`:
 /// anywhere, as before part 5, for comparison.)
 fn ssa_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
@@ -1243,69 +1662,45 @@ impl RegSet {
     fn insert(&mut self, r: usize) {
         self.0[r >> 6] |= 1 << (r & 63);
     }
-    fn union(&self, o: &RegSet) -> RegSet {
-        RegSet([self.0[0] | o.0[0], self.0[1] | o.0[1], self.0[2] | o.0[2], self.0[3] | o.0[3]])
+    fn intersect(&self, o: &RegSet) -> RegSet {
+        RegSet([self.0[0] & o.0[0], self.0[1] & o.0[1], self.0[2] & o.0[2], self.0[3] & o.0[3]])
+    }
+    fn minus(&self, o: &RegSet) -> RegSet {
+        RegSet([self.0[0] & !o.0[0], self.0[1] & !o.0[1], self.0[2] & !o.0[2], self.0[3] & !o.0[3]])
+    }
+    fn contains(&self, r: usize) -> bool {
+        r < 256 && self.0[r >> 6] & (1 << (r & 63)) != 0
+    }
+    fn set(&mut self, r: usize, on: bool) {
+        if on {
+            self.insert(r);
+        } else {
+            self.0[r >> 6] &= !(1 << (r & 63));
+        }
+    }
+    fn is_empty(&self) -> bool {
+        self.0 == [0; 4]
     }
     fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         (0..256).filter(|&r| self.0[r >> 6] & (1 << (r & 63)) != 0)
     }
 }
 
-/// What compile_inner needs to keep registers in SSA values: where native
-/// code may be entered (`entries`), and the registers whose writes are
-/// deferred that may hold values the frame doesn't yet (written since the
-/// last entry or write-back) as each instruction starts (`din`) and ends
-/// (`dout`). Every way out of native code writes those back first, so the
-/// frame is exact wherever it stops. Other registers' writes go through to
-/// the frame at once. (Nothing is deferred yet: unboxed floats will be.)
-///
-/// Between entries a register's value is an SSA value: reads don't go
-/// back to the frame. The fewer entries, the more an analysis of the code
-/// between them knows (at an entry, the interpreter may have left
-/// anything in any register).
+/// Where native code may be entered (compile_inner keeps registers in SSA
+/// values between entries: reads don't go back to the frame; writes go
+/// through to it, except unboxed floats', FloFlow). The fewer entries, the
+/// more an analysis of the code between them knows: at an entry, the
+/// interpreter may have left anything in any register.
 ///
 /// Entries: the first instruction; the one after each instruction native
 /// code can stop at (the interpreter runs that one, then comes back), which
 /// includes every call (its frame resumes after it); and a loop's head
 /// (after the safepoint at its back-edge stopped). At any other pc native
 /// code stops at once, and the interpreter runs on to an entry.
-struct RegFlow {
-    entries: Vec<bool>,
-    din: Vec<RegSet>,
-    dout: Vec<RegSet>,
-}
-
-/// Instruction i's jump target, if inside the code.
-fn jump_target(i: usize, w: u32, n: usize) -> Option<usize> {
-    let t = i as isize + 1 + sbx(w);
-    (t >= 0 && (t as usize) < n).then_some(t as usize)
-}
-
-/// The register an instruction writes natively, if any (CLOSURE's helper
-/// writes it in the frame).
-fn defines(w: u32) -> Option<usize> {
-    match op(w) {
-        MOVE | LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF | CALL => Some(a(w)),
-        _ => None,
-    }
-}
-
-/// Every register an instruction reads or writes natively is below nregs?
-/// (else it isn't compiled)
-fn regs_in_range(ins: &[u32], nregs: usize) -> bool {
-    ins.iter().enumerate().all(|(i, &w)| match op(w) {
-        MOVE => a(w) < nregs && b(w) < nregs,
-        LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF | CLOSURE | JMPF | RETURN => a(w) < nregs,
-        GUARD if i + 2 < ins.len() => a(w) < nregs,
-        CALL | TAILCALL => a(w) + b(w) < nregs,
-        _ => true,
-    })
-}
-
-fn reg_flow(ins: &[u32], ssa: bool) -> RegFlow {
+fn entries(ins: &[u32], ssa: bool) -> Vec<bool> {
     let n = ins.len();
     if !ssa {
-        return RegFlow { entries: vec![true; n], din: vec![RegSet::default(); n], dout: vec![RegSet::default(); n] };
+        return vec![true; n];
     }
     let mut entries = vec![false; n];
     if n > 0 {
@@ -1328,6 +1723,170 @@ fn reg_flow(ins: &[u32], ssa: bool) -> RegFlow {
             }
         }
     }
+    entries
+}
+
+/// Instruction i's jump target, if inside the code.
+fn jump_target(i: usize, w: u32, n: usize) -> Option<usize> {
+    let t = i as isize + 1 + sbx(w);
+    (t >= 0 && (t as usize) < n).then_some(t as usize)
+}
+
+/// Every register an instruction reads or writes natively is below nregs?
+/// (else it isn't compiled)
+fn regs_in_range(ins: &[u32], nregs: usize) -> bool {
+    ins.iter().enumerate().all(|(i, &w)| match op(w) {
+        MOVE => a(w) < nregs && b(w) < nregs,
+        LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF | CLOSURE | JMPF | RETURN => a(w) < nregs,
+        GUARD if i + 2 < ins.len() => a(w) < nregs,
+        CALL | TAILCALL => a(w) + b(w) < nregs,
+        _ => true,
+    })
+}
+
+// ---- floats unboxed (M10 part 5.2) --------------------------------------------------------
+
+/// Which registers surely hold floats, as each instruction starts (`fin`)
+/// and ends (`fout`), and which calls are assumed to give a float
+/// (`spec`). Such a register is kept as an f64 (an unboxed value), boxed
+/// only when something needs the value itself (a generic call, a return,
+/// a stop, an edge into code that doesn't know it's a float), at most once
+/// per value (a flag says whether it has been: identical? stays true of
+/// it).
+///
+/// A float comes from a float constant, a move of one, a call assumed to
+/// give one, or an entry that finds one. A call is assumed to give a float
+/// when it's of + - * / with an argument surely a float (inc, dec: its
+/// argument), its callee loaded from that primitive's var: natively, it
+/// does when the callee is that primitive and the other argument a
+/// number; otherwise the call is made the general way, and when its value
+/// isn't a float native code stops after it. An entry other than the
+/// first checks the frame's registers that are floats here; when one
+/// isn't, it refuses (the interpreter runs on), and after a few refusals
+/// the function is compiled again without any of this (despecialise).
+///
+/// The greatest fixpoint: every such register's value is made a float by
+/// what wrote it, or native code stops, so assuming it in a loop's head
+/// holds.
+struct FloFlow {
+    fin: Vec<RegSet>,
+    fout: Vec<RegSet>,
+    spec: Vec<bool>,
+    /// Which float registers hold the same value, as each instruction
+    /// starts and ends: a label per register, equal for copies (a move
+    /// copies the value, as the interpreter copies its pointer). Boxing one
+    /// boxes its copies with the same box, so identical? holds of them.
+    ain: Vec<Vec<u32>>,
+    aout: Vec<Vec<u32>>,
+}
+
+/// How many times a function's compiled code may have its assumptions
+/// fail before it's compiled without them.
+const DESPEC_LIMIT: u32 = 4;
+static DESPECS: Mutex<Option<std::collections::HashMap<u64, u32>>> = Mutex::new(None);
+pub static DESPECIALISED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn despecs(proto: Value) -> u32 {
+    DESPECS.lock().unwrap().as_ref().and_then(|m| m.get(&proto.0).copied()).unwrap_or(0)
+}
+
+/// From native code: an entry found a register that isn't the float it
+/// assumed. Uninstall the code (as relink does); it's compiled again with
+/// fewer assumptions, none after DESPEC_LIMIT.
+extern "C" fn despecialise(proto: u64, cell: u64) -> u64 {
+    let proto = Value(proto);
+    // SAFETY: cell is the compiled code's own entry cell (leaked).
+    let entry = unsafe { (*(cell as *const std::sync::atomic::AtomicU64)).load(std::sync::atomic::Ordering::Acquire) } as usize;
+    if entry >= MIN_ENTRY && proto.proto_native_cas(entry, 0) {
+        let mut g = DESPECS.lock().unwrap();
+        *g.get_or_insert_with(Default::default).entry(proto.0).or_insert(0) += 1;
+        DESPECIALISED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    0
+}
+
+/// The registers live as each instruction starts: read before written on
+/// some way on from it through the bytecode (as the interpreter runs it, so
+/// past where native code stops too). An edge into an instruction that
+/// doesn't know a register is a float boxes it only if it's live there.
+/// (A closure's captures, and what the interpreter alone runs, count as
+/// reading every register.)
+fn live_in(ins: &[u32], nregs: usize) -> Vec<RegSet> {
+    let n = ins.len();
+    let mut all = RegSet::default();
+    for r in 0..nregs {
+        all.insert(r);
+    }
+    let succ = |i: usize, w: u32| -> [Option<usize>; 2] {
+        let next = (i + 1 < n).then_some(i + 1);
+        match op(w) {
+            JMP | LOOP => [jump_target(i, w, n), None],
+            JMPF => [jump_target(i, w, n), next],
+            GUARD => [next, (i + 2 < n).then_some(i + 2)],
+            RETURN | TAILCALL => [None, None],
+            _ => [next, None],
+        }
+    };
+    let mut live = vec![RegSet::default(); n];
+    loop {
+        let mut changed = false;
+        for (i, &w) in ins.iter().enumerate().rev() {
+            let mut out = RegSet::default();
+            for s in succ(i, w).into_iter().flatten() {
+                out = RegSet([out.0[0] | live[s].0[0], out.0[1] | live[s].0[1], out.0[2] | live[s].0[2], out.0[3] | live[s].0[3]]);
+            }
+            let ra = a(w);
+            let mut l = out;
+            match op(w) {
+                MOVE => {
+                    l.set(ra, false);
+                    l.insert(b(w));
+                }
+                LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF => l.set(ra, false),
+                JMP | LOOP => {}
+                JMPF | GUARD | RETURN | DEFVAR => l.insert(ra),
+                CALL | TAILCALL => {
+                    if op(w) == CALL {
+                        l.set(ra, false);
+                    }
+                    for r in ra..=ra + b(w) {
+                        l.insert(r);
+                    }
+                }
+                _ => l = all,
+            }
+            if l != live[i] {
+                live[i] = l;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    live
+}
+
+/// Is FAST_PRIMS[k] arithmetic that gives a float when an argument is one?
+fn float_arith(k: usize, rb: usize) -> bool {
+    match FAST_PRIMS[k] {
+        "+" | "-" | "*" => rb == 2 || rb == 3,
+        "/" => rb == 2,
+        "inc" | "dec" => rb == 1,
+        _ => false,
+    }
+}
+
+fn flo_flow(ins: &[u32], consts: Value, named_prim: &[Option<usize>], entries: &[bool], nregs: usize, on: bool) -> FloFlow {
+    let n = ins.len();
+    let none = RegSet::default();
+    if !on {
+        return FloFlow { fin: vec![none; n], fout: vec![none; n], spec: vec![false; n], ain: vec![vec![0; nregs]; n], aout: vec![vec![0; nregs]; n] };
+    }
+    let mut all = RegSet::default();
+    for r in 0..nregs {
+        all.insert(r);
+    }
     let succ = |i: usize, w: u32| -> [Option<usize>; 2] {
         let next = (i + 1 < n).then_some(i + 1);
         match op(w) {
@@ -1338,35 +1897,103 @@ fn reg_flow(ins: &[u32], ssa: bool) -> RegFlow {
             _ => [None, None],
         }
     };
-    // (whether instruction i's write to its register is deferred: never yet)
-    let deferred = |_i: usize, _w: u32| false;
-    let mut din = vec![RegSet::default(); n];
-    let mut dout = vec![RegSet::default(); n];
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, &w) in ins.iter().enumerate() {
+        for s in succ(i, w).into_iter().flatten() {
+            preds[s].push(i);
+        }
+    }
+    let is_float_const = |k: usize| consts.arr_slice().get(k).is_some_and(|v| v.is(norn_rt::Kind::Float));
+    // (the first instruction and an entry nothing else leads to start with
+    // nothing known; everything else, optimistically, with everything)
+    let start = |k: usize| if k == 0 || (entries[k] && preds[k].is_empty()) { none } else { all };
+    let mut fin: Vec<RegSet> = (0..n).map(start).collect();
+    // (optimistic too: a loop's back-edge, not yet visited, mustn't empty
+    // its head on the first pass)
+    let mut fout = vec![all; n];
+    let mut spec = vec![false; n];
     loop {
         let mut changed = false;
         for (i, &w) in ins.iter().enumerate() {
-            // (CLOSURE writes everything back for its helper, which writes
-            // its register in the frame: then nothing differs)
-            let mut o = if op(w) == CLOSURE { RegSet::default() } else { din[i] };
-            if let Some(r) = defines(w)
-                && deferred(i, w)
-            {
-                o.insert(r);
+            let mut s = start(i);
+            for &p in &preds[i] {
+                s = s.intersect(&fout[p]);
             }
-            dout[i] = o;
-            for s in succ(i, w).into_iter().flatten() {
-                let u = din[s].union(&o);
-                if u != din[s] {
-                    din[s] = u;
-                    changed = true;
+            if s != fin[i] {
+                fin[i] = s;
+                changed = true;
+            }
+            let ra = a(w);
+            let mut o = s;
+            spec[i] = false;
+            match op(w) {
+                MOVE => o.set(ra, s.contains(b(w))),
+                LOADK => o.set(ra, is_float_const(bx(w))),
+                CALL => {
+                    let rb = b(w);
+                    // (with three arguments, (x op y) op z: x or y a float makes
+                    // both steps float arithmetic, as numeric.rs's arith does)
+                    let sp = named_prim[i].is_some_and(|k| float_arith(k, rb)) && (s.contains(ra + 1) || (rb >= 2 && s.contains(ra + 2)));
+                    spec[i] = sp;
+                    o.set(ra, sp);
                 }
+                LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF | CLOSURE => o.set(ra, false),
+                _ => {}
             }
+            fout[i] = o;
         }
         if !changed {
             break;
         }
     }
-    RegFlow { entries, din, dout }
+    // Copies (must-alias, optimistic as above): a value made at pc i is
+    // labelled PRODUCED + i; a move gives its destination the source's
+    // label; where ways meet, registers with the same labels on every way
+    // in share the lowest such register's number; at an entry nothing is
+    // known to be a copy (the edges into it box what they must, goto in
+    // compile_inner).
+    const PRODUCED: u32 = 1 << 20;
+    const ENTERED: u32 = 1 << 21;
+    let mut ain = vec![vec![0u32; nregs]; n];
+    let mut aout = vec![vec![0u32; nregs]; n];
+    loop {
+        let mut changed = false;
+        for (i, &w) in ins.iter().enumerate() {
+            let mut l = vec![u32::MAX; nregs];
+            if entries[i] || preds[i].is_empty() {
+                for r in fin[i].iter() {
+                    l[r] = ENTERED + r as u32;
+                }
+            } else if preds[i].len() == 1 {
+                for r in fin[i].iter() {
+                    l[r] = aout[preds[i][0]][r];
+                }
+            } else {
+                let key = |r: usize| preds[i].iter().map(|&p| aout[p][r]).collect::<Vec<_>>();
+                let regs: Vec<usize> = fin[i].iter().collect();
+                for &r in &regs {
+                    let k = key(r);
+                    l[r] = regs.iter().copied().find(|&q| key(q) == k).unwrap_or(r) as u32;
+                }
+            }
+            if l != ain[i] {
+                ain[i] = l.clone();
+                changed = true;
+            }
+            let ra = a(w);
+            match op(w) {
+                MOVE if fout[i].contains(ra) => l[ra] = l[b(w)],
+                LOADK | CALL if fout[i].contains(ra) => l[ra] = PRODUCED + i as u32,
+                MOVE | LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF | CLOSURE | CALL if ra < nregs => l[ra] = u32::MAX,
+                _ => {}
+            }
+            aout[i] = l;
+        }
+        if !changed {
+            break;
+        }
+    }
+    FloFlow { fin, fout, spec, ain, aout }
 }
 
 /// Native functions' signature: (regs, consts, ctx, pc) → pc, in

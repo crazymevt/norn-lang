@@ -705,6 +705,18 @@ pub(crate) unsafe extern "C" fn jit_closure(ctx: *mut crate::jit::JitCtx, regs: 
     }
 }
 
+/// A float for tier-1 code, from its bits (M10 part 5.2). Allocating never
+/// collects, so native code's other values stay where they are.
+///
+/// # Safety
+/// As jit_call's.
+pub(crate) unsafe extern "C" fn jit_box_float(ctx: *mut crate::jit::JitCtx, bits: u64) -> u64 {
+    unsafe {
+        let (vm, _) = jit_vm(ctx);
+        norn_rt::string::float_new(&mut vm.m, f64::from_bits(bits)).0
+    }
+}
+
 /// TAILCALL ra argc from tier-1 code: as jit_call, the closure's frame in
 /// place of this one (Vm::tail_frame); a primitive's value is returned by
 /// the native code.

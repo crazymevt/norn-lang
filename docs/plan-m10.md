@@ -259,13 +259,40 @@ baseline compared.
     `NORN_JIT_SSA=0`. **Costs:** code 10% larger (16.1 MB for
     everything at `NORN_JIT_THRESHOLD=1`), and compiling everything 10%
     longer (5.2 → 5.7 s): entry stubs, and Cranelift building the SSA.
-  - **5.2, types in tier 1, floats unboxed.** A forward analysis of the
-    bytecode gives each register a type at each instruction (fixnum,
-    float, boolean, nil, a heap kind, anything) from literals, the fast
-    primitives' results and the checks already passed. Float arithmetic
-    and comparisons run natively; a register known to hold a float is
-    an f64, boxed only when written back or passed on; checks the types
-    prove go.
+  - **5.2, floats in tier 1: done.** Narrower than planned: the analysis
+    tracks one type, float (FloFlow in jit.rs), which is what unboxing
+    needs; fixnum and kind facts (to drop tag checks) are left for 5.3,
+    where the IR's types arrive. `+ - * / inc dec zero? < > <= >= == =`
+    run natively on floats and a float with a fixnum, matching
+    numeric.rs (comparisons exact: a fixnum converted only within 2^53;
+    `=` true of two NaNs, never of a float and a fixnum), and `+ - *` with
+    three arguments when the first or second is a float. A register that
+    surely holds a float (a constant, a copy, or a call of those with a
+    float argument, assumed to give a float; the greatest fixpoint, so a
+    loop's float variables are) is an f64, boxed only when something
+    needs the value itself (a generic call, a return, a stop, an edge
+    into code that doesn't know it's a float and reads it: a liveness
+    pass). A flag per register says whether it has its box, and copies
+    share one (a must-alias pass), so `identical?` holds as at tier 0.
+    Where an assumption fails (`*` redefined), native code stops after
+    the call, entries that find a non-float refuse, and after four such
+    failures the function is compiled without assumptions (decision 8's
+    mechanism; signatures' parameters come in 5.3). **Measured** (tier 1
+    against the baseline): Mandelbrot 293 → 30 ms (9.7×, 14× SBCL), float
+    `*` 30 → 3.4 ns (8.7×); nothing else moved beyond noise. Tests:
+    `tests/norn/arith_test.norn` (every operator on edge inputs against
+    the primitive through `apply`, three arguments, identity, and `*`
+    redefined under a compiled float loop, in a process of its own).
+    **Found on the way:** (1) the analysis's back-edges must start
+    optimistic, or a loop's head loses its floats; (2) f64 values live
+    across many blocks are kept on the stack by the register allocator
+    (a probe loop reading a var each turn: 11 ns against the benchmark's
+    3.4); moving them across calls as integer bits made it worse, so it's
+    left; (3) **lint and group-by are mostly GC:** with
+    `NORN_HEAP_MIN=1g`, linting http.norn takes 80–93 ms against 510–560
+    (6×), group-by 70 against 200; the heap's growth policy (64 MB to
+    start, MMTk's dynamic size) is likely the largest win left on the
+    library workloads, and why they swing run to run (todo).
   - **5.3, types in the IR.** compiler.norn infers types from literals,
     primitives' result types, signatures (results: the callee's contract
     checks them; parameters: speculation, decision 8), `(declare (type

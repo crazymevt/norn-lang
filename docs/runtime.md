@@ -1212,11 +1212,40 @@ so both tiers gain.
   ns: the call is gone), a checked call across modules 26.7× (417 →
   15.6 ns; tier 0 3.8×), `count` and `nth` of a vector 2.6×; the static
   site 1.40×, the other programs 1.12–1.19×; the rope workloads 2.3–2.6×.
-  **The cost is compile time:** compiling and loading `http.norn` takes
-  67 ms at tier 0 against 45 before inlining (51 ms at tier 1, within
-  5% of the baseline), the compiler generating each inlined copy;
-  `%index-of` in `konst!` and the compiler's state atom are its own
-  overheads.
+  **The cost was compile time:** compiling and loading `http.norn` took
+  67 ms at tier 0 against 45 before inlining. Making the compiler's state
+  mutable (transient vectors as records and buffers, constants found by
+  an identity index) brought it to 35 ms (24–28 at tier 1).
+
+**Registers in SSA, as built in M10 part 5.1.** Native code is entered
+only at some instructions (`entries` in jit.rs): the first, the one after
+each instruction it can stop at (every call included, its frame resuming
+there), and a loop's head (after its back-edge's safepoint stopped). At
+any other pc it stops at once and the interpreter runs on to an entry.
+Between entries each register is a Cranelift variable: reads don't go back
+to the frame. Writes go through to it (a store is cheap; reloading what
+was just stored was the cost), so the frame stays exact wherever native
+code stops. `NORN_JIT_SSA=0` enters anywhere, keeps no floats unboxed, as
+before part 5.
+
+**Floats, as built in M10 part 5.2.** `+ - * / inc dec zero? < > <= >= ==
+=` run natively on floats and a float with a fixnum, as numeric.rs does
+(a fixnum compared exactly: converted only within 2^53; `=` of floats
+true of two NaNs, never of a float and a fixnum), and `+ - *` with three
+arguments when the first or second is a float. A register that surely
+holds a float (FloFlow: a float constant, a copy, a call of one of those
+with a float argument, assumed to give a float; the greatest fixpoint,
+so a loop's float variables are) is kept unboxed, an f64, and boxed only
+when something needs the value itself: a generic call, a return, a stop,
+an edge into code that doesn't know it's a float and reads it. A flag per
+register says whether it has its box yet, and copies of a value share one
+box (a must-alias analysis), so `identical?` holds as at tier 0. Where an
+assumption fails (a call assumed to give a float doesn't: `*` redefined),
+native code stops after the call; an entry that finds a register it
+assumed a float isn't refuses, and the function is compiled again without
+assumptions after four failures. `NORN_JIT_DUMP=name` prints the machine code
+of compiled functions whose names have `name` in them;
+`NORN_JIT_TRACE_FLO` prints each one's analysis.
 
 *Next.* The full design below (inline caches) keeps the same frame layout,
 so it can replace this piece by piece.
