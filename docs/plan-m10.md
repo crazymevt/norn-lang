@@ -222,3 +222,86 @@ baseline compared.
   binary there), so that is the state the cases before them leave.
   norn.core isn't inlined (the seed compiles it at boot). Tests:
   `tests/norn/inline_test.norn`, and prof_test's inlined-calls check.
+
+## Open after part 4 (2026-11-16)
+
+Where to pick up. Parts 0–4 are committed on branch `m10` (not merged,
+not pushed); part 5 is next in the plan, but the user asked to weigh the
+first item against it.
+
+**To decide first: win back compile time, or start part 5.**
+
+- **Compile time.** Inlining made compiling slower: `http.norn` compiles
+  and loads in 67 ms at tier 0 (45 before part 4; 51 without inlining,
+  the rest the specialised contract wrappers and the shape analysis) and
+  51 ms at tier 1 (0.96× the baseline; the done-check allows 5%). A
+  profile of 20 compiles at tier 0: `gen-inline!` about a quarter of the
+  time (each call site generates the callee's body again); the
+  compiler's state atom (`swap!`/`update` in `emit!`, `alloc!`,
+  `upd-ar!`) the largest share overall; `%index-of` in `konst!`, a
+  linear scan of the constants by identity (an `=` map would merge equal
+  constants and break the seed comparison, so it needs an identity
+  index). Lowering the inline budget or depth barely helped (60–67 ms).
+  Ideas: a mutable code buffer per arity instead of the atom of maps; an
+  identity index for constants; caching the specialised wrapper per
+  (callee, contract) rather than per caller module.
+- **norn.core isn't inlined.** The Rust seed compiles it at boot, which
+  keeps no IR, so `second`, `not`, `some?` and the like are linked (part
+  3) but never inlined. Options: compile core with `norn.compiler` once
+  it's installed, at image-build time (boot cost is then the build's,
+  not the user's), or record IR for core's small functions by analysing
+  core.norn after boot.
+
+**Deferred to part 5 (with the user's agreement):**
+
+- **Signing norn.string, norn.math, norn.regex and norn.bytes** (todo).
+  norn.string was signed in part 4 and reverted: a probe of 1,519 calls
+  on edge inputs showed no change in behaviour (with `replace`'s pattern
+  nilable, as it must be for a function replacement), but its thinnest
+  functions were slower a call: at tier 1 `blank?` 65 → 79 ns,
+  `includes?` 46 → 72, `trim` 38 → 44, `starts-with?` 98 → 115; at tier
+  0 50–90 ns more (`includes?` 138 → 225). Each check is a var read, a
+  call and a branch through the frame's registers in memory: about 4–6
+  ns at tier 1 and a full primitive call at tier 0. Part 5 is to drop
+  the checks types prove (literal arguments too: the wrapper's tests on
+  a `LOADK` are decidable when compiling). The signatures were reverted
+  before part 4's commit, so they aren't in git history: they followed
+  what each function accepts (`^String` where the primitives already
+  reject anything else, `^(? String)` for `blank?` and `ends-with?`,
+  `^(U String Character)` for `includes?`, `index-of` and `width`, only
+  a result type where a function takes anything, as `upper-case` and
+  `pad-left`). The probe was a scratch file; write it as a test when
+  signing.
+- **Values in registers.** Tier 1 keeps registers in the heap frame, so
+  every instruction loads and stores; checks and arithmetic pay for it.
+  Unboxed floats and SSA values are part 5's. Mandelbrot is still about
+  117× SBCL (floats boxed, float arithmetic through primitive calls).
+
+**Smaller gaps:**
+
+- **The empty loop is 0.88× the baseline** at tier 1 (4.8 against 4.3 ns
+  a turn) since part 2's switch to the `tail` calling convention; not
+  looked into.
+- **Printing workloads** (`str` of 100,000 pieces, JSON write, EDN
+  `pr-str`, bin encode) read 0.84–0.9× in the full comparison run, at
+  both tiers, but match part 3's binary when run alone: something the
+  cases before them leave (heap, GC) — worth one look with
+  `bench/compare.norn --only` and the profiler.
+- **Contracts that aren't classes or predicates** (collections, `fn-of`,
+  `defcontract` with a closure) still go through `%wrap-for`'s generic
+  wrapper, 0.3–0.8 µs a call.
+- **Inlining's limits are untuned:** 24 IR nodes, 96 for a contract
+  wrapper, three calls deep, no inlining past 200 registers.
+- **Code size:** part 3's linked calls made tier 1's code 15% larger (4.8
+  MB for everything at `NORN_JIT_THRESHOLD=1`).
+
+**Flaky tests seen under load (not regressions, each passing alone):**
+
+- prof_test's sampling at `NORN_JIT_THRESHOLD=1` in the full suite (the
+  busy fiber starved: compiles aren't preemptible); never at the default.
+- errors_test's refused connection to port 1 (another error than
+  "refused" when the other suites use many sockets).
+- http_test's stale pooled connection (a 100 ms idle timeout racing the
+  load).
+- One tier-1 suite failure in part 2 (1 run in 34), never captured or
+  seen again.
