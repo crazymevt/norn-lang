@@ -805,6 +805,17 @@
 (is (= [] (lint/lint-string "(ns my.norn.thing)\n(defn f [] 1)\n" "src/my/norn/thing.norn")))
 (is (lint/first-party? "norn.html.writer"))
 (is (not (lint/first-party? "norn.htmlx")))
+;; (a folder below with its own norn.edn is a project of its own, linted
+;; in its folder, where its source paths are known: lang-tests' are)
+(let [d (io/path (sys/temp-dir) (str "lint-nested-" (sys/pid) "-" (nano-time)))]
+  (io/mkdirs! (io/path d "app" "src" "app"))
+  (io/write-text (io/path d "top.norn") "(ns top)\n(defn f [] (missing))\n")
+  (io/write-text (io/path d "app" "norn.edn") "{:name app :paths [\"src\"]}\n")
+  (io/write-text (io/path d "app" "src" "app" "main.norn") "(ns app.main (:require [app.util :as u]))\n(defn f [] (u/g))\n")
+  (let [out (%with-out-str (fn [] (lint/main d)))]
+    (is (str/includes? out "top.norn:2: unresolved"))
+    (is (not (str/includes? out "app/main.norn")) "the project below isn't linted from here"))
+  (io/delete! d :recursive true))
 ;; (a Java habit says what Norn has instead: pulse finding)
 (is (= ["unresolved symbol Math/round (Norn has no Java classes: try norn.math/round)"
         "unresolved symbol Thread/sleep (Norn has no Java classes: use sleep)"

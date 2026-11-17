@@ -589,13 +589,28 @@
   [{:keys [file line kind message]}]
   (str file (when line (str ":" line)) ": " (name kind) ": " message))
 
+(defn- in-a-project-below?
+  "Is file f, found under folder dir, in a project of its own: a folder
+  below dir, around f, with a norn.edn? (Linted in its own folder, where
+  its source paths are known, not as part of dir.)"
+  [dir f]
+  (let [base (if (str/ends-with? dir "/") dir (str dir "/"))
+        parts (butlast (str/split (subs f (count base)) #"/"))]
+    (loop [d base ps (seq parts)]
+      (cond (empty? ps) false
+            (%fs-info (str d (first ps) "/norn.edn")) true
+            :else (recur (str d (first ps) "/") (next ps))))))
+
 (defn main
   "`norn lint [paths…]`: lint .norn files (default: the current directory,
-  recursively). Prints one line per warning; exits 1 if there are any."
+  recursively, leaving out a folder below that's a project of its own,
+  with a norn.edn: lint it in its folder). Prints one line per warning;
+  exits 1 if there are any."
   [& args]
   (let [files (vec (mapcat (fn [p] (if (str/ends-with? p ".norn")
                                      [p]
-                                     (vec (sort (filter (fn [f] (and (str/ends-with? f ".norn") (not (str/includes? f "/target/"))))
+                                     (vec (sort (filter (fn [f] (and (str/ends-with? f ".norn") (not (str/includes? f "/target/"))
+                                                                     (not (in-a-project-below? p f))))
                                                         (%fs-walk p))))))
                            (if (seq args) args ["."])))
         ws (vec (mapcat lint-file files))]
