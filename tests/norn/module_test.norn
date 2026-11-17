@@ -4,7 +4,7 @@
 
 (ns module-test
   (:require [norn.test :refer [is deftest testing]] [norn.io :as io] [norn.sys :as sys]
-            [norn.string :as str] [norn.lint :as lint] [norn.dev :as dev]))
+            [norn.string :as str] [norn.lint :as lint] [norn.dev :as dev] [norn.edn]))
 
 (def dir (io/path (sys/temp-dir) (str "norn-module-test-" (sys/pid) "-" (nano-time))))
 (io/mkdirs! (io/path dir "mt"))
@@ -250,3 +250,22 @@
     (require 'norn.csv)
     (is (= {:reloaded [] :failed [] :unknown [(io/path dir "mt" ".!123!dw.norn")]}
            (dev/reload! [(io/path dir "mt" ".!123!dw.norn")])))))
+
+(deftest a-load-that-fails-in-a-tag-reader
+  ;; A tag's reader runs nested in the reader: when the load fails there,
+  ;; its catches don't run, but its cleanups do, and the namespace and
+  ;; dynamic bindings are put back, so the error is caught as any other.
+  ;; (Before: it went on in mt.fails's namespace with a handler-case's
+  ;; handler whose catch was gone, and signalling looped without end.)
+  (module! "fails" (str "(ns mt.fails)\n(def finished (atom false))\n"
+                        "(handler-case (try (nth [] 5) (finally (reset! finished true))) (Warning [c] c))\n"))
+  (let [rd {'mt/f (fn [form] (require 'mt.fails) form)}
+        here (str (current-ns))
+        attempt (fn [] (try (norn.edn/read-string "#mt/f 1" :readers rd) :read
+                            (catch Error e (condition-message e))))]
+    (is (str/includes? (attempt) "Index out of bounds: 5"))
+    (is (= here (str (current-ns))) "the namespace is put back")
+    (is (true? (run '@mt.fails/finished)) "its finally ran")
+    (is (str/includes? (attempt) "Index out of bounds: 5") "it loads again, not a circular require")
+    (is (str/includes? (deref (future (attempt)) 10000 :timed-out) "Index out of bounds") "another fiber doesn't wait for it")
+    (is (= :caught (try (nth [] 9) (catch Error _ :caught))) "no handler left behind")))

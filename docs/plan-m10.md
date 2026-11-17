@@ -759,17 +759,29 @@ win back compile time first: done, below.
   vector 165.0 → 33.8; `(reduce + (map inc v))` 45.0 → 21.2. Test:
   items_test's sequence-functions (each kind of collection, `for`'s
   modifiers at each level), passing on the binary before too.
-- **A hang seen once (2026-11-17), not reproduced.** In a full `cargo
-  test` run, images.rs's shaken-image test hung: its `norn --image
-  full.nimg` printed its first line, then spun at about 700% CPU for 17
-  minutes, and SIGQUIT printed no fiber dump. Run by hand right after, the
-  same image hung once more, then ran correctly 45 times; 120 runs eight
-  at a time, three runs of images.rs and a full cargo run didn't hang.
-  A guess, unconfirmed (no native sample was taken): a stop-the-world
-  collection waiting for the background compile thread, which is a
-  running participant while it compiles, with a compile that doesn't end
-  (a fixpoint that doesn't converge?), the collector's workers spinning.
-  Next time: `sample PID` before killing it (todo).
+- **The shaken-image hang: found and fixed (2026-11-17); not M10's.**
+  images.rs's shaken-image test hung now and then in a full `cargo
+  test`: its `norn --image full.nimg` printed its first line, then spun
+  on every core. A watcher rerunning the suite caught it twice (runs 5
+  and 6); with the heap capped, SIGQUIT's dump showed one fiber
+  signalling without end: `error` → `signal` → `throw-tag` (no catch) →
+  `%runtime-error` → `error` …, in namespace norn.time. The cause: the
+  reader calls a tag's reader (#inst's) *nested*, from Rust, and that
+  loaded norn.time the first time. The cache lookup `slurp`s the module's
+  entry inside a `try`, but a nested run can't catch a primitive's error:
+  it returns to Rust past its frames. So when the entry was missing (other
+  tests' processes prune the shared cache, oldest first, past 1000
+  entries), the load was abandoned mid-way, and the reader went on in its
+  namespace and dynamic bindings, with a handler-case's handler whose
+  catch was gone. Fixed in three places: a failed nested run puts the
+  dynamic environment and namespace back, and runs its frames'
+  cleanups (`unwind-protect`, `finally`), as unwinding does; a library
+  load forgets a failed load in `finally`, not `catch` (so a later
+  `require` loads it again instead of waiting for it forever); and the
+  cache looks for a missing entry, not catching it. Tests: cache_test's
+  a-module-first-loaded-by-a-tag-reader, module_test's
+  a-load-that-fails-in-a-tag-reader (both hung before). Left as it was:
+  inside a nested run, a primitive's error still skips `catch` (todo).
 - **The profiler's timer threads: fixed (2026-11-17).** A profile's timer
   thread ran while any profile was active; one whose profile stopped and
   another started within its sleep went on too, so every later profile

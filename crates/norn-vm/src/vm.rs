@@ -1622,6 +1622,12 @@ impl Vm {
     /// fiber and ends it.
     unsafe fn handle_error(&mut self, st: &mut St, e: Error, dest: Option<Option<usize>>) -> Result<Flow> {
         let Some(fk) = FRAME_KINDS.get() else { return Err(self.fail(st, e)) };
+        if self.nested > 0 && !st.seg.is_nil() {
+            let e = self.fail(st, e);
+            // SAFETY: st describes a valid frame chain.
+            unsafe { self.nested_cleanups(st, fk) };
+            return Err(e);
+        }
         if self.nested > 0 || self.current.is_nil() || e.kind == ErrKind::Fatal || st.seg.is_nil() {
             return Err(self.fail(st, e));
         }
@@ -1681,6 +1687,30 @@ impl Vm {
         })
     }
 
+    /// A nested run failed. Its error goes back to the Rust that called it,
+    /// past the run's frames, which no condition handler or catch inside
+    /// it sees. Run the cleanups of their `%unwind-protect*` frames
+    /// (`finally`, a library load's bookkeeping), innermost first, each in
+    /// its own dynamic environment, as unwinding does. An error in one is
+    /// dropped: the run's own is the one reported.
+    unsafe fn nested_cleanups(&mut self, st: &St, fk: &FrameKinds) {
+        let mut cleanups = Vec::new();
+        for (seg, fp) in walk_frames(st.seg, st.fp) {
+            // SAFETY: (seg, fp) is a live frame.
+            unsafe {
+                let fr = seg.seg_data().add(fp);
+                if *fr.add(F_FN) == fk.unwind {
+                    let regs = fr.add(HDR);
+                    cleanups.push((*regs.add(1), *regs.add(2)));
+                }
+            }
+        }
+        for (cleanup, dyn_env) in cleanups {
+            self.dyn_env = dyn_env;
+            let _ = self.apply(cleanup, &[]);
+        }
+    }
+
     /// Error e's class as Norn values for `%runtime-error`: (class symbol,
     /// data map, condition to signal again), nil where there's none.
     fn class_values(&mut self, e: &Error) -> (Value, Value, Value) {
@@ -1710,10 +1740,23 @@ impl Vm {
 
     /// Call any callable from Rust: a *nested* run on a fresh stack. It can't
     /// park or yield, and GC is inhibited until it returns.
+    ///
+    /// A failure leaves its frames without running them on: their cleanups
+    /// run (`nested_cleanups`), but no `catch`, and no `binding` or `in-ns`
+    /// is undone. So the dynamic environment and the namespace are put back
+    /// as they were, or the caller would go on in the failed code's (with
+    /// its handlers, whose catches are gone: a condition signalled then
+    /// found one, couldn't throw to it, signalled that, and so on without
+    /// end).
     pub fn apply(&mut self, f: Value, args: &[Value]) -> Result<Value> {
+        let (dyn_env, ns) = (self.dyn_env, self.ns);
         self.nested += 1;
         let r = self.apply_inner(f, args);
         self.nested -= 1;
+        if r.is_err() {
+            self.dyn_env = dyn_env;
+            self.ns = ns;
+        }
         r
     }
 

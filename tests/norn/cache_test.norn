@@ -4,7 +4,7 @@
 ;;;; modules and the cache are in a temporary folder.
 
 (ns cache-test
-  (:require [norn.test :refer [is deftest testing]] [norn.io :as io] [norn.sys :as sys]))
+  (:require [norn.test :refer [is deftest testing]] [norn.io :as io] [norn.sys :as sys] [norn.edn]))
 
 (def dir (io/path (sys/temp-dir) (str "norn-cache-test-" (sys/pid) "-" (nano-time))))
 (def cache (io/path dir "cache"))
@@ -99,3 +99,14 @@
     (is (= "ContractError" (error-name)) ":boundaries: checked")
     (is (= {:hits 2} (counted '(do (require 'ct.typed :reload) (require 'ct.caller :reload))))
         "and cached under its own key")))
+
+(deftest a-module-first-loaded-by-a-tag-reader
+  ;; A tag's reader runs nested in the reader, where a primitive's error
+  ;; can't be caught: the cache's missing entry must be looked for, not
+  ;; caught (#inst loads norn.time this way, the first time).
+  (module! "tagged" "(ns ct.tagged)\n(defn parse [x] [:tagged x])\n")
+  (let [rd {'ct/t (fn [form] (require 'ct.tagged) ((resolve 'ct.tagged/parse) form))}
+        stats (atom {:hits 0 :misses 0 :writes 0 :uncacheable 0})]
+    (is (= [:tagged 1] (binding [norn.expander/*cache-dir* cache norn.expander/*cache-stats* stats]
+                         (norn.edn/read-string "#ct/t 1" :readers rd))))
+    (is (= 1 (:misses @stats) (:writes @stats)))))

@@ -1068,10 +1068,15 @@
 
 (defn- cache-file [dir nsym src] (str dir "/" (%hash-text (str nsym "|" src)) ".nmod"))
 
+;; (A file that isn't there is looked for, not caught: a load in a nested
+;; run, such as a tag reader's, runs no catch when a primitive fails, and
+;; the first load of each module finds none. Another process may prune
+;; one between the look and the read, rarely: then that load fails.)
 (defn- read-cache [file key]
-  (try (let [m (read-string (slurp file))]
-         (when (and (map? m) (= key (:key m))) m))
-       (catch Error _ nil)))
+  (when (%fs-info file)
+    (try (let [m (read-string (slurp file))]
+           (when (and (map? m) (= key (:key m))) m))
+         (catch Error _ nil))))
 
 (defn- prune-cache!
   "Keep the cache folder to at most 1000 entries, dropping the oldest
@@ -1081,7 +1086,7 @@
     (when (> (count names) 1000)
       (doseq [[_ p] (take (- (count names) 800)
                           (sort-by first (map (fn [n] (let [p (str dir "/" n)] [(or (:modified (%fs-info p)) 0) p])) names)))]
-        (try (%fs-delete p false) (catch Error _ nil))))))
+        (when (%fs-info p) (try (%fs-delete p false) (catch Error _ nil)))))))
 
 (defn- write-cache! [dir file key forms]
   (let [text (pr-str {:key key :forms (mapv (fn [units] (mapv (fn [[n f]] [n (encode f (atom {}))]) units)) forms)})]

@@ -2826,8 +2826,12 @@
                     (if (compare-and-set! %libs m (assoc m key {:done done :owner (current-fiber)}))
                       (try (binding [*loading* (conj *loading* key) *load-shift* s] (%load-lib-source lib))
                            (swap! %libs assoc key :loaded)
-                           (catch Error c (swap! %libs dissoc key) (throw c))
-                           (finally (close! done)))
+                           ;; (failed: forgotten, so it can be loaded again.
+                           ;; In finally, not catch: a load in a nested run,
+                           ;; such as a tag reader's, runs no catch when it
+                           ;; fails, only cleanups)
+                           (finally (when-not (= :loaded (get @%libs key)) (swap! %libs dissoc key))
+                                    (close! done)))
                       (recur)))))))
 
 (defn require
