@@ -2,7 +2,9 @@
 # Build and test this checkout on Linux, in a disposable Docker container
 # (on a Mac: start Colima first, `colima start`). It sends the tracked files
 # of the working tree, so uncommitted changes are tested too, and keeps the
-# Cargo registry and the build in named volumes between runs.
+# Cargo registry and the build in named volumes between runs. The whole
+# check is what CI's Linux job runs: the build, cargo test, the Norn suites
+# (at both tiers here), norn check, and the lang-tests.
 #
 #   tools/check-linux.sh                  the whole check
 #   tools/check-linux.sh tests/norn/X.norn …   just those suites, at both tiers
@@ -11,7 +13,7 @@ cd "$(dirname "$0")/.."
 git ls-files | COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata -cf - -T - 2>/dev/null |
   docker run -i --rm \
     -v norn-linux-target:/w/target -v norn-linux-cargo:/usr/local/cargo/registry \
-    -e CARGO_TERM_COLOR=never -e FILES="$*" rust:1 bash -c '
+    -e CARGO_TERM_COLOR=never -e NORN_UI_HEADLESS=1 -e FILES="$*" rust:1 bash -c '
 set -u
 mkdir -p /w && cd /w && tar -x 2>/dev/null
 apt-get update -qq >/dev/null && apt-get install -y -qq libsqlite3-0 zsh git >/dev/null 2>&1
@@ -37,6 +39,9 @@ else
   echo "== norn check"
   target/release/norn check > /tmp/k.log 2>&1 || status=1
   tail -3 /tmp/k.log
+  echo "== lang-tests"
+  target/release/norn lang-tests/run.norn > /tmp/l.log 2>&1 || status=1
+  grep -E "FAIL|skipped|all passed|failed:" /tmp/l.log | head -30
 fi
 exit $status
 '

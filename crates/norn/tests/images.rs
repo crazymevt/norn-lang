@@ -250,10 +250,14 @@ fn start_up_from_an_image_is_fast() {
         assert_eq!(eval(Some(&img), "(+ 1 2)"), "3");
         best = best.min(t.elapsed().as_millis());
     }
+    // (The 50 ms target is a release build's on a developer's machine. A CI
+    // runner, a shared virtual machine, gets a looser bound: a regression
+    // by several times still fails there.)
+    let limit = if std::env::var_os("CI").is_some() { 250 } else { 50 };
     if cfg!(debug_assertions) {
-        eprintln!("start-up from an image: {best} ms (debug build; the 50 ms target is checked in release)");
+        eprintln!("start-up from an image: {best} ms (debug build; the {limit} ms target is checked in release)");
     } else {
-        assert!(best < 50, "start-up took {best} ms");
+        assert!(best < limit, "start-up took {best} ms (the target: {limit} ms)");
     }
 }
 

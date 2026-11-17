@@ -32,6 +32,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: macOS file limits
+        if: runner.os == 'macOS'
+        # (as a developer's Mac allows: the suites' many sockets; norn raises
+        # its own limit to this cap)
+        run: sudo sysctl -w kern.maxfiles=122880 kern.maxfilesperproc=61440
+
       - name: Linux packages
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-0 zsh

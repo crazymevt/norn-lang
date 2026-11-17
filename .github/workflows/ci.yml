@@ -38,6 +38,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: macOS file limits
+        if: runner.os == 'macOS'
+        # (as a developer's Mac allows: io.rs holds 10,000 connections, both
+        # ends, in one process; norn raises its own limit to this cap)
+        run: sudo sysctl -w kern.maxfiles=122880 kern.maxfilesperproc=61440
+
       - name: Linux packages
         if: runner.os == 'Linux'
         # SQLite for norn.sqlite (loaded at run time), zsh for terminal_test
