@@ -339,13 +339,43 @@ baseline compared.
     ms at tier 0). Tests: `tests/norn/types_test.norn` (decided tests
     keep their meaning; a loop's locals change kind; a test with effects
     still runs).
-  - **5.4, signing** norn.string, norn.math, norn.regex and norn.bytes,
-    with part 4's probe as a test.
+  - **5.4, signing: done.** norn.string, norn.math, norn.regex and
+    norn.bytes carry signatures: what each function's primitives already
+    take (`^String` where nothing else works), nilable or either-of where
+    the function takes those, result types where they're certain, none
+    where a function takes anything (`upper-case`, `pad-left`, `join`:
+    `str` of it). `tests/norn/signed_test.norn` is part 4's probe as a
+    test: every public function, 0–4 arguments of edge values, called as
+    itself (no checks) and from another module (its call-site checks);
+    where the function gave a value the checked call must give the same,
+    where it failed the checked call must fail. It found signatures too
+    narrow, since widened: the regex functions take a string pattern
+    (and `pattern` a regex), the statistics functions bytes (percentile
+    too, an M9 signature; `api/` recorded again for it, the only change
+    api-diff calls breaking). What the signatures refuse that gave a
+    value only by accident is listed in the test with why (`ends-with?`
+    of a vector, `sum` of an empty string, `truncate`'s three-argument
+    form of a character, `finish-decoder` of something not a map).
+    **Measured** (tier 1, arguments of unknown type): `blank?`,
+    `includes?`, `trim`, `starts-with?` signed and not within run-to-run
+    noise (±2 ns; part 4: 6–26 ns more). The suites pass at both tiers
+    and at `NORN_JIT_THRESHOLD=1`, and the sibling projects' (lang-tests'
+    five, norn-html, norn-sdl3, norn-raylib, norn-ui, cats, norn-studio)
+    as before signing: norn-studio's chat test fails the same with the
+    binary before (a fake Claude client's reply never comes).
   **Done-check (proposed):** Mandelbrot at tier 1 10× its baseline or
   better (under 30 ms); float arithmetic 5×; the empty loop 2×; the four
   libraries signed with their thinnest functions no slower at tier 1
   (decision 10); the tiers agree on every suite; the debugger,
   backtraces, `restart-frame`, the profiler and coverage as before.
+  **Where it stands:** Mandelbrot 9.5–9.8× (29.8–30.9 ms: at the line,
+  not past it); float `*` 8.7×; the empty loop 1.7× (short of 2×: the
+  safepoint's loads each turn); signing as above; the suites agree. The
+  same Mandelbrot in SBCL takes 2.0 ms and in Clojure (`bench/mandelbrot.clj`,
+  primitive hints and unchecked arithmetic, after the JVM's warm-up) 2.0
+  ms: Norn's tier 1 is 15× either. What's left is per operation in the
+  loop: a var read and a callee check on each arithmetic call, the
+  safepoint, floats kept on the stack.
 
 ## Open after part 4 (2026-11-16)
 

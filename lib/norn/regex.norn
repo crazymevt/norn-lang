@@ -32,41 +32,41 @@
                   (recur (inc i) (if-let [n (nth names i)] (assoc out n (nth groups i)) out))
                   out))})))
 
-(defn pattern "A regex from string s (an error if s isn't a valid pattern)." [s] (re-pattern s))
+(defn pattern "A regex from string s (an error if s isn't a valid pattern)." ^Regex [^(U String Regex) s] (re-pattern s))
 
 (defn find
   "The first match of re in s (at or after index from): the matched text, or
   [text group1 group2 …] when re has groups; nil when there's none."
-  ([re s] (result (%re-search re s 0 false)))
-  ([re s from] (result (%re-search re s from false))))
+  ([^(U Regex String) re ^String s] (result (%re-search re s 0 false)))
+  ([^(U Regex String) re ^String s ^Integer from] (result (%re-search re s from false))))
 
-(defn matches "As find, but re must match the whole of s." [re s] (result (%re-search re s 0 true)))
+(defn matches "As find, but re must match the whole of s." [^(U Regex String) re ^String s] (result (%re-search re s 0 true)))
 
-(defn find-all "Every non-overlapping match, as find gives each." [re s] (mapv result (%re-all re s)))
+(defn find-all "Every non-overlapping match, as find gives each." ^Vector [^(U Regex String) re ^String s] (mapv result (%re-all re s)))
 
 (defn match
   "The first match as a map: :match (the text), :start and :end (indexes),
   :groups (a vector, nil for a group that took no part) and :named (named
   groups by keyword). nil when there's no match."
-  ([re s] (details (%re-search re s 0 false)))
-  ([re s from] (details (%re-search re s from false))))
+  (^(? Map) [^(U Regex String) re ^String s] (details (%re-search re s 0 false)))
+  (^(? Map) [^(U Regex String) re ^String s ^Integer from] (details (%re-search re s from false))))
 
-(defn match-all "Every match, as match gives each." [re s] (mapv details (%re-all re s)))
+(defn match-all "Every match, as match gives each." ^Vector [^(U Regex String) re ^String s] (mapv details (%re-all re s)))
 
-(defn matches? "Does re match the whole of s?" [re s] (some? (%re-search re s 0 true)))
-(defn found? "Does re match somewhere in s?" [re s] (some? (%re-search re s 0 false)))
+(defn matches? "Does re match the whole of s?" ^Boolean [^(U Regex String) re ^String s] (some? (%re-search re s 0 true)))
+(defn found? "Does re match somewhere in s?" ^Boolean [^(U Regex String) re ^String s] (some? (%re-search re s 0 false)))
 
 (defn replace
   "s with every match of re replaced: replacement is a string ($1 or ${name}
   for groups, $$ for a dollar) or a function of the match (as find gives)."
-  [re s replacement]
+  ^String [re ^String s replacement]
   (norn.string/replace s re replacement))
 
-(defn replace-first "As replace, for the first match only." [re s replacement]
+(defn replace-first "As replace, for the first match only." ^String [re ^String s replacement]
   (norn.string/replace-first s re replacement))
 
 (defn split "The parts of s between matches of re (at most limit parts)."
-  ([re s] (%re-split re s nil))
-  ([re s limit] (%re-split re s limit)))
+  (^Vector [^(U Regex String) re ^String s] (%re-split re s nil))
+  (^Vector [^(U Regex String) re ^String s ^(? Integer) limit] (%re-split re s limit)))
 
-(defn literal "A regex matching string s literally." [s] (re-quote s))
+(defn literal "A regex matching string s literally." ^Regex [^String s] (re-quote s))

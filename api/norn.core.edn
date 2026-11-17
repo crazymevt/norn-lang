@@ -38,7 +38,7 @@
  "Collection" {:kind :class, :slots [], :supers ["norn.core/Object"]}
  "Condition" {:kind :class, :slots ["location" "message" "trace"], :supers ["norn.core/StandardObject"]}
  "ConnectionError" {:kind :class, :slots ["address" "location" "message" "path" "reason" "trace"], :supers ["norn.core/IOError"]}
- "Contract" {:kind :class, :slots ["blamed" "check" "name" "parts" "test"], :supers ["norn.core/StandardObject"]}
+ "Contract" {:kind :class, :slots ["alts" "blamed" "check" "inner" "name" "parts" "pred" "test"], :supers ["norn.core/StandardObject"]}
  "ContractError" {:kind :class, :slots ["blame" "expected" "function" "location" "message" "position" "trace" "value"], :supers ["norn.core/TypeError"]}
  "Delay" {:kind :class, :slots ["claimed" "result" "thunk"], :supers ["norn.core/StandardObject"]}
  "Error" {:kind :class, :slots ["location" "message" "trace"], :supers ["norn.core/SeriousCondition"]}
