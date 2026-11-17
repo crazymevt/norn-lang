@@ -161,9 +161,9 @@ impl Value {
         self.field(6)
     }
     /// Tier-1 entry point: 0 = not compiled yet, 1 = can't be compiled,
-    /// 2 up to tier 1's MIN_ENTRY = its count of entries (+1), not compiled
-    /// yet (norn-vm's jit.rs, entry_for), otherwise the address of the
-    /// native function (runtime.md §8.2).
+    /// 2 up to tier 1's MIN_ENTRY = its count of entries (+1) or, queued to
+    /// compile, its count since (norn-vm's jit.rs, entry_for), otherwise
+    /// the address of the native function (runtime.md §8.2).
     #[inline]
     pub fn proto_native(self) -> usize {
         self.atomic_word(7).load(Ordering::Acquire) as usize

@@ -1089,11 +1089,29 @@ reused, and a later delta can recognise them by address.
   code that runs once: `norn -e` started in 1.07 s at tier 1 against 0.11
   s at tier 0, and 0.54 s at 100. Tier 0 stays the default until tier 1
   has seen more use. At M10's end compiling is slower than that, the code
-  doing more: `norn -e nil` compiles 258 protos (2.9 MB) and starts in
-  1.0 s against 0.10 at tier 0 (0.81 s with `NORN_JIT_OPT=none`, Cranelift
-  not optimising; 0.41 s at a threshold of 1,000), and a small project's
-  tests take 1.5 s longer. Compiling on the carrier that hit the
-  threshold is what costs: the interpreter waits for it.
+  doing more: `norn -e nil` compiles 258 protos (2.9 MB), which took 1.0
+  s on the carriers that reached the threshold, waiting for each.
+- **On a thread of its own** (background compilation, M10): reaching the
+  threshold puts the proto on a queue (its native word QUEUED, below
+  MIN_ENTRY, so it keeps running in the interpreter, still counting its
+  entries) and a compile thread compiles the hottest queued (the newest
+  of equals) and installs its code with a compare-and-swap from the
+  queued word: if it has left the queued range meanwhile, the code is
+  dropped. (First in, first out, a loop started after start-up waited a
+  second behind the 350-odd functions start-up and loading queue; newest
+  first, a function warm but no longer running could wait behind newer
+  ones indefinitely.) MIN_ENTRY is 2^20, QUEUED 2^19. Carriers pick it
+  up at the proto's next call or loop turn, as they do code another
+  carrier compiled. The thread reads the heap, so while it compiles it's
+  a running safepoint participant (a collection waits out the compile in
+  hand, a few ms, and can't free what it reads); waiting for work it's
+  safe, and the queue is a GC root. `norn -e nil` starts in 0.10 s at
+  tier 1, as at tier 0. `NORN_JIT_SYNC=1` compiles on the carrier, as
+  before: with `NORN_JIT_THRESHOLD=1`, every function runs compiled from
+  its first call, which is how the suites check everything compiled
+  (without it about 2,000 protos queue at start-up, compiled over the
+  next 1.5 s). `jit-stats`' `:pending` counts what's queued or being
+  compiled: tests that need code compiled wait for it to be 0.
 - Code goes into `MAP_JIT` memory (§7.4) and is never freed.
 - No relocations: constants and runtime addresses arrive through the
   arguments.

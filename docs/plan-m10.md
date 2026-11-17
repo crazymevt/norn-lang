@@ -561,6 +561,38 @@ baseline compared.
     0.5 → 2.1; the whole norn-lang suite about even, 16.4 → 17.1 s).
     `NORN_JIT_OPT=none` gives 0.81 s; a threshold of 1,000, 0.41 s. The
     cost is compiling on the carrier that's waiting to run the code.
+- **Background compilation: done (2026-11-17)**, the user's choice for
+  decision 2's start-up cost (runtime.md, tier 1's compilation). A proto
+  that reaches the threshold is queued (its native word in the queued
+  range, still counting entries) and runs in the interpreter until the
+  compile thread installs its code (a compare-and-swap from the queued
+  word; code for a proto changed meanwhile is dropped). The thread is a
+  running safepoint participant only while it compiles; the queue is a GC
+  root. The hottest queued is compiled first. First in, first out, the
+  micro suite's first cases were timed before their code was compiled,
+  behind the 350-odd functions start-up and loading queue (1.1 s of
+  compiling). Newest first, opt_tools_test's warmed function waited past
+  5 s behind newer ones in the full suite. `norn.bench/run` waits for the
+  compile thread after warming up (its promise: timed compiled), and
+  `jit-stats` has `:pending`. `NORN_JIT_SYNC=1` compiles on the carrier as
+  before. **Measured:** `norn -e nil` 0.11 s at tier 1 (0.10 at tier 0);
+  tests at tier 1 now faster than at tier 0 (ledger 0.57 → 0.43 s,
+  norn-html 0.62 → 0.49, the norn-lang suite 17.6 → 15.0); the benchmarks
+  as before (Mandelbrot 10.1×, the empty loop 2.3×, float `*` 10.5×;
+  making a map read 0.86×, but the binary before this reads 75–86 ns on
+  it run to run, as this one does). Tests: the suites at tier 0, tier 1,
+  threshold 1 synchronous (everything compiled from its first call) and
+  threshold 1 in the background (a stress test: about 2,000 installs
+  racing running code), all passing; opt_tools_test's `warm!` calls its
+  function until it's compiled, link_test's `many` waits for `:pending` 0
+  (and calls through `apply`, with `twice` made not to inline, so its
+  check of relinking sees a linked call). Every sibling project as before
+  at both tiers.
+  **Found on the way:** chat's test of state staying consistent sometimes
+  waits out its 5 s timeout: under load the server stops answering one
+  client's commands (it still hears the room) — at tier 0 too (1 round in
+  30 of a probe of that test at each tier); tier 1 only moves the timing.
+  The test passes regardless. Chat's or the runtime's (todo).
 
 ## Open after part 4 (2026-11-16)
 

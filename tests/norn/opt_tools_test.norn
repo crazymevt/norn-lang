@@ -18,11 +18,14 @@
 (defn- tier1? [] (= 1 (:tier (jit-stats))))
 
 (defn- warm!
-  "Call f with args often enough that it is compiled. (Through apply: a
+  "Call f with args until it is compiled (at tier 1, which compiles on a
+  thread of its own: at most 10 s; at tier 0, 300 times). Through apply: a
   direct call of a small function would be inlined into the caller, and
-  the function's own code never run.)"
+  the function's own code never run."
   [f & args]
-  (dotimes [_ 300] (apply f args)))
+  (dotimes [_ 300] (apply f args))
+  (when (tier1?)
+    (loop [k 0] (when (and (not (native? f)) (< k 10000)) (apply f args) (sleep 1) (recur (inc k))))))
 
 (defn- parked [id] (first (filter (fn [d] (= id (:fiber d))) (debugging))))
 (defn- wait-until [f] (loop [i 0] (or (f) (when (< i 500) (sleep 2) (recur (inc i))))))

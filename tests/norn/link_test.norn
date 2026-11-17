@@ -4,12 +4,25 @@
 ;;;; check that what's linked behaves as a call through the var: a
 ;;;; redefinition takes effect at once, in a loop already running too.
 ;;;; (Calls run 300 times or more, so tier 1 has compiled them: at its
-;;;; default, a function compiles once entered 100 times.)
+;;;; default, a function is queued to compile once entered 100 times, and
+;;;; `many` waits for the compile thread before running them again.)
 
 (ns link-test
   (:require [norn.test :refer [is deftest testing]] [norn.string :as str]))
 
-(defn- many [n f] (loop [i 0 v nil] (if (= i n) v (recur (inc i) (f i)))))
+(defn- compiled!
+  "Wait for tier 1's compile thread to finish what's queued (at most 5 s)."
+  []
+  (loop [k 0] (when (and (pos? (:pending (jit-stats))) (< k 5000)) (sleep 1) (recur (inc k)))))
+
+(defn- many
+  "(f i) for i below n, then, once what that queued is compiled, again: the
+  last value."
+  [n f]
+  (let [run #(loop [i 0 v nil] (if (= i n) v (recur (inc i) (f i))))]
+    (run)
+    (compiled!)
+    (run)))
 
 (defn- redefine
   "Define again in this namespace, as at the REPL (a string, so the
@@ -17,14 +30,18 @@
   [src]
   (load-string (str "(in-ns 'link-test) " src)))
 
-(defn twice [x] (* 2 x))
+;; (twice makes a closure, so it isn't inlined: via-twice's call of it is
+;; a linked one)
+(defn twice [x] ((fn [y] (* 2 y)) x))
 (defn via-twice [x] (twice x))
 
 (deftest a-redefinition-takes-effect-in-linked-callers
-  (is (= 10 (many 300 (fn [_] (via-twice 5)))))
+  ;; (through apply too: a direct call inlines via-twice into the caller,
+  ;; and via-twice's own code, linked to twice, would never run)
+  (is (= [10 10] (many 300 (fn [_] [(via-twice 5) (apply via-twice [5])]))))
   (redefine "(defn twice [x] (* 3 x))")
   (is (= 15 (via-twice 5)) "the caller, compiled against the old twice, calls the new one")
-  (is (= 15 (many 300 (fn [_] (via-twice 5)))) "and again once it has compiled again")
+  (is (= [15 15] (many 300 (fn [_] [(via-twice 5) (apply via-twice [5])]))) "and again once it has compiled again")
   (testing "a var that comes to hold something else callable"
     (redefine "(def twice {5 :five})")
     (is (= :five (via-twice 5)))

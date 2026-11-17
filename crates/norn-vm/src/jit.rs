@@ -64,7 +64,12 @@
 //! `JitCtx::cur_regs` says which frame it stopped in.
 //!
 //! A proto is compiled once it has been entered THRESHOLD times (calls and
-//! loop turns, counted in its native word: entry_for).
+//! loop turns, counted in its native word: entry_for), on the compile
+//! thread (background compilation): the interpreter runs it meanwhile, and
+//! picks up its code at the next call or loop turn once it's installed.
+//! `NORN_JIT_SYNC=1` compiles on the carrier that reached the threshold,
+//! which waits for it, as before (tests that need code compiled at a known
+//! moment).
 
 use crate::bytecode::*;
 use cranelift_codegen::control::ControlPlane;
@@ -234,6 +239,9 @@ pub static CODE_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomi
 /// call's guard failed (jit-stats).
 pub static LINKED_SITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub static RELINKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Protos queued for the compile thread or being compiled (jit-stats'
+/// :pending: tests wait for it to be 0 before checking compiled code).
+pub static COMPILES_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Is tier 1 on? (`NORN_TIER=1`; tier 0 is the default for now.)
 pub fn enabled() -> bool {
@@ -2470,8 +2478,10 @@ fn make_trampoline() -> Option<usize> {
 
 /// The lowest real code address: a proto's native word below it is tier
 /// 1's count of how often the proto has been entered (stored +1; 0: never),
-/// 1 means it can't be compiled, at or above it is its entry.
-pub const MIN_ENTRY: usize = 4096;
+/// or, from QUEUED up, its count since it was queued; 1 means it can't be
+/// compiled; at or above MIN_ENTRY it is its entry. (Code is mapped far
+/// above it.)
+pub const MIN_ENTRY: usize = 1 << 20;
 
 /// How many entries (calls, returns into it, loop turns) before a proto is
 /// compiled: NORN_JIT_THRESHOLD, 1 (the first) by default.
@@ -2487,17 +2497,51 @@ fn threshold() -> usize {
     *T.get_or_init(|| std::env::var("NORN_JIT_THRESHOLD").ok().and_then(|s| s.parse().ok()).unwrap_or(THRESHOLD).clamp(1, 4000))
 }
 
-/// The native entry for proto, counting this entry, and compiling it once
-/// it has been entered `threshold` times. 1: run it in the interpreter (not
-/// yet, or it can't be compiled). Allocates nothing on the Norn heap.
+/// The native word of a proto waiting on the compile queue, or being
+/// compiled, is QUEUED plus how often it has been entered since (up to
+/// MIN_ENTRY - 1): it runs in the interpreter meanwhile, and the compile
+/// thread takes the hottest first. (Above any threshold.)
+const QUEUED: usize = 1 << 19;
+
+fn queued(n: usize) -> bool {
+    (QUEUED..MIN_ENTRY).contains(&n)
+}
+
+/// Compile on the carrier that reached the threshold (`NORN_JIT_SYNC=1`),
+/// not on the compile thread?
+fn sync_compile() -> bool {
+    static S: OnceLock<bool> = OnceLock::new();
+    *S.get_or_init(|| std::env::var("NORN_JIT_SYNC").as_deref() == Ok("1"))
+}
+
+/// The native entry for proto, counting this entry; once it has been
+/// entered `threshold` times, queued for the compile thread (or compiled
+/// here, with NORN_JIT_SYNC=1). 1: run it in the interpreter (not yet,
+/// waiting to be compiled, or it can't be). Allocates nothing on the Norn
+/// heap.
 pub fn entry_for(proto: Value) -> usize {
     loop {
         let n = proto.proto_native();
         if n >= MIN_ENTRY || n == 1 {
             return n;
         }
+        if queued(n) {
+            // (counted while it waits: how hot it is decides when it's
+            // compiled; a lost race costs only a count)
+            if n + 1 < MIN_ENTRY {
+                proto.proto_native_cas(n, n + 1);
+            }
+            return 1;
+        }
         let seen = if n == 0 { 1 } else { n };
         if seen >= threshold() {
+            if !sync_compile() {
+                if proto.proto_native_cas(n, QUEUED) {
+                    enqueue(proto);
+                    return 1;
+                }
+                continue;
+            }
             let entry = compile(proto).unwrap_or(1);
             // (installed unless another carrier has installed its own
             // meanwhile; the count may have moved on under us)
@@ -2514,6 +2558,78 @@ pub fn entry_for(proto: Value) -> usize {
         if proto.proto_native_cas(n, seen + 1) {
             return 1;
         }
+    }
+}
+
+// ---- background compilation ----
+
+/// Protos waiting for the compile thread: GC roots (for_each_queued), as
+/// a proto may lose its last other reference while it waits. The hottest
+/// (the most entries since it was queued) is compiled first, the newest
+/// of equals: first in, first out, a loop started after start-up's 300-odd
+/// functions were queued waited a second behind them; newest first, a
+/// function warm but no longer running could wait behind newer ones
+/// indefinitely.
+static QUEUE: Mutex<std::collections::VecDeque<u64>> = Mutex::new(std::collections::VecDeque::new());
+static QUEUE_CV: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Every proto waiting to be compiled (GC roots: sched's for_each_root).
+pub fn for_each_queued(f: &mut dyn FnMut(Value)) {
+    QUEUE.lock().unwrap().iter().for_each(|&v| f(Value(v)));
+}
+
+fn enqueue(proto: Value) {
+    static THREAD: OnceLock<()> = OnceLock::new();
+    THREAD.get_or_init(|| {
+        // (Cranelift recurses on large functions: a stack to match a
+        // carrier's)
+        std::thread::Builder::new().name("norn-jit".into()).stack_size(16 << 20).spawn(compile_thread).expect("the compile thread");
+    });
+    COMPILES_PENDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    QUEUE.lock().unwrap().push_back(proto.0);
+    QUEUE_CV.notify_one();
+}
+
+/// The compile thread: takes protos off the queue, compiles each and
+/// installs its code (unless its native word has changed meanwhile: the
+/// code is then dropped). It reads the heap (the proto, its constants,
+/// what its vars hold), so while compiling it's a running safepoint
+/// participant: a collection waits for the compile in hand to finish (a
+/// few ms) and can't free what it reads. Waiting for work, it's safe; the
+/// queue keeps what's on it alive.
+fn compile_thread() {
+    loop {
+        {
+            let mut q = QUEUE.lock().unwrap();
+            while q.is_empty() {
+                q = QUEUE_CV.wait(q).unwrap();
+            }
+        }
+        // (running before the proto leaves the queue, so it's a root
+        // throughout: the world may stop between the wait and this)
+        norn_rt::safepoint::leave_safe();
+        let next = {
+            let mut q = QUEUE.lock().unwrap();
+            let hottest = (0..q.len()).max_by_key(|&i| Value(q[i]).proto_native());
+            hottest.and_then(|i| q.remove(i))
+        };
+        let Some(p) = next else {
+            norn_rt::safepoint::enter_safe();
+            continue;
+        };
+        let proto = Value(p);
+        let entry = std::panic::catch_unwind(|| compile(proto)).ok().flatten().unwrap_or(1);
+        // (installed while it's still queued, whatever its count; if it
+        // has been compiled meanwhile, or set back to count again, this
+        // code isn't used)
+        loop {
+            let m = proto.proto_native();
+            if !queued(m) || proto.proto_native_cas(m, entry) {
+                break;
+            }
+        }
+        COMPILES_PENDING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        norn_rt::safepoint::enter_safe();
     }
 }
 

@@ -205,6 +205,7 @@ impl Sched {
         self.roots.lock().unwrap().values().for_each(|&v| f(v));
         self.native_keep.lock().unwrap().values().flatten().for_each(|&v| f(v));
         crate::jit::for_each_linked(f);
+        crate::jit::for_each_queued(f);
         crate::reactor::for_each_root(f);
         for c in &self.currents {
             let v = Value(c.load(Ordering::Acquire));
