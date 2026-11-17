@@ -540,8 +540,9 @@ baseline compared.
     watch starts (at tier 0 it arrives within a millisecond of the edit,
     too soon to be the edit's; tier 1 moves the timing), and "building"
     compares zips whose entries keep DOS times (2 s apart), so builds
-    either side of a boundary differ. Each passed in reruns; fixing them is
-    quire's (todo). Studio's shell-in-the-editor and norn-ui's editor
+    either side of a boundary differ. Each passed in reruns. (Fixed
+    2026-11-17, in lang-tests/quire: the zip's entries dated at a fixed
+    time, and "serving" waiting for the edit's title.) Studio's shell-in-the-editor and norn-ui's editor
     tests passed alone and in full runs.
   - **The tools on optimised code** (opt_tools_test, both tiers): the
     debugger stopped in a compiled float loop shows its unboxed float as
@@ -622,8 +623,9 @@ baseline compared.
   inlining's limits untuned and tier 1's code size; the printing
   workloads' reading in a full comparison run; a primitive's error inside
   a nested run skipping `catch` (todo); chat's kicked clients (todo);
-  waking fibers on other carriers (todo); quire's two timing-dependent
-  tests (quire's).
+  waking fibers on other carriers (todo). Checking changes since:
+  `lang-tests/run.norn` runs the five lang-tests programs (now in this
+  repository) at all three tiers, against recorded outputs.
 
 ## After the parts (2026-11-16–17)
 
