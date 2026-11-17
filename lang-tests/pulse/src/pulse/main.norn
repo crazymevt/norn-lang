@@ -1,0 +1,127 @@
+(ns pulse.main
+  "pulse's command line: serve, and look after the targets."
+  (:require [norn.actor :as a]
+            [norn.cli :as cli]
+            [norn.http :as http]
+            [norn.log :as log]
+            [norn.schedule :as schedule]
+            [norn.signal :as signal]
+            [norn.sqlite :as sql]
+            [norn.string :as str]
+            [norn.time :as t]
+            [pulse.check :as check]
+            [pulse.store :as store]
+            [pulse.web :as web]))
+
+(def keep-days "How long checks are kept." 30)
+
+(defn- prune! [db]
+  (let [n (store/prune! db (- (t/epoch-ms (t/now)) (* keep-days web/day-ms)))]
+    (log/info "pruned" :checks n)))
+
+(defn start!
+  "Start pulse on database db: the checkers, the server, and the daily
+  pruning. {:db :sup :server :pruning}, for stop!."
+  [db {:keys [host port timeout-ms]}]
+  (let [sup (check/start db timeout-ms)
+        server (web/serve {:db db :sup sup :timeout-ms timeout-ms} host port)]
+    {:db db :sup sup :server server
+     :pruning (schedule/schedule "0 3 * * *" (fn [] (prune! db)))}))
+
+(defn stop!
+  "Stop what start! started."
+  [{:keys [sup server pruning]}]
+  (schedule/stop! pruning)
+  (http/stop! server)
+  (a/stop-supervisor! sup))
+
+(defn- serve [{:keys [options]}]
+  (let [db (store/open (:db options))
+        app (start! db options)
+        sigs (signal/listen :int :term)]
+    (log/info "listening" :url (str "http://" (:host options) ":" (:port (:server app)))
+              :targets (count (store/targets db)))
+    (let [sig (<! (:signals sigs))]
+      (log/info "stopping" :signal sig)
+      (stop! app)
+      (signal/stop! sigs)
+      (sql/close! db)
+      0)))
+
+(defn- with-db [options f]
+  (let [db (store/open (:db options))]
+    (try (f db) (finally (sql/close! db)))))
+
+(defn- add [{:keys [options args]}]
+  (with-db options
+    (fn [db]
+      (try (store/add-target! db (:name args) (:url args) (:every options))
+           (println "Watching" (:name args) "every" (str (:every options) "s")
+                    "(a pulse serve that's running picks it up when it's restarted)")
+           0
+           (catch sql/ConstraintError _
+             (println (str "pulse: " (:name args) " is watched already"))
+             1)))))
+
+(defn- remove-target [{:keys [options args]}]
+  (with-db options
+    (fn [db]
+      (if (store/remove-target! db (:name args))
+        (do (println "No longer watching" (:name args)) 0)
+        (do (println (str "pulse: no target " (:name args))) 1)))))
+
+(defn- list-targets [{:keys [options]}]
+  (with-db options
+    (fn [db]
+      (doseq [{:keys [name url every-s]} (store/targets db)]
+        (println (str/pad-right name 16) (str/pad-left (str every-s "s") 6) " " url))
+      0)))
+
+(defn- report [{:keys [options]}]
+  (with-db options
+    (fn [db]
+      (let [since (- (t/epoch-ms (t/now)) (* (:hours options) 3600 1000))
+            rows (store/summary db since)]
+        (doseq [{:keys [name last uptime avg-ms checks]} rows]
+          (println (str/pad-right name 16)
+                   (str/pad-right (cond (nil? last) "-" (:ok last) "up" :else "DOWN") 5)
+                   (str/pad-left (if uptime (format "%.1f%%" (* 100 uptime)) "-") 7)
+                   (str/pad-left (if avg-ms (str avg-ms "ms") "-") 7)
+                   (str "  " checks " checks")))
+        (if (some (fn [r] (false? (:ok (:last r)))) rows) 1 0)))))
+
+(defn- command
+  "Command function f, with the log level -v asked for."
+  [f]
+  (fn [parsed]
+    (when (pos? (or (:verbose (:options parsed)) 0))
+      (log/set-level! :debug))
+    (f parsed)))
+
+(def spec
+  {:name "pulse"
+   :summary "Watch web sites and keep a record of whether they're up."
+   :version "0.1.0"
+   :options [{:name :db :value "FILE" :default "pulse.db" :env "PULSE_DB" :doc "The database"}
+             {:name :verbose :short \v :count true :doc "Log more (each request)"}]
+   :commands [{:name "serve" :summary "Check the targets, and serve the status page and API"
+               :options [{:name :host :value "HOST" :default "127.0.0.1"}
+                         {:name :port :short \p :type :int :default 8080}
+                         {:name :timeout-ms :type :int :default 10000 :doc "How long a check may take"}]
+               :run (command serve)}
+              {:name "add" :summary "Watch a URL"
+               :options [{:name :every :value "SECONDS" :type :int :default 60}]
+               :args [{:name :name} {:name :url}]
+               :run (command add)}
+              {:name "remove" :summary "Stop watching a target"
+               :args [{:name :name}]
+               :run (command remove-target)}
+              {:name "list" :summary "The targets" :run (command list-targets)}
+              {:name "report" :summary "Each target's uptime (status 1 if one is down)"
+               :options [{:name :hours :type :int :default 24}]
+               :run (command report)}]})
+
+(defn main
+  "pulse's entry point: its command-line arguments in, its exit status out."
+  [& args]
+  (cli/run spec (vec args)))

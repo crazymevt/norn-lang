@@ -1,0 +1,36 @@
+(ns pulse.check-test
+  (:require [norn.actor :as a]
+            [norn.test :refer [deftest is testing]]
+            [pulse.check :as check]
+            [pulse.fake-site :as fake :refer [url]]
+            [pulse.store :as store]))
+
+(deftest one-check
+  (let [site (fake/start)]
+    (is (= {:status 200 :ok true :error nil} (dissoc (check/check (url site "/ok") 2000) :ms)))
+    (is (= {:status 503 :ok false :error nil} (dissoc (check/check (url site "/down") 2000) :ms)))
+    (let [r (check/check (url site "/slow") 100)]
+      (is (false? (:ok r)))
+      (is (string? (:error r)) "a timeout is an error, not a failure of the checker"))
+    (let [r (check/check "http://127.0.0.1:1/" 2000)]
+      (is (false? (:ok r)))
+      (is (nil? (:status r))))
+    (fake/stop site)))
+
+(deftest checkers
+  (let [site (fake/start)
+        db (store/open ":memory:")]
+    (store/add-target! db "ok" (url site "/ok") 60)
+    (let [sup (check/start db 2000)]
+      (testing "each target is checked when its checker starts"
+        (is (= {:status 200 :ok true :error nil} (dissoc (check/check-now! sup "ok") :ms)))
+        (is (= 2 (count (store/checks db "ok" 0 10)))))
+      (testing "added while running"
+        (check/watch! sup db (store/add-target! db "down" (url site "/down") 60) 2000)
+        (is (false? (:ok (check/check-now! sup "down")))))
+      (testing "removed while running"
+        (is (true? (check/unwatch! sup "down")))
+        (is (nil? (check/check-now! sup "down")))
+        (is (= [[:check "ok"]] (mapv first (a/which-children sup)))))
+      (a/stop-supervisor! sup))
+    (fake/stop site)))
