@@ -1228,13 +1228,19 @@ so both tiers gain.
 - **Contracts at the call site:** a call of another module's function
   with a contract goes through a checking wrapper in the caller's
   module, as before; it's now plain code (`%wrapper-source`) when the
-  contract's tests are classes or norn.core predicates (also nilable or
-  either-of), so it's inlined like any small function: the checks are at
-  the call site. It's written for the contract's stamp (a hash of the
+  contract's tests are norn.core predicates or classes (`instance?` of
+  the class's var while it holds that class; also nilable or either-of),
+  so it's inlined like any small function: the checks are at the call
+  site. An arity taking more arguments (keyword arguments, a rest
+  parameter without a contract of its own) is written twice: with its
+  fixed arguments alone, the clause a call with just those inlines, and
+  with the rest passed on through `apply`; counts no arity takes go the
+  generic way. It's written for the contract's stamp (a hash of the
   declared types and their module, in a `f%stamp` var): a redefinition
   with other types, or none, falls back to `%wrap-for`'s generic
   wrapper. Its code names only vars, so modules stay cacheable. Other
-  contracts (collections, function contracts) use the generic wrapper.
+  contracts (collections, function contracts, rest arguments with a
+  contract) use the generic wrapper.
   Since part 5.3 the stamp isn't tested on each call: each wrapper is
   registered with its callee (`%register-wrapper!`), checked against the
   stamp when it's defined (a module loaded from the cache after the

@@ -139,6 +139,38 @@
     (is (= ["a" "a2"] ((caller "calls-arities") "a")))
     (is (str/includes? (message (fn [] ((caller "calls-arities") 5))) "its 1st argument should be String"))))
 
+(load-string "(ns inline-test.lib2)
+  (defclass Pt () ((x :initform 0)))
+  (defn px ^Integer [^Pt p] (:x p))
+  (defn opts ^String [^String s & {:keys [n] :or {n 1}}] (str s n))
+  (defn pts ^(U Pt String) [^(? Pt) p] (or p \"none\"))")
+(load-string "(ns inline-test.callers2)
+  (defn calls-px [p] (inline-test.lib2/px p))
+  (defn calls-opts [s] (inline-test.lib2/opts s))
+  (defn calls-opts-n [s n] (inline-test.lib2/opts s :n n))
+  (defn calls-opts-none [] (apply inline-test.lib2/opts []))
+  (defn calls-pts [p] (inline-test.lib2/pts p))")
+
+(defn- caller2 [n] (var-get (resolve (symbol "inline-test.callers2" n))))
+(defn- pt [x] ((resolve 'inline-test.lib2/Pt) :x x))
+
+(deftest class-and-keyword-contracts-at-the-call-site
+  (testing "a class without a norn.core predicate: an instance? test"
+    (is (inlined? (caller2 "calls-px")))
+    (is (= 3 ((caller2 "calls-px") (pt 3))))
+    (is (str/starts-with? (message (fn [] ((caller2 "calls-px") 5)))
+                          "inline-test.lib2/px: its 1st argument should be Pt, got 5, blaming inline-test.callers2")))
+  (testing "nil, a class, or a string"
+    (is (= ["none" 4] [((caller2 "calls-pts") nil) (:x ((caller2 "calls-pts") (pt 4)))]))
+    (is (str/includes? (message (fn [] ((caller2 "calls-pts") 5))) "should be nil or Pt")))
+  (testing "keyword arguments: the fixed ones alone inlined, more passed on"
+    (is (inlined? (caller2 "calls-opts")))
+    (is (= ["a1" "a7"] [((caller2 "calls-opts") "a") ((caller2 "calls-opts-n") "a" 7)]))
+    (is (str/starts-with? (message (fn [] ((caller2 "calls-opts") :a))) "inline-test.lib2/opts: its 1st argument should be String"))
+    (is (str/starts-with? (message (fn [] ((caller2 "calls-opts-n") :a 7))) "inline-test.lib2/opts: its 1st argument should be String")))
+  (testing "too few arguments: as a call without the check says"
+    (is (some? (message (caller2 "calls-opts-none"))))))
+
 (deftest call-site-checks-follow-a-redefinition
   (is (= "a" ((caller "calls-relabel") "a")))
   (testing "other types: the new ones are checked"

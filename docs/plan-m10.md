@@ -689,8 +689,26 @@ win back compile time first: done, below.
   cases before them leave (heap, GC) — worth one look with
   `bench/compare.norn --only` and the profiler.
 - **Contracts that aren't classes or predicates** (collections, `fn-of`,
-  `defcontract` with a closure) still go through `%wrap-for`'s generic
-  wrapper, 0.3–0.8 µs a call.
+  `defcontract` with a closure, a rest argument's) still go through
+  `%wrap-for`'s generic wrapper, 0.1–0.8 µs a call. **Classes and keyword
+  arguments: done (2026-11-17).** A class without a norn.core predicate
+  (`Decimal`, `Ref`, `Collection`) went the generic way, and so did every
+  function taking keyword arguments (variadic: `json/read-string`,
+  `csv/read-maps`): 17 of the benchmark programs' call-site wrappers. A
+  class contract now keeps its class (`:of-class`), checked at the call
+  site with `instance?` through the class's var; a variadic arity without
+  a rest contract is written with its fixed arguments alone (inlined) and
+  with the rest through `apply`. **Measured** (a call's cost through the
+  wrapper, beyond the function's own): `json/read-string` 111 → 2 ns,
+  `math/mean` 207 → 26, `decimal/parse` 173 → 49 (`instance?` is still
+  a primitive call at tier 1). The programs, with `reduced?` and
+  `unreduced` native too: the log report 104.9 → 97.4 ms (1.53 → 1.65×
+  the baseline), the ledger 122.8 → 117.2 (1.67 → 1.75×), the site level;
+  less than the profile's 10–18% for `%wrap-for/fn` promised, which was
+  mostly time in primitives (JSON parsing) charged to the frame that
+  reached the next safepoint.
+  inline_test checks a class contract, nil-or-a-class, keyword arguments
+  with and without more, and a count no arity takes.
 - **Inlining's limits are untuned:** 24 IR nodes, 96 for a contract
   wrapper, three calls deep, no inlining past 200 registers.
 - **Code size:** part 3's linked calls made tier 1's code 15% larger (4.8

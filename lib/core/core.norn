@@ -4424,7 +4424,10 @@
                          ;; the rest: what a call site's checks are written with
                          (pred :initform nil) (inner :initform nil)
                          ;; any-of's contracts
-                         (alts :initform nil))
+                         (alts :initform nil)
+                         ;; the class an instance of which it wants, for a class's
+                         ;; contract: a call site's check names it (M10)
+                         (of-class :initform nil))
   (:doc "The class of contracts, as ->contract, fn-of, any-of, vec-of,
   defcontract and the rest make; contract? tests for one. :name is what
   messages call it, and (:check c) checks a value against it."))
@@ -4466,7 +4469,7 @@
         (or (nil? x) (= x :any)) (make Contract :name "anything" :check (fn [v _] v))
         (class? x) (let [t (fn [v] (instance? x v))]
                      (make Contract :name (name (class-name x)) :check (fn [v fail] (if (t v) v (fail))) :test t
-                           :pred (get %class-preds (str (class-name x)))))
+                           :pred (get %class-preds (str (class-name x))) :of-class x))
         (fn? x) (make Contract :name (%after (%fn-label x) "/") :check (fn [v fail] (if (x v) v (fail))) :test x
                       ;; (a norn.core predicate by name, when it's one of those)
                       :pred (some (fn [s] (when (identical? x (%bound-value s)) s)) (vals %class-preds)))
@@ -4829,6 +4832,14 @@
                     (cond (some (fn [t] (= t ::no)) ts) ::no
                           (some nil? ts) nil
                           :else (reduce (fn [acc t] (list 'if t true acc)) false (reverse ts))))
+        ;; (a class without such a predicate, by its var's name: while the var
+        ;; holds that class, and a call site anywhere may name it)
+        (:of-class c) (let [k (:of-class c)
+                            sym (class-name k)
+                            v (resolve sym)]
+                        (if (and v (not (private? v)) (identical? (var-get v) k))
+                          (list 'norn.core/instance? sym x)
+                          ::no))
         :else ::no))
 
 (defn %stamp-of
@@ -4840,11 +4851,13 @@
   "The source of the function named w that another module (caller) calls
   in var v's place (M10 part 4): v's function with v's contract checked by
   plain code (its tests are norn.core predicates), so the compiler can
-  inline it at the call site, an arity per arity of the contract. Behind a
-  guard: when v's stamp var holds another stamp (v was redefined with other
-  types) or none, it does what %wrap-for's does. nil when an arity has a
-  rest argument or a check that isn't such a predicate: then the caller
-  uses %wrap-for's."
+  inline it at the call site, an arity per arity of the contract (one
+  taking more, keyword arguments say, also as its fixed arguments alone:
+  the call that's inlined). Behind a guard: when v's stamp var holds
+  another stamp (v was redefined with other types) or none, it does what
+  %wrap-for's does. nil when an arity's rest arguments have a contract or
+  a check isn't such a predicate or class: then the caller uses
+  %wrap-for's."
   [v caller w]
   (let [n (%var-name v)
         csym (symbol (str n "%contract"))
@@ -4853,12 +4866,14 @@
         ps (if (map? c) [c] c)
         stamp (when (and (vector? ps) (seq ps)) (%stamp-of ps))]
     (when (and stamp (= stamp (%bound-value ssym))
-               (every? (fn [p] (and (map? p) (not (:variadic p)) (nil? (:rest p)) (<= (:nfixed p) 6))) ps))
+               (every? (fn [p] (and (map? p) (nil? (:rest p)) (<= (:nfixed p) 6))) ps)
+               (<= (count (filter :variadic ps)) 1))
       (let [module (subs n 0 (%str-index n "/" nil false))
             r (symbol "r")
             generic (fn [as] (list 'norn.core/%wrapped-apply (list 'var (symbol n)) caller as))
-            ;; (an arity's clause, or ::no when its checks can't be written)
-            clause (fn [p]
+            ;; (an arity's clause, or ::no when its checks can't be written;
+            ;; more? for a variadic one's taking more: its rest passed on)
+            clause (fn [p more?]
                      (let [k (:nfixed p)
                            args (mapv (fn [i] (symbol (str "a" i))) (range k))
                            tests (mapv (fn [i] (%test-form (nth (:args p) i nil) (nth args i))) (range k))
@@ -4871,15 +4886,31 @@
                                               (when-let [t (nth tests i)]
                                                 (list 'if t nil (list 'norn.core/%contract-fail-at pf i (nth args i) n caller))))
                                             (range k))
-                               call (list 'let* [r (cons (symbol n) args)]
+                               call (list 'let* [r (if more?
+                                                     (concat (list 'norn.core/apply (symbol n)) args ['more])
+                                                     (cons (symbol n) args))]
                                           (if rtest (list 'if rtest r (list 'norn.core/%contract-fail-at pf :result r n module)) r))]
                            ;; (written for v's stamp now: %register-wrapper! makes
                            ;; the wrapper %wrap-for's where it isn't, or stops
                            ;; being: no test of it on each call)
-                           (list args (cons 'do (concat checks [call])))))))
-            clauses (mapv clause ps)]
-        (when-not (some (fn [x] (= x ::no)) clauses)
-          (concat (list 'fn* w) clauses [(list ['& 'more] (generic 'more))]))))))
+                           (list (if more? (conj args '& 'more) args) (cons 'do (concat checks [call])))))))
+            fixed (mapv (fn [p] (clause p false))
+                        ;; (a variadic arity's fixed arguments alone, unless a
+                        ;; fixed arity takes as many)
+                        (remove (fn [p] (and (:variadic p) (some (fn [q] (and (not (:variadic q)) (= (:nfixed q) (:nfixed p)))) ps)))
+                                ps))
+            vp (first (filter :variadic ps))
+            ;; (a variadic arity: its taking more, and the argument counts below
+            ;; its fixed ones that no arity takes, the general way; else every
+            ;; other count, the general way)
+            others (if vp
+                     (into [(clause vp true)]
+                           (for [k (range (:nfixed vp)) :when (not-any? (fn [p] (= k (:nfixed p))) ps)]
+                             (let [as (mapv (fn [i] (symbol (str "a" i))) (range k))]
+                               (list as (generic (cons 'norn.core/list as))))))
+                     [(list ['& 'more] (generic 'more))])]
+        (when-not (some (fn [x] (= x ::no)) (concat fixed others))
+          (concat (list 'fn* w) fixed others))))))
 
 (defn %type->contract
   "Type t (written as ^t: a class, Any, or (? T) (U A B…) (Vec T) (Map K V)
