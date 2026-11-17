@@ -2,12 +2,18 @@
 //!
 //! While a profile runs, a timer thread wakes every interval, bumps the
 //! sample epoch and the safepoint attention word. Each carrier then takes
-//! its next poll's slow path (function entry or a loop's back edge, at
-//! either tier: tier 1 bails to the interpreter when attention changes) and
-//! records the stack of the fiber it's running, its own: no thread reads a
-//! stack it doesn't own. An idle carrier, or one in a native call, records
-//! nothing, so a profile counts time spent running Norn code. Stacks are
-//! kept as the names of their frames' code, counted.
+//! its next poll's slow path (a function's entry or return, or a loop's
+//! back edge, at either tier: tier 1 bails to the interpreter when
+//! attention changes) and records the stack of the fiber it's running, its
+//! own: no thread reads a stack it doesn't own. A primitive that returns
+//! with a sample due records it too, for the frame that called it: its
+//! time, as that function's own (a leaf for each primitive would bury
+//! tier 0's profiles in + and <, which are primitive calls there). Before,
+//! a function with no loop of its own, and a primitive's time, were
+//! charged to wherever the next safepoint was: the caller's loop, or the
+//! next function's caller. An idle carrier records nothing, so a profile
+//! counts time spent running Norn code and the primitives it calls.
+//! Stacks are kept as the names of their frames' code, counted.
 
 use crate::vm::{Error, Result, walk_frames};
 use norn_rt::func::F_PROTO;

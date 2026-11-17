@@ -1229,6 +1229,18 @@ impl Vm {
     /// and runs again: one cell for the one-step operations, which must
     /// work on infinite streams, otherwise all of it.
     pub(crate) fn call_prim(&mut self, f: Value, args: &[Value]) -> Result<Value> {
+        let r = self.call_prim_inner(f, args);
+        // (a profile's sample due while it ran is its time: the calling
+        // frame's, not the next to reach a safepoint)
+        if crate::prof::due(&mut self.prof_seen) && !self.cur_st.is_null() {
+            // SAFETY: cur_st is the running St while a run is under way.
+            let st = unsafe { &*self.cur_st };
+            crate::prof::sample(st.seg, st.fp, false, st.pc.saturating_sub(1));
+        }
+        r
+    }
+
+    fn call_prim_inner(&mut self, f: Value, args: &[Value]) -> Result<Value> {
         if args.len() < f.prim_min() || args.len() > f.prim_max() {
             return Err(arity_error(f, args.len()));
         }
@@ -2078,6 +2090,19 @@ impl Vm {
                         let r = self.invoke(st, f, &scratch, None);
                         self.scratch = scratch;
                         r
+                    }
+                    // (with attention since the last poll, poll here first: a
+                    // profile's sample counts for the function returning,
+                    // whose time it was, though it has no loop or call)
+                    RETURN if safepoint::attention() != self.seen_attention => {
+                        st.pc -= 1;
+                        match self.poll_slow(st, false) {
+                            Ok(Flow::Next) => {
+                                st.pc += 1;
+                                Ok(self.do_return(st, *regs.add(ra)))
+                            }
+                            other => other,
+                        }
                     }
                     RETURN => Ok(self.do_return(st, *regs.add(ra))),
                     other => Err(Error::new(format!("bad opcode {other}"))),

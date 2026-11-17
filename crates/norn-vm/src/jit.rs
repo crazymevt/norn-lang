@@ -1361,6 +1361,19 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 }
             }
             RETURN => {
+                // (attention since the last poll: the interpreter returns,
+                // polling first, so a profile's sample taken now counts for
+                // this function, which may have no other safepoint)
+                let ap = b.ins().load(types::I64, mf, ctx, W);
+                let att = b.ins().load(types::I64, mf, ap, 0);
+                let sp = b.ins().load(types::I64, mf, ctx, 2 * W);
+                let seen = b.ins().load(types::I64, mf, sp, 0);
+                let (go, poll) = (b.create_block(), b.create_block());
+                let fresh = b.ins().icmp(IntCC::Equal, att, seen);
+                b.ins().brif(fresh, go, &[], poll, &[]);
+                b.switch_to_block(poll);
+                bail(&mut b);
+                b.switch_to_block(go);
                 let v = get(&mut b, ra);
                 ret_value(&mut b, v, ra, i, fin);
             }

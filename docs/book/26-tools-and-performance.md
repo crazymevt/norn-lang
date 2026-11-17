@@ -433,9 +433,10 @@ Reading a profile takes knowing a few things about how it was made:
   under `revenue`.
 - **Primitives have no frames.** Time spent in a primitive written in
   Rust, such as `str/split` or `parse-long`, counts for the Norn function
-  that called it. Samples are taken where code checks in, at a function's
-  entry or a loop's turn, and a sample taken as a function starts counts
-  for its caller, whose time it was.
+  that called it. Samples are taken where code checks in: at a function's
+  entry, as it returns, at a loop's turn, and as a primitive returns. A
+  sample taken as a function starts counts for its caller, whose time it
+  was, so a short function with no loop still gets its own time.
 - **A profile is of the whole process.** Every carrier samples, so other
   fibers' work shows too, each from its own outermost frame. In the
   fiber that called `profile`, stacks start at the code you gave it.

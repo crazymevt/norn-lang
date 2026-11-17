@@ -65,3 +65,37 @@
   (let [p (:profile (prof/sample (fn [] (spin-inlining 150)) :interval-us 500))]
     (is (some (fn [[s _]] (= ["prof-test/spin-inlining" "prof-test/inlined-work"] (vec (take-last 2 s)))) (:stacks p))
         "inlined-work's samples are under spin-inlining")))
+
+;; Where time goes, not where the next safepoint is: time in a primitive is
+;; the time of the function that called it; and a function with no loop of
+;; its own gets its time, not its caller (a sample is also taken as a
+;; function returns). Before, both were charged to the caller's loop.
+(def ^:private big (vec (range 3000)))
+(defn render [v] (str v))
+(defn after [] nil)
+(defn renders [ms]
+  (let [end (+ (nano-time) (* ms 1000000))]
+    (loop [n 0] (if (< (nano-time) end) (do (render big) (after) (recur (inc n))) n))))
+
+(defmacro ^:private chain [x n] (cons 'do (map (fn [i] (list 'bit-and (list '+ (list '* x 3) i) 1023)) (range n))))
+(defn straight [x] (chain x 300))
+(defn straights [ms]
+  (let [end (+ (nano-time) (* ms 1000000))]
+    (loop [n 0 a 0] (if (< (nano-time) end) (recur (inc n) (straight a)) n))))
+
+(defn- share-of
+  "Of profile p's samples whose stacks hold frame, the share whose stacks
+  end with tail."
+  [p frame tail]
+  (let [with (filter (fn [[s _]] (some #{frame} s)) (:stacks p))
+        n (reduce + 0 (map second with))
+        ending (reduce + 0 (for [[s c] with :when (= tail (vec (take-last (count tail) s)))] c))]
+    (if (zero? n) 0 (/ ending (double n)))))
+
+(deftest where-the-time-goes
+  (testing "a primitive's time, under its caller"
+    (let [p (:profile (prof/sample (fn [] (renders 200)) :interval-us 500))]
+      (is (< 0.6 (share-of p "prof-test/renders" ["prof-test/render"])) (pr-str (:stacks p)))))
+  (testing "a function without a loop gets its own time"
+    (let [p (:profile (prof/sample (fn [] (straights 200)) :interval-us 500))]
+      (is (< 0.6 (share-of p "prof-test/straights" ["prof-test/straight"])) (pr-str (:stacks p))))))

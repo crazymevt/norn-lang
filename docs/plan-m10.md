@@ -729,6 +729,21 @@ win back compile time first: done, below.
   tests/norn/items_test.norn (edges against fixed answers: non-ASCII,
   out of range, mixed kinds, NaN, lazy tails, swap!'s arities, watches,
   contention).
+- **The profiler's attribution: fixed (2026-11-17).** Samples were taken
+  only at a function's entry and a loop's turn, so a function with no loop
+  of its own, and the time of a primitive (JSON parsing, say), were
+  charged to wherever the next safepoint was: the caller's loop, or the
+  next function's caller. That put 18% of the log report under
+  `%wrap-for/fn` and most of the ledger's CSV parsing under `reduce`. A
+  sample is now also taken as a function returns (the interpreter's
+  RETURN polls when attention has changed, and tier 1's RETURN bails to
+  it then: a load and a compare, nothing measurable on a call), and as a
+  primitive returns with one due (`call_prim`, for the calling frame).
+  The programs' profiles now lead with JSON parsing and regexes (the log
+  report) and the CSV parser's step function (the ledger); `reduce`'s
+  own share fell from 2,394 and 5,025 samples to 176 and 158. prof_test's
+  where-the-time-goes checks both cases at both tiers (each failed
+  before: every sample was the caller's).
 - **Inlining's limits are untuned:** 24 IR nodes, 96 for a contract
   wrapper, three calls deep, no inlining past 200 registers.
 - **Code size:** part 3's linked calls made tier 1's code 15% larger (4.8

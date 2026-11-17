@@ -5,9 +5,11 @@
 ;;;;
 ;;;; While a profile runs, every carrier records the stack of the fiber it's
 ;;;; running about every :interval-us microseconds (1000 by default), at its
-;;;; next safepoint (a function's entry or a loop's turn), at either tier: a
-;;;; sample taken as a function is entered counts for its caller, whose
-;;;; time it was (native calls have no frames of their own). A
+;;;; next safepoint (a function's entry or return, or a loop's turn), at
+;;;; either tier: a sample taken as a function is entered counts for its
+;;;; caller, whose time it was, and one taken as it returns for it. A
+;;;; sample due while a primitive ran is taken as it returns, for the
+;;;; function that called it (primitives have no frames of their own). A
 ;;;; carrier that's idle, or waiting in a native call, records nothing: a
 ;;;; profile counts time spent running Norn code, in every fiber, not only
 ;;;; the one that started it. A profile is data:
