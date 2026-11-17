@@ -51,8 +51,38 @@ const USAGE: &str = "usage: norn [--image IMG.nimg] [FILE.norn | -e EXPR | --ser
        norn doc NAMESPACE | NAME | NS/NAME …
        norn image info IMG.nimg | norn image diff A.nimg B.nimg";
 
-/// Ticket of the root fiber the REPL is waiting on (0 = none), for Ctrl-C.
+/// Ticket of the root fiber the REPL is waiting on (0 = none), for Ctrl-C;
+/// SUBMITTING while one is being submitted, PENDING if Ctrl-C came then.
 static CURRENT: AtomicU64 = AtomicU64::new(0);
+const SUBMITTING: u64 = u64::MAX;
+const PENDING: u64 = u64::MAX - 1;
+
+/// Submit `task` as the root fiber Ctrl-C interrupts: its ticket. A Ctrl-C
+/// that comes before the ticket is known (the fiber may already be
+/// running, and raising SIGINT itself) is held, and delivered once it is.
+fn submit_current(norn: &norn_vm::Norn, task: RootTask, ns: &str) -> u64 {
+    CURRENT.store(SUBMITTING, Ordering::Release);
+    let t = norn.submit(task, ns);
+    if CURRENT.swap(t, Ordering::AcqRel) == PENDING {
+        norn.interrupt(t);
+    }
+    t
+}
+
+/// The root fiber a Ctrl-C now interrupts, if any; during a submission it
+/// holds the interrupt for that fiber instead (see `submit_current`).
+fn current_for_interrupt() -> Option<u64> {
+    loop {
+        let c = CURRENT.load(Ordering::Acquire);
+        if c == SUBMITTING {
+            if CURRENT.compare_exchange(SUBMITTING, PENDING, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                return None;
+            }
+            continue;
+        }
+        return if c == 0 || c == PENDING { None } else { Some(c) };
+    }
+}
 
 /// Set when the REPL's input ends at a debugger prompt: the evaluation is
 /// aborted and the REPL ends once it has.
@@ -160,8 +190,9 @@ fn run_app(app: &App) -> ! {
     });
     let _ = ctrlc::set_handler(move || {
         // (a program listening for :int handles ^C itself)
-        let t = CURRENT.load(Ordering::Acquire);
-        if t != 0 && !norn_vm::os::listening_for_interrupt() {
+        if !norn_vm::os::listening_for_interrupt()
+            && let Some(t) = current_for_interrupt()
+        {
             norn.interrupt(t);
         }
     });
@@ -181,8 +212,7 @@ fn has_entry(norn: &norn_vm::Norn) -> bool {
 /// Call the image's entry function with the program's arguments (set
 /// already), and exit with its status.
 fn run_entry(norn: &'static norn_vm::Norn) -> ! {
-    let t = norn.submit(RootTask::Call("%run-entry-with-args", String::new()), "user");
-    CURRENT.store(t, Ordering::Release);
+    let t = submit_current(norn, RootTask::Call("%run-entry-with-args", String::new()), "user");
     let done = norn.wait(t);
     let _ = io::stdout().flush();
     exit(match done.result {
@@ -248,8 +278,7 @@ pub fn run() {
             return;
         }
         INTERRUPTED.store(true, Ordering::Release);
-        let t = CURRENT.load(Ordering::Acquire);
-        if t != 0 {
+        if let Some(t) = current_for_interrupt() {
             norn.interrupt(t);
         }
     });
@@ -290,8 +319,7 @@ pub fn run() {
             "(do (%set-location! nil) (require 'norn.{tool}) (norn.{tool}/main {}))",
             args[1..].iter().map(|a| norn_string(a)).collect::<Vec<_>>().join(" ")
         );
-        let t = norn.submit(RootTask::Eval(call), "user");
-        CURRENT.store(t, Ordering::Release);
+        let t = submit_current(norn, RootTask::Eval(call), "user");
         let done = norn.wait(t);
         let _ = io::stdout().flush();
         exit(match done.result {
@@ -508,8 +536,7 @@ fn build(args: &[String]) -> i32 {
 }
 
 fn run_task(norn: &norn_vm::Norn, task: RootTask, print: bool) -> bool {
-    let t = norn.submit(task, "user");
-    CURRENT.store(t, Ordering::Release);
+    let t = submit_current(norn, task, "user");
     let done = norn.wait(t);
     let _ = io::stdout().flush();
     match done.result {
@@ -618,7 +645,7 @@ fn repl(norn: &'static norn_vm::Norn) {
         // (a fiber that entered the debugger before this input is announced;
         // one that does while the REPL waits for it gets the prompt)
         announce_debugging(norn, &events, &ns);
-        let t = norn.submit(RootTask::Repl(src), &ns);
+        let t = submit_current(norn, RootTask::Repl(src), &ns);
         let done = wait_root(norn, &events, t, &ns);
         if let Err(e) = done.result {
             eprintln!("Error: {e}");
@@ -782,11 +809,11 @@ fn eval_raw(norn: &norn_vm::Norn, src: &str, ns: &str) -> String {
     }
 }
 
-/// Wait for root fiber `t`, handling the debugger meanwhile: if `t`, or
-/// another fiber (one `t` spawned, often, which it may be waiting for),
-/// waits in the debugger, show it and take commands.
+/// Wait for root fiber `t` (from `submit_current`, so Ctrl-C interrupts
+/// it), handling the debugger meanwhile: if `t`, or another fiber (one `t`
+/// spawned, often, which it may be waiting for), waits in the debugger,
+/// show it and take commands.
 fn wait_root(norn: &norn_vm::Norn, events: &mpsc::Receiver<String>, t: u64, ns: &str) -> norn_vm::RootDone {
-    CURRENT.store(t, Ordering::Release);
     loop {
         if let Some(done) = norn.wait_timeout(t, Duration::from_millis(30)) {
             CURRENT.store(0, Ordering::Release);
@@ -901,7 +928,7 @@ fn debugger(norn: &norn_vm::Norn, events: &mpsc::Receiver<String>, id: u64, ns: 
             }
             _ => {
                 // Ordinary input: evaluate it (it may itself enter the debugger).
-                let t = norn.submit(RootTask::Repl(line.clone()), ns);
+                let t = submit_current(norn, RootTask::Repl(line.clone()), ns);
                 if let Err(e) = wait_root(norn, events, t, ns).result {
                     eprintln!("Error: {e}");
                 }
