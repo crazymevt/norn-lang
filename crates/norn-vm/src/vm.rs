@@ -1412,7 +1412,7 @@ impl Vm {
                             // the condition system's handing it on)
                             let given = args[1];
                             let trace = if given.is_nil() || (given.is(Kind::Vector) && given.vec_count() == 0) {
-                                let lines: Vec<String> = unsafe { self.backtrace(st) }
+                                let lines: Vec<String> = self.backtrace(st)
                                     .into_iter()
                                     .skip_while(|t| {
                                         matches!(
