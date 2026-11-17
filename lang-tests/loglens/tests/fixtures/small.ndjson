@@ -1,0 +1,5 @@
+{"ts": "2026-11-13T07:00:00Z", "level": "info", "user": 1, "msg": "GET /api/users/42 200 12ms 512b"}
+{"ts": "2026-11-13T07:00:01Z", "level": "info", "user": 2, "msg": "GET /api/users/7 200 20ms 600b"}
+{"ts": "2026-11-13T07:00:02Z", "level": "warn", "msg": "slow disk"}
+{"ts": "2026-11-13T07:00:03Z", "level": "error", "user": 1, "msg": "POST /api/orders 500 300ms 80b"}
+{"ts": "2026-11-13T07:00:04Z", "level": "info", "user": 3, "msg": "GET /api/orders/9?full=1 200 40ms 2048b"}
