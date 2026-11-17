@@ -57,13 +57,21 @@ jobs:
         run: cargo build --locked --release
 
       - name: Rust tests
+        # (after a failure too: every failure in one run)
+        if: ${{ !cancelled() }}
         run: cargo test --locked --release --workspace --no-fail-fast
 
       - name: Every Norn suite
+        # (after a failure too: every failure in one run)
+        if: ${{ !cancelled() }}
         run: target/release/norn test tests/norn
 
       - name: lang-tests
+        # (after a failure too: every failure in one run)
+        if: ${{ !cancelled() }}
         run: target/release/norn lang-tests/run.norn
 
       - name: norn check
+        # (after a failure too: every failure in one run)
+        if: ${{ !cancelled() }}
         run: target/release/norn check
