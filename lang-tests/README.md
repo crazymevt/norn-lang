@@ -51,9 +51,10 @@ NORN_LANG_TESTS=1 cargo test --release -p norn --test lang_tests
   that `norn test` loads itself, and norn.core and the compiler (loaded
   at start-up), aren't counted.
 
-ledger and quire depend on norn-html by Git, from
-`/Users/jessie/projects/norn/norn-libs/norn-html` (their `norn.lock`).
-On a machine without it, the runner skips them and says so.
+ledger and quire depend on [norn-html](https://github.com/crazymevt/norn-html)
+by Git, pinned in their `norn.lock`, so running them needs the network the
+first time (norn caches what it fetches). A project whose `norn.lock`
+names a local folder that isn't there is skipped, and the runner says so.
 
 chat and pulse have no fixed outputs: they're servers, whose output
 depends on the network and the clock. Their tests cover them.

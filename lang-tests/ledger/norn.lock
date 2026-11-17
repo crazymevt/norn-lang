@@ -1,2 +1,2 @@
 ;; Written by norn: the commit of each Git package in the build (see norn deps).
-{:git {norn-html {:git "/Users/jessie/projects/norn/norn-libs/norn-html", :sha "9eb97137e4b440eff587f96686eae6fae2bd3607", :tag "v0.2.0"}}}
+{:git {norn-html {:git "https://github.com/crazymevt/norn-html", :sha "9eb97137e4b440eff587f96686eae6fae2bd3607", :tag "v0.2.0"}}}
