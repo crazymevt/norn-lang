@@ -1207,11 +1207,33 @@ so both tiers gain.
   module, as before; it's now plain code (`%wrapper-source`) when the
   contract's tests are classes or norn.core predicates (also nilable or
   either-of), so it's inlined like any small function: the checks are at
-  the call site. It's guarded by the contract's stamp (a hash of the
+  the call site. It's written for the contract's stamp (a hash of the
   declared types and their module, in a `f%stamp` var): a redefinition
   with other types, or none, falls back to `%wrap-for`'s generic
   wrapper. Its code names only vars, so modules stay cacheable. Other
   contracts (collections, function contracts) use the generic wrapper.
+  Since part 5.3 the stamp isn't tested on each call: each wrapper is
+  registered with its callee (`%register-wrapper!`), checked against the
+  stamp when it's defined (a module loaded from the cache after the
+  callee changed gets the generic one), and replaced by the generic one
+  when the callee's contract changes (`%restamp`, `%contract-changed!`);
+  code that inlined the old one calls the new one, its guard failing.
+
+**Types, as built in M10 part 5.3.** The compiler knows what kinds of
+value a node can give as it generates (a set of simple kinds: nil, true,
+false, integer, float, ratio, string, character, keyword, symbol; or
+unknown): from literals, locals bound to them, an inlined function's
+arguments (its parameters), norn.core's type predicates and primitives
+with fixed result types (`str`, `count`, `%str-trim`, comparisons…), an
+inlined function's body, and the tests an `if` has passed in its
+branches. An `if` whose test is pure (constants, locals, predicates of
+those) and surely true or false generates only its branch: a contract's
+checks at a call site go where the types prove them (a literal argument,
+a result the inlined callee's body shows), at both tiers. A loop's locals
+aren't typed (they change from turn to turn). norn.core's predicates
+and primitives are taken as they are when compiling, while each var
+holds what it did when the compiler was loaded (decision 11):
+redefining one affects code compiled after it.
 - **Tier 1's fast primitives** grew (behind the same check that the
   callee is the primitive): `count` and `nth` of a vector (the trie
   walked natively), `first` of a list, `identical?`, `nil?`, `some?`,

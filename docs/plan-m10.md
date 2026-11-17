@@ -115,6 +115,12 @@ baseline compared.
 10. **Signing's "no slower" is measured at tier 1** (decided when part 5
     started), the default when M10 ends: at tier 0 the checks types can't
     prove still cost a primitive call each.
+11. **norn.core's types are fixed when compiling** (decided in part 5.3):
+    the compiler relies on what its type predicates and primitives with
+    fixed result types give, as they are when compiling (while each var
+    still holds what it held when the compiler was loaded). Redefining
+    one (which unseals norn.core with a warning) affects code compiled
+    after it, not tests already decided.
 
 ## Status
 
@@ -308,14 +314,31 @@ baseline compared.
   `norn -e nil` unchanged (79 MB). The suites pass at both tiers; under
   `NORN_GC_STRESS=2` io_test's 30 s timing limit on reading 50,000 lines
   was overrun once in the full run (passing alone, before and after).
-  - **5.3, types in the IR.** compiler.norn infers types from literals,
-    primitives' result types, signatures (results: the callee's contract
-    checks them; parameters: speculation, decision 8), `(declare (type
-    …))` and tests passed (`(if (string? x) …)`). A contract check at an
-    inlined call site that the types prove is dropped (both tiers; a test
-    of a literal is decided when compiling), and the facts tier 1 can't
-    see in the bytecode (parameters' speculated types, calls' result
-    types) go with the proto.
+  - **5.3, types in the IR: done, narrower than planned.** compiler.norn
+    knows what kinds of value a node gives as it generates (runtime.md
+    §8.2, "Types"): from literals, locals, an inlined function's
+    arguments and body, norn.core's predicates and primitives (decision
+    11) and tests passed; an `if` with a pure test the types decide
+    generates only its branch. That's what drops a contract's checks at a
+    call site where they're proven: the result check, when the inlined
+    callee's body shows it (`blank?`'s is a boolean, `trim`'s a string),
+    and a literal argument's. The stamp test each call made (part 4) moved
+    to when the wrapper is defined, with the wrappers registered by
+    callee and replaced when its contract changes (runtime.md). **Not
+    done:** signatures' and `(declare (type …))`'s types, and passing
+    types to tier 1 with the proto (parameters' speculation, decision
+    8); tier 1's float analysis covers what Mandelbrot needed, and
+    signing didn't need the rest. **Measured** (four of norn.string's
+    thinnest functions signed, arguments of unknown type, tier 1): part
+    4 measured 6–26 ns more a call signed; after 5.1 it was 3–11; now
+    1–2 (`blank?` 77 against 75 ns unsigned, `includes?` 57 / 56, `trim`
+    45 / 44, `starts-with?` 139 / 138): what's left is a predicate per
+    argument of unknown type. At tier 0, 30–60 ns less a call than
+    before (decision 10). The micro suite's checked call across modules:
+    41× the baseline at tier 1 (32× before), 5.4× at tier 0 (3.7×). Compiling `http.norn` 4% longer (35.9 → 37.6
+    ms at tier 0). Tests: `tests/norn/types_test.norn` (decided tests
+    keep their meaning; a loop's locals change kind; a test with effects
+    still runs).
   - **5.4, signing** norn.string, norn.math, norn.regex and norn.bytes,
     with part 4's probe as a test.
   **Done-check (proposed):** Mandelbrot at tier 1 10× its baseline or

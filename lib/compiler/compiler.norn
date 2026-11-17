@@ -46,10 +46,11 @@
 ;;; in place. They belong to the compiling fiber and live only as long as
 ;;; one call of generate.
 ;;;
-;;;   cs, the state:     [fns template inline-depth arity]
+;;;   cs, the state:     [fns template inline-depth arity types]
 ;;;     fns: the stack of function contexts, innermost last; template: the
 ;;;     latest function's (for gen-def!); arity: the innermost's arity being
-;;;     generated (kept here, as every emit! needs it)
+;;;     generated (kept here, as every emit! needs it); types: the locals'
+;;;     known types, binding id → type (see "types")
 ;;;   a function context: [self-id upvals arity], upvals [[binding-id capture]…]
 ;;;   an arity:          [code consts cindex locals debug next max recur inl inlines]
 ;;;     cindex: the constants' indices by %identity-hash (lists of them),
@@ -59,7 +60,7 @@
 ;;;     :holes [[from to]…]}, one per call being inlined; inlines: [start
 ;;;     end fname debug holes …] per inlined call, for backtraces.
 
-(def ^:private FNS 0) (def ^:private TEMPLATE 1) (def ^:private DEPTH 2) (def ^:private CUR 3)
+(def ^:private FNS 0) (def ^:private TEMPLATE 1) (def ^:private DEPTH 2) (def ^:private CUR 3) (def ^:private TYPES 4)
 (def ^:private SELF-ID 0) (def ^:private UPVALS 1) (def ^:private FAR 2)
 (def ^:private CODE 0) (def ^:private CONSTS 1) (def ^:private CINDEX 2) (def ^:private LOCALS 3)
 (def ^:private DEBUG 4) (def ^:private NEXT 5) (def ^:private MAX 6) (def ^:private RECUR 7)
@@ -438,8 +439,9 @@
 ;;; body is, so backtraces and the debugger show its function.
 
 (def ^:dynamic *inline*
-  "Whether calls of small functions are inlined. The checks against the
-  seed compiler, which doesn't inline, bind it false."
+  "Whether calls of small functions are inlined, and tests the types
+  prove decided when compiling (part 5.3). The checks against the seed
+  compiler, which does neither, bind it false."
   true)
 
 (def ^:private inlinable (atom {}))
@@ -500,10 +502,138 @@
           (when (and a (%closure? c) (identical? (%closure-template c) (:template e)))
             [(assoc a :fname (:fname e)) c]))))))
 
+;;; ---- types (M10 part 5.3) -------------------------------------------------------------------
+;;;
+;;; What kinds of value a node can give, as generating goes: a set of
+;;; simple kinds (:nil :true :false :integer :float :ratio :string :char
+;;; :keyword :symbol), or nil, unknown (any value, of these kinds or
+;;; others). A type is known from a literal, a local bound to something of
+;;; known type (an inlined function's parameters are bound to its
+;;; arguments'), norn.core's predicates and primitives with fixed result
+;;; types, an inlined function's body, and the tests an if has passed. An
+;;; if whose test is pure and surely true (or false) generates only that
+;;; branch: that's how a contract's check at a call site goes when the
+;;; types prove it (%wrapper-source's tests are these predicates).
+;;;
+;;; norn.core's predicates and primitives are taken as they are when
+;;; compiling (decision 11): while each var still holds what it held when
+;;; the compiler was loaded. Redefining one affects what's compiled after.
+
+(def ^:private BOOL #{:true :false})
+
+(defn- kind-of
+  "The simple kind of constant v, or nil (another kind)."
+  [v]
+  (cond (nil? v) :nil
+        (true? v) :true
+        (false? v) :false
+        (integer? v) :integer
+        (float? v) :float
+        (string? v) :string
+        (char? v) :char
+        (keyword? v) :keyword
+        (symbol? v) :symbol
+        :else nil))
+
+;; (a var of norn.core, and what it held when the compiler was loaded)
+(defn- core-entries [m]
+  (into {} (keep (fn [[s x]] (when-let [v (resolve (symbol "norn.core" (name s)))] [v [x (var-get v)]])) m)))
+
+;; Type predicates: the kinds they're true of.
+(def ^:private predicates
+  (core-entries {'nil? #{:nil} 'string? #{:string} 'integer? #{:integer} 'float? #{:float}
+                 'number? #{:integer :float :ratio} 'boolean? BOOL 'true? #{:true} 'false? #{:false}
+                 'char? #{:char} 'keyword? #{:keyword} 'symbol? #{:symbol}}))
+
+;; Functions whose value is always of these kinds.
+(def ^:private results
+  (core-entries {'str #{:string} 'subs #{:string} 'name #{:string} 'pr-str #{:string}
+                 '%str-trim #{:string} '%str-case #{:string} '%str-index #{:integer :nil}
+                 'count #{:integer} 'keyword #{:keyword} 'symbol #{:symbol}
+                 'some? BOOL '= BOOL 'not= BOOL '< BOOL '> BOOL '<= BOOL '>= BOOL '== BOOL
+                 'identical? BOOL 'not BOOL 'zero? BOOL 'pos? BOOL 'neg? BOOL 'even? BOOL 'odd? BOOL
+                 'empty? BOOL 'contains? BOOL 'nil? BOOL 'string? BOOL 'integer? BOOL 'float? BOOL
+                 'number? BOOL 'boolean? BOOL 'true? BOOL 'false? BOOL 'char? BOOL 'keyword? BOOL
+                 'symbol? BOOL}))
+
+;; The entry of table m for the var of global node f, while it holds what
+;; it did.
+(defn- core-entry [m f]
+  (when (= :global (:op f))
+    (when-let [[x orig] (get m (:var f))]
+      (when (identical? (var-get (:var f)) orig) x))))
+
+(defn- t-union [a b] (when (and a b) (into a b)))
+(defn- t-sub? [a b] (and a (every? (fn [k] (contains? b k)) a)))
+(defn- t-apart? [a b] (and a (not-any? (fn [k] (contains? b k)) a)))
+
+;; (truthy: never nil or false; falsy: only nil or false)
+(defn- truthy? [t] (t-apart? t #{:nil :false}))
+(defn- falsy? [t] (t-sub? t #{:nil :false}))
+
+;; A predicate's value on an argument of type t.
+(defn- pred-type [kinds t]
+  (cond (t-sub? t kinds) #{:true}
+        (t-apart? t kinds) #{:false}
+        :else BOOL))
+
+(def ^:private type-depth 4)
+
+(declare ctype)
+
+;; The type of node with locals' types env (binding id → type), d calls
+;; deep into inlinable functions' bodies.
+(defn- call-type [env node d]
+  (let [f (:f node)
+        args (:args node)]
+    (if-let [kinds (when (= 1 (count args)) (core-entry predicates f))]
+      (pred-type kinds (ctype env (first args) d))
+      (or (core-entry results f)
+          ;; (an inlinable function the var holds: its body's type, its
+          ;; parameters its arguments')
+          (when (and (< d type-depth) (= :global (:op f)))
+            (when-let [e (get @inlinable (:var f))]
+              (let [c (var-get (:var f))
+                    a (get (:arities e) (count args))]
+                (when (and a (%closure? c) (identical? (%closure-template c) (:template e)))
+                  (ctype (reduce (fn [env i] (assoc env (:id (nth (:params a) i)) (ctype env (nth args i) d)))
+                                 env (range (count args)))
+                         (:body a) (inc d))))))))))
+
+(defn- ctype [env node d]
+  (let [op (:op node)]
+    (cond (= op :const) (when-let [k (kind-of (:value node))] #{k})
+          (= op :local) (get env (:id (:binding node)))
+          (= op :call) (call-type env node d)
+          (= op :if) (let [tt (ctype env (:test node) d)]
+                       (cond (truthy? tt) (ctype env (:then node) d)
+                             (falsy? tt) (ctype env (:else node) d)
+                             :else (t-union (ctype env (:then node) d) (ctype env (:else node) d))))
+          (= op :do) (if (empty? (:body node)) #{:nil} (ctype env (peek (:body node)) d))
+          ;; (a loop's locals change from turn to turn: unknown)
+          (= op :let) (ctype (reduce (fn [env [b init]] (assoc env (:id b) (when-not (:loop node) (ctype env init d))))
+                                     env (:bindings node))
+                             (:body node) d)
+          :else nil)))
+
+;; Is node free of effects, so that a test of it may be decided when
+;; compiling and not run? (constants, locals, predicates of those)
+(defn- pure? [node]
+  (let [op (:op node)]
+    (or (= op :const) (= op :local)
+        (and (= op :call) (= 1 (count (:args node))) (some? (core-entry predicates (:f node)))
+             (pure? (first (:args node))))
+        (and (= op :if) (pure? (:test node)) (pure? (:then node)) (pure? (:else node))))))
+
+;; The types of locals as generating goes (cs's TYPES).
+(defn- types [cs] (nth cs TYPES))
+(defn- set-types! [cs env] (assoc! cs TYPES env))
+
 ;; Call node, inlined: e what it inlines, c the closure the var holds.
 (defn- gen-inline! [cs node e c dest pos]
   (let [args (:args node)
         tail (:tail pos)
+        env0 (types cs)
         base (alloc! cs)]
     (gen! cs (:f node) base NT)
     (let [regs (mapv (fn [x] (let [r (alloc! cs)] (gen! cs x r NT) r)) args)]
@@ -514,9 +644,13 @@
         (push-field! (ar cs) INL {:dbg [] :holes []})
         (assoc! cs DEPTH (inc (nth cs DEPTH)))
         (doseq [i (range (count regs))] (bind-local! cs (nth (:params e) i) (nth regs i)))
+        ;; (its parameters' types, its arguments')
+        (set-types! cs (reduce (fn [env i] (assoc env (:id (nth (:params e) i)) (ctype env0 (nth args i) 0)))
+                               env0 (range (count args))))
         ;; (in tail position its returns are the caller's; a recur in it
         ;; is its own loop's, never the caller's)
         (gen-do! cs (:body e) dest {:tail tail :recur false :itail true})
+        (set-types! cs env0)
         (assoc! cs DEPTH (dec (nth cs DEPTH)))
         (truncate-locals! cs nlocals)
         (let [{:keys [dbg holes]} (peek (nth (ar cs) INL))
@@ -562,16 +696,42 @@
           :else (cerr "Internal error: no place for the local" (pr-str (:sym b))))
     (finish! cs dest pos)))
 
+;; The locals' types in an if's branches, knowing its test held or not:
+;; [then else]. (A predicate of a local, or a local itself.)
+(defn- refine [env test]
+  (let [arg (when (= :call (:op test)) (first (:args test)))
+        kinds (when (and arg (= 1 (count (:args test))) (= :local (:op arg))) (core-entry predicates (:f test)))]
+    (cond kinds (let [id (:id (:binding arg))
+                      t (get env id)]
+                  [(assoc env id (if t (set (filter (fn [k] (contains? kinds k)) t)) kinds))
+                   (if t (assoc env id (set (remove (fn [k] (contains? kinds k)) t))) env)])
+          (and (= :local (:op test)) (get env (:id (:binding test))))
+          (let [id (:id (:binding test))
+                t (get env id)]
+            [(assoc env id (set (remove #{:nil :false} t))) (assoc env id (set (filter #{:nil :false} t)))])
+          :else [env env])))
+
 (defn- gen-if! [cs node dest pos]
-  (let [t (alloc! cs)]
-    (gen! cs (:test node) t NT)
-    (free-to! cs t)
-    (let [jf (emit! cs (asbx JMPF t 0))]
-      (gen! cs (:then node) dest pos)
-      (let [jend (when-not (:tail pos) (emit! cs (asbx JMP 0 0)))]
-        (patch-jump! cs jf (pc cs))
-        (gen! cs (:else node) dest pos)
-        (when jend (patch-jump! cs jend (pc cs)))))))
+  (let [test (:test node)
+        tt (when *inline* (ctype (types cs) test 0))]
+    ;; (a pure test the types decide: only its branch)
+    (cond (and (truthy? tt) (pure? test)) (gen! cs (:then node) dest pos)
+          (and (falsy? tt) (pure? test)) (gen! cs (:else node) dest pos)
+          :else
+          (let [t (alloc! cs)
+                env (types cs)
+                [then-env else-env] (if *inline* (refine env test) [env env])]
+            (gen! cs test t NT)
+            (free-to! cs t)
+            (let [jf (emit! cs (asbx JMPF t 0))]
+              (set-types! cs then-env)
+              (gen! cs (:then node) dest pos)
+              (let [jend (when-not (:tail pos) (emit! cs (asbx JMP 0 0)))]
+                (patch-jump! cs jf (pc cs))
+                (set-types! cs else-env)
+                (gen! cs (:else node) dest pos)
+                (set-types! cs env)
+                (when jend (patch-jump! cs jend (pc cs)))))))))
 
 (defn- gen-do! [cs node dest pos]
   (let [body (:body node)]
@@ -589,10 +749,15 @@
   (let [loop? (:loop node)
         mark (nth (ar cs) NEXT)
         nlocals (count (nth (ar cs) LOCALS))
+        env0 (types cs)
         regs (reduce (fn [regs [b init]]
                        (let [r (alloc! cs)]
                          (gen! cs init r NT)
                          (bind-local! cs b r)
+                         ;; (its type, unless it's a loop's: those change)
+                         (when (and *inline* (not loop?))
+                           (when-let [t (ctype (types cs) init 0)]
+                             (set-types! cs (assoc (types cs) (:id b) t))))
                          (conj regs r)))
                      [] (:bindings node))
         body-pos (if loop?
@@ -601,6 +766,7 @@
                      {:tail (:tail pos) :recur true :itail (:itail pos)})
                    pos)]
     (gen-do! cs (:body node) dest body-pos)
+    (set-types! cs env0)
     (when loop? (pop-field! (ar cs) RECUR))
     (truncate-locals! cs nlocals)
     (free-to! cs mark)))
@@ -715,7 +881,7 @@
   "The zero-argument closure that runs IR node (from analyze at top level)."
   [node]
   (let [a (new-arity)
-        cs (transient [(transient [(transient [nil (transient []) a])]) nil 0 a])
+        cs (transient [(transient [(transient [nil (transient []) a])]) nil 0 a {}])
         tl (symbol "<toplevel>")
         dest (alloc! cs)]
     (gen! cs node dest {:tail true :recur false})

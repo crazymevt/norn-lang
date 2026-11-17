@@ -4689,10 +4689,45 @@
              (%check-call (var-get v) args p n caller module)
              (apply (var-get v) args))))))))
 
-(defn %drop-contract!
-  "Function var v has no contract now. (Its contract var holds nil, so the
-  checks written for the old one at call sites don't run: %wrapper-source.)"
+(def ^:private %wrappers-of
+  "Each function var's call-site wrappers written by %wrapper-source: {v
+  {wrapper-var caller}} (M10 part 5.3)."
+  (atom {}))
+
+(defn %register-wrapper!
+  "Wrapper var w checks var v's contract for caller, written for v's stamp
+  stamp: if v's stamp isn't that now (a module loaded from the cache after v
+  changed), w is %wrap-for's wrapper; and it becomes that when v's contract
+  changes (%contract-changed!). That's what keeps the checks written at
+  call sites right, with nothing tested on each call."
+  [w v caller stamp]
+  (swap! %wrappers-of update v (fn [m] (assoc (or m {}) w caller)))
+  (when-not (= stamp (%bound-value (symbol (str (%var-name v) "%stamp"))))
+    (%set-root! w (%wrap-for v caller)))
+  nil)
+
+(defn %contract-changed!
+  "Var v's contract changed: its call sites' wrappers check it as
+  %wrap-for's do (reading it on each call) from now on; code that inlined
+  the old ones calls these (its guards fail)."
   [v]
+  (doseq [[w caller] (get @%wrappers-of v)]
+    (%set-root! w (%wrap-for v caller)))
+  nil)
+
+(defn %restamp
+  "Var v's contract's new stamp: if v had another, its call sites'
+  wrappers change (%contract-changed!)."
+  [v stamp]
+  (let [old (%bound-value (symbol (str (%var-name v) "%stamp")))]
+    (when (and old (not= old stamp)) (%contract-changed! v))
+    stamp))
+
+(defn %drop-contract!
+  "Function var v has no contract now. (Its contract var holds nil, and
+  its call sites' wrappers check it as %wrap-for's do: none.)"
+  [v]
+  (%contract-changed! v)
   (%set-contracted! v false)
   (doseq [k ["%contract" "%stamp"]]
     (when-let [cv (resolve (symbol (str (%var-name v) k)))]
@@ -4780,9 +4815,10 @@
                                             (range k))
                                call (list 'let* [r (cons (symbol n) args)]
                                           (if rtest (list 'if rtest r (list 'norn.core/%contract-fail-at pf :result r n module)) r))]
-                           (list args (list 'if (list 'norn.core/identical? ssym stamp)
-                                            (cons 'do (concat checks [call]))
-                                            (generic (cons 'norn.core/list args))))))))
+                           ;; (written for v's stamp now: %register-wrapper! makes
+                           ;; the wrapper %wrap-for's where it isn't, or stops
+                           ;; being: no test of it on each call)
+                           (list args (cons 'do (concat checks [call])))))))
             clauses (mapv clause ps)]
         (when-not (some (fn [x] (= x ::no)) clauses)
           (concat (list 'fn* w) clauses [(list ['& 'more] (generic 'more))]))))))

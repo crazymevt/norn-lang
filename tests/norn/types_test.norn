@@ -1,0 +1,53 @@
+;;;; Types in the compiler (M10 part 5.3): an if whose test the types
+;;;; decide generates only its branch. These check that what's decided is
+;;;; what running it would give, where it's easy to get wrong: a loop's
+;;;; locals change kind from turn to turn, a test with effects must still
+;;;; run, an inlined function's parameters take its arguments' types.
+;;;; Run at both tiers.
+
+(ns types-test
+  (:require [norn.test :refer [is deftest testing]] [norn.string :as str]))
+
+(defn- code-length
+  "How many instructions f's (first arity's) code has."
+  [f]
+  (count (:code (first (:arities (norn.compiler/%signature f))))))
+
+(defn kind [x] (if (string? x) :s (if (nil? x) :n :o)))
+
+(deftest decided-tests-keep-their-meaning
+  (testing "a literal's test is decided"
+    (is (= :yes ((fn [] (if (string? "a") :yes :no)))))
+    (is (< (code-length (fn [] (if (string? "a") :yes :no)))
+           (code-length (fn [x] (if (string? x) :yes :no))))
+        "only the branch taken is generated"))
+  (testing "an inlined function's parameters have its arguments' types"
+    (is (= [:s :n :o :o] [(kind "a") (kind nil) (kind 1) (kind :k)])))
+  (testing "a local of known type, through a let"
+    (is (= :s ((fn [] (let [x (str 1 2)] (kind x))))))
+    (is (= :o ((fn [] (let [x (count "abc")] (kind x)))))))
+  (testing "a branch knows its test held"
+    (is (= [:s :o] (mapv (fn [x] (if (string? x) (kind x) :o)) ["a" 1]))))
+  (testing "nil or a string, both ways"
+    (is (= [true true false] (mapv (fn [x] (if (nil? x) true (string? x))) [nil "a" 1])))))
+
+(deftest a-loop-s-locals-change-kind
+  ;; (typing a loop's local by its first value would decide (string? x)
+  ;; for every turn: this loop would never end)
+  (is (= 1 (loop [x "a" n 0] (if (string? x) (recur 5 (inc n)) n))))
+  (is (= [:s :o :n] (loop [xs ["a" 1 nil] out []]
+                      (if (seq xs) (recur (rest xs) (conj out (kind (first xs)))) out)))))
+
+(deftest a-test-with-effects-still-runs
+  (let [seen (atom 0)]
+    (is (= :yes (if (do (swap! seen inc) (string? "a")) :yes :no)))
+    (is (= 1 @seen))))
+
+(deftest contract-checks-the-types-prove
+  ;; (when a function is signed, its call sites' checks the types prove
+  ;; go, a result shown by its inlined body, a literal argument; a bad
+  ;; argument is still refused)
+  (is (= [true false] [(str/blank? "  ") (str/blank? "x")]))
+  (is (= true (str/includes? "hello" "l")))
+  (is (thrown? Error (str/includes? 5 "l")))
+  (is (thrown? Error (str/blank? 5))))

@@ -218,10 +218,14 @@
               file (let [i (%str-index loc ":" nil false)] (if i (subs loc 0 i) loc))
               caller (str here (when (seq file) (str " (" file ")")))]
           (%intern here w)
-          (swap! *wrappers* conj
-                 (list 'do (list 'def w (or (norn.core/%wrapper-source v caller w)
-                                            (list 'norn.core/%wrap-for (list 'var (symbol n)) caller)))
-                       (list 'norn.core/%set-private! (list 'var w))))))
+          (let [src (norn.core/%wrapper-source v caller w)]
+            (swap! *wrappers* conj
+                   (concat (list 'do (list 'def w (or src (list 'norn.core/%wrap-for (list 'var (symbol n)) caller)))
+                                 (list 'norn.core/%set-private! (list 'var w)))
+                           ;; (written for the callee's stamp now: M10 part 5.3)
+                           (when src
+                             [(list 'norn.core/%register-wrapper! (list 'var w) (list 'var (symbol n)) caller
+                                    (%bound-value (symbol (str n "%stamp"))))]))))))
       w)))
 
 (defn- check-unsafe
@@ -436,7 +440,7 @@
                                      (list 'norn.core/%set-private! (list 'var c))
                                      ;; (its stamp, which call sites' checks compare with
                                      ;; theirs: M10 part 4, norn.core/%wrapper-source)
-                                     (list 'def st (list 'norn.core/%stamp-of c))
+                                     (list 'def st (list 'norn.core/%restamp (list 'var nm) (list 'norn.core/%stamp-of c)))
                                      (list 'norn.core/%set-private! (list 'var st))])))]
               (if (seq extra) (apply list 'do d extra) d)))
     "var" (let [id (nth xs 1 nil)]
