@@ -4,6 +4,7 @@
 ;;;; with this norn, one tier at a time. With sbcl or clojure on the PATH,
 ;;;; the Mandelbrot program is also compared with the same kernel in SBCL
 ;;;; (bench/mandelbrot.lisp) and Clojure (bench/mandelbrot.clj).
+;;;; bench/mandelbrot.norn is the same program in Norn, to run beside them.
 ;;;;
 ;;;;   norn bench/compare.norn                  (against the baseline)
 ;;;;   norn bench/compare.norn --record         (run, and record it as the baseline:

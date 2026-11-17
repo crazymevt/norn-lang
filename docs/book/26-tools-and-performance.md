@@ -361,8 +361,12 @@ examples: `bench/micro.norn` times single operations,
 small programs (a log report, a ledger, a static site, a chat fan-out and
 a Mandelbrot renderer). `bench/compare.norn` runs all three at both tiers
 and compares them with a recorded baseline, `bench/baseline.edn`, and it
-times the Mandelbrot renderer in SBCL too (`bench/mandelbrot.lisp`), when
-`sbcl` is installed, for a point of comparison outside Norn.
+times the Mandelbrot renderer in SBCL and Clojure too
+(`bench/mandelbrot.lisp`, `bench/mandelbrot.clj`), when `sbcl` or
+`clojure` is installed, for a point of comparison outside Norn.
+`bench/mandelbrot.norn` is the same program in Norn, written and run the
+same way, so the three can be timed side by side: each prints its best
+time in milliseconds and the same checksum.
 
 ## Finding where the time goes: `norn.prof`
 

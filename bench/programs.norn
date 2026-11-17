@@ -128,8 +128,10 @@
     @received))
 
 ;; ---- Mandelbrot (the mandelbrot project's renderer): escape-time with
-;; smooth colouring, floats throughout. bench/mandelbrot.lisp computes the
-;; same thing in SBCL, typed, for comparison (bench/compare.norn) ----
+;; smooth colouring, floats throughout. bench/mandelbrot.lisp and .clj
+;; compute the same thing in SBCL and Clojure, typed, for comparison
+;; (bench/compare.norn); bench/mandelbrot.norn is this, as a program of
+;; its own beside them ----
 
 (def mandel-view {:re -0.7463 :im 0.1102 :span 0.028 :width 200 :height 125 :limit 220})
 
