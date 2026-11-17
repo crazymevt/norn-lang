@@ -1,7 +1,7 @@
 # Every push to main and every pull request: build, the Rust tests (with
 # 37 Norn suites at both tiers), every Norn suite, the lang-tests at three
-# tiers against their recorded outputs, and norn check. On macOS and Linux,
-# both arm64: tier 1 hasn't run on x86-64 yet (M12).
+# tiers against their recorded outputs, and norn check. On macOS arm64 and
+# Linux arm64 and x86-64.
 name: CI
 
 on:
@@ -33,6 +33,8 @@ jobs:
             os: macos-15
           - name: Linux arm64
             os: ubuntu-24.04-arm
+          - name: Linux x86-64
+            os: ubuntu-24.04
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
