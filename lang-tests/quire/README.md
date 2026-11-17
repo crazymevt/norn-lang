@@ -22,4 +22,4 @@ A post that can't be read (front matter that isn't YAML, no title, a date
 that isn't one) becomes a page saying so, or is left out, or (`--strict`)
 stops the build. Only files that changed are written, and files the site no
 longer makes are removed. Pages are made with
-[norn-html](../../norn-libs/norn-html), a Git dependency pinned in `norn.lock`.
+[norn-html](../../../norn-libs/norn-html), a Git dependency pinned in `norn.lock`.

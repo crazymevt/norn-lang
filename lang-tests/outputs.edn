@@ -1,0 +1,38 @@
+;; The lang-tests' fixed outputs (run.norn): each program run on a fixed
+;; input in a fresh folder, $TMP, in every mode. A step is `norn run`
+;; with :args, in the project's folder; :copy first copies files or
+;; folders (relative to the project) into $TMP; :exit is the status it
+;; must end with (0 unless given). What each step prints
+;; (standard output, $TMP's path written as $TMP) and the files :files
+;; names (globs in $TMP) must be the same in every mode, and as recorded
+;; in expected/<project>/. chat and pulse have none: they're servers,
+;; whose output is the network's and the clock's.
+{loglens
+ [{:name "gen" :args ["gen" "$TMP/day.ndjson.gz" "--lines" "20000" "--seed" "7"] :files ["day.ndjson.gz"]}
+  {:name "report"
+   :args ["report" "$TMP/day.ndjson.gz" "--users" "tests/fixtures/users.ndjson" "--sample" "5" "--save" "$TMP/day.bin"]
+   :files ["day.bin"]}
+  {:name "against"
+   :args ["report" "tests/fixtures/small.ndjson" "--users" "tests/fixtures/users.ndjson"
+          "--against" "$TMP/day.bin" "--export" "$TMP/small.cbor"]
+   :files ["small.cbor"]}]
+
+ ledger
+ [{:name "import" :copy ["tests/fixtures/ledger.toml"]
+   :args ["--config" "$TMP/ledger.toml" "import" "checking" "tests/fixtures/checking.csv"]}
+  {:name "import-again" :args ["--config" "$TMP/ledger.toml" "import" "checking" "tests/fixtures/checking.csv"]}
+  {:name "import-card" :args ["--config" "$TMP/ledger.toml" "import" "card" "tests/fixtures/card.csv"]}
+  {:name "rules" :args ["--config" "$TMP/ledger.toml" "rules"]}
+  {:name "list" :args ["--config" "$TMP/ledger.toml" "list"]}
+  {:name "uncategorized" :args ["--config" "$TMP/ledger.toml" "list" "--uncategorized"]}
+  {:name "report" :args ["--config" "$TMP/ledger.toml" "report"]}
+  {:name "report-html" :args ["--config" "$TMP/ledger.toml" "report" "--html" "$TMP/report.html"]
+   :files ["ledger.edn" "report.html"]}]
+
+ quire
+ [{:name "build" :copy ["tests/site"]
+   ;; (1: the sample site has a post that can't be read, built as a placeholder)
+   :args ["--dir" "$TMP/site" "build" "--out" "$TMP/out" "--drafts" "--zip"] :exit 1
+   :files ["out/**"]}
+  {:name "build-again" :args ["--dir" "$TMP/site" "build" "--out" "$TMP/out" "--drafts" "--zip"] :exit 1
+   :files ["out/**"]}]}

@@ -10,7 +10,9 @@
 ;;;; docstring, a parameter vector, a constant alone on a line) has no
 ;;;; count, and is neither hit nor missed. Counted: files, but not test
 ;;;; files (name_test.norn), and the standard library's modules when their
-;;;; source is here (lib/…, in a Norn checkout). Code loaded before coverage
+;;;; source is here (lib/…, in a Norn checkout) or in the folder
+;;;; NORN_COVER_LIB names (a checkout's lib/, when testing a project
+;;;; elsewhere: lang-tests/run.norn does). Code loaded before coverage
 ;;;; started, the language itself among it, isn't counted. Coverage stays
 ;;;; on for the rest of the process, at either tier.
 

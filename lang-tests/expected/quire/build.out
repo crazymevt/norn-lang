@@ -1,0 +1,2 @@
+Built 4 posts into $TMP/out: 14 written, 0 unchanged, 0 removed
+  can't read $TMP/site/posts/broken.md: the front matter isn't YAML: YAML, line 1: unclosed flow collection

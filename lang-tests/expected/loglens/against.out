@@ -1,0 +1,12 @@
+4 requests, 25.0% failed, 3.2 KB sent
+  /api/orders                  1  p50 300ms  p95 300ms  1 error
+  /api/orders/:id              1  p50 40ms  p95 40ms
+  /api/users/:id               2  p50 16ms  p95 20ms
+  by plan: free 2, pro 2
+  (1 entries weren't requests)
+  since $TMP/day.bin:
+    /api/orders: count 2,655 → 1, errors 85 → 1, p50-ms 97ms → 300ms, p95-ms 161ms → 300ms
+    /api/orders/:id: count 5,460 → 1, errors 174 → 0, p50-ms 34ms → 40ms, p95-ms 57ms → 40ms
+    /api/users/:id: count 9,511 → 2, errors 296 → 0, p50-ms 34ms → 16ms, p95-ms 55ms → 20ms
+    gone: /health
+  exported to $TMP/small.cbor

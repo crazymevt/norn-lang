@@ -916,7 +916,9 @@
 (defn- cover-file
   "The file coverage reports code from src as: a file under the current
   folder, unless it's a test (name_test.norn); an embedded library's
-  source file, lib/…, when it's here (in the Norn checkout); else nil."
+  source file, lib/…, when it's here (in the Norn checkout), or under the
+  folder NORN_COVER_LIB names (a checkout's lib, for a project's tests:
+  reported as that path); else nil."
   [src]
   (let [known (get @cover-files src)]
     (if (some? known)
@@ -926,7 +928,8 @@
             f (cond (contains? #{"<string>" "<editor>" "<repl>"} src) nil
                     (= "<" (subs src 0 (min 1 n)))
                     (let [lib (subs src 1 (dec n))
-                          p (str "lib/" (apply str (map (fn [c] (if (= c \.) "/" (str c))) lib)) ".norn")]
+                          rel (str (apply str (map (fn [c] (if (= c \.) "/" (str c))) lib)) ".norn")
+                          p (str (or (%getenv "NORN_COVER_LIB") "lib") "/" rel)]
                       (when (%fs-info p) p))
                     (and (> n 10) (= "_test.norn" (subs src (- n 10)))) nil
                     (= "/" (subs src 0 (min 1 n))) (when (= cwd (subs src 0 (min n (count cwd)))) src)

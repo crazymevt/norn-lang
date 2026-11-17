@@ -1,0 +1,14 @@
+19005 requests, 3.2% failed, 181.2 MB sent
+  /api/orders              2,655  p50 97ms  p95 161ms  85 errors
+  /api/orders/:id          5,460  p50 34ms  p95 57ms  174 errors
+  /api/users/:id           9,511  p50 34ms  p95 55ms  296 errors
+  /health                  1,379  p50 30ms  p95 47ms  46 errors
+  by plan: free 1,522, pro 773
+  (995 entries weren't requests)
+  a sample:
+    2026-11-13T03:30:31.697Z POST /api/orders 200 58ms
+    2026-11-13T03:46:27.437Z GET /api/users/3079 200 38ms
+    2026-11-13T04:22:44.088Z GET /health 429 27ms
+    2026-11-13T00:48:02.212Z GET /api/users/566 200 15ms
+    2026-11-13T00:11:06.207Z GET /api/users/1541 200 22ms
+  saved to $TMP/day.bin

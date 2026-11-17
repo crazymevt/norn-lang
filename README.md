@@ -52,6 +52,8 @@ cargo build --release
 ./target/release/norn check                 # fmt --check, lint, test, doc examples
 ./target/release/norn doc norn.string       # what a library offers
 cargo test                                  # Rust + Norn test suites
+./target/release/norn lang-tests/run.norn   # five real programs at every tier (lang-tests/README.md)
+./target/release/norn bench/compare.norn    # the benchmarks against bench/baseline.edn
 cargo run -p jit-spike --release            # tier-1 platform checks
 ./target/release/norn -e '(do (load-file "bench/pingpong.norn") (ping-pong 500000 10))'
                                             # 1M fibers ping-pong
@@ -77,6 +79,7 @@ lib/core         norn.core, written in Norn
 lib/compiler     the Norn compiler, written in Norn
 lib/norn         the standard libraries (norn.io, norn.net, …)
 tests/norn       Norn test suites
+lang-tests/      five programs written as users would, checking each change to Norn
 bench/           benchmarks
 spikes/          throwaway platform experiments
 docs/            user documentation, language reference, and design documents
