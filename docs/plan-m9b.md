@@ -183,7 +183,8 @@ shape and 4's op).
   evaluation and output could reach the wrong one. The server now numbers
   its connections and adds `:conn`; requests are `[conn id]`, output
   events carry `:conn`, and a connection drops others' output.
-- **5, `norn lsp`: done, but not checked with VS Code or Zed.**
+- **5, `norn lsp`: done, checked in VS Code (as Antigravity IDE,
+  2026-11-17: `editors/vscode`, docs/plan-vscode.md) but not yet in Zed.**
   `norn.lsp` runs in the project's own Norn (`norn lsp`) and answers
   through the editor protocol's ops in-process (`%serve-request`):
   diagnostics from `norn lint` on every change, hover (`:doc`),

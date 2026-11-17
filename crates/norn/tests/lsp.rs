@@ -189,3 +189,26 @@ fn emacs_eglot_uses_it() {
         assert!(out.contains(want), "{want}\n--- out:\n{out}\n--- err:\n{}", String::from_utf8_lossy(&o.stderr));
     }
 }
+
+/// The VS Code extension (editors/vscode) in an editor built on VS Code:
+/// its test (editors/vscode/test/run.js) runs it on a project like the one
+/// above, in Antigravity IDE (or the editor EDITOR_BIN names). It opens a
+/// window for a few seconds, so it runs only when asked
+/// (`NORN_VSCODE_TEST=1`), with Node and the extension's packages
+/// installed (`npm install` in editors/vscode).
+#[test]
+fn vscode_extension_uses_it() {
+    if std::env::var("NORN_VSCODE_TEST").as_deref() != Ok("1") {
+        return eprintln!("skipped: NORN_VSCODE_TEST=1 runs it (it opens an editor window)");
+    }
+    let ext = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../editors/vscode");
+    assert!(ext.join("node_modules/vscode-languageclient").exists(), "npm install in editors/vscode first");
+    let o = Command::new("node")
+        .arg("test/run.js")
+        .env("NORN", env!("CARGO_BIN_EXE_norn"))
+        .current_dir(&ext)
+        .output()
+        .expect("node");
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success() && out.contains("\nok"), "--- out:\n{out}\n--- err:\n{}", String::from_utf8_lossy(&o.stderr));
+}

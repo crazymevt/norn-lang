@@ -2165,7 +2165,10 @@
                    (= op :ns-vars) (%serve-ns-vars req)
                    (= op :test) (%serve-test req)
                    (= op :debugging) {:value (debugging)}
+                   ;; (:vars: each local's name and printed value, for an
+                   ;; editor's variables view)
                    (= op :backtrace) {:frames (mapv (fn [fr] {:fn (str (:fn fr)) :locals (pr-str (:locals fr))
+                                                              :vars (mapv (fn [kv] [(str (first kv)) (pr-str (second kv))]) (:locals fr))
                                                               :internal (:internal? fr)})
                                                     (backtrace (:fiber req)))}
                    (= op :restart) {:value (pr-str (apply debug-restart (:fiber req) (:restart req)

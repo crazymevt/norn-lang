@@ -95,14 +95,45 @@ language-servers = ["norn"]
 grammar = "clojure"
 ```
 
-## VS Code and Zed
+## VS Code (and Antigravity, Cursor, VSCodium)
 
-Both start a language server only through an extension, which tells them
-about the language and the command to run. Neither extension exists yet.
-For VS Code, an extension built on `vscode-languageclient` with
-`{ command: "norn", args: ["lsp"] }` as its server options is enough. For
-Zed, an extension whose `language_server_command` returns `norn lsp`, with
-Clojure's grammar, is enough.
+`editors/vscode` is the extension. Build it and install it:
+
+```text
+cd editors/vscode
+npm install
+npm run package                      # norn.vsix
+code --install-extension norn.vsix   # or antigravity-ide, or Install from VSIX…
+```
+
+It needs `norn` on the PATH, or **norn.path** set to it. Open a file of a
+project and it runs `norn lsp` there (in the nearest folder with
+`norn.edn`): everything above, with **Format Document** for formatting.
+
+- **Norn: Evaluate Top-Level Form or Selection** (Cmd+Enter on macOS,
+  Ctrl+Enter elsewhere) evaluates the form around the cursor.
+- **Norn: Start REPL** runs `norn --server` in a terminal in the project:
+  the REPL, which you can type at too. From then on evaluations go to it,
+  their values show beside the forms, and what they print goes to the
+  **Norn Evaluation** output.
+- **An error in the REPL's evaluations stops in VS Code's debugger.** The
+  call stack is the fiber's frames, with each frame's locals. The Debug
+  Console evaluates in the selected frame. **Restart Frame** calls the
+  frame's function again, in its newest definition: fix it, evaluate the
+  fix, then restart. **Continue** offers the condition's restarts, and
+  **Stop** aborts the evaluation. Norn's debugger stops on conditions, not
+  lines, so there are no breakpoints and no stepping, and a frame opens
+  its function's definition rather than the line it stopped at.
+
+`npm test` checks all of this in Antigravity IDE (or the editor
+`EDITOR_BIN` names) on a test project. `crates/norn/tests/lsp.rs` runs it
+with `NORN_VSCODE_TEST=1`. It opens a window for a few seconds.
+
+## Zed
+
+Zed starts a language server only through an extension. None exists yet.
+One whose `language_server_command` returns `norn lsp`, with Clojure's
+grammar, is enough.
 
 ## Checking it by hand
 

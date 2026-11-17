@@ -1,0 +1,117 @@
+{
+  "name": "norn",
+  "displayName": "Norn",
+  "description": "Norn for VS Code: highlighting; norn lsp's diagnostics, hover, completion, definitions, references, outline and formatting; a REPL, values beside the forms evaluated, and Norn's debugger in VS Code's.",
+  "version": "0.0.1",
+  "publisher": "norn",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters",
+    "Debuggers"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "norn",
+        "aliases": [
+          "Norn",
+          "norn"
+        ],
+        "extensions": [
+          ".norn"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "norn",
+        "scopeName": "source.norn",
+        "path": "./syntaxes/norn.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Norn",
+      "properties": {
+        "norn.path": {
+          "type": "string",
+          "default": "norn",
+          "description": "The norn command: a name on the PATH, or the binary's full path."
+        },
+        "norn.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Log the messages between VS Code and norn lsp in the Norn output."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "norn.evalTopLevel",
+        "title": "Evaluate Top-Level Form or Selection",
+        "category": "Norn"
+      },
+      {
+        "command": "norn.startRepl",
+        "title": "Start REPL",
+        "category": "Norn"
+      },
+      {
+        "command": "norn.restartServer",
+        "title": "Restart Language Server",
+        "category": "Norn"
+      },
+      {
+        "command": "norn.showOutput",
+        "title": "Show Output",
+        "category": "Norn"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "norn.evalTopLevel",
+          "when": "editorLangId == norn"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "norn.evalTopLevel",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && editorLangId == norn"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "norn",
+        "label": "Norn",
+        "languages": [
+          "norn"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "package": "vsce package --allow-missing-repository --out norn.vsix",
+    "test": "node test/run.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^11.0.0"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.0.0"
+  }
+}
