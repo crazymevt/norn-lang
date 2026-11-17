@@ -1257,7 +1257,10 @@ functions behind `map`, `filter` and the rest on a collection, build into a
 transient when they start from an empty vector (`transient` copies a
 vector's items, and a map's or set's transient only wraps it); `mapv` and `filterv`
 loop directly over vectors and ranges. Tier 1 runs `quot`, `rem`, `mod`,
-`even?` and `odd?` on fixnums natively.
+`even?` and `odd?` on fixnums natively, and a call whose callee came from
+a local or upvalue writes a closure's frame itself (its arity found at run
+time). A map pattern without `:as` reads each key from a keyword-argument
+seq directly (`%kw-get`), making no map.
 - **Tier 1's fast primitives** grew (behind the same check that the
   callee is the primitive): `count` and `nth` of a vector (the trie
   walked natively), `first` of a list, `identical?`, `nil?`, `some?`,

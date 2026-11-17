@@ -459,9 +459,16 @@ baseline compared.
     linked generic calls (methods redefined and added, a :before, the class
     redefined, other classes at the site) and keyword reads (a mutable
     instance from another fiber, a class redefined).
-  - **6.5, keyword arguments' maps,** if still worth it: not started.
-    Keyword options take 255 ns with two given (1.06× the baseline), 54
-    with none; no done-check item covers them.
+  - **6.5, keyword arguments' maps: done.** A map pattern without `:as`
+    reads each key from what it's given (`%kw-get`): from a keyword-
+    argument seq (a rest parameter's) by searching it, the last pair with
+    the key winning as `hash-map`'s would, an odd count `hash-map`'s
+    error; from anything else as `get`. No map is made. With `:as`, the
+    whole map is bound, so `%as-map` makes one, now a primitive (it was
+    `(apply hash-map x)`, and `apply` stopped tier-1 code each call).
+    **Measured** (tier 1): keyword options with two given 255 → 141 ns
+    (1.93×), with `:or` 2.08×, none given 1.77×; an options map 1.97×,
+    destructuring a vector and a map 1.99×.
   **Where it stands** (tier 1, the full comparison): `try` 2.57×,
   `binding` 2.96×, making an instance 8.15×, a Buffer's `count` 3.45× and
   `nth` 4.01×: the done-check's 2×, 5× and 3× met. The log report 1.48×,
@@ -493,8 +500,19 @@ baseline compared.
     primitive). arith_test checks them on its edge inputs. **Measured:**
     `into []` through `(comp (map inc) (filter even?))` 102 → 56 ns an item
     (2.97×): `even?`'s `rem` had been the generic division.
-  - **7.3, tier 1:** calls of closures held in locals without the helper:
-    not started; the done-check's 2× is met without it.
+  - **7.3, tier 1: done.** A call whose callee came from a local or an
+    upvalue (a function passed in) writes the callee's frame itself when
+    it's a closure with a fixed arity for the arguments (found at run
+    time) and the frame fits, as a linked call does, and enters its code;
+    anything else goes the general way. At every unlinked call it made the
+    code 13% larger and the chat and site programs 3–4% slower (calls
+    through vars that couldn't be linked gained only checks), so it's only
+    where the callee came from a local. **Measured:** a closure call 1.44
+    → 1.85×, `into` through a transducer 3.19×; the programs level or
+    slightly faster (the log report 1.5%); code 0.2% larger. Tests:
+    link_test's local closure calls (an upvalue, several arities, a rest
+    parameter, a primitive, a closure compiled late, past a segment's
+    end, an error).
 
 ## Open after part 4 (2026-11-16)
 

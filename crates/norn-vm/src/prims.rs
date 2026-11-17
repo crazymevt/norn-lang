@@ -120,6 +120,10 @@ prims! {
     "list" 0 VAR => |vm, a| Ok(list_from(&mut vm.m, a));
     "vector" 0 VAR => |vm, a| Ok(vec_from_slice(&mut vm.m, a));
     "hash-map" 0 VAR => |vm, a| hash_map(vm, a);
+    // (a rest-argument seq of keyword arguments as a map: what
+    // (apply hash-map x) gave, without apply, which stopped tier-1 code
+    // each call; M10 part 6.5)
+    "%as-map" 1 Some(1) => |vm, a| { let x = a[0]; let is_seq = x.is_cons() || (x.is_obj() && matches!(x.obj_kind(), Kind::EmptyList | Kind::VecSeq | Kind::Range)); if !is_seq { return Ok(x); } let items = to_vec(vm, x)?; hash_map(vm, &items) };
     "hash-set" 0 VAR => |vm, a| Ok(a.iter().fold(set_empty(), |s, &x| set_conj(&mut vm.m, s, x)));
     "vec" 1 Some(1) => |vm, a| { if a[0].is(Kind::Vector) { return Ok(a[0]); }
         if a[0].is(Kind::Instance) { return collection_op(vm, "vec", a); }
@@ -132,7 +136,10 @@ prims! {
     "seq" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "seq", a); } Ok(seq::seq(&mut vm.m, a[0])?) };
     "count" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "count", a); } Ok(Value::fix(seq::count(a[0])? as i64)) };
     "nth" 2 Some(3) => nth;
-    "get" 2 Some(3) => |vm, a| { crate::owned::check(vm, a[0], false)?; if a[0].is(Kind::Transient) { return transient_get(vm, a); } if a[0].is(Kind::Sorted) { let r = if a[0].sorted_is_set() { crate::sorted::find(a[0].sorted_root(), a[1])?.map(|n| n.field(0)) } else { crate::sorted::get(a[0], a[1])? }; return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))); } Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) };
+    "get" 2 Some(3) => get_prim;
+    // (a map pattern's key, without making a keyword-argument seq a map
+    // first: M10 part 6.5)
+    "%kw-get" 2 Some(3) => kw_get_prim;
     // sorted maps and sets, queues, transients (colls.rs, sorted.rs)
     "sorted-map" 0 VAR => |vm, a| { if a.len() % 2 != 0 { return Err(Error::of("TypeError", "sorted-map expects key/value pairs")); } let mut s = norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, false); for kv in a.chunks(2) { s = crate::sorted::assoc(&mut vm.m, s, kv[0], kv[1])?; } Ok(s) };
     "sorted-set" 0 VAR => |vm, a| { let mut s = norn_rt::colls::sorted_new(&mut vm.m, 0, Value::NIL, true); for &k in a { s = crate::sorted::assoc(&mut vm.m, s, k, k)?; } Ok(s) };
@@ -1578,6 +1585,28 @@ fn bind_map(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         m = map_assoc(&mut vm.m, m, kv[0], kv[1]);
     }
     Ok(m)
+}
+
+/// `(get coll key default?)`.
+fn get_prim(vm: &mut Vm, a: &[Value]) -> Result<Value> { crate::owned::check(vm, a[0], false)?; if a[0].is(Kind::Transient) { return transient_get(vm, a); } if a[0].is(Kind::Sorted) { let r = if a[0].sorted_is_set() { crate::sorted::find(a[0].sorted_root(), a[1])?.map(|n| n.field(0)) } else { crate::sorted::get(a[0], a[1])? }; return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))); } Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) }
+
+/// `(%kw-get x key default?)`: what (get (%as-map x) key default) gives, a
+/// map destructuring's key, without the map: a seq of keyword arguments
+/// (a rest parameter's) is searched for key, the last pair with it winning
+/// as hash-map's would, and an odd count is hash-map's error; anything
+/// else is get's (M10 part 6.5).
+fn kw_get_prim(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let x = a[0];
+    let is_seq = x.is_cons() || (x.is_obj() && matches!(x.obj_kind(), Kind::EmptyList | Kind::VecSeq | Kind::Range));
+    if !is_seq {
+        return get_prim(vm, a);
+    }
+    let items = to_vec(vm, x)?;
+    if !items.len().is_multiple_of(2) {
+        return Err(Error::new("hash-map requires an even number of arguments"));
+    }
+    let found = items.chunks(2).rev().find(|kv| kv[0] == a[1] || equal(kv[0], a[1]));
+    Ok(found.map(|kv| kv[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL)))
 }
 
 fn assoc(vm: &mut Vm, a: &[Value]) -> Result<Value> {

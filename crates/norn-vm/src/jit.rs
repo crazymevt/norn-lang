@@ -431,6 +431,17 @@ fn compile_inner(proto: Value) -> Option<usize> {
             })
             .collect()
     };
+    // A call whose callee came from a local or an upvalue (a function passed
+    // in, as higher-order code calls them; not a var, whose callee is linked
+    // when it can be): those get call_closure's native path (part 7.3).
+    let local_callee: Vec<bool> = ins
+        .iter()
+        .enumerate()
+        .map(|(i, &w)| {
+            matches!(op(w), CALL | TAILCALL)
+                && (0..i).rev().find(|&k| a(ins[k]) == a(w)).is_some_and(|k| matches!(op(ins[k]), MOVE | GETUP))
+        })
+        .collect();
     let ff = flo_flow(&ins, proto.proto_consts(), &named_prim, &entry_pcs, nregs, ssa && despecs(proto) < DESPEC_LIMIT);
     let kw_ref = b.import_signature(helper(2));
     let live = live_in(&ins, nregs);
@@ -712,6 +723,130 @@ fn compile_inner(proto: Value) -> Option<usize> {
         b.ins().brif(compiled, native, &[], interp, &[]);
         b.switch_to_block(native);
         let cs = b.ins().iconst(types::I64, lk.proto.proto_consts().arr_ptr() as i64);
+        let zero = b.ins().iconst(types::I64, 0);
+        b.ins().return_call_indirect(native_ref, nat, &[new_regs, cs, ctx, zero]);
+        b.switch_to_block(interp);
+        stop(b, 0);
+    };
+
+    // A call of what's in register ra with rb arguments, when it's a closure
+    // with a fixed arity for rb (found at run time) and its frame fits in
+    // the segment: the frame written here, as a linked call's (as
+    // Vm::push_frame: this one resumes after the call), and its code
+    // entered (its entry safepoint first; the interpreter, if it has no
+    // code yet). Anything else jumps to `general`. (M10 part 7.3: calls of
+    // closures held in locals, as higher-order code makes, went through
+    // the call helper.)
+    let call_closure = |b: &mut FunctionBuilder, ra: i32, rb: i32, i: usize, general: Block| {
+        let step = |b: &mut FunctionBuilder, c: cranelift_codegen::ir::Value| {
+            let next = b.create_block();
+            b.ins().brif(c, next, &[], general, &[]);
+            b.switch_to_block(next);
+        };
+        let f = b.ins().load(types::I64, mf, regs, ra * W);
+        let tag = b.ins().band_imm_s(f, norn_rt::value::TAG_MASK as i64);
+        let obj = b.ins().icmp_imm_s(IntCC::Equal, tag, norn_rt::value::TAG_OBJ as i64);
+        step(b, obj);
+        let layout = b.ins().load(types::I64, mf, f, -(norn_rt::value::TAG_OBJ as i32));
+        let is_clo = b.ins().icmp_imm_s(IntCC::Equal, layout, &norn_rt::object::LAYOUTS[norn_rt::Kind::Closure as usize] as *const norn_rt::object::Layout as i64);
+        step(b, is_clo);
+        // (its template's arities: the first with rb fixed parameters)
+        let tmpl = b.ins().load(types::I64, mf, f, 2 * W - 1);
+        let ar = b.ins().load(types::I64, mf, tmpl, 3 * W - 1);
+        let n = b.ins().load(types::I64, mf, ar, 2 * W - 1);
+        let (look, found) = (b.create_block(), b.create_block());
+        b.append_block_param(look, types::I64);
+        b.append_block_param(found, types::I64);
+        let zero = b.ins().iconst(types::I64, 0);
+        b.ins().jump(look, &[BlockArg::Value(zero)]);
+        b.switch_to_block(look);
+        let k = b.block_params(look)[0];
+        let more = b.ins().icmp(IntCC::SignedLessThan, k, n);
+        step(b, more);
+        let off = b.ins().ishl_imm_u(k, 3);
+        let at = b.ins().iadd(ar, off);
+        let p = b.ins().load(types::I64, mf, at, ARR_DATA);
+        let nf = b.ins().load(types::I64, mf, p, 3 * W - 1);
+        let var = b.ins().load(types::I64, mf, p, 4 * W - 1);
+        let same_n = b.ins().icmp_imm_s(IntCC::Equal, nf, rb as i64);
+        let fixed = b.ins().icmp_imm_s(IntCC::Equal, var, 0);
+        let hit = b.ins().band(same_n, fixed);
+        let k1 = b.ins().iadd_imm_s(k, 1);
+        b.ins().brif(hit, found, &[BlockArg::Value(p)], look, &[BlockArg::Value(k1)]);
+        b.switch_to_block(found);
+        let p = b.block_params(found)[0];
+        let nregs = b.ins().load(types::I64, mf, p, 5 * W - 1);
+        let new_regs = b.ins().iadd_imm_s(regs, ((my_nregs + HDR as i32) * W) as i64);
+        let size = b.ins().ishl_imm_u(nregs, 3);
+        let end = b.ins().iadd(new_regs, size);
+        let seg_end = b.ins().load(types::I64, mf, ctx, CTX_SEG_END);
+        let fits = b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, seg_end);
+        step(b, fits);
+        let resume = b.ins().iconst(types::I64, Value::fix(i as i64 + 1).0 as i64);
+        b.ins().store(mf, resume, regs, (F_RESUME as i32 - HDR as i32) * W);
+        let base = b.ins().load(types::I64, mf, ctx, CTX_SEG_BASE);
+        let fr = b.ins().iadd_imm_s(regs, -(HDR as i64) * W as i64);
+        let rel = b.ins().isub(fr, base);
+        let prev = b.ins().ushr_imm_u(rel, 2); // (fp tagged: bytes / 8 · 2)
+        let hdr = my_nregs * W; // (the new frame's header, from regs)
+        b.ins().store(mf, f, regs, hdr + F_FN as i32 * W);
+        b.ins().store(mf, p, regs, hdr + F_PROTO as i32 * W);
+        let zero_fix = b.ins().iconst(types::I64, Value::fix(0).0 as i64);
+        b.ins().store(mf, zero_fix, regs, hdr + F_RESUME as i32 * W);
+        b.ins().store(mf, prev, regs, hdr + F_PREV as i32 * W);
+        for k in 0..rb {
+            let v = b.ins().load(types::I64, mf, regs, (ra + 1 + k) * W);
+            b.ins().store(mf, v, new_regs, k * W);
+        }
+        // (its other registers nil)
+        let (fill, filled) = (b.create_block(), b.create_block());
+        b.append_block_param(fill, types::I64);
+        let start = b.ins().iconst(types::I64, rb as i64);
+        b.ins().jump(fill, &[BlockArg::Value(start)]);
+        b.switch_to_block(fill);
+        let k = b.block_params(fill)[0];
+        let left = b.ins().icmp(IntCC::SignedLessThan, k, nregs);
+        let body = b.create_block();
+        b.ins().brif(left, body, &[], filled, &[]);
+        b.switch_to_block(body);
+        let off = b.ins().ishl_imm_u(k, 3);
+        let at = b.ins().iadd(new_regs, off);
+        let nilv = b.ins().iconst(types::I64, Value::NIL.0 as i64);
+        b.ins().store(mf, nilv, at, 0);
+        let k1 = b.ins().iadd_imm_s(k, 1);
+        b.ins().jump(fill, &[BlockArg::Value(k1)]);
+        b.switch_to_block(filled);
+        // (its entry safepoint, as enter_linked's; then its code, or the
+        // interpreter there)
+        let stop = |b: &mut FunctionBuilder, r: i64| {
+            b.ins().store(mf, new_regs, ctx, CTX_CUR_REGS);
+            let rv = b.ins().iconst(types::I64, r);
+            b.ins().return_(&[rv]);
+        };
+        let bp = b.ins().load(types::I64, mf, ctx, 0);
+        let budget = b.ins().load(types::I64, mf, bp, 0);
+        let budget = b.ins().iadd_imm_s(budget, -1);
+        b.ins().store(mf, budget, bp, 0);
+        let ap = b.ins().load(types::I64, mf, ctx, W);
+        let att = b.ins().atomic_load(types::I64, mf, ap);
+        let sp = b.ins().load(types::I64, mf, ctx, 2 * W);
+        let seen = b.ins().load(types::I64, mf, sp, 0);
+        let fresh = b.ins().icmp(IntCC::Equal, att, seen);
+        let left = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, budget, 0);
+        let go = b.ins().band(fresh, left);
+        let (ok, due) = (b.create_block(), b.create_block());
+        b.ins().brif(go, ok, &[], due, &[]);
+        b.switch_to_block(due);
+        stop(b, POLL_FLAG as i64);
+        b.switch_to_block(ok);
+        let naddr = b.ins().iadd_imm_s(p, PROTO_NATIVE as i64);
+        let nat = b.ins().atomic_load(types::I64, mf, naddr);
+        let compiled = b.ins().icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, nat, MIN_ENTRY as i64);
+        let (native, interp) = (b.create_block(), b.create_block());
+        b.ins().brif(compiled, native, &[], interp, &[]);
+        b.switch_to_block(native);
+        let carr = b.ins().load(types::I64, mf, p, PROTO_CONSTS);
+        let cs = b.ins().iadd_imm_s(carr, ARR_DATA as i64);
         let zero = b.ins().iconst(types::I64, 0);
         b.ins().return_call_indirect(native_ref, nat, &[new_regs, cs, ctx, zero]);
         b.switch_to_block(interp);
@@ -1011,7 +1146,13 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 let linked = links[i].as_ref().map(|lk| linked_guard(&mut b, lk, ra));
                 // (one general call, for a failed guard and a full segment)
                 let general = b.create_block();
-                b.ins().jump(general, &[]);
+                if links[i].is_none() && kw_callee[i].is_none() && !spec && local_callee[i] {
+                    // (a closure not linked, as one held in a local: its
+                    // frame written here all the same, M10 part 7.3)
+                    call_closure(&mut b, ra, rb, i, general);
+                } else {
+                    b.ins().jump(general, &[]);
+                }
                 b.switch_to_block(general);
                 call_any(&mut b, ra, rb, i, spec);
                 if let (Some(lk), Some((fast, fv))) = (links[i].as_ref(), linked) {

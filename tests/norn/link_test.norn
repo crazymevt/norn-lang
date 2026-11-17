@@ -135,3 +135,33 @@
     (let [old (Spot :x 3)]
       (redefine "(defclass Spot () ((y :initform 2)))")
       (is (nil? (read-x old)) "a slot the class no longer has"))))
+
+;;; Calls of closures held in locals (M10 part 7.3): tier 1 writes their
+;;; frame itself when the closure has a fixed arity for the arguments and
+;;; the frame fits; anything else goes the general way.
+
+(defn apply-local [f & args]
+  (let [g f]
+    (case (count args)
+      0 (g)
+      1 (g (first args))
+      2 (g (first args) (second args))
+      (apply g args))))
+
+(deftest local-closure-calls
+  (let [k 10
+        add-k (fn [x] (+ x k))
+        arities (fn ([] :none) ([a] [:one a]) ([a b] [:two a b]))
+        rest-args (fn [a & more] [a more])]
+    (is (= 11 (many 300 (fn [_] (apply-local add-k 1)))) "an upvalue")
+    (is (= [:none [:one 1] [:two 1 2]] [(apply-local arities) (apply-local arities 1) (apply-local arities 1 2)]))
+    (is (= [1 [2]] (apply-local rest-args 1 2)) "a rest parameter: the general way")
+    (is (= 6 (apply-local + 1 5)) "a primitive")
+    (testing "a closure compiled late, called before and after"
+      (let [fresh (fn [x] (* x 3))]
+        (is (= [3 30] [(apply-local fresh 1) (many 300 (fn [_] (apply-local fresh 10)))]))))
+    (testing "deep: frames past a segment's end"
+      (let [down (fn down [n] (if (zero? n) :bottom (let [f down] (f (dec n)))))]
+        (is (= :bottom (down 20000)))))
+    (testing "an error in the callee"
+      (is (thrown? Error (apply-local (fn [x] (/ x 0)) 1))))))

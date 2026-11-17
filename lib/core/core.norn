@@ -2217,8 +2217,13 @@
 (defn- %destructure-map [acc pat init]
   (let [g (gensym "map")
         defaults (get pat :or {})
-        acc (conj (conj acc g) (list 'norn.core/%as-map init))
-        acc (if (contains? pat :as) (conj (conj acc (:as pat)) g) acc)
+        ;; (with :as the whole map is bound, so a keyword-argument seq is
+        ;; made one; without, each key is read from what's given: no map,
+        ;; M10 part 6.5)
+        as? (contains? pat :as)
+        lookup (if as? 'norn.core/get 'norn.core/%kw-get)
+        acc (conj (conj acc g) (if as? (list 'norn.core/%as-map init) init))
+        acc (if as? (conj (conj acc (:as pat)) g) acc)
         entries (concat (map (fn [s] [s (keyword (name s))]) (:keys pat))
                         (map (fn [s] [s (name s)]) (:strs pat))
                         (map (fn [s] [s (list 'quote s)]) (:syms pat))
@@ -2227,15 +2232,13 @@
               (let [bp (first e)
                     k (second e)
                     getter (if (and (symbol? bp) (contains? defaults bp))
-                             (list 'norn.core/get g k (get defaults bp))
-                             (list 'norn.core/get g k))]
+                             (list lookup g k (get defaults bp))
+                             (list lookup g k))]
                 (%destructure-1 acc bp getter)))
             acc entries)))
 
-(defn %as-map
-  "A rest-argument seq of keyword arguments becomes a map."
-  [x]
-  (if (seq? x) (apply hash-map x) x))
+;; (%as-map: a primitive since M10 part 6.5; a rest-argument seq of keyword
+;; arguments becomes a map, anything else is itself)
 
 (defn- %destructure-1 [acc pat init]
   (cond (symbol? pat) (conj (conj acc pat) init)
