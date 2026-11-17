@@ -120,8 +120,14 @@ pub(crate) fn tcp_check(vm: &mut Vm, h: Value) -> Result<Value> {
             }
             match s.peer_addr() {
                 Ok(_) => Ok(true),
-                Err(e) if e.kind() == std::io::ErrorKind::NotConnected => Ok(false),
-                Err(e) => Err(e),
+                // (The connect may fail between the two questions: macOS
+                // then answers peer_addr with EINVAL, not ENOTCONN. The
+                // socket's error, asked again, says why: refused, say.)
+                Err(e) => match s.take_error()? {
+                    Some(why) => Err(why),
+                    None if e.kind() == std::io::ErrorKind::NotConnected => Ok(false),
+                    None => Err(e),
+                },
             }
         }
         _ => Err(std::io::Error::other("not a TCP stream")),
