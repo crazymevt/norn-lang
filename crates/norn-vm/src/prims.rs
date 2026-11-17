@@ -2311,6 +2311,9 @@ fn proto_parts(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         k(vm, "consts"), consts,
         k(vm, "code"), code_v,
         k(vm, "locals"), locals,
+        // (compiled to tier 1 and installed: what tests of optimised code
+        // check they are testing)
+        k(vm, "native"), Value::bool(p.proto_native() >= crate::jit::MIN_ENTRY),
     ];
     hash_map(vm, &kvs)
 }

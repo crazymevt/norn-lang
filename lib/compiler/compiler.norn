@@ -948,7 +948,8 @@
      {:name (:name tp)
       :captures (:captures tp)
       :arities (mapv (fn [p]
-                       (let [pp (%proto-parts p)]
+                       ;; (not :native: whether tier 1 has compiled it yet)
+                       (let [pp (dissoc (%proto-parts p) :native)]
                          (assoc pp :consts (normalize (:consts pp) names) :locals (normalize (:locals pp) names))))
                      (:arities tp))})))
 

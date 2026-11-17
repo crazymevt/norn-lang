@@ -1,0 +1,99 @@
+;;;; The tools on optimised code (M10's done-check): the debugger,
+;;;; backtraces, restart-frame and images where the function stopped in runs
+;;;; as tier 1's code: compiled, with its floats unboxed and its small calls
+;;;; inlined. Each function is called enough to be compiled first (at tier 1:
+;;;; checked; at tier 0 these run interpreted, as a baseline). The profiler
+;;;; and coverage on compiled code: prof_test and cover_test, run at both
+;;;; tiers.
+
+(ns opt-tools-test
+  (:require [norn.test :refer [is deftest testing]]
+            [norn.process :as proc] [norn.sys :as sys] [norn.io :as io]))
+
+(defn- native?
+  "Is every arity of function f compiled to tier 1?"
+  [f]
+  (every? (fn [p] (:native (%proto-parts p))) (:arities (%template-parts (%closure-template f)))))
+
+(defn- tier1? [] (= 1 (:tier (jit-stats))))
+
+(defn- warm!
+  "Call f with args often enough that it is compiled. (Through apply: a
+  direct call of a small function would be inlined into the caller, and
+  the function's own code never run.)"
+  [f & args]
+  (dotimes [_ 300] (apply f args)))
+
+(defn- parked [id] (first (filter (fn [d] (= id (:fiber d))) (debugging))))
+(defn- wait-until [f] (loop [i 0] (or (f) (when (< i 500) (sleep 2) (recur (inc i))))))
+(defn- frame-of [id name] (some (fn [[i fr]] (when (= name (:fn fr)) i)) (map-indexed vector (backtrace id))))
+(defn- redefine [src] (load-string (str "(in-ns 'opt-tools-test) " src)))
+
+;; (the error is an argument of +, not in tail position: the loop's frame
+;; stays to be looked at and restarted)
+(defn drift [n bad]
+  (loop [i 0 x 0.0]
+    (cond (= i n) x
+          (= i bad) (+ x (error "stopped at" i))
+          :else (recur (inc i) (+ x 0.25)))))
+
+(deftest the-debugger-in-a-compiled-float-loop
+  (warm! drift 40 -1)
+  (when (tier1?) (is (native? drift) "compiled"))
+  (let [f (binding [*debugger* :park] (spawn-detached (apply drift [40 10])))
+        id (fiber-id f)]
+    (is (wait-until (fn [] (parked id))))
+    (is (= "stopped at 10" (:condition (parked id))))
+    (let [i (frame-of id 'opt-tools-test/drift)
+          locals (:locals (nth (backtrace id) i))]
+      (is (= 10 (get locals 'i)))
+      (is (= 2.5 (get locals 'x)) "the unboxed float, as a value")
+      (is (= 5.0 (eval-in-frame id i '(* x 2))))
+      (testing "restarted with a new definition"
+        (redefine "(defn drift [n bad] (loop [i 0 x 0.0] (if (= i n) x (recur (inc i) (+ x 0.5)))))")
+        (debug-restart-frame id i)))
+    (is (= 20.0 (await f)))))
+
+(defn scale [x] (when (neg? x) (error "negative:" x)) (* x 1.5))
+(defn scale-sum [xs] (loop [s 0.0 xs xs] (if (seq xs) (recur (+ s (scale (first xs))) (rest xs)) s)))
+
+(deftest the-debugger-in-compiled-inlined-code
+  (warm! scale-sum [1.0 2.0])
+  (when (tier1?) (is (native? scale-sum) "compiled"))
+  (let [f (binding [*debugger* :park] (spawn-detached (apply scale-sum [[1.0 -2.0 3.0]])))
+        id (fiber-id f)]
+    (is (wait-until (fn [] (parked id))))
+    (let [frames (backtrace id)
+          i (frame-of id 'opt-tools-test/scale)]
+      (is (some? i) "scale has a frame of its own")
+      (is (= {'x -2.0} (:locals (nth frames i))))
+      (is (= 'opt-tools-test/scale-sum (:fn (nth frames (inc i)))) "above its caller")
+      (is (= 1.5 (get (:locals (nth frames (inc i))) 's)) "the caller's float so far")
+      (redefine "(defn scale [x] (* (abs x) 1.5))")
+      (debug-restart-frame id i))
+    (is (= 9.0 (await f)) "1.5 + 3.0 + 4.5"))
+  (redefine "(defn scale [x] (when (neg? x) (error \"negative:\" x)) (* x 1.5))"))
+
+(defn ratio [a b] (loop [k 0 acc 0.0] (if (= k 3) (+ acc (/ a b)) (recur (inc k) (+ acc 1.0)))))
+
+(deftest a-value-for-the-failed-call
+  (warm! ratio 1 2)
+  (when (tier1?) (is (native? ratio) "compiled"))
+  (let [f (binding [*debugger* :park] (spawn-detached (apply ratio [1 0])))
+        id (fiber-id f)]
+    (is (wait-until (fn [] (parked id))))
+    (debug-restart id 0 0.5)
+    (is (= 3.5 (await f)))))
+
+(deftest an-image-saved-after-compiling
+  (let [img (io/path (sys/temp-dir) (str "opt-tools-" (sys/pid) "-" (nano-time) ".nimg"))
+        src (str "(defn spin [n] (loop [i 0 x 0.0] (if (= i n) x (recur (inc i) (+ x 0.5)))))"
+                 "(dotimes [_ 300] (spin 100))"
+                 "(defn main [& _] (println (spin 1000)))"
+                 "(save-image " (pr-str img) " :entry #'main)")
+        made (proc/sh (:executable (sys/info)) "-e" src)]
+    (try
+      (is (zero? (:exit made)) (:err made))
+      (let [run (proc/sh (:executable (sys/info)) "--image" img)]
+        (is (= "500.0\n" (:out run)) (:err run)))
+      (finally (when (io/exists? img) (io/delete! img))))))

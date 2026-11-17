@@ -513,6 +513,54 @@ baseline compared.
     link_test's local closure calls (an upvalue, several arities, a rest
     parameter, a primitive, a closure compiled late, past a segment's
     end, an error).
+- **The done-check: met but for decision 2 (2026-11-17).**
+  - **Speed** (`bench/compare.norn`, tier 1): Mandelbrot 29.1 ms, 10.0×
+    the baseline (SBCL and Clojure 2.0 ms: Norn 14×); the empty loop 1.85
+    ns a turn, 2.30× (from 1.7×: below); float `*` 9.9×; calls 5.4–7.5×,
+    the checked one 47.7×; `try` 2.87×, `binding` 3.36×, making an
+    instance 8.24×, a library collection's `count` and `nth` 3.8× and
+    4.4×, `mapv` 5.3× and `into` 3.0× an item; the programs 1.32–1.68× and
+    Mandelbrot's 10×; nothing marked slower (making a map 0.93×, within
+    micro's noise).
+  - **The empty loop**, 2.58 → 2.0 ns (runtime.md, tier 1's smaller
+    things): a comparison and the `JMPF` testing it fused, through the
+    `MOVE` an `if` leaves between them; no store of a temporary nothing
+    reads after; plain loads of var roots and the attention epoch; and,
+    most of it, GETVAR's two tests and the safepoint's two as two branches
+    each, not their `and` (Cranelift had made each test a boolean: five
+    instructions more, four times a turn). Tried and slower: var addresses
+    as constants (four instructions to make each, against one load) and
+    the safepoint's pointers loaded once an entry (spilled across calls).
+  - **The tiers agree:** the suites at tier 0, tier 1 and
+    `NORN_JIT_THRESHOLD=1`; every sibling project at both tiers but
+    norn-studio's chat test (fails as before M10). Quire's two tier-1
+    failures were its tests': "serving" checks the page once after the
+    first reload, which can come from the files copied just before the
+    watch starts (at tier 0 it arrives within a millisecond of the edit,
+    too soon to be the edit's; tier 1 moves the timing), and "building"
+    compares zips whose entries keep DOS times (2 s apart), so builds
+    either side of a boundary differ. Each passed in reruns; fixing them is
+    quire's (todo). Studio's shell-in-the-editor and norn-ui's editor
+    tests passed alone and in full runs.
+  - **The tools on optimised code** (opt_tools_test, both tiers): the
+    debugger stopped in a compiled float loop shows its unboxed float as
+    a value, evaluates in the frame and restarts it with a new
+    definition; in compiled code with an inlined call, the inlined frame
+    and its caller's float so far; a value given for a failed call; an
+    image saved after compiling runs. (`%proto-parts` now says whether a
+    proto is `:native`, so the test checks it is testing compiled code;
+    the functions are called through `apply`, as a small one called
+    directly is inlined and its own code never runs.) prof_test and
+    cover_test pass at both tiers, and ledger's coverage report is the
+    same at both with `--serial` (in parallel, tier 1's hit counts vary
+    by one or two run to run with the scheduling; the lines hit don't).
+  - **Decision 2, tier 1 as the default: not yet.** It wins on the
+    baseline and agrees everywhere, but starting costs: `norn -e nil`
+    takes 1.0 s against 0.10 at tier 0 (258 protos compiled, 2.9 MB), and
+    a small project's tests 1.5 s more (ledger 0.43 → 2.05 s, norn-html
+    0.5 → 2.1; the whole norn-lang suite about even, 16.4 → 17.1 s).
+    `NORN_JIT_OPT=none` gives 0.81 s; a threshold of 1,000, 0.41 s. The
+    cost is compiling on the carrier that's waiting to run the code.
 
 ## Open after part 4 (2026-11-16)
 
@@ -580,9 +628,9 @@ win back compile time first: done, below.
 
 **Smaller gaps:**
 
-- **The empty loop is 0.88× the baseline** at tier 1 (4.8 against 4.3 ns
-  a turn) since part 2's switch to the `tail` calling convention; not
-  looked into.
+- **The empty loop was 0.88× the baseline** at tier 1 (4.8 against 4.3 ns
+  a turn) after part 2's switch to the `tail` calling convention: 2.30×
+  at M10's done-check.
 - **Printing workloads** (`str` of 100,000 pieces, JSON write, EDN
   `pr-str`, bin encode) read 0.84–0.9× in the full comparison run, at
   both tiers, but match part 3's binary when run alone: something the
