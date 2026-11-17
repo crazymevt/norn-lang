@@ -1088,7 +1088,12 @@ reused, and a later delta can recognise them by address.
   to 4000). Until M10 it was on first execution, which compiled all the
   code that runs once: `norn -e` started in 1.07 s at tier 1 against 0.11
   s at tier 0, and 0.54 s at 100. Tier 0 stays the default until tier 1
-  has seen more use.
+  has seen more use. At M10's end compiling is slower than that, the code
+  doing more: `norn -e nil` compiles 258 protos (2.9 MB) and starts in
+  1.0 s against 0.10 at tier 0 (0.81 s with `NORN_JIT_OPT=none`, Cranelift
+  not optimising; 0.41 s at a threshold of 1,000), and a small project's
+  tests take 1.5 s longer. Compiling on the carrier that hit the
+  threshold is what costs: the interpreter waits for it.
 - Code goes into `MAP_JIT` memory (§7.4) and is never freed.
 - No relocations: constants and runtime addresses arrive through the
   arguments.
@@ -1306,6 +1311,21 @@ assumed a float isn't refuses, and the function is compiled again without
 assumptions after four failures. `NORN_JIT_DUMP=name` prints the machine code
 of compiled functions whose names have `name` in them;
 `NORN_JIT_TRACE_FLO` prints each one's analysis.
+
+Smaller things the code does (M10's done-check, for the empty loop:
+2.58 → 1.85 ns a turn): a comparison whose value a `JMPF` tests next
+(perhaps after a `MOVE` of it, as an `if`'s test is left) branches to
+where the `JMPF` would go on its fast paths, its value still stored; a
+register no debug local names (its function's or an inlined call's) and
+nothing reads after an instruction isn't stored to the frame (the
+interpreter reads only live registers, and the older value the slot keeps
+is as good to the GC); a var's root and the attention epoch are plain
+loads (an acquire held every later load back; what a root points to is
+read through it, an address dependency); and a test of two conditions is
+two branches, not their `and`. A call whose callee isn't known to be a
+primitive's var tries only `+ - < = inc` natively before the general
+call (all 35 made such call sites large and compiling slow;
+`NORN_JIT_CASCADE` tries them all).
 
 *Next.* The full design below (inline caches) keeps the same frame layout,
 so it can replace this piece by piece.

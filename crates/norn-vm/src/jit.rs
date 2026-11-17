@@ -245,7 +245,7 @@ pub(crate) fn isa() -> Option<&'static OwnedTargetIsa> {
     static ISA: OnceLock<Option<OwnedTargetIsa>> = OnceLock::new();
     ISA.get_or_init(|| {
         let mut flags = settings::builder();
-        flags.set("opt_level", "speed").ok()?;
+        flags.set("opt_level", if std::env::var("NORN_JIT_OPT").as_deref() == Ok("none") { "none" } else { "speed" }).ok()?;
         flags.set("is_pic", "true").ok()?;
         cranelift_native::builder().ok()?.finish(settings::Flags::new(flags)).ok()
     })
@@ -566,9 +566,20 @@ fn compile_inner(proto: Value) -> Option<usize> {
     // cheap, reloading what was just stored isn't, and the frame stays
     // exact); to a float, unboxed (not yet in the frame); write back a set
     // of float registers (boxed); a float register's f64.
-    let set = |b: &mut FunctionBuilder, r: i32, v: cranelift_codegen::ir::Value| {
+    //
+    // (but not a temporary's that nothing reads: written at instruction k,
+    // not live after it, and no local's register, its own function's or an
+    // inlined one's, which the debugger shows. The interpreter reads only
+    // live registers, and what the slot still holds is an older value of
+    // the frame's, as good to the GC. Copying a loop's counter, its test and
+    // its step into argument registers and back cost a store each.)
+    let named = named_registers(proto);
+    let set_at = |b: &mut FunctionBuilder, k: usize, r: i32, v: cranelift_codegen::ir::Value| {
         b.def_var(vars[r as usize], v);
-        b.ins().store(mf, v, regs, r * W);
+        let r = r as usize;
+        if r >= 256 || named.contains(r) || (k + 1 < n && live[k + 1].contains(r)) {
+            b.ins().store(mf, v, regs, r as i32 * W);
+        }
     };
     let setf = |b: &mut FunctionBuilder, r: i32, f: cranelift_codegen::ir::Value| {
         b.def_var(fvars[r as usize], f);
@@ -611,14 +622,16 @@ fn compile_inner(proto: Value) -> Option<usize> {
             let budget = b.ins().iadd_imm_s(budget, -1);
             b.ins().store(mf, budget, bp, 0);
             let ap = b.ins().load(types::I64, mf, ctx, W);
-            let att = b.ins().atomic_load(types::I64, mf, ap);
+            let att = b.ins().load(types::I64, mf, ap, 0);
             let sp = b.ins().load(types::I64, mf, ctx, 2 * W);
             let seen = b.ins().load(types::I64, mf, sp, 0);
             let fresh = b.ins().icmp(IntCC::Equal, att, seen);
             let left = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, budget, 0);
-            let go = b.ins().band(fresh, left);
-            let (ok, due) = (b.create_block(), b.create_block());
-            b.ins().brif(go, ok, &[], due, &[]);
+            // (a branch for each test, not their and: fewer instructions)
+            let (ok, due, in_budget) = (b.create_block(), b.create_block(), b.create_block());
+            b.ins().brif(fresh, in_budget, &[], due, &[]);
+            b.switch_to_block(in_budget);
+            b.ins().brif(left, ok, &[], due, &[]);
             b.switch_to_block(due);
             let flagged = b.ins().bor_imm_s(pcv, POLL_FLAG as i64);
             stop(b, flagged);
@@ -705,14 +718,16 @@ fn compile_inner(proto: Value) -> Option<usize> {
         let budget = b.ins().iadd_imm_s(budget, -1);
         b.ins().store(mf, budget, bp, 0);
         let ap = b.ins().load(types::I64, mf, ctx, W);
-        let att = b.ins().atomic_load(types::I64, mf, ap);
+        let att = b.ins().load(types::I64, mf, ap, 0);
         let sp = b.ins().load(types::I64, mf, ctx, 2 * W);
         let seen = b.ins().load(types::I64, mf, sp, 0);
         let fresh = b.ins().icmp(IntCC::Equal, att, seen);
         let left = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, budget, 0);
-        let go = b.ins().band(fresh, left);
-        let (ok, due) = (b.create_block(), b.create_block());
-        b.ins().brif(go, ok, &[], due, &[]);
+        // (a branch for each test, not their and: fewer instructions)
+        let (ok, due, in_budget) = (b.create_block(), b.create_block(), b.create_block());
+        b.ins().brif(fresh, in_budget, &[], due, &[]);
+        b.switch_to_block(in_budget);
+        b.ins().brif(left, ok, &[], due, &[]);
         b.switch_to_block(due);
         stop(b, POLL_FLAG as i64);
         b.switch_to_block(ok);
@@ -828,14 +843,16 @@ fn compile_inner(proto: Value) -> Option<usize> {
         let budget = b.ins().iadd_imm_s(budget, -1);
         b.ins().store(mf, budget, bp, 0);
         let ap = b.ins().load(types::I64, mf, ctx, W);
-        let att = b.ins().atomic_load(types::I64, mf, ap);
+        let att = b.ins().load(types::I64, mf, ap, 0);
         let sp = b.ins().load(types::I64, mf, ctx, 2 * W);
         let seen = b.ins().load(types::I64, mf, sp, 0);
         let fresh = b.ins().icmp(IntCC::Equal, att, seen);
         let left = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, budget, 0);
-        let go = b.ins().band(fresh, left);
-        let (ok, due) = (b.create_block(), b.create_block());
-        b.ins().brif(go, ok, &[], due, &[]);
+        // (a branch for each test, not their and: fewer instructions)
+        let (ok, due, in_budget) = (b.create_block(), b.create_block(), b.create_block());
+        b.ins().brif(fresh, in_budget, &[], due, &[]);
+        b.switch_to_block(in_budget);
+        b.ins().brif(left, ok, &[], due, &[]);
         b.switch_to_block(due);
         stop(b, POLL_FLAG as i64);
         b.switch_to_block(ok);
@@ -864,9 +881,26 @@ fn compile_inner(proto: Value) -> Option<usize> {
         b.append_block_param(ret_helper, types::I64);
     }
 
+    // Before going from where the floats are fo (their copies ao) to
+    // instruction s: those s doesn't know of, and will read, boxed (and
+    // copies that stop being known as copies there).
+    let spill_into = |b: &mut FunctionBuilder, fo: &RegSet, ao: &[u32], s: usize| {
+        let keep = fo.intersect(&live[s]);
+        let mut need = fo.minus(&ff.fin[s]).intersect(&live[s]);
+        for r in keep.iter() {
+            for q in keep.iter().filter(|&q| q > r && ao[q] == ao[r]) {
+                if !(ff.fin[s].contains(r) && ff.fin[s].contains(q) && ff.ain[s][r] == ff.ain[s][q]) {
+                    need.insert(r);
+                }
+            }
+        }
+        spill(b, &need, ao, fo);
+    };
+
     for (i, &w) in ins.iter().enumerate() {
         b.switch_to_block(blocks[i]);
         let (o, ra, rb) = (op(w), a(w) as i32, b_(w) as i32);
+        let set = |b: &mut FunctionBuilder, r: i32, v: cranelift_codegen::ir::Value| set_at(b, i, r, v);
         // (the registers surely floats as this instruction starts and ends:
         // FloFlow)
         let (fin, fout) = (&ff.fin[i], &ff.fout[i]);
@@ -892,26 +926,19 @@ fn compile_inner(proto: Value) -> Option<usize> {
         };
         // Go on at instruction `to` (the floats it doesn't know of, and
         // will read, boxed first); past the end, stop there.
-        let goto = |b: &mut FunctionBuilder, to: Option<usize>| match to {
+        // Go from the end of instruction k (its floats fo, their copies ao)
+        // to instruction `to`; past the end, stop there.
+        let goto_from = |b: &mut FunctionBuilder, k: usize, fo: &RegSet, ao: &[u32], to: Option<usize>| match to {
             Some(s) => {
-                // (and copies that stop being known as copies there)
-                let keep = fout.intersect(&live[s]);
-                let mut need = fout.minus(&ff.fin[s]).intersect(&live[s]);
-                for r in keep.iter() {
-                    for q in keep.iter().filter(|&q| q > r && aout[q] == aout[r]) {
-                        if !(ff.fin[s].contains(r) && ff.fin[s].contains(q) && ff.ain[s][r] == ff.ain[s][q]) {
-                            need.insert(r);
-                        }
-                    }
-                }
-                spill(b, &need, aout, fout);
+                spill_into(b, fo, ao, s);
                 b.ins().jump(blocks[s], &[]);
             }
             None => {
-                spill(b, fout, aout, fout);
-                stop_at(b, i + 1);
+                spill(b, fo, ao, fo);
+                stop_at(b, k + 1);
             }
         };
+        let goto = |b: &mut FunctionBuilder, to: Option<usize>| goto_from(b, i, fout, aout, to);
         let nextpc = (i + 1 < n).then_some(i + 1);
         // Return v from this frame: inline when the caller's frame is below
         // this one in the segment (not a run's bottom, not across segments)
@@ -1053,14 +1080,19 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 let var = b.ins().load(types::I64, mf, consts, bx(w) as i32 * W);
                 let flags = b.ins().load(types::I64, mf, var, (2 + 3) * W - 1);
                 let dyn_bits = b.ins().band_imm_s(flags, VAR_DYNBOUND as i64);
-                let dyn_bit = b.ins().icmp_imm_s(IntCC::NotEqual, dyn_bits, 0);
                 let root_addr = b.ins().iadd_imm_s(var, (2 + 2) * W as i64 - 1);
-                let root = b.ins().atomic_load(types::I64, mf, root_addr);
+                // (a plain load: the interpreter's is an acquire, but what
+                // the root points to is read through it, an address
+                // dependency, which orders those reads on aarch64 as x86;
+                // and an acquire keeps every later load waiting for it)
+                let root = b.ins().load(types::I64, mf, root_addr, 0);
                 let is_unbound = b.ins().icmp_imm_s(IntCC::Equal, root, unbound);
-                let slow = b.ins().bor(dyn_bit, is_unbound);
-                let ok = b.create_block();
-                let s = b.create_block();
-                b.ins().brif(slow, s, &[], ok, &[]);
+                // (a branch for each: or-ing the two tests made them
+                // booleans first, five instructions more)
+                let (bound, ok, s) = (b.create_block(), b.create_block(), b.create_block());
+                b.ins().brif(dyn_bits, s, &[], bound, &[]);
+                b.switch_to_block(bound);
+                b.ins().brif(is_unbound, s, &[], ok, &[]);
                 b.switch_to_block(s);
                 bail(&mut b);
                 b.switch_to_block(ok);
@@ -1099,14 +1131,16 @@ fn compile_inner(proto: Value) -> Option<usize> {
                 let budget = b.ins().iadd_imm_s(budget, -1);
                 b.ins().store(mf, budget, bp, 0);
                 let ap = b.ins().load(types::I64, mf, ctx, W);
-                let att = b.ins().atomic_load(types::I64, mf, ap);
+                let att = b.ins().load(types::I64, mf, ap, 0);
                 let sp = b.ins().load(types::I64, mf, ctx, 2 * W);
                 let seen = b.ins().load(types::I64, mf, sp, 0);
                 let fresh = b.ins().icmp(IntCC::Equal, att, seen);
                 let left = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, budget, 0);
-                let go = b.ins().band(fresh, left);
-                let (t, s) = (b.create_block(), b.create_block());
-                b.ins().brif(go, t, &[], s, &[]);
+                // (a branch for each test, not their and: fewer instructions)
+                let (t, s, in_budget) = (b.create_block(), b.create_block(), b.create_block());
+                b.ins().brif(fresh, in_budget, &[], s, &[]);
+                b.switch_to_block(in_budget);
+                b.ins().brif(left, t, &[], s, &[]);
                 b.switch_to_block(s);
                 bail(&mut b);
                 b.switch_to_block(t);
@@ -1137,7 +1171,54 @@ fn compile_inner(proto: Value) -> Option<usize> {
                     let y = if rb >= 2 { arg(&mut b, ra + 2) } else { x };
                     let z = (rb == 3).then(|| arg(&mut b, ra + 3));
                     let on_float: Option<OnValue> = if spec { Some(&float_next) } else { None };
-                    fast_prims(&mut b, mf, ctx, f, x, y, z, rb, slow, named_prim[i], box_ref, &store_next, on_float);
+                    // (a comparison whose value a JMPF tests next, perhaps
+                    // after a MOVE of it, as the compiler leaves an `if`'s
+                    // test: on its fast paths it branches to where the JMPF
+                    // would go, its value still stored, and moved)
+                    let mv = (i + 2 < n && op(ins[i + 1]) == MOVE && b_(ins[i + 1]) as i32 == ra).then(|| a(ins[i + 1]) as i32);
+                    let j = if mv.is_some() { i + 2 } else { i + 1 };
+                    let tested = mv.unwrap_or(ra);
+                    let fused = rb == 2
+                        && named_prim[i].is_some_and(|k| matches!(FAST_PRIMS[k], "<" | ">" | "<=" | ">=" | "==" | "="))
+                        && j < n
+                        && op(ins[j]) == JMPF
+                        && a(ins[j]) as i32 == tested
+                        && !ff.fin[j].contains(tested as usize)
+                        && !ff.fin[i + 1].contains(ra as usize);
+                    let branch_next = |b: &mut FunctionBuilder, c: cranelift_codegen::ir::Value| {
+                        let t = b.ins().iconst(types::I64, tru);
+                        let f = b.ins().iconst(types::I64, fal);
+                        let v = b.ins().select(c, t, f);
+                        // (each stored only if read after: the MOVE and the
+                        // JMPF read them here, not from the frame)
+                        let set_tested = |b: &mut FunctionBuilder, r: i32| {
+                            b.def_var(vars[r as usize], v);
+                            let after = [(j + 1 < n).then_some(j + 1), jump_target(j, ins[j], n)];
+                            let r = r as usize;
+                            if r >= 256 || named.contains(r) || after.iter().flatten().any(|&s| live[s].contains(r)) {
+                                b.ins().store(mf, v, regs, r as i32 * W);
+                            }
+                        };
+                        if mv.is_some() {
+                            set_at(b, i + 1, ra, v);
+                        } else {
+                            set_tested(b, ra);
+                        }
+                        spill_into(b, fout, aout, i + 1);
+                        if let Some(rd) = mv {
+                            set_tested(b, rd);
+                            spill_into(b, &ff.fout[i + 1], &ff.aout[i + 1][..], j);
+                        }
+                        let (yes, no) = (b.create_block(), b.create_block());
+                        b.ins().brif(c, yes, &[], no, &[]);
+                        let (fo, ao) = (&ff.fout[j], &ff.aout[j][..]);
+                        b.switch_to_block(yes);
+                        goto_from(b, j, fo, ao, (j + 1 < n).then_some(j + 1));
+                        b.switch_to_block(no);
+                        goto_from(b, j, fo, ao, jump_target(j, ins[j], n));
+                    };
+                    let on_bool: Option<OnValue> = if fused { Some(&branch_next) } else { None };
+                    fast_prims(&mut b, mf, ctx, f, x, y, z, rb, slow, named_prim[i], box_ref, &store_next, on_float, on_bool);
                     b.switch_to_block(slow);
                 }
                 // (from here the frame is written back: the helpers and a
@@ -1200,7 +1281,7 @@ fn compile_inner(proto: Value) -> Option<usize> {
                     let x = arg(&mut b, ra + 1);
                     let y = if rb >= 2 { arg(&mut b, ra + 2) } else { x };
                     let z = (rb == 3).then(|| arg(&mut b, ra + 3));
-                    fast_prims(&mut b, mf, ctx, f, x, y, z, rb, slow, named_prim[i], box_ref, &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1, fin), None);
+                    fast_prims(&mut b, mf, ctx, f, x, y, z, rb, slow, named_prim[i], box_ref, &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1, fin), None, None);
                     b.switch_to_block(slow);
                 }
                 spill(&mut b, fin, ain, fin);
@@ -1424,6 +1505,7 @@ fn fast_prims(
     box_ref: cranelift_codegen::ir::SigRef,
     on_value: &dyn Fn(&mut FunctionBuilder, cranelift_codegen::ir::Value),
     on_float: Option<OnValue>,
+    on_bool: Option<OnValue>,
 ) {
     // (an unboxed argument is only given for the numeric primitives, named)
     let unboxed = matches!(xa, Arg::F(_)) || matches!(ya, Arg::F(_));
@@ -1438,6 +1520,15 @@ fn fast_prims(
         let t = b.ins().iconst(types::I64, tru);
         let ff = b.ins().iconst(types::I64, fal);
         b.ins().select(c, t, ff)
+    };
+    // A comparison's outcome c (an i8): to on_bool when given, else as a
+    // boolean to on_value.
+    let bool_out = |b: &mut FunctionBuilder, c| match on_bool {
+        Some(ob) => ob(b, c),
+        None => {
+            let v = boolv(b, c);
+            on_value(b, v);
+        }
     };
     // Is v a heap object of kind k (tag 1, and its layout word k's)?
     let is_kind = |b: &mut FunctionBuilder, v: cranelift_codegen::ir::Value, k: norn_rt::Kind, no: Block| {
@@ -1498,8 +1589,14 @@ fn fast_prims(
             on_value(b, v);
         }
     };
+    // (a callee not loaded from a fast primitive's var tries only the few
+    // most common: trying all of them made every such call site's code
+    // large, and compiling slow)
     let cands: Vec<usize> = (0..NPRIMS)
-        .filter(|&k| named.is_none_or(|n| n == k))
+        .filter(|&k| match named {
+            Some(n) => n == k,
+            None => std::env::var("NORN_JIT_CASCADE").is_ok() || matches!(FAST_PRIMS[k], "+" | "-" | "<" | "=" | "inc"),
+        })
         .filter(|&k| !unboxed || matches!(FAST_PRIMS[k], "+" | "-" | "*" | "/" | "inc" | "dec" | "zero?" | "<" | ">" | "<=" | ">=" | "==" | "="))
         .filter(|&k| rb != 3 || matches!(FAST_PRIMS[k], "+" | "-" | "*"))
         .filter(|&k| match FAST_PRIMS[k] {
@@ -1840,8 +1937,7 @@ fn fast_prims(
                 let yn = b.ins().fcmp(FloatCC::Unordered, fy, fy);
                 let nan2 = b.ins().band(xn, yn);
                 let c0 = b.ins().bor(eq, nan2);
-                let v = boolv(b, c0);
-                on_value(b, v);
+                bool_out(b, c0);
             }
             cmp if unboxed => {
                 let fx = num(b, xa, true);
@@ -1854,8 +1950,7 @@ fn fast_prims(
                     _ => FloatCC::Equal,
                 };
                 let c0 = b.ins().fcmp(cc, fx, fy);
-                let v = boolv(b, c0);
-                on_value(b, v);
+                bool_out(b, c0);
             }
             cmp => {
                 let (fix, other) = (b.create_block(), b.create_block());
@@ -1871,8 +1966,7 @@ fn fast_prims(
                     _ => IntCC::Equal, // == and = on fixnums
                 };
                 let c0 = b.ins().icmp(cc, x, y);
-                let v = boolv(b, c0);
-                on_value(b, v);
+                bool_out(b, c0);
                 b.switch_to_block(other);
                 if cmp == "=" {
                     // (=: two floats are equal as numbers, or both NaN; a
@@ -1902,8 +1996,7 @@ fn fast_prims(
                     let yn = b.ins().fcmp(FloatCC::Unordered, fy, fy);
                     let nan2 = b.ins().band(xn, yn);
                     let c0 = b.ins().bor(eq, nan2);
-                    let v = boolv(b, c0);
-                    on_value(b, v);
+                    bool_out(b, c0);
                 } else {
                     // (as floats, NaN unordered: false; a fixnum converted
                     // only where that's exact, as numeric.rs's partial_cmp
@@ -1918,8 +2011,7 @@ fn fast_prims(
                         _ => FloatCC::Equal,
                     };
                     let c0 = b.ins().fcmp(cc, fx, fy);
-                    let v = boolv(b, c0);
-                    on_value(b, v);
+                    bool_out(b, c0);
                 }
             }
         }
@@ -2087,6 +2179,33 @@ extern "C" fn despecialise(proto: u64, cell: u64) -> u64 {
         DESPECIALISED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     0
+}
+
+/// The registers a proto's debug locals name: its own function's, and each
+/// inlined call's (vm::inline_records' [start end fname debug holes]).
+fn named_registers(proto: Value) -> RegSet {
+    let mut set = RegSet::default();
+    let mut add = |pairs: &mut dyn Iterator<Item = (Value, Value)>| {
+        for (_, r) in pairs {
+            if r.is_fixnum() && (0..256).contains(&r.as_fixnum()) {
+                set.insert(r.as_fixnum() as usize);
+            }
+        }
+    };
+    let dbg = proto.proto_locals();
+    if dbg.is(norn_rt::Kind::Array) {
+        for p in dbg.arr_slice().chunks(2) {
+            if p[0].is(norn_rt::Kind::Vector) && p[0].vec_count() >= 4 {
+                let d = p[0].vec_nth(3);
+                if d.is(norn_rt::Kind::Vector) {
+                    add(&mut (0..d.vec_count() / 2).map(|i| (d.vec_nth(2 * i), d.vec_nth(2 * i + 1))));
+                }
+            } else if p.len() == 2 {
+                add(&mut std::iter::once((p[0], p[1])));
+            }
+        }
+    }
+    set
 }
 
 /// The registers live as each instruction starts: read before written on
