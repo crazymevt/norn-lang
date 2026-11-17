@@ -1,0 +1,77 @@
+(ns chat.state
+  "Who's here and where: names, rooms and each room's recent history, in
+  refs, so that taking a name or leaving everything happens all at once."
+  (:require [norn.stm :as stm]))
+
+(def history-size "Messages a room remembers for those who join." 50)
+
+(defn new-state
+  "An empty chat: {:users (ref {name user}) :rooms (ref {room #{name}})
+  :history (ref {room [line…]})}; a user is {:name :outbox :kick :room}."
+  []
+  {:users (stm/ref {}) :rooms (stm/ref {}) :history (stm/ref {})})
+
+(defn valid-name? "Is s a name people may take? Letters, digits, - and _, 1–20." [s]
+  (boolean (re-matches #"[\p{L}\p{N}_-]{1,20}" s)))
+
+(defn valid-room? "Is s a room's name? # and then what a name may be." [s]
+  (boolean (re-matches #"#[\p{L}\p{N}_-]{1,20}" s)))
+
+(defn claim-name!
+  "Take name for a connection (its outbox, a channel, and kick, a function
+  that lets it go), giving up old (its name till now, or nil): whether it
+  was free. Its room follows it."
+  [st old name outbox kick]
+  (stm/dosync
+   (let [users @(:users st)]
+     (if (and (contains? users name) (not= old name))
+       false
+       (let [user (assoc (get users old {:room nil}) :name name :outbox outbox :kick kick)]
+         (stm/alter (:users st) (fn [us] (assoc (dissoc us old) name user)))
+         (when (and old (:room user))
+           (stm/alter (:rooms st) update (:room user) (fn [ms] (conj (disj ms old) name))))
+         true)))))
+
+(defn user "The user called name, or nil." [st name] (get @(:users st) name))
+
+(defn- leave-room [st name]
+  (when-let [room (:room (get (stm/ensure (:users st)) name))]
+    (stm/alter (:rooms st) (fn [rs] (let [ms (disj (get rs room) name)] (if (empty? ms) (dissoc rs room) (assoc rs room ms)))))
+    room))
+
+(defn join!
+  "Move name into room (leaving the one it was in): [room-left recent], the
+  room's recent history."
+  [st name room]
+  (stm/dosync
+   (let [left (leave-room st name)]
+     (stm/alter (:rooms st) update room (fnil conj #{}) name)
+     (stm/alter (:users st) assoc-in [name :room] room)
+     [left (get @(:history st) room [])])))
+
+(defn part!
+  "Take name out of its room: the room it left, or nil."
+  [st name]
+  (stm/dosync
+   (let [left (leave-room st name)]
+     (stm/alter (:users st) assoc-in [name :room] nil)
+     left)))
+
+(defn leave!
+  "Forget name altogether: the room it was in, or nil."
+  [st name]
+  (stm/dosync
+   (let [left (leave-room st name)]
+     (stm/alter (:users st) dissoc name)
+     left)))
+
+(defn members "Who's in room, sorted." [st room] (vec (sort (get @(:rooms st) room))))
+
+(defn rooms "Each room and how many are in it, by name." [st]
+  (into (sorted-map) (for [[r ms] @(:rooms st)] [r (count ms)])))
+
+(defn remember!
+  "Add line to room's history (the last history-size)."
+  [st room line]
+  (stm/dosync
+   (stm/alter (:history st) update room (fn [h] (let [h (conj (or h []) line)] (if (> (count h) history-size) (subvec h (- (count h) history-size)) h))))))

@@ -1,0 +1,4 @@
+/.norn/
+/dist/
+*.nimg
+.DS_Store
