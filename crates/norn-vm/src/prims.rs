@@ -277,6 +277,7 @@ prims! {
     "fiber-stats" 0 Some(0) => fiber_stats;
     // conditions, dynamic environment, debugger support
     "%dyn" 0 Some(0) => |vm, _| Ok(vm.dyn_env);
+    "%bind-map" 0 VAR => bind_map;
     "%set-dyn!" 1 Some(1) => |vm, a| { vm.dyn_env = a[0]; Ok(a[0]) };
     "%mark-dynamic!" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "%mark-dynamic!")?; a[0].var_set_flag(norn_rt::func::VAR_DYNBOUND); Ok(a[0]) };
     "%register-frame-kinds!" 5 Some(5) => register_frame_kinds;
@@ -529,6 +530,7 @@ prims! {
     "%register-builtin!" 2 Some(2) => |_, a| { expect(a[1], Kind::Class, "%register-builtin!")?; let n = text(a[0]); if norn_rt::clos::register_builtin(&n, a[1]) { Ok(a[1]) } else { Err(Error::new(format!("Unknown builtin class: {n}"))) } };
     "%bump-class-epoch" 0 Some(0) => |_, _| { norn_rt::clos::bump_class_epoch(); Ok(Value::NIL) };
     "%instance" 2 Some(2) => instance_new;
+    "%make-fast" 2 Some(2) => make_fast;
     // (MOP hooks, M9 part 9.5: bits of HOOK_*, set on a class, seen by its subclasses)
     // (x printed as a record, whatever print-object says: its default)
     "%pr-plain" 1 Some(1) => |vm, a| { forced(a)?; Ok(str_new(&mut vm.m, &pr_str(a[0], true))) };
@@ -945,12 +947,28 @@ fn to_vec(vm: &mut Vm, v: Value) -> Result<Vec<Value>> {
 // collections never pay for the check beyond their kind.
 
 static COLLECTION_OP: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+static COLLECTION_COUNT: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+static COLLECTION_NTH: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
 static COLLECTION_SEQ: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
 
 /// Hand primitive op's call on an instance to norn.core/%collection-op,
 /// which the interpreter runs in its place, in the fiber: the methods it
 /// calls can signal, be caught and park like any other call.
 fn collection_op(vm: &mut Vm, op: &str, a: &[Value]) -> Result<Value> {
+    // (count, and nth without a default: straight to the generic function,
+    // M10 part 6.3; the rest, and nth with a default, which is checked
+    // against the count first, through %collection-op)
+    let direct: Option<(&str, &'static std::sync::OnceLock<Value>)> = match (op, a.len()) {
+        ("count", 1) => Some(("collection-count", &COLLECTION_COUNT)),
+        ("nth", 2) => Some(("collection-nth", &COLLECTION_NTH)),
+        _ => None,
+    };
+    if let Some((name, cell)) = direct {
+        let var = vm.core_fn(name, cell);
+        let f = if var.is(Kind::Var) { var.var_root() } else { var };
+        let args = vec_from_slice(&mut vm.m, a);
+        return Err(Error::call(f, args));
+    }
     let var = vm.core_fn("%collection-op", &COLLECTION_OP);
     let f = if var.is(Kind::Var) { var.var_root() } else { var };
     let mut args = Vec::with_capacity(a.len() + 1);
@@ -1543,6 +1561,25 @@ fn nth(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     }
 }
 
+/// `(%bind-map var value …)`: the dynamic environment with those bindings
+/// added (binding's), each var marked as dynamically bound. Natively since
+/// M10 part 6.1 (a Norn loop of assoc was two thirds of a binding). One
+/// vector of the pairs is taken too: what binding expanded to before, which
+/// the module cache may hold.
+fn bind_map(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let pairs: Vec<Value> = if a.len() == 1 && a[0].is(Kind::Vector) { (0..a[0].vec_count()).map(|i| a[0].vec_nth(i)).collect() } else { a.to_vec() };
+    if pairs.len() % 2 != 0 {
+        return Err(Error::new("%bind-map expects var/value pairs"));
+    }
+    let mut m = if vm.dyn_env.is_nil() { map_empty() } else { vm.dyn_env };
+    for kv in pairs.chunks(2) {
+        expect(kv[0], Kind::Var, "%bind-map")?;
+        kv[0].var_set_flag(norn_rt::func::VAR_DYNBOUND);
+        m = map_assoc(&mut vm.m, m, kv[0], kv[1]);
+    }
+    Ok(m)
+}
+
 fn assoc(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     if a.len() % 2 != 1 {
         return Err(Error::of("TypeError", "assoc expects a collection and key/value pairs"));
@@ -1910,6 +1947,67 @@ fn class_set(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     }
     a[0].class_set_field(f, a[2]);
     Ok(a[2])
+}
+
+static STANDARD_OBJECT: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+static K_INITARG: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+static K_INITVALUE: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+static K_INITFORM: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+static K_REQUIRED: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+
+/// `(%make-fast c initargs)`: an instance of standard class c from :initarg
+/// value pairs (a seq), natively, when that's plain (M10 part 6.2): every
+/// pair names a slot (the last one given wins), and each slot not given has
+/// a constant default (`:initvalue`, from a literal :initform) or none and
+/// isn't required. nil otherwise, and %make-from does it: it calls
+/// initforms in the fiber (so their conditions reach its handlers) and says
+/// what's wrong.
+fn make_fast(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    use norn_rt::clos::class::*;
+    let c = a[0];
+    if !c.is(Kind::Class) || c.word(BUILTIN) != NOT_BUILTIN {
+        return Ok(Value::NIL);
+    }
+    let so = vm.core_fn("StandardObject", &STANDARD_OBJECT);
+    let so = if so.is(Kind::Var) { so.var_root() } else { so };
+    let cpl = c.class_field(CPL);
+    if !(0..cpl.vec_count()).any(|i| cpl.vec_nth(i) == so) {
+        return Ok(Value::NIL);
+    }
+    let args = to_vec(vm, a[1])?;
+    if args.len() % 2 != 0 {
+        return Ok(Value::NIL);
+    }
+    let kw = |vm: &mut Vm, cell: &'static std::sync::OnceLock<Value>, name: &str| *cell.get_or_init(|| rt().keyword(&mut vm.m, None, name));
+    let (k_initarg, k_initvalue) = (kw(vm, &K_INITARG, "initarg"), kw(vm, &K_INITVALUE, "initvalue"));
+    let (k_initform, k_required) = (kw(vm, &K_INITFORM, "initform"), kw(vm, &K_REQUIRED, "required"));
+    let slots = c.class_field(SLOTS);
+    let n = slots.vec_count();
+    if !slots.is(Kind::Vector) || norn_rt::clos::layout_len(c.class_field(LAYOUT)) != n {
+        return Ok(Value::NIL);
+    }
+    let initargs: Vec<Value> = (0..n).map(|i| get(slots.vec_nth(i), k_initarg).unwrap_or(Value::NIL)).collect();
+    if args.chunks(2).any(|kv| kv[0].is_nil() || !initargs.contains(&kv[0])) {
+        return Ok(Value::NIL);
+    }
+    let mut vals = Vec::with_capacity(n);
+    for (i, &ia) in initargs.iter().enumerate() {
+        if !ia.is_nil()
+            && let Some(kv) = args.chunks(2).rev().find(|kv| kv[0] == ia)
+        {
+            vals.push(kv[1]);
+            continue;
+        }
+        let sd = slots.vec_nth(i);
+        if let Some(v) = get(sd, k_initvalue) {
+            vals.push(v);
+        } else if get(sd, k_initform).is_some() || get(sd, k_required).is_some_and(|r| !r.is_nil() && r != Value::FALSE) {
+            return Ok(Value::NIL);
+        } else {
+            vals.push(Value::NIL);
+        }
+    }
+    Ok(norn_rt::clos::instance_new(&mut vm.m, c, &vals, vm.current))
 }
 
 fn instance_new(vm: &mut Vm, a: &[Value]) -> Result<Value> {

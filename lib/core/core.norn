@@ -909,6 +909,12 @@
         k (keyword (name sname))
         sd {:name k :initarg (get o :initarg k)}
         sd (if (contains? o :initform) (assoc sd :initform (list 'fn* [] (:initform o))) sd)
+        ;; (a literal's value too, which %make-fast uses without a call)
+        sd (let [f (:initform o)]
+             (if (and (contains? o :initform)
+                      (or (nil? f) (boolean? f) (number? f) (string? f) (keyword? f) (char? f)))
+               (assoc sd :initvalue f)
+               sd))
         sd (if (:reader o) (assoc sd :reader (list 'quote (:reader o))) sd)
         sd (if (:required o) (assoc sd :required true) sd)
         sd (if (:type o) (assoc sd :type (list 'quote (:type o))) sd)
@@ -952,12 +958,16 @@
          ~@readers
          (var ~cname))))
 
-(declare make-instance %check-slot-types)
+(declare make-instance %check-slot-types %make-slow)
 
 (defn %make-from
   "An instance of class c from initargs (a seq of :initarg value pairs),
   as the standard make-instance makes it."
   [c initargs]
+  ;; (natively when it's plain: M10 part 6.2)
+  (or (%make-fast c initargs) (%make-slow c initargs)))
+
+(defn- %make-slow [c initargs]
   (when-not (and (class? c) (subclass? c StandardObject))
     (error "Can't make an instance of" (pr-str (if (class? c) (class-name c) c))))
   (when (odd? (count initargs))
@@ -1405,19 +1415,14 @@
           (= mode :call) (apply x args)
           :else (%die x args))))
 
-(defn %bind-map [pairs]
-  (loop [m (or (%dyn) {}) s (seq pairs)]
-    (if s
-      (do (%mark-dynamic! (first s)) (recur (assoc m (first s) (second s)) (nnext s)))
-      m)))
-
 (defmacro binding
   "Bind vars for the dynamic extent of body, in this fiber and in every fiber
   it spawns (conveyance)."
   [bindings & body]
   (let [pairs (loop [s (seq bindings) acc []]
                 (if s (recur (nnext s) (conj (conj acc (list 'var (first s))) (second s))) acc))]
-    `(%with-bindings* (%bind-map [~@pairs]) (fn* [] ~@body) (%dyn))))
+    ;; (%bind-map: a primitive since M10 part 6.1)
+    `(%with-bindings* (%bind-map ~@pairs) (fn* [] ~@body) (%dyn))))
 
 (defmacro catch-tag
   "(catch-tag tag body…): body's value; but if (throw-tag tag v) is
@@ -1530,12 +1535,15 @@
         msg (or (:message c) (str (class-name (class-of c))))]
     (if loc (str loc ": " msg) msg)))
 
-;; Each handler is [class fn owner]. Handlers that unwind (handler-case) can
-;; only reach their catch point in the fiber that established them, so other
+;; Each handler is [class fn owner], or a handler-case clause's [class nil
+;; owner tag i]: signal throws [%caught i condition] to tag itself (M10 part
+;; 6.1: no closure per clause). Handlers that unwind (handler-case) can only
+;; reach their catch point in the fiber that established them, so other
 ;; fibers skip them; handler-bind handlers (owner nil) are conveyed.
 (def *handlers*
   "The active condition handlers, innermost first, as handler-bind and
-  handler-case establish them (each [class handler owner]). Internal, but
+  handler-case establish them (each [class handler owner], or [class nil
+  owner tag i]). Internal, but
   a test runner binds it to nil to run code with no handlers outside it."
   nil)
 (def *restarts* nil)
@@ -1549,6 +1557,12 @@
 
 (defn- %visible? [owner] (or (nil? owner) (identical? owner (current-fiber))))
 
+(def %caught
+  "What a handler-case's catch point receives: [%caught i condition] (any
+  value it is otherwise is the form's own: M10 part 6.1, no [:ok v] for
+  every try). Internal."
+  (atom nil))
+
 (defn signal
   "Offer condition c to the active handlers, innermost first. A handler
   declines by returning; while it runs, only the handlers outside it are active."
@@ -1557,7 +1571,9 @@
     (when hs
       (let [h (first hs) more (next hs)]
         (when (and (%visible? (nth h 2)) (instance? (nth h 0) c))
-          (binding [*handlers* more] ((nth h 1) c)))
+          (if-let [f (nth h 1)]
+            (binding [*handlers* more] (f c))
+            (throw-tag (nth h 3) [%caught (nth h 4) c])))
         (recur more))))
   nil)
 
@@ -1615,8 +1631,11 @@
 
 (defn %with-handlers [entries thunk]
   ;; (a list, consed onto the handlers outside: signal walks it, and a lazy
-  ;; concat per handler-bind made that slow)
-  (binding [*handlers* (reduce (fn [acc e] (cons e acc)) *handlers* (reverse* entries))] (thunk)))
+  ;; concat per handler-bind made that slow; the first entry innermost)
+  (%with-bindings* (%bind-map (var *handlers*)
+                              (loop [i (dec (count entries)) acc *handlers*]
+                                (if (neg? i) acc (recur (dec i) (cons (nth entries i) acc)))))
+                   thunk (%dyn)))
 
 (defmacro handler-bind
   "(handler-bind [Class handler …] body…): call handler on matching conditions
@@ -1624,17 +1643,18 @@
   [bindings & body]
   `(%with-handlers [~@(map (fn [p] `[~(first p) ~(second p) nil]) (partition 2 bindings))] (fn* [] ~@body)))
 
-(defn %handler-case [thunk classes]
+(defn %handler-case
+  "thunk's value, or [%caught i c] when a condition c of the i-th of classes
+  is signalled in it (handler-case's expansion tells them apart)."
+  [thunk classes]
   (let [tag (atom nil) ; (any new object: a catch tag is matched by identity)
         me (current-fiber)
-        n (count classes)]
-    (%catch* tag
-             (fn* [] [:ok (%with-handlers (loop [i 0 out []]
-                                            (if (< i n)
-                                              (recur (inc i) (conj out [(nth classes i) (fn [c] (throw-tag tag [i c])) me]))
-                                              out))
-                                          thunk)])
-             (%dyn))))
+        n (count classes)
+        entries (loop [i 0 out (transient [])]
+                  (if (< i n)
+                    (recur (inc i) (conj! out [(nth classes i) nil me tag i]))
+                    (persistent! out)))]
+    (%catch* tag (fn* [] (%with-handlers entries thunk)) (%dyn))))
 
 (defmacro handler-case
   "(handler-case form (Class [e] body…)…): if a matching condition is
@@ -1643,12 +1663,13 @@
   (let [r (gensym "r")
         clauses (vec clauses)]
     `(let* [~r (%handler-case (fn* [] ~form) [~@(map first clauses)])]
-       (cond (= (first ~r) :ok) (second ~r)
-             ~@(apply concat
-                      (map (fn [i c]
-                             [`(= (first ~r) ~i)
-                              `(let* [~@(let [ps (second c)] (if (seq ps) [(first ps) `(second ~r)] []))] ~@(drop 2 c))])
-                           (range (count clauses)) clauses))))))
+       (if (if (vector? ~r) (if (= 3 (count ~r)) (identical? (nth ~r 0) %caught) false) false)
+         (cond ~@(apply concat
+                        (map (fn [i c]
+                               [`(= (nth ~r 1) ~i)
+                                `(let* [~@(let [ps (second c)] (if (seq ps) [(first ps) `(nth ~r 2)] []))] ~@(drop 2 c))])
+                             (range (count clauses)) clauses)))
+         ~r))))
 
 (defmacro try
   "Clojure-style: (try body… (catch Class e handler…)… (finally cleanup…))."

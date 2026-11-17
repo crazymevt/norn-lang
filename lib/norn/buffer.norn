@@ -147,7 +147,7 @@
     (do
       (when-not (and (integer? i) (<= 0 i) (< i (count buf)))
         (error IndexError :message "Buffer index out of bounds" :index i))
-      (let [{:keys [element-type order data]} (instance->map buf) width (width-of element-type)
+      (let [element-type (:element-type buf) order (:order buf) data (:data buf) width (width-of element-type)
             offset (* i width)]
         (if (contains? float-types element-type)
           (b/read-float data offset width order)

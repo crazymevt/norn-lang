@@ -121,6 +121,16 @@ baseline compared.
     still holds what it held when the compiler was loaded). Redefining
     one (which unseals norn.core with a warning) affects code compiled
     after it, not tests already decided.
+12. **Part 6 fixes the runtime's protocols, not escape analysis first**
+    (decided when it started): profiling showed `try`, `binding`, making
+    an instance and library collections spend their time and allocate in
+    core.norn's own protocol functions (`%bind-map`, `%handler-case`,
+    `%with-handlers`, `%make-from`, `%collection-op`), which a compiler
+    pass over user code wouldn't reach. Escape analysis only where user
+    code still allocates (keyword arguments' maps), if needed after.
+13. **Inline caches for generic calls and slot reads** (decided when part
+    6 started); var reads stay as part 3 left them (a load and a
+    compare).
 
 ## Status
 
@@ -376,6 +386,54 @@ baseline compared.
   ms: Norn's tier 1 is 15× either. What's left is per operation in the
   loop: a var read and a callee check on each arithmetic call, the
   safepoint, floats kept on the stack.
+
+- **6, the cheap paths: started (2026-11-17).** At the start (tier 1):
+  `try` with no error 959 ns (1.39× the baseline), `binding` 300 ns
+  (1.30×), making an instance 1,381 ns (1.28×), `count` of a library
+  collection 499 ns (1.27×), `nth` 1,379 ns (1.56×), a generic function
+  with one method 53 ns (0.98×), a slot read 14 ns (0.94×). Where the time
+  goes (norn.prof): `binding`, two thirds in `%bind-map` (a Norn loop of
+  assoc and marking each var dynamic); `try`, the same for `*handlers*`,
+  plus an atom as the catch tag, a closure per catch clause and an `[:ok
+  v]` vector; an instance, `%make-from` (a map of the initargs, each
+  checked against the slots with `some`, initform closures); a library
+  collection, the primitive handing the call to `%collection-op`
+  (variadic, a `case` on a keyword) which calls the generic function. In
+  steps (decisions 12, 13):
+  - **6.1, `binding` and `try`: done.** `%bind-map` is a primitive
+    (variadic: `binding` no longer builds a vector for it; one vector
+    still taken, as cached expansions may hold). `handler-case`'s clauses
+    are data in the handler list, `[class nil owner tag i]`, which `signal`
+    throws to itself (no closure per clause); a normal value comes back as
+    it is, a caught condition as `[%caught i c]` (no `[:ok v]` per try);
+    `%with-handlers` conses its entries on without `reduce` or `reverse*`
+    and binds without a thunk of its own. (The module cache's key has the
+    build id: no expansion of the old protocol meets the new one.)
+    **Measured** (tier 1 against the baseline): `binding` 300 → 196 ns
+    (2.00×; 2.41× at tier 0), `try` with no error 959 → 506 ns (2.64×;
+    1.84× at tier 0), an error signalled and caught 3,452 → 2,553 ns
+    (1.70×).
+  - **6.2, making an instance: done.** `%make-fast` makes a plain
+    `(Class :k v…)` natively: a standard class, every pair naming a slot
+    (the last given wins, as before), each slot not given with a constant
+    default or none and not required. A literal `:initform` is recorded as
+    `:initvalue` too. Anything else (an initform to run, a required slot
+    missing, an unknown initarg) returns nil and `%make-from` does it as
+    before, calling initforms in the fiber (a primitive calling them would
+    keep their conditions from its handlers) and saying what's wrong.
+    **Measured:** 1,381 → 225 ns (7.86×; 7.15× at tier 0). Tests:
+    `tests/norn/make_test.norn`.
+  - **6.3, library collections: done.** `count`, and `nth` without a
+    default, hand the call straight to `collection-count` and
+    `collection-nth` (the rest, and `nth` with a default, still through
+    `%collection-op`). norn.buffer's `nth` read three slots by making the
+    instance a map (`instance->map`) each call: now it reads them.
+    **Measured:** `count` of a Buffer 499 → 222 ns (2.85×, short of 3×:
+    what's left is the generic function's dispatch, 6.4's), `nth` 1,379 →
+    602 ns (3.58×).
+  - **6.4, inline caches:** generic-function dispatch at the call site, and
+    slot reads keyed on the instance's layout.
+  - **6.5, keyword arguments' maps,** if still worth it.
 
 ## Open after part 4 (2026-11-16)
 

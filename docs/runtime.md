@@ -1234,6 +1234,18 @@ aren't typed (they change from turn to turn). norn.core's predicates
 and primitives are taken as they are when compiling, while each var
 holds what it did when the compiler was loaded (decision 11):
 redefining one affects code compiled after it.
+
+**The cheap paths, as built in M10 part 6.** `binding`'s map is made by a
+primitive, `%bind-map` (var value …), which marks each var dynamic. A
+`handler-case` clause is data in `*handlers*`, `[class nil owner tag i]`,
+which `signal` throws to itself; its form's value comes back as it is, a
+caught condition as `[%caught i condition]`, `%caught` a private object
+no other value can be. A plain `(Class :k v…)` is made natively
+(`%make-fast`: a standard class, the pairs all naming slots, every other
+slot's default constant, recorded from a literal `:initform` as
+`:initvalue`); anything else goes through `%make-from`, which runs
+initforms in the fiber. `count`, and `nth` without a default, of a library
+collection call `collection-count` and `collection-nth` directly.
 - **Tier 1's fast primitives** grew (behind the same check that the
   callee is the primitive): `count` and `nth` of a vector (the trie
   walked natively), `first` of a list, `identical?`, `nil?`, `some?`,
