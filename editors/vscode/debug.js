@@ -1,6 +1,6 @@
-// Part 6: Norn's debugger in VS Code's, through the Debug Adapter Protocol,
+// Part 6: Skein's debugger in VS Code's, through the Debug Adapter Protocol,
 // an adapter inside the extension. A REPL's evaluation that fails parks
-// its fiber in Norn's debugger (a :debug event); this starts a debug
+// its fiber in Skein's debugger (a :debug event); this starts a debug
 // session for the REPL, in which each parked fiber is a thread stopped on
 // an exception:
 //
@@ -13,7 +13,7 @@
 //   Continue    picks one of the condition's restarts (:restart)
 //   Stop        aborts the parked evaluations (:abort)
 //
-// Norn's debugger stops on conditions, not on lines: no breakpoints, no
+// Skein's debugger stops on conditions, not on lines: no breakpoints, no
 // stepping.
 
 'use strict';
@@ -22,13 +22,13 @@ const vscode = require('vscode');
 
 const FRAMES = 10000; // a frame's DAP id: fiber × FRAMES + its number
 
-class NornDebugAdapter {
+class SkeinDebugAdapter {
   constructor(repl) {
     this.repl = repl;
     this.seq = 1;
     this.emitter = new vscode.EventEmitter();
     this.onDidSendMessage = this.emitter.event;
-    /** fiber → its frames as :backtrace gave them (numbered as Norn does). */
+    /** fiber → its frames as :backtrace gave them (numbered as Skein does). */
     this.frames = new Map();
     /** Ended (terminated sent): a later stop needs a session of its own. */
     this.done = false;
@@ -159,7 +159,7 @@ class NornDebugAdapter {
         if (!picked) return this.respond(req, undefined, 'No restart chosen');
         let args;
         if (picked.label === 'use-value' || picked.label === 'store-value') {
-          args = await vscode.window.showInputBox({ title: picked.description, prompt: 'The value (Norn)' });
+          args = await vscode.window.showInputBox({ title: picked.description, prompt: 'The value (Skein)' });
           if (args === undefined) return this.respond(req, undefined, 'No value given');
         }
         const r = await this.repl.request({ op: 'restart', fiber: a.threadId, restart: picked.index, args });
@@ -169,7 +169,7 @@ class NornDebugAdapter {
       case 'stepIn':
       case 'stepOut':
       case 'pause':
-        return this.respond(req, undefined, "Norn's debugger stops on conditions and doesn't step: Continue picks a restart.");
+        return this.respond(req, undefined, "Skein's debugger stops on conditions and doesn't step: Continue picks a restart.");
       case 'terminate':
       case 'disconnect':
         if (req.command === 'terminate' || (a.terminateDebuggee !== false && req.command === 'disconnect')) {
@@ -196,11 +196,11 @@ function registerDebugging(context, replFor) {
   // project root → its session's adapter (or {done: false} while it starts)
   const running = new Map();
   context.subscriptions.push(
-    vscode.debug.registerDebugAdapterDescriptorFactory('norn', {
+    vscode.debug.registerDebugAdapterDescriptorFactory('skein', {
       createDebugAdapterDescriptor(session) {
-        const repl = replFor(session.configuration.nornRoot);
+        const repl = replFor(session.configuration.skeinRoot);
         if (!repl) return undefined;
-        const adapter = new NornDebugAdapter(repl);
+        const adapter = new SkeinDebugAdapter(repl);
         running.set(repl.root, adapter);
         return new vscode.DebugAdapterInlineImplementation(adapter);
       },
@@ -215,9 +215,9 @@ function registerDebugging(context, replFor) {
       running.set(repl.root, { done: false });
       const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(repl.root));
       vscode.debug
-        .startDebugging(folder, { type: 'norn', request: 'attach', name: `Norn (${repl.root.split('/').pop()})`, nornRoot: repl.root })
+        .startDebugging(folder, { type: 'skein', request: 'attach', name: `Skein (${repl.root.split('/').pop()})`, skeinRoot: repl.root })
         .then((ok) => ok || running.delete(repl.root), () => running.delete(repl.root));
     });
 }
 
-module.exports = { registerDebugging, NornDebugAdapter };
+module.exports = { registerDebugging, SkeinDebugAdapter };

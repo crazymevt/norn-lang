@@ -1,0 +1,94 @@
+;;;; Signing skein.string, skein.math, skein.regex and skein.bytes (M10 part
+;;;; 5.4) changed what they refuse, nothing else. Every public function is
+;;;; called on edge inputs two ways: as itself (a function value applied:
+;;;; no contract is checked), and from here through its call-site wrapper
+;;;; (the checks a caller in another module gets). Where the function gives
+;;;; a value, the checked call must give the same; where it fails, the
+;;;; checked call must fail too (a contract error is fine: an earlier,
+;;;; clearer one). A signature that refused something the function took
+;;;; would show here. Run at both tiers.
+
+(ns signed-test
+  (:require [skein.test :refer [is deftest testing]]
+            [skein.string] [skein.math] [skein.regex] [skein.bytes]))
+
+(def inputs
+  "Values of every kind the four libraries take, and some they don't."
+  [nil "" "abc" " a b\n" "héllo wörld" \a 0 1 -2 3 1.5 ##NaN 1/3 :k 'sym [] ["x" 1] {} #"b" (bytes [104 105 255])
+   (fn [x] x) true])
+
+(def few
+  "For three arguments: fewer, or the calls would be too many."
+  [nil "abc" \a 0 2 1.5 1/3 :k :be ["x" 1] #"b" (bytes [104 105]) (fn [x] x)])
+
+(def fewest
+  "For four."
+  [nil "abc" 0 2 1.5 :be :le (bytes [104 105 106 107])])
+
+(def intended
+  "Calls a signature refuses that gave a value before, but only by
+  accident: by function, a test of the arguments."
+  {;; (it compared by count and =: a vector, map or bytes gave false)
+   'skein.string/ends-with? (fn [[s suffix]] (not (and (or (nil? s) (string? s)) (or (nil? suffix) (string? suffix)))))
+   ;; (with an ellipsis, s that already fit came back as it was, whatever
+   ;; it was, and cols was only compared; without one it must be a string
+   ;; and an integer)
+   'skein.string/truncate (fn [[s cols]] (not (and (string? s) (integer? cols))))
+   ;; (an empty string summed, or none of a string's characters taken: a
+   ;; collection of numbers is meant)
+   'skein.math/sum (fn [[xs]] (string? xs))
+   'skein.math/product (fn [[xs]] (string? xs))
+   'skein.math/mean (fn [[xs]] (string? xs))
+   'skein.math/median (fn [[xs]] (string? xs))
+   'skein.math/variance (fn [[xs]] (string? xs))
+   'skein.math/std-dev (fn [[xs]] (string? xs))
+   'skein.math/percentile (fn [[xs]] (string? xs))
+   ;; (a value that isn't a decoder's state read as one with nothing pending)
+   'skein.bytes/finish-decoder (fn [[state]] (not (map? state)))})
+
+(defn- outcome
+  "What applying f to args gives: [:value its printed form and class], or
+  :error."
+  [f args]
+  (try (let [v (apply f args)] [:value (pr-str v) (class-of v)])
+       (catch Error _ :error)))
+
+(defn- checked-call
+  "A function of n arguments calling var v's function from this module, so
+  through its call-site checks."
+  [v n]
+  (let [args (mapv (fn [i] (symbol (str "a" i))) (range n))]
+    (let [saved (current-ns)]
+      (in-ns 'signed-test)
+      (try (eval (list 'fn args (cons (symbol (%var-name v)) args)))
+           (finally (in-ns (symbol (str saved))))))))
+
+(defn- arg-lists [n]
+  (case n
+    0 [[]]
+    1 (mapv vector inputs)
+    2 (vec (for [a inputs b inputs] [a b]))
+    3 (vec (for [a few b few c few] [a b c]))
+    4 (vec (for [a fewest b fewest c fewest d fewest] [a b c d]))))
+
+(defn- disagreements
+  "The calls of ns's public functions whose checked outcome differs from
+  the function's own: [name args own checked]."
+  [ns]
+  (vec (for [[s v] (sort-by (fn [[s _]] (str s)) (ns-publics ns))
+             :let [f (var-get v)]
+             :when (fn? f)
+             n (range 5)
+             :let [g (checked-call v n)]
+             args (arg-lists n)
+             :let [own (outcome f args)
+                   checked (outcome g args)]
+             :when (not (if (= own :error) (= checked :error) (= own checked)))
+             :when (not (and (= checked :error) (when-let [t (get intended (symbol (%var-name v)))] (t args))))]
+         [s args own checked])))
+
+(deftest signing-refuses-only-what-failed-anyway
+  (doseq [ns ['skein.string 'skein.math 'skein.regex 'skein.bytes]]
+    (testing (str ns)
+      (let [d (disagreements ns)]
+        (is (= [] (vec (take 10 d))) (str (count d) " calls disagree"))))))

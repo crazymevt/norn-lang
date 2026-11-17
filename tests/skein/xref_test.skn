@@ -1,0 +1,55 @@
+;;;; skein.xref: callees, callers, references and reachable, read from
+;;;; compiled code (nested functions, generic methods and data included).
+
+(ns xref-test
+  (:require [skein.json :as json]
+            [skein.test :refer [deftest is testing]]
+            [skein.xref :as x]))
+
+(defn helper [n] (* 2 n))
+(defn twice-all [xs] (map (fn [n] (helper n)) xs))
+(def handlers {:twice twice-all :plain [identity]})
+(defmacro doubled [n] `(helper ~n))
+(defn uses-macro [n] (doubled n))
+(defgeneric area [shape])
+(defclass Square () ((side)))
+(defmethod area ((s Square)) (helper (:side s)))
+(defn loner [] 42)
+(defn writes [x] (json/write-string x))
+(defn countdown [n] (if (pos? n) (countdown (dec n)) :done))
+
+(deftest callees
+  (is (= [#'skein.core/map #'xref-test/helper] (x/callees #'twice-all)) "nested functions count")
+  (is (= [#'skein.core/map #'xref-test/helper] (x/callees #'handlers))
+      "a function in data: what its code refers to (it's a value there, not a var)")
+  (is (= [#'xref-test/helper] (x/callees #'uses-macro)) "a macro as it expanded")
+  (is (some #{#'xref-test/helper} (x/callees #'area)) "a generic function's methods")
+  (is (= [] (x/callees #'loner)))
+  (is (= [#'skein.json/write-string] (x/callees #'writes))
+      "a function with a contract, not the wrapper that checks it")
+  (is (not-any? #{#'xref-test/countdown} (x/callees #'countdown)) "itself left out"))
+
+(defn- of-this-ns
+  "What callers found here, these tests (which name the vars) left out."
+  [vs]
+  (vec (remove (set (map (fn [s] (resolve (symbol "xref-test" s))) ["callees" "callers" "reachable"]))
+               (filter (fn [v] (= "xref-test" (namespace (symbol (subs (str v) 2))))) vs))))
+
+(deftest callers
+  (is (= [#'xref-test/area #'xref-test/handlers #'xref-test/twice-all #'xref-test/uses-macro]
+         (of-this-ns (x/callers #'helper))))
+  (is (= [] (of-this-ns (x/callers (resolve 'xref-test/loner)))))
+  (is (= [#'xref-test/writes] (of-this-ns (x/callers #'json/write-string))))
+  (testing "a redefinition shows at once"
+    (alter-var-root #'loner (constantly (fn [] (helper 21))))
+    (is (some #{#'xref-test/loner} (x/callers #'helper)))
+    (alter-var-root #'loner (constantly (fn [] 42)))
+    (is (not-any? #{#'xref-test/loner} (x/callers #'helper)))))
+
+(deftest reachable
+  (let [r (x/reachable [#'handlers])]
+    (is (every? r [#'handlers #'helper #'skein.core/map]))
+    (is (not (r #'loner))))
+  (let [refs (x/references)]
+    (is (= (x/reachable [#'uses-macro]) (x/reachable [#'uses-macro] refs)))
+    (is (not (contains? refs #'loner)) "what refers to nothing is left out")))

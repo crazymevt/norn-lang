@@ -1,12 +1,12 @@
-# The Norn Book
+# The Skein Book
 
 [Documentation home](../README.md)
 
-A guide to programming in Norn, from the first expression at the REPL to a
+A guide to programming in Skein, from the first expression at the REPL to a
 packaged application. It teaches the language and its standard libraries
 in order, with examples you can run. For complete lists of functions and
 options, use the [language reference](../reference/README.md) and
-`norn doc`.
+`skein doc`.
 
 ## Part I · The language
 
@@ -53,19 +53,19 @@ options, use the [language reference](../reference/README.md) and
 
 ## Appendix
 
-29. [Norn for Lispers](29-norn-for-lispers.md)
+29. [Skein for Lispers](29-skein-for-lispers.md)
 
 ## Running the examples
 
 Every `clojure` block in the book runs under `check.py`, which compares
 each result with the `; =>`, `; prints:` or `; !!` comment after it. The
-blocks of a chapter run in order in one fresh `norn` process, in a
+blocks of a chapter run in order in one fresh `skein` process, in a
 temporary folder.
 
 ```sh
 python3 docs/book/check.py                       # every chapter
 python3 docs/book/check.py docs/book/16-channels.md
-python3 docs/book/check.py --norn path/to/norn   # a different build
+python3 docs/book/check.py --skein path/to/skein   # a different build
 ```
 
 A block that can't run unattended, because it needs the network or a

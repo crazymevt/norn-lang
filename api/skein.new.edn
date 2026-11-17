@@ -1,0 +1,6 @@
+;; skein.new's public interface, recorded by skein api-diff --record.
+{
+ "create!" {:arglists ["[name dir & {:or {git true}, :keys [app lib git]}]"], :kind :function, :signature [{:result "String", :args ["String" "String"], :rest "Any"}]}
+ "files" {:arglists ["[name app]" "[name app lib]"], :kind :function, :signature [{:result "Map", :args ["String" "Boolean"]} {:result "Map", :args ["String" "Boolean" "Boolean"]}]}
+ "main" {:arglists ["[& args]"], :kind :function}
+}

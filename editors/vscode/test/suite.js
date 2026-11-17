@@ -1,5 +1,5 @@
 // The extension's test, run inside the editor by test/run.js: each
-// feature's answer, a line each, to the file NORN_TEST_RESULTS names.
+// feature's answer, a line each, to the file SKEIN_TEST_RESULTS names.
 
 'use strict';
 
@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const vscode = require('vscode');
 
-const say = (line) => fs.appendFileSync(process.env.NORN_TEST_RESULTS, line + '\n');
+const say = (line) => fs.appendFileSync(process.env.SKEIN_TEST_RESULTS, line + '\n');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Wait (at most ms) for f to give something truthy. */
@@ -49,11 +49,11 @@ async function run() {
 }
 
 async function steps() {
-  await vscode.workspace.getConfiguration('norn').update('path', process.env.NORN_TEST_NORN, vscode.ConfigurationTarget.Global);
-  const file = vscode.Uri.file(path.join(process.env.NORN_TEST_PROJECT, 'src/geo/shapes.norn'));
+  await vscode.workspace.getConfiguration('skein').update('path', process.env.SKEIN_TEST_SKEIN, vscode.ConfigurationTarget.Global);
+  const file = vscode.Uri.file(path.join(process.env.SKEIN_TEST_PROJECT, 'src/geo/shapes.skn'));
   const doc = await vscode.workspace.openTextDocument(file);
   let editor = await vscode.window.showTextDocument(doc);
-  const ext = vscode.extensions.getExtension('norn.norn');
+  const ext = vscode.extensions.getExtension('skein.skein');
   const api = await ext.activate();
   await api.clientFor(file);
   say('activated');
@@ -99,10 +99,10 @@ async function steps() {
 
   await replaceAll(editor, '(ns geo.shapes)\n\n(+ 40\n   2)\n');
   editor.selection = new vscode.Selection(3, 2, 3, 2);
-  say(`eval: ${await vscode.commands.executeCommand('norn.evalTopLevel')}`);
+  say(`eval: ${await vscode.commands.executeCommand('skein.evalTopLevel')}`);
 
   // (a second project: a client of its own)
-  const file2 = vscode.Uri.file(path.join(process.env.NORN_TEST_OTHER, 'src/geo/shapes.norn'));
+  const file2 = vscode.Uri.file(path.join(process.env.SKEIN_TEST_OTHER, 'src/geo/shapes.skn'));
   const doc2 = await vscode.workspace.openTextDocument(file2);
   await vscode.window.showTextDocument(doc2);
   await api.clientFor(file2);
@@ -120,13 +120,13 @@ async function steps() {
   await replaceAll(editor, '(ns geo.shapes)\n\n(+ 40 2)\n\n(defn half [x] (when (odd? x) (error "odd:" x)) (quot x 2))\n\n(half 3)\n\n(half 5)\n');
   const evalLine = async (n) => {
     editor.selection = new vscode.Selection(n - 1, 1, n - 1, 1);
-    return vscode.commands.executeCommand('norn.evalTopLevel');
+    return vscode.commands.executeCommand('skein.evalTopLevel');
   };
   say(`repl eval: ${await evalLine(3)}`);
   say(`repl define: ${await evalLine(5)}`);
 
   // (part 6: an error stops in the debugger)
-  const started = new Promise((r) => vscode.debug.onDidStartDebugSession((s) => s.type === 'norn' && r(s)));
+  const started = new Promise((r) => vscode.debug.onDidStartDebugSession((s) => s.type === 'skein' && r(s)));
   const failing = evalLine(7);
   const session = await Promise.race([started, sleep(15000).then(() => null)]);
   if (!session) throw new Error('no debug session started');
@@ -152,7 +152,7 @@ async function steps() {
   // (Stop aborts what's waiting)
   await replaceAll(editor, '(ns geo.shapes)\n\n(defn half [x] (when (odd? x) (error "odd:" x)) (quot x 2))\n\n(half 5)\n');
   await evalLine(3);
-  const started2 = new Promise((r) => vscode.debug.onDidStartDebugSession((s) => s.type === 'norn' && r(s)));
+  const started2 = new Promise((r) => vscode.debug.onDidStartDebugSession((s) => s.type === 'skein' && r(s)));
   const failing2 = evalLine(5);
   const session2 = await Promise.race([started2, sleep(15000).then(() => null)]);
   if (session2) {

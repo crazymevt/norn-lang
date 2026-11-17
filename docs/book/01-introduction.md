@@ -2,20 +2,21 @@
 
 [Contents](README.md) · Next: [2. First steps](02-first-steps.md) <!-- nav -->
 
-This book teaches you to write programs in Norn. It starts with the
+This book teaches you to write programs in Skein. It starts with the
 expressions you type at the REPL and ends with a signed application you can
-hand to someone who has never heard of Norn. Along the way it covers the
+hand to someone who has never heard of Skein. Along the way it covers the
 data model, functions and sequences, classes and generic functions, the
 condition system, concurrency, the standard libraries, testing and
 deployment.
 
-This chapter says what Norn is, what ideas shape it, and how the rest of the
-book is organized.
+This chapter says what Skein is, what ideas shape it, and how the rest of the
+book is organized. (Until 2026-11-17 Skein was called Norn: an older note or
+program that says `norn` means `skein`.)
 
-## What Norn is
+## What Skein is
 
-Norn is a general-purpose Lisp. Programs are written as nested lists, and
-code is data that macros can transform. Beyond that common ground, Norn
+Skein is a general-purpose Lisp. Programs are written as nested lists, and
+code is data that macros can transform. Beyond that common ground, Skein
 borrows deliberately from three older Lisps:
 
 - From **Clojure**, it takes the literal syntax for data (`[1 2]`, `{:a 1}`,
@@ -32,7 +33,7 @@ borrows deliberately from three older Lisps:
 It runs on its own runtime, written in Rust: a bytecode interpreter with an
 optional native-code tier, a work-stealing scheduler that runs millions of
 lightweight fibers across every core, and a parallel garbage collector. The
-compiler is written in Norn and compiles itself.
+compiler is written in Skein and compiles itself.
 
 Here is a small taste. It reads some orders, keeps the paid ones, and totals
 them by category, using a transducer so no intermediate collections are
@@ -74,9 +75,9 @@ scope that waits for all of them:
 If one of those fibers had failed, the scope would have cancelled the other
 and passed the failure to the caller. Nothing leaks out of a scope.
 
-## The ideas behind Norn
+## The ideas behind Skein
 
-Five principles explain most of Norn's design decisions. You'll meet each of
+Five principles explain most of Skein's design decisions. You'll meet each of
 them in detail later; it helps to know them up front.
 
 **Values by default, identities on purpose.** Numbers, strings, collections,
@@ -92,7 +93,7 @@ redefined while the program runs, on every core at once. Calls go through
 vars, so the next call sees the new definition. Redefining a class keeps its
 identity, and existing instances are read through the new layout.
 
-**Errors are conversations, not crashes.** Norn has Common Lisp's condition
+**Errors are conversations, not crashes.** Skein has Common Lisp's condition
 system. Code that detects a problem signals a condition. Code further up the
 stack decides what to do about it, and it can decide *before* the stack
 unwinds, by choosing a restart that the low-level code offered. During
@@ -111,7 +112,7 @@ running heap, parked fibers included, and start it again in tens of
 milliseconds. Deployable images are built reproducibly from source modules,
 so an image is a cache of your program, never the only copy of it.
 
-## What Norn leaves behind
+## What Skein leaves behind
 
 If you know another Lisp, some habits won't carry over. The most important
 differences:
@@ -129,7 +130,7 @@ differences:
 - Handlers established with `handler-bind`, and dynamic bindings, are
   conveyed to the fibers you spawn.
 
-[Appendix 29](29-norn-for-lispers.md) collects these differences for
+[Appendix 29](29-skein-for-lispers.md) collects these differences for
 Clojure and Common Lisp programmers.
 
 ## How this book is organized
@@ -187,8 +188,8 @@ Code examples show their results in comments:
 `; prints:` shows what an expression writes to standard output:
 
 ```clojure
-(println "Hello," "Norn")
-; prints: Hello, Norn
+(println "Hello," "Skein")
+; prints: Hello, Skein
 ```
 
 and `; !!` names the class of condition an expression signals:
@@ -199,7 +200,7 @@ and `; !!` names the class of condition an expression signals:
 
 Within a chapter, examples build on each other, so a function defined in
 one block is available in the blocks that follow it. Every example in the
-book is run against Norn by `docs/book/check.py`, so the results you see
+book is run against Skein by `docs/book/check.py`, so the results you see
 are the results you'll get. To run them yourself:
 
 ```sh
@@ -212,12 +213,12 @@ appears in plain text blocks.
 
 This book teaches; it doesn't list everything. When you want the complete
 set of functions in a library, or every option of a form, use the
-[language reference](../reference/README.md) and the `norn doc` command,
+[language reference](../reference/README.md) and the `skein doc` command,
 which reads the documentation built into the runtime you're using.
 
 ## Summary
 
-- Norn is a Lisp that combines Clojure's data model, Common Lisp's objects,
+- Skein is a Lisp that combines Clojure's data model, Common Lisp's objects,
   conditions and images, and Racket's hygienic macros and modules.
 - Its runtime is built for many cores: fibers, a work-stealing scheduler, a
   parallel collector, and non-blocking I/O.

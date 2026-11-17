@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Run the book's examples against a norn binary.
+"""Run the book's examples against a skein binary.
 
-    python3 docs/book/check.py [--norn PATH] [--keep DIR] [CHAPTER.md ...]
+    python3 docs/book/check.py [--skein PATH] [--keep DIR] [CHAPTER.md ...]
 
 With no chapters given, every numbered chapter in docs/book runs. Each
-chapter's ```clojure blocks run in order, in one fresh norn process, as one
+chapter's ```clojure blocks run in order, in one fresh skein process, as one
 script, so a later block can use what an earlier one defined. Top-level
 forms are checked by the comment that follows them:
 
@@ -31,12 +31,12 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 PRELUDE = r'''
-(require 'norn.string 'norn.sys)
+(require 'skein.string 'skein.sys)
 (def book-checks (atom 0))
 (def book-failures (atom []))
 
 (defn- book-norm [s]
-  (-> s (norn.string/replace "," " ") (norn.string/replace #"\s+" " ") norn.string/trim))
+  (-> s (skein.string/replace "," " ") (skein.string/replace #"\s+" " ") skein.string/trim))
 
 (defn- book-fail [loc & lines]
   (swap! book-failures conj loc)
@@ -81,12 +81,12 @@ PRELUDE = r'''
     (cond
       (contains? r :err)
       (book-fail loc (str "expected output: " (pr-str expected)) (str "raised: " (book-describe (:err r))))
-      (not= (norn.string/trimr @out) (norn.string/trimr expected))
+      (not= (skein.string/trimr @out) (skein.string/trimr expected))
       (book-fail loc (str "expected output: " (pr-str expected)) (str "printed:         " (pr-str @out))))))
 
 (defn book-summary []
   (println (str "BOOK " @book-checks " checks, " (count @book-failures) " failed"))
-  (norn.sys/exit (if (empty? @book-failures) 0 1)))
+  (skein.sys/exit (if (empty? @book-failures) 0 1)))
 '''
 
 
@@ -106,7 +106,7 @@ def blocks(path):
             while j < len(lines) and not lines[j].strip().startswith(ticks):
                 j += 1
             skip = "<!-- skip -->" in prev
-            if lang in ("clojure", "norn") and not skip:
+            if lang in ("clojure", "skein") and not skip:
                 yield start + 1, "\n".join(lines[start:j])
             i = j + 1
             prev = ""
@@ -226,7 +226,7 @@ def balanced(s):
     return depth <= 0 and not in_str
 
 
-def norn_str(s):
+def skein_str(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
@@ -276,11 +276,11 @@ def translate(path, first_line, text):
         if check is None:
             out.append(f"{mark}\n{form}")
         elif check[0] == "value":
-            out.append(f"{mark}\n(user/book-value {norn_str(loc)} (fn [] {form}\n) {norn_str(check[1])})")
+            out.append(f"{mark}\n(user/book-value {skein_str(loc)} (fn [] {form}\n) {skein_str(check[1])})")
         elif check[0] == "raises":
-            out.append(f"{mark}\n(user/book-raises {norn_str(loc)} (fn [] {form}\n) {check[1]})")
+            out.append(f"{mark}\n(user/book-raises {skein_str(loc)} (fn [] {form}\n) {check[1]})")
         else:
-            out.append(f"{mark}\n(user/book-prints {norn_str(loc)} (fn [] {form}\n) {norn_str(check[1])})")
+            out.append(f"{mark}\n(user/book-prints {skein_str(loc)} (fn [] {form}\n) {skein_str(check[1])})")
         k = j
     return "\n".join(out)
 
@@ -293,18 +293,18 @@ def chapter_script(path):
     return "\n\n".join(parts) + "\n"
 
 
-def run(norn, path, keep):
+def run(skein, path, keep):
     script = chapter_script(path)
     with tempfile.TemporaryDirectory() as tmp:
-        name = os.path.splitext(os.path.basename(path))[0] + ".norn"
+        name = os.path.splitext(os.path.basename(path))[0] + ".skn"
         spath = os.path.join(keep or tmp, name)
         with open(spath, "w", encoding="utf-8") as f:
             f.write(script)
         workdir = tempfile.mkdtemp(dir=tmp)
         try:
-            p = subprocess.run([norn, spath], cwd=workdir, capture_output=True,
+            p = subprocess.run([skein, spath], cwd=workdir, capture_output=True,
                                text=True, timeout=180,
-                               env={**os.environ, "NORN_UI_HEADLESS": "1"})
+                               env={**os.environ, "SKEIN_UI_HEADLESS": "1"})
         except subprocess.TimeoutExpired:
             return False, "TIMEOUT after 180 s"
     out = p.stdout + p.stderr
@@ -324,7 +324,7 @@ def run(norn, path, keep):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--norn", default=os.environ.get("NORN", os.path.join(HERE, "../../target/release/norn")))
+    ap.add_argument("--skein", default=os.environ.get("SKEIN", os.path.join(HERE, "../../target/release/skein")))
     ap.add_argument("--keep", help="write the generated scripts to this folder")
     ap.add_argument("--verbose", "-v", action="store_true")
     ap.add_argument("chapters", nargs="*")
@@ -333,7 +333,7 @@ def main():
         os.path.join(HERE, f) for f in os.listdir(HERE) if re.match(r"\d\d-.*\.md$", f))
     bad = 0
     for ch in chapters:
-        ok, out = run(os.path.abspath(a.norn), ch, a.keep)
+        ok, out = run(os.path.abspath(a.skein), ch, a.keep)
         summary = next((l for l in out.splitlines() if l.startswith("BOOK ")), "no summary (the run ended early)")
         print(f"{'ok  ' if ok else 'FAIL'} {os.path.relpath(ch)}: {summary[5:] if summary.startswith('BOOK ') else summary}")
         if not ok or a.verbose:

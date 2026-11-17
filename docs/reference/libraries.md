@@ -2,54 +2,54 @@
 
 [Reference contents](README.md) · [Symbol index](symbols.md)
 
-`norn.core` is available by default. To use another namespace, declare it
+`skein.core` is available by default. To use another namespace, declare it
 in `ns` or load it at the REPL with `require`. List a namespace's public
-definitions with `norn doc NAMESPACE`. Use `norn doc NAMESPACE/SYMBOL` for the
+definitions with `skein doc NAMESPACE`. Use `skein doc NAMESPACE/SYMBOL` for the
 signature, docstring, and any examples recorded for that symbol.
 
 ```sh
-norn doc norn.string
-norn doc norn.json/read-string norn.io/with-open norn.sqlite/query
+skein doc skein.string
+skein doc skein.json/read-string skein.io/with-open skein.sqlite/query
 ```
 
 ## Text and data
 
 | Namespace | Use |
 | --- | --- |
-| `norn.string` | Split, join, trim, and transform strings. |
-| `norn.regex` | Compile patterns and find, replace, or split on matches. |
-| `norn.rope` | Edit large texts with persistent ropes. |
-| `norn.format` | Format numbers and quantities for display: `number` and `percent` take `:decimals`; `duration` rounds. |
-| `norn.pprint` | Pretty-print nested data within a width. |
-| `norn.markdown` | Read and render Markdown. |
-| `norn.json` | Read and write JSON, including file helpers. |
-| [`norn.ndjson`](#json-lines) | Read and write JSON Lines, with record-by-record reduction. |
-| [`norn.xml`](#xml) | Read and write XML 1.0 documents with namespace-aware names. |
-| [`norn.yaml`](#yaml) | Read and write YAML configuration documents. |
-| [`norn.cbor`](#cbor) | Encode and decode CBOR for binary interchange. |
-| `norn.edn` | Read and write Norn data as text without evaluating it. |
-| `norn.csv` | Read and write comma-separated rows and maps. |
-| `norn.toml` | Read and write TOML configuration, with optional typed local dates and times. |
-| `norn.bin` | Encode and decode supported Norn data in a binary format. |
-| [`norn.bytes`](#bytes-and-packed-buffers) | Work with byte strings, text encodings, hexadecimal, and Base64. |
-| [`norn.buffer`](#bytes-and-packed-buffers) | Store and read packed integer and floating-point values. |
-| `norn.compress` | Compress or decompress deflate, zlib, and gzip data, whole or (`decompress-stream`) as a stream is read. |
-| `norn.zip` | Read and write ZIP archives. |
-| `norn.data` | Compare nested values and report what differs. |
-| `norn.set` | Set operations and relational operations on sets of maps. |
-| `norn.walk` | Traverse and transform nested collections. |
-| `norn.math` | Mathematical functions and constants. |
-| [`norn.decimal`](#decimal-values) | Work with exact base-10 values, scale, and explicit rounding. |
-| `norn.random` | Random values and seeded generators. |
-| `norn.uuid` | Work with UUIDs as strings. |
-| `norn.crypto` | Digests, HMAC, key derivation, and secure random bytes. |
+| `skein.string` | Split, join, trim, and transform strings. |
+| `skein.regex` | Compile patterns and find, replace, or split on matches. |
+| `skein.rope` | Edit large texts with persistent ropes. |
+| `skein.format` | Format numbers and quantities for display: `number` and `percent` take `:decimals`; `duration` rounds. |
+| `skein.pprint` | Pretty-print nested data within a width. |
+| `skein.markdown` | Read and render Markdown. |
+| `skein.json` | Read and write JSON, including file helpers. |
+| [`skein.ndjson`](#json-lines) | Read and write JSON Lines, with record-by-record reduction. |
+| [`skein.xml`](#xml) | Read and write XML 1.0 documents with namespace-aware names. |
+| [`skein.yaml`](#yaml) | Read and write YAML configuration documents. |
+| [`skein.cbor`](#cbor) | Encode and decode CBOR for binary interchange. |
+| `skein.edn` | Read and write Skein data as text without evaluating it. |
+| `skein.csv` | Read and write comma-separated rows and maps. |
+| `skein.toml` | Read and write TOML configuration, with optional typed local dates and times. |
+| `skein.bin` | Encode and decode supported Skein data in a binary format. |
+| [`skein.bytes`](#bytes-and-packed-buffers) | Work with byte strings, text encodings, hexadecimal, and Base64. |
+| [`skein.buffer`](#bytes-and-packed-buffers) | Store and read packed integer and floating-point values. |
+| `skein.compress` | Compress or decompress deflate, zlib, and gzip data, whole or (`decompress-stream`) as a stream is read. |
+| `skein.zip` | Read and write ZIP archives. |
+| `skein.data` | Compare nested values and report what differs. |
+| `skein.set` | Set operations and relational operations on sets of maps. |
+| `skein.walk` | Traverse and transform nested collections. |
+| `skein.math` | Mathematical functions and constants. |
+| [`skein.decimal`](#decimal-values) | Work with exact base-10 values, scale, and explicit rounding. |
+| `skein.random` | Random values and seeded generators. |
+| `skein.uuid` | Work with UUIDs as strings. |
+| `skein.crypto` | Digests, HMAC, key derivation, and secure random bytes. |
 
-`(norn.json/read-string s)` reads JSON objects as maps with keyword keys.
-Pass `:keys identity` to retain string keys (or another function to make them something else), as `norn.yaml`, `norn.toml` and `norn.csv` take it. Arrays become vectors and
+`(skein.json/read-string s)` reads JSON objects as maps with keyword keys.
+Pass `:keys identity` to retain string keys (or another function to make them something else), as `skein.yaml`, `skein.toml` and `skein.csv` take it. Arrays become vectors and
 JSON `null` becomes `nil`.
 
 ```clojure
-(require '[norn.json :as json])
+(require '[skein.json :as json])
 
 [(json/read-string "{\"id\":7}")
  (json/read-string "{\"id\":7}" :keys identity)] ; => [{:id 7} {"id" 7}]
@@ -57,23 +57,23 @@ JSON `null` becomes `nil`.
 
 ### JSON Lines
 
-`norn.ndjson/read-string` and `read-file` return vectors. Pass `:keys identity`
+`skein.ndjson/read-string` and `read-file` return vectors. Pass `:keys identity`
 to keep JSON object keys as strings. Each line needs one complete JSON value.
 `write-string` and `write-file` emit a line feed after each value. For streams,
-`reduce-records` takes a `norn.io/line-reader` and `write-record` takes a handle.
+`reduce-records` takes a `skein.io/line-reader` and `write-record` takes a handle.
 An early `reduced` result leaves the reader positioned at the next record.
 
 ```clojure
-(require '[norn.ndjson :as ndjson])
+(require '[skein.ndjson :as ndjson])
 
 (ndjson/read-string "{\"id\":7}\nnull\n") ; => [{:id 7} nil]
 ```
 
 ### EDN, CSV and TOML
 
-`norn.edn/write-string` writes text that `read-string` reads back as an
+`skein.edn/write-string` writes text that `read-string` reads back as an
 equal value. Decimals and times are written as tagged literals
-(`#norn/decimal "12.30"`, `#norn/date "2026-11-03"`, `#inst "…"`), as `pr-str`
+(`#skein/decimal "12.30"`, `#skein/date "2026-11-03"`, `#inst "…"`), as `pr-str`
 prints them; `read-string` reads those, `#uuid`, and other tags through
 `:readers` (a map of tag to function) and `:default` (a function of tag and
 form). A value with no such text, such as an atom, a function, or an
@@ -81,16 +81,16 @@ instance whose class has no `tagged-form` method, signals `TypeError` naming it.
 `:pretty true` lays the text out over lines. Use `pr-str` to print
 anything.
 
-`norn.csv/read-maps` reads a header row and makes a map of each row after it.
+`skein.csv/read-maps` reads a header row and makes a map of each row after it.
 A row with more or fewer fields than the header signals `ParseError` with
 the row's `:line`. Pass `:strict false` to drop extra fields and leave
 missing ones out. Malformed CSV text signals `ParseError` too.
 
-`norn.toml` has `read-file` and `write-file`, like the other formats.
+`skein.toml` has `read-file` and `write-file`, like the other formats.
 
 ### XML
 
-`(norn.xml/read-string text)` reads decoded XML text. `(norn.xml/read-file path)`
+`(skein.xml/read-string text)` reads decoded XML text. `(skein.xml/read-file path)`
 reads UTF-8 files and UTF-16 files with a byte-order mark. Both parse the
 whole document and return its root element as a map.
 
@@ -108,7 +108,7 @@ always have a `nil` namespace. Namespace declarations contribute to
 normalization.
 
 ```clojure
-(require '[norn.xml :as xml])
+(require '[skein.xml :as xml])
 
 (let [catalog (xml/read-string
                 (str "<catalog xmlns='urn:catalog' xmlns:m='urn:meta'>"
@@ -128,7 +128,7 @@ It rejects `DOCTYPE` declarations. XML syntax errors raise `ParseError`
 with `:source`, `:line`, and `:column`. An invalid file encoding raises
 `ParseError` with the file path as `:source`.
 
-`(norn.xml/write-string root)` writes an element tree, and `(norn.xml/write-file
+`(skein.xml/write-string root)` writes an element tree, and `(skein.xml/write-file
 path root)` writes it as UTF-8. The writer escapes text and attributes,
 reuses in-scope prefixes where possible, and generates prefixes for expanded
 names without a binding. An element without `:namespaces` inherits its
@@ -141,16 +141,16 @@ written back out.
 
 ### YAML
 
-`norn.yaml/read-string` and `read-file` read a single configuration document
+`skein.yaml/read-string` and `read-file` read a single configuration document
 with YAML 1.2 Core scalar resolution. They accept block and flow maps and
 sequences, quoted strings, literal and folded block strings, and aliases to
 completed anchors. String keys become keywords by default, as in
-`norn.json`, `norn.toml`, and `norn.csv`. Use `:keys identity` to keep them
+`skein.json`, `skein.toml`, and `skein.csv`. Use `:keys identity` to keep them
 as strings. `write-string` and `write-file` emit flow collections.
 Keyword values and keys are written as strings.
 
 ```clojure
-(require '[norn.yaml :as yaml])
+(require '[skein.yaml :as yaml])
 
 (yaml/read-string "server:\n  ports: [80, 443]\n  enabled: true\n")
 ; => {:server {:ports [80 443] :enabled true}}
@@ -163,7 +163,7 @@ The merge key `<<` is an ordinary key.
 
 ### CBOR
 
-`norn.cbor/encode` and `decode` convert one item to and from `Bytes`. File
+`skein.cbor/encode` and `decode` convert one item to and from `Bytes`. File
 helpers are `read-file` and `write-file`. The codec handles integers, floats,
 bytes, text, vectors, maps, null, and booleans; keywords and symbols are a
 `TypeError` (use string keys). Values with a registered tag travel through
@@ -176,7 +176,7 @@ guarantee. Both enforce a nesting limit of 256.
 
 ### Decimal values
 
-`norn.decimal/parse` reads decimal text without going through a float.
+`skein.decimal/parse` reads decimal text without going through a float.
 `decimal` constructs a value from an integer coefficient and an optional
 scale. Arithmetic is available through `add`, `subtract`, `multiply`, and
 `divide`. Division and `quantize` take a result scale and default to
@@ -190,30 +190,30 @@ and floats. Convert at the edges with `parse` and `text`, or with
 `decimal` from an integer coefficient.
 
 ```clojure
-(require '[norn.decimal :as d])
+(require '[skein.decimal :as d])
 
 (d/text (d/add (d/parse "0.10") (d/parse "0.2"))) ; => "0.30"
 ```
 
 ### Bytes and packed buffers
 
-`norn.bytes/decoder` starts a UTF-8 or UTF-16 decoder in a specified byte
+`skein.bytes/decoder` starts a UTF-8 or UTF-16 decoder in a specified byte
 order. Feed byte chunks to `decode-chunk` and pass its returned state to the
 next call. `finish-decoder` detects a truncated character at the end.
 `decode-text` handles a complete byte string. The decoder preserves BOM
 characters so a format reader can interpret them.
 
-`norn.buffer/pack` writes numeric elements into an immutable packed buffer.
+`skein.buffer/pack` writes numeric elements into an immutable packed buffer.
 `from-bytes` views existing `Bytes` without copying. A buffer is a collection
 to core: `count` and `nth` are constant time, and `seq`, `reduce`, `into`,
 `vec` and the other sequence functions read its elements in order.
-`norn.buffer/values` gives them as a vector, and `to-bytes` returns the
+`skein.buffer/values` gives them as a vector, and `to-bytes` returns the
 backing value.
 Supported types are `:u8`, `:i8`, `:u16`, `:i16`, `:u32`, `:i32`, `:u64`,
 `:i64`, `:f32`, and `:f64`. Byte order defaults to `:le`. Use `:order :be`
 for big-endian data.
 
-`norn.buffer/mutable` makes a buffer to update in place, such as pixels or
+`skein.buffer/mutable` makes a buffer to update in place, such as pixels or
 audio samples: `(mutable :u8 (* 4 width height))` holds zeros, and
 `mutable-copy` starts from another buffer's elements. `set!`, `fill!` and
 `copy!` (from a buffer of the same type and byte order, as one block, or from
@@ -225,7 +225,7 @@ which the mutable buffer can't be used. `snapshot` copies its elements
 instead, and writing carries on.
 
 ```clojure
-(require '[norn.buffer :as buf])
+(require '[skein.buffer :as buf])
 
 (let [pixels (buf/mutable :u8 (* 4 2 2))]
   (buf/fill! pixels 255)
@@ -237,39 +237,39 @@ instead, and writing carries on.
 
 | Namespace | Use |
 | --- | --- |
-| `norn.io` | Read and write whole files or streams, and work with paths. `bytes-stream` makes a stream of bytes or text in hand. |
-| `norn.fs` | Walk directories, apply glob patterns, and watch for changes. |
-| `norn.sys` | Read process arguments, environment variables, and system information. |
-| `norn.cli` | Parse command lines: typed options, arguments, subcommands, and generated help. |
-| `norn.terminal` | Detect the terminal, read keys in raw mode, and style output with ANSI colors. |
-| `norn.process` | Run operating-system processes and work with pipes or pseudo-terminals. |
-| `norn.signal` | Receive operating-system signals through channels. |
-| `norn.net` | Work with TCP, UDP, and TLS. |
-| `norn.http` | Send HTTP/1.1 requests, stream response bodies, send and parse multipart forms, and serve request maps with functions. |
-| `norn.uri` | Parse, build, and percent-encode URIs. |
-| `norn.sqlite` | Open SQLite databases, bind query parameters, and run transactions. |
-| `norn.ffi` | Call C functions and describe native memory and data types. Pass `:main-thread true` for APIs that must run on the process's first thread, such as windowing and graphics. |
-| `norn.log` | Emit leveled, structured logs. |
-| `norn.time` | Work with instants, durations, calendar dates, named time zones, and calendar arithmetic. |
-| `norn.schedule` | Run code on cron-like schedules. |
+| `skein.io` | Read and write whole files or streams, and work with paths. `bytes-stream` makes a stream of bytes or text in hand. |
+| `skein.fs` | Walk directories, apply glob patterns, and watch for changes. |
+| `skein.sys` | Read process arguments, environment variables, and system information. |
+| `skein.cli` | Parse command lines: typed options, arguments, subcommands, and generated help. |
+| `skein.terminal` | Detect the terminal, read keys in raw mode, and style output with ANSI colors. |
+| `skein.process` | Run operating-system processes and work with pipes or pseudo-terminals. |
+| `skein.signal` | Receive operating-system signals through channels. |
+| `skein.net` | Work with TCP, UDP, and TLS. |
+| `skein.http` | Send HTTP/1.1 requests, stream response bodies, send and parse multipart forms, and serve request maps with functions. |
+| `skein.uri` | Parse, build, and percent-encode URIs. |
+| `skein.sqlite` | Open SQLite databases, bind query parameters, and run transactions. |
+| `skein.ffi` | Call C functions and describe native memory and data types. Pass `:main-thread true` for APIs that must run on the process's first thread, such as windowing and graphics. |
+| `skein.log` | Emit leveled, structured logs. |
+| `skein.time` | Work with instants, durations, calendar dates, named time zones, and calendar arithmetic. |
+| `skein.schedule` | Run code on cron-like schedules. |
 
-`norn.time` also has `LocalDate`, `LocalTime`, and `LocalDateTime` values for
+`skein.time` also has `LocalDate`, `LocalTime`, and `LocalDateTime` values for
 calendar dates and clock times without a zone. Construct them with `local-date`,
 `local-time`, and `local-date-time`, or use their `parse-local-*` helpers.
 `format-local` writes their ISO calendar text. Pass `:local-times true` to
-`norn.toml/read-string` to read TOML local dates and times as these values.
+`skein.toml/read-string` to read TOML local dates and times as these values.
 The default keeps returning strings. TOML writing accepts the typed values.
 
-For a file, `norn.io/read-text` reads UTF-8 text and
-`norn.io/read-bytes` reads bytes. For stream access,
-`(norn.io/with-open [h (norn.io/open path :read)] body…)` closes the
+For a file, `skein.io/read-text` reads UTF-8 text and
+`skein.io/read-bytes` reads bytes. For stream access,
+`(skein.io/with-open [h (skein.io/open path :read)] body…)` closes the
 handle when the body exits, including on failure. It takes several
 bindings, `[in (open a :read) out (open b :write)]`, and closes them in
 reverse order. `close` does nothing given nil. `eprint` and `eprintln`
 print to standard error, as `print` and `println` print to standard output.
 
-`norn.process/start` returns the process handle and its piped streams.
-`norn.process/close` closes them all; call `wait` first. `sh` runs a program
+`skein.process/start` returns the process handle and its piped streams.
+`skein.process/close` closes them all; call `wait` first. `sh` runs a program
 to completion and accepts `:in`, `:dir`, `:env`, and `:clear-env`. A program
 that doesn't exist signals `FileNotFound`.
 
@@ -290,7 +290,7 @@ original, so readers see the old or the new and a crash leaves one of them.
 The replacement doesn't keep the old file's permissions.
 
 ```clojure
-(require '[norn.io :as io])
+(require '[skein.io :as io])
 
 (io/write-atomic! "settings.edn" (pr-str settings))
 (io/with-temp-directory [dir]
@@ -302,7 +302,7 @@ connection after its body. In a statement vector, the first item supplies
 SQL and the remaining items supply bound parameters.
 
 ```clojure
-(require '[norn.sqlite :as db])
+(require '[skein.sqlite :as db])
 
 (db/with-connection [conn ":memory:"]
   (db/execute! conn "CREATE TABLE books (title TEXT)")
@@ -322,8 +322,8 @@ is one too.
 
 ### HTTP bodies and forms
 
-By default, `norn.http/request` reads the whole response body. With
-`:as :stream`, the body is a `norn.io` stream that you read as the data
+By default, `skein.http/request` reads the whole response body. With
+`:as :stream`, the body is a `skein.io` stream that you read as the data
 arrives. Every stream function accepts it, including `read`, `read-line`,
 `copy-stream!`, and `text-reader`. A streamed body can also be the `:body`
 of another request.
@@ -334,7 +334,7 @@ connection. `with-response` closes the body when its form ends, however it
 ends. `:timeout` covers the exchange only until the response headers arrive.
 
 ```clojure
-(require '[norn.http :as http] '[norn.io :as io])
+(require '[skein.http :as http] '[skein.io :as io])
 
 (http/with-response [r {:url "https://example.com/big.log"}]
   (let [lines (io/line-reader (:body r))]
@@ -361,13 +361,13 @@ request's parts in order as maps with `:name`, `:filename`, `:content-type`,
     {:status 200 :body (str (count parts) " parts")}))
 ```
 
-Classes can act as streams too. Define methods on `norn.io/stream-read`,
-`stream-write`, and `stream-close` for a class, and the `norn.io` functions
+Classes can act as streams too. Define methods on `skein.io/stream-read`,
+`stream-write`, and `stream-close` for a class, and the `skein.io` functions
 accept its instances.
 
 ### Time zones and calendar arithmetic
 
-`norn.time/zone` returns a named IANA zone, such as `"Europe/Paris"`. Zone
+`skein.time/zone` returns a named IANA zone, such as `"Europe/Paris"`. Zone
 data comes from the system's TZif files in `$TZDIR` or `/usr/share/zoneinfo`.
 For times after a file's last listed transition, the file's POSIX TZ rule
 applies. Each zone file is read once and kept. `zone` also accepts:
@@ -393,7 +393,7 @@ JavaScript's Temporal:
 - `:reject` signals a `TypeError`.
 
 ```clojure
-(require '[norn.time :as t])
+(require '[skein.time :as t])
 
 (def ny "America/New_York")
 (t/format-zoned (t/zoned (t/parse-local-date-time "2026-03-08T02:30") ny))
@@ -441,7 +441,7 @@ other parsing functions, and `zone` given a name it can't find. Values that
 don't make a date or time signal `TypeError`, such as `(local-date 2026 2
 30)` or a wall-clock time that `:reject` refuses.
 
-`norn.schedule` reads five-field cron expressions and runs their times in
+`skein.schedule` reads five-field cron expressions and runs their times in
 a zone (`:zone`, UTC by default). Across a clock change it follows Vixie
 cron. A time that the change skips runs once, at the change. A time that it
 repeats runs once, the first time. An expression whose minute or hour is
@@ -450,7 +450,7 @@ hour and not at all in a skipped one. Bad cron text signals `ParseError`.
 
 ### The terminal
 
-`norn.terminal` works with the terminal the program runs in. Its main
+`skein.terminal` works with the terminal the program runs in. Its main
 functions are:
 
 - `tty?` checks whether `:in`, `:out`, or `:err` is a terminal.
@@ -462,7 +462,7 @@ functions are:
 converts a color to what the terminal can show and returns plain text when
 color is off. Bind `*color*` to override that decision. `strip` removes
 escape sequences, and `width` counts the columns that text takes on screen.
-`norn.string/width`, `pad-left`, `pad-right`, and `center` also ignore
+`skein.string/width`, `pad-left`, `pad-right`, and `center` also ignore
 escape sequences, so styled text lines up.
 `cursor-to`, `clear`, `hide-cursor`, and `alternate-screen` produce control
 sequences for you to print.
@@ -502,7 +502,7 @@ returns names such as `"ctrl+shift+left"`. `decode-keys` decodes bytes
 without a terminal.
 
 ```clojure
-(require '[norn.terminal :as t])
+(require '[skein.terminal :as t])
 
 (t/with-raw-mode {:hide-cursor true}
   (println (t/style "Press keys; q quits." :bold))
@@ -512,15 +512,15 @@ without a terminal.
       (when-not (= k {:key \q}) (recur)))))
 ```
 
-To handle resizing, listen for `:winch` with `norn.signal/listen` and call
+To handle resizing, listen for `:winch` with `skein.signal/listen` and call
 `size` again. To run another program on a terminal of its own, use
-`norn.process/start-pty`.
+`skein.process/start-pty`.
 
 ### Command-line programs
 
-`norn.cli` parses a command line against a spec, which is a map that
+`skein.cli` parses a command line against a spec, which is a map that
 describes the program's options, positional arguments, and subcommands.
-`run` parses `norn.sys/program-args`, the arguments after the script's path
+`run` parses `skein.sys/program-args`, the arguments after the script's path
 or the image. Then it does one of three things:
 
 - For `--help`, it prints the generated help and returns 0.
@@ -529,7 +529,7 @@ or the image. Then it does one of three things:
   returns the exit status.
 
 ```clojure
-(ns greet (:require [norn.cli :as cli] [norn.string :as str] [norn.sys :as sys]))
+(ns greet (:require [skein.cli :as cli] [skein.string :as str] [skein.sys :as sys]))
 
 (def spec
   {:name "greet" :summary "Say hello." :version "1.0"
@@ -543,9 +543,9 @@ or the image. Then it does one of three things:
 (sys/exit (cli/run spec))
 ```
 
-`norn greet.norn -sc 2 Ada` prints `HELLO, ADA!` twice. `norn greet.norn
+`skein greet.skn -sc 2 Ada` prints `HELLO, ADA!` twice. `skein greet.skn
 --cuont 2` reports `greet: unknown option "--cuont" (did you mean
-"--count"?)` and exits with status 2. For a program built with `norn build`,
+"--count"?)` and exits with status 2. For a program built with `skein build`,
 the entry function receives the arguments. Write it as
 `(defn main [& args] (cli/run spec args))` and its result becomes the exit
 status.
@@ -585,18 +585,18 @@ The parser follows these rules:
 - A negative number such as `-5` is an argument.
 
 `cli/parse` returns the parsed map without acting on it and signals a
-`norn.cli/UsageError` for a bad command line. `cli/usage` returns the help
+`skein.cli/UsageError` for a bad command line. `cli/usage` returns the help
 text.
 
 ## Concurrency
 
 | Namespace | Use |
 | --- | --- |
-| `norn.async` | Connect channels with pipes, merges, fan-out, and publish/subscribe. |
-| `norn.sync` | Coordinate fibers with semaphores, latches, barriers, and related types. |
-| `norn.actor` | Run fibers with mailboxes, selective receive, links, monitors, and supervisors. |
-| `norn.stm` | Coordinate changes to several refs in a transaction. |
-| `norn.cache` | Use bounded caches and memoization. |
+| `skein.async` | Connect channels with pipes, merges, fan-out, and publish/subscribe. |
+| `skein.sync` | Coordinate fibers with semaphores, latches, barriers, and related types. |
+| `skein.actor` | Run fibers with mailboxes, selective receive, links, monitors, and supervisors. |
+| `skein.stm` | Coordinate changes to several refs in a transaction. |
+| `skein.cache` | Use bounded caches and memoization. |
 
 See [concurrency and state](concurrency.md) for channels, scopes, and a
 transaction example.
@@ -605,21 +605,21 @@ transaction example.
 
 | Namespace | Use |
 | --- | --- |
-| `norn.core` | Language definitions, built-in classes, sequence functions, conditions, and concurrency primitives. |
-| `norn.syntax` | Inspect and construct syntax objects, and write structured syntax patterns. |
-| `norn.compiler`, `norn.expander` | The compiler and hygienic expander. |
-| `norn.validate` | Validate the shapes of common forms during expansion. |
-| `norn.test` | Write tests, fixtures, and assertions and run suites. |
-| `norn.property` | Property-based tests: generators, shrinking, and seeds that reproduce failures. |
-| `norn.cover` | Line coverage: `start!`, `counts`, and reports as text (`report`) or lcov (`lcov`); `norn test --coverage` uses it. |
-| `norn.bench` | Measure code execution. |
-| `norn.prof` | A sampling profiler: `profile`, `sample`, `start!`/`stop!`, and reports as text (`report`) or folded stacks (`folded`). |
-| `norn.fmt`, `norn.lint`, `norn.check` | Format, lint, and check source. |
-| `norn.doc`, `norn.expand` | Inspect documentation or trace macro expansion. |
-| `norn.xref` | Who refers to what, read from compiled code: `callers`, `callees`, `references` and `reachable`. |
-| `norn.lsp` | `norn lsp`, a Language Server Protocol server over the editor protocol's ops (see [Editors](../editors.md)). |
-| `norn.deps` | Read project manifests and resolve dependencies. |
-| `norn.image` | Inspect and compare saved images. |
-| `norn.shake` | What shaking an image leaves out (`save-image :shake`, `norn build --shake`): `shake-plan`, `shake-report`. |
+| `skein.core` | Language definitions, built-in classes, sequence functions, conditions, and concurrency primitives. |
+| `skein.syntax` | Inspect and construct syntax objects, and write structured syntax patterns. |
+| `skein.compiler`, `skein.expander` | The compiler and hygienic expander. |
+| `skein.validate` | Validate the shapes of common forms during expansion. |
+| `skein.test` | Write tests, fixtures, and assertions and run suites. |
+| `skein.property` | Property-based tests: generators, shrinking, and seeds that reproduce failures. |
+| `skein.cover` | Line coverage: `start!`, `counts`, and reports as text (`report`) or lcov (`lcov`); `skein test --coverage` uses it. |
+| `skein.bench` | Measure code execution. |
+| `skein.prof` | A sampling profiler: `profile`, `sample`, `start!`/`stop!`, and reports as text (`report`) or folded stacks (`folded`). |
+| `skein.fmt`, `skein.lint`, `skein.check` | Format, lint, and check source. |
+| `skein.doc`, `skein.expand` | Inspect documentation or trace macro expansion. |
+| `skein.xref` | Who refers to what, read from compiled code: `callers`, `callees`, `references` and `reachable`. |
+| `skein.lsp` | `skein lsp`, a Language Server Protocol server over the editor protocol's ops (see [Editors](../editors.md)). |
+| `skein.deps` | Read project manifests and resolve dependencies. |
+| `skein.image` | Inspect and compare saved images. |
+| `skein.shake` | What shaking an image leaves out (`save-image :shake`, `skein build --shake`): `shake-plan`, `shake-report`. |
 
 See [command-line tools](../tooling.md) for the corresponding shell commands.

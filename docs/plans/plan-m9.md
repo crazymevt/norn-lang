@@ -6,7 +6,7 @@ M9 (runtime.md §12) around sealing. The decisions behind M9's parts are in
 design §3.2 (STM), §4.3 (the MOP), §6.5 (processes), §8.4 (types) and §9
 (the FFI).
 
-**Why before sealing.** Sealing freezes `norn.core` behind `api-diff` and
+**Why before sealing.** Sealing freezes `skein.core` behind `api-diff` and
 deprecation cycles. Writing real programs is how the gaps in it show:
 M7.5's UI library and M7.6's editor both changed the stdlib. runtime.md put
 M9 after sealing because "libraries nothing else in the stdlib builds on"
@@ -16,7 +16,7 @@ contracts, the MOP, pattern matching), so it can only come first.
 
 **So M9 splits:**
 
-- **M9a, before sealing:** what changes `norn.core` or the runtime's
+- **M9a, before sealing:** what changes `skein.core` or the runtime's
   contracts, and the libraries most likely to find gaps (as probes).
 - **M9b, after sealing:** what needs a sealed module, and tooling that
   doesn't shape core.
@@ -36,8 +36,8 @@ Sealing then waits for M9a, as well as the M7.6 done-check.
     `slot-value-using-class`, metaclasses), `print-object`,
     `initialize-instance`, `define-method-combination`, and protocol
     sugar.
-- **Concurrency:** fibers, scopes, channels, `alts!`, `norn.async` and
-  `norn.sync`. No processes, mailboxes, links or supervisors.
+- **Concurrency:** fibers, scopes, channels, `alts!`, `skein.async` and
+  `skein.sync`. No processes, mailboxes, links or supervisors.
 - **Pattern matching:** only on syntax (`syntax-parse`, 8.3). Nothing
   matches data, which `receive` needs (design §6.5's example).
 - **STM:** none.
@@ -45,7 +45,7 @@ Sealing then waits for M9a, as well as the M7.6 done-check.
   with byte buffers. No structs, callbacks or typed signatures, and
   nothing marks a module as unsafe.
 - **Networking:** TCP, UDP and TLS (rustls), but no HTTP.
-- **Processes:** `norn.process` runs programs with pipes, but has no
+- **Processes:** `skein.process` runs programs with pipes, but has no
   pseudo-terminals.
 - **Formats:** EDN and JSON. No binary format, CSV or TOML. No
   compression, archives or crypto.
@@ -56,19 +56,19 @@ M9a, before sealing:
 
 | Part | Work |
 |---|---|
-| 9.1 | **HTTP and URIs:** `norn.uri` (parse, build, encode), and `norn.http`, an HTTP/1.1 client and server: keep-alive, chunked bodies, TLS both ways on the existing rustls, bodies as `norn.io` streams. The server takes a handler from a request map to a response map. It's first because it exercises the most at once: sockets, streams, bytes, fibers, timeouts and errors under load. |
-| 9.2 | **Pattern matching on data:** `match` in `norn.core`. Patterns are literals, bindings, `_`, vectors and lists with `& rest`, maps by key, `(:or …)`, and `:when` guards. A failed match says what didn't match. It's in core because `receive`, the supervisors and ordinary code all want it. |
+| 9.1 | **HTTP and URIs:** `skein.uri` (parse, build, encode), and `skein.http`, an HTTP/1.1 client and server: keep-alive, chunked bodies, TLS both ways on the existing rustls, bodies as `skein.io` streams. The server takes a handler from a request map to a response map. It's first because it exercises the most at once: sockets, streams, bytes, fibers, timeouts and errors under load. |
+| 9.2 | **Pattern matching on data:** `match` in `skein.core`. Patterns are literals, bindings, `_`, vectors and lists with `& rest`, maps by key, `(:or …)`, and `:when` guards. A failed match says what didn't match. It's in core because `receive`, the supervisors and ordinary code all want it. |
 | 9.3 | **Types: checked signatures and `declare`:** `^Type` on parameters and results (design §8.4). Types are classes, with a few forms (`(? T)` for nil-able, `(U A B)`, `(Vec T)`, `(Map K V)`, `(-> A B)`). `(declare (optimize …))` and `(declare (type …))` are accepted and recorded for M10. |
 | 9.4 | **Contracts, with blame:** predicates and combinators (`(-> int? string?)`, `or/c`, `and/c`, `vec-of`, `map-of`), and `defcontract`. A public function's signature is its contract. It's checked on calls from other modules; the module's own calls go direct. A violation blames the side at fault: the caller (with its place) for bad arguments, the module for a bad result. |
 | 9.5 | **The full MOP** (design §4.3): classes as instances of `standard-class`, and generic functions of `standard-generic-function`. Also `compute-applicable-methods`, `compute-effective-method`, `slot-value-using-class`, metaclasses, `initialize-instance` and `make-instance`'s protocol, `print-object` (the printer calls it for instances), `define-method-combination`, `defprotocol` as sugar for generic functions, and slot readers as generic functions (today they're plain functions, design §4), so a subclass can specialise one. The fast path stays whenever the hooks aren't specialised. |
 | 9.6 | **Processes and supervision** (design §6.5): `defprocess`, mailboxes with selective `receive` (on 9.2's `match`, with timeouts), `send`, a registry of names, links and monitors with exit signals, and supervisors (one-for-one, one-for-all, rest-for-one, with restart limits). A crashed process stays in the debugger, as design §5.3 says, and its supervisor is told. |
-| 9.7 | **`norn.stm`** (design §3.2): `ref`, `dosync`, `alter`, `commute` and `ensure`, with MVCC as Clojure's. A ref can't hold a mutable owned object (§4.2), and `io!` refuses side effects inside a transaction. |
-| 9.8 | **The full FFI** (design §9): struct layouts (`defcstruct`: fields, alignment, nested structs and arrays), typed signatures, and callbacks from C. Callbacks run on the caller's thread during a call from Norn, as a nested run; a foreign thread's callbacks are posted to a channel. **Unsafe modules:** a module that uses the raw FFI says `(:unsafe)` in its `ns`, and the expander refuses raw FFI use elsewhere. |
+| 9.7 | **`skein.stm`** (design §3.2): `ref`, `dosync`, `alter`, `commute` and `ensure`, with MVCC as Clojure's. A ref can't hold a mutable owned object (§4.2), and `io!` refuses side effects inside a transaction. |
+| 9.8 | **The full FFI** (design §9): struct layouts (`defcstruct`: fields, alignment, nested structs and arrays), typed signatures, and callbacks from C. Callbacks run on the caller's thread during a call from Skein, as a nested run; a foreign thread's callbacks are posted to a channel. **Unsafe modules:** a module that uses the raw FFI says `(:unsafe)` in its `ns`, and the expander refuses raw FFI use elsewhere. |
 | 9.9 | **SQLite,** on 9.8's FFI and the system's libsqlite3: connections, prepared statements, transactions, and rows as maps. It's the FFI's first real user. |
-| 9.10 | **Pseudo-terminals** in `norn.process`: spawning on a pty, resizing, and reading and writing as streams. |
-| 9.11 | **A binary format for Norn values** (`norn.bin`): every value type, versioned, and safe to read from untrusted input, as `norn.edn` is. Touching every type is the point: it finds gaps in types, the printer and equality. |
-| 9.12 | **The smaller libraries,** each when something needs it: `norn.uuid`, `norn.csv`, `norn.toml`, compression (deflate, gzip, zlib), `norn.zip`, `norn.crypto` (digests, HMAC, secure random, on `ring`, which rustls already links), `norn.schedule` (cron-like), and `norn.data` (structural diff). |
-| 9.13 | **Conditions for the runtime's errors:** a hierarchy of condition classes (`IOError`, with `FileNotFound`, `ConnectionError` and `TimeoutError` under it; `ParseError`; `OwnershipError`; `ArityError`; and so on), and a way for Rust to raise one with its data (the path, the address, the line). Today a Rust error carries only its message, so an `OwnershipError` is recognised by its text (M7), and every timeout, failed connection and parse error in the stdlib, `norn.http`'s included, is a plain `Error`. Handlers choose by class, so the hierarchy is part of what sealing freezes. |
+| 9.10 | **Pseudo-terminals** in `skein.process`: spawning on a pty, resizing, and reading and writing as streams. |
+| 9.11 | **A binary format for Skein values** (`skein.bin`): every value type, versioned, and safe to read from untrusted input, as `skein.edn` is. Touching every type is the point: it finds gaps in types, the printer and equality. |
+| 9.12 | **The smaller libraries,** each when something needs it: `skein.uuid`, `skein.csv`, `skein.toml`, compression (deflate, gzip, zlib), `skein.zip`, `skein.crypto` (digests, HMAC, secure random, on `ring`, which rustls already links), `skein.schedule` (cron-like), and `skein.data` (structural diff). |
+| 9.13 | **Conditions for the runtime's errors:** a hierarchy of condition classes (`IOError`, with `FileNotFound`, `ConnectionError` and `TimeoutError` under it; `ParseError`; `OwnershipError`; `ArityError`; and so on), and a way for Rust to raise one with its data (the path, the address, the line). Today a Rust error carries only its message, so an `OwnershipError` is recognised by its text (M7), and every timeout, failed connection and parse error in the stdlib, `skein.http`'s included, is a plain `Error`. Handlers choose by class, so the hierarchy is part of what sealing freezes. |
 | 9.14 | **Values that arrive later, and errors with data:** `delay` (computed once, when first forced), `future` (a fiber whose value `deref` waits for), promises (`promise` and `deliver`), and `ex-info` with `ex-data`. M7.6 left them for a design against fibers and conditions. Proposed: a future is a fiber and `@` is `await`, so cancelling and the debugger work as for any fiber; a promise is a one-shot channel; and `ex-info` makes a condition carrying a data map, which a handler reads with `ex-data` (a condition with a `:data` slot, under 9.13's hierarchy). |
 
 Studio's phased panels come as their libraries do, and are where the
@@ -83,17 +83,17 @@ M9b, after sealing (unchanged from runtime.md):
 
 - **Needs sealing:**
   - tree shaking for images (`:shake` uses sealing to prove code unused);
-  - `norn api-diff`;
+  - `skein api-diff`;
   - the lint rule for redefining sealed vars.
-- **Tooling, any time** (none of it shapes core): `norn lsp`, the sampling
-  profiler, source-drift tracking (design §5.1), coverage, and `norn new`,
+- **Tooling, any time** (none of it shapes core): `skein lsp`, the sampling
+  profiler, source-drift tracking (design §5.1), coverage, and `skein new`,
   which is small now that packages exist.
 
 **Order.** 9.1 first: it's concrete, it exercises the most, and it unlocks
 Studio's API workbench, while the type and contract decisions below get
 made. Then 9.13 → 9.14 → 9.2 → 9.3 and 9.4 → 9.5 → 9.6 → 9.7 → 9.8 →
 9.9. The runtime's condition classes come first: every library after
-them raises them, and `norn.http` changes to. 9.14 builds on them
+them raises them, and `skein.http` changes to. 9.14 builds on them
 (`ex-info`) and on fibers, and 9.6's processes on 9.14's futures. Types
 come early so the libraries after them are written with signatures, and
 they test them. 9.10, 9.11 and 9.12 fit in when Studio or a library needs
@@ -102,7 +102,7 @@ them.
 **Done-check (M9a)** (met on 2026-11-15, see the end of Status; M9a is
 done, and sealing followed on 2026-11-16):
 
-- Studio's API workbench, terminal and Databases view run on `norn.http`,
+- Studio's API workbench, terminal and Databases view run on `skein.http`,
   the pty support and SQLite.
 - Every public function of the new libraries has a checked signature.
 - A contract violation across a module boundary blames the right side,
@@ -133,7 +133,7 @@ The draft's proposals, accepted:
    knows the calling module, so a call from another module goes through the
    contract and a call from inside doesn't; inside costs nothing. A debug
    setting (`*check-contracts* :all`) checks every call.
-5. **`match` goes in `norn.core`** (9.2), since `receive` and ordinary code
+5. **`match` goes in `skein.core`** (9.2), since `receive` and ordinary code
    both need it. It's a macro over the existing data, with no new runtime
    type.
 6. **Processes are fibers with mailboxes,** not a second kind of task.
@@ -146,7 +146,7 @@ The draft's proposals, accepted:
    where core's behaviour changes.
 8. **FFI callbacks are synchronous** on the thread that called out (a
    nested run, which can't park). A foreign thread's callbacks go to a
-   channel. Calling into Norn from an arbitrary thread directly isn't
+   channel. Calling into Skein from an arbitrary thread directly isn't
    offered.
 9. **New native dependencies are fine before sealing:** `flate2` and
    `zip`, plus `ring`, which is already linked. Each new primitive
@@ -173,7 +173,7 @@ Added the same day, from what earlier milestones left open (the user,
 
 **9.1, HTTP and URIs (2026-11-14): done.**
 
-- **`norn.uri`** (RFC 3986):
+- **`skein.uri`** (RFC 3986):
   - `parse` gives a map of a URI's parts, as written (IPv6 hosts without
     their brackets), and `format` puts it back together;
   - `encode` and `decode` handle UTF-8 percent-encoding, with `+` as a
@@ -183,7 +183,7 @@ Added the same day, from what earlier milestones left open (the user,
   - `resolve` makes a reference absolute against a base, passing every
     normal example in RFC 3986 §5.4.1;
   - `port-of` gives a URI's port, or its scheme's default.
-- **`norn.http`, the client:**
+- **`skein.http`, the client:**
   - `request`, and `get`, `post`, `put`, `delete` and `head`;
   - a status that isn't 2xx is a response like any other, while a failed
     connection or a timeout is an error;
@@ -198,7 +198,7 @@ Added the same day, from what earlier milestones left open (the user,
   - `:as :text` or `:bytes`, and `:ca-file` for a private CA;
   - request bodies can be strings, bytes, or sequences and streams (sent
     chunked).
-- **`norn.http`, the server:** `serve` takes a handler from a request map
+- **`skein.http`, the server:** `serve` takes a handler from a request map
   to a response map (Ring's model), and runs each connection in its own
   fiber.
   - Connections are kept alive with an idle timeout, honour
@@ -206,7 +206,7 @@ Added the same day, from what earlier milestones left open (the user,
   - It has limits: lines (431), headers, and bodies (`:max-body`, 413).
   - A malformed request gets a 400. A handler that fails gets a 500, and
     the error goes to `:on-error`.
-  - A response body can be a string, bytes, a sequence or a `norn.io`
+  - A response body can be a string, bytes, a sequence or a `skein.io`
     stream (the last two chunked). HEAD responses carry the headers with
     no body.
   - It serves TLS with `:tls`, `:cert-file` and `:key-file`, and `stop!`
@@ -221,21 +221,21 @@ Added the same day, from what earlier milestones left open (the user,
   module's own names win, and nothing warned. Two halves:
   - **`(:refer-core :exclude [names…] :rename {name new-name})` in `ns`.**
     An excluded name is the module's own, defined or not. A renamed one is
-    `norn.core`'s under its new name. `norn.http` says
+    `skein.core`'s under its new name. `skein.http` says
     `(:refer-core :rename {get core-get})` and looks up maps with
     `core-get`. Both are ordinary namespace mappings, so images keep them.
-  - **A lint rule** (`:shadow`): a module defining a `norn.core` name that
+  - **A lint rule** (`:shadow`): a module defining a `skein.core` name that
     its `ns` doesn't take for its own is told that every use of the name
     in it means the definition. It found 31 such definitions in the stdlib
-    and 22 in norn-ui and Studio. Every one was meant (`norn.async`'s
-    `map`, `norn.net`'s `resolve`, tests' `settle`, Studio's `close!`),
+    and 22 in skein-ui and Studio. Every one was meant (`skein.async`'s
+    `map`, `skein.net`'s `resolve`, tests' `settle`, Studio's `close!`),
     and is now said so with `:exclude`.
   - **Tests:** `module_test` checks `:rename`, `:exclude`, the mistakes,
     and the rule.
 - **Speed, a first measure:** about 7,100 requests/s from one client over
   a kept-alive connection, and 29,000/s from eight clients at once, with
   client and server in one process.
-- **Tests:** `http_test.norn`, 77 checks at both tiers, covering:
+- **Tests:** `http_test.skn`, 77 checks at both tiers, covering:
   - URIs: parsing, formatting, encoding, queries, and RFC 3986's
     resolution examples;
   - HTTP: query parameters; text, byte, chunked and 1 MB bodies; stream
@@ -247,7 +247,7 @@ Added the same day, from what earlier milestones left open (the user,
 
 **9.13, conditions for the runtime's errors (2026-11-14): done.**
 
-- **The hierarchy, in `norn.core`:**
+- **The hierarchy, in `skein.core`:**
   - `RuntimeError`, a mistake in the program, keeping its `use-value` and
     `retry` restarts: `TypeError` (`:expected`, `:value`), `ArityError`
     (`:function`, `:given`), `UnboundVarError` (`:var`), `IndexError`
@@ -263,8 +263,8 @@ Added the same day, from what earlier milestones left open (the user,
   I/O errors aren't `RuntimeError`s any more: a handler for program
   mistakes no longer catches a missing file. Every message is as it was.
 - **Rust raises them with their data.**
-  - `Error` gains a class: a `norn.core` class by name with slot values,
-    or a Norn value (a condition to signal again).
+  - `Error` gains a class: a `skein.core` class by name with slot values,
+    or a Skein value (a condition to signal again).
   - `%runtime-error` makes that class. The old recognising of
     `OwnershipError` by its message's text is gone.
   - `io::ErrorKind` maps to the I/O classes. rustls's failures
@@ -279,16 +279,16 @@ Added the same day, from what earlier milestones left open (the user,
   - the I/O classes from files, sockets, DNS (`ConnectionError`,
     `:reason :host-not-found`), accept, read, write and the TLS handshake;
   - `ParseError` from the reader, the comment-keeping reader, JSON (with
-    the line and column), `norn.uri`, and HTTP messages.
+    the line and column), `skein.uri`, and HTTP messages.
 
-  `norn.http` raises `TimeoutError` (`:after`), `ConnectionError` (a
+  `skein.http` raises `TimeoutError` (`:after`), `ConnectionError` (a
   server that closes without answering) and `ParseError`.
 - **A failed fiber keeps its condition** (a new fiber field, `CONDITION`),
   and `await` and scopes signal that same object again, class and data
   intact. Until now they made a new `RuntimeError` from its message. The
   VM's own `%abort-fiber` and die paths carry the condition through the
   unwinding. An image's dead fibers drop theirs.
-- **Tests:** `errors_test.norn`, 28 checks at both tiers:
+- **Tests:** `errors_test.skn`, 28 checks at both tiers:
   - each class with its data;
   - the hierarchy, and restarts still offered;
   - files, a refused connection with its address, an untrusted
@@ -325,7 +325,7 @@ done.**
     for `throw` or `error`;
   - `ex-data` gives an `ExInfo`'s map, or a runtime error's slots
     (`{:path … :reason :not-found}`), or nil.
-- **`deref` stays a primitive.** A Norn `deref` function made `@` on an
+- **`deref` stays a primitive.** A Skein `deref` function made `@` on an
   atom four times slower at tier 1 (20 to 76 ms for 2 million). Instead,
   the primitive hands an object to `deref-object` through a new
   `ErrKind::Call`: the interpreter calls the function in the primitive's
@@ -341,7 +341,7 @@ done.**
   - `realized?` already existed, as a primitive for lazy streams, and the
     first version replaced it (`core_test` caught it). The new one hands
     everything that isn't a fiber or an object to that primitive.
-- **Tests:** `later_test.norn`, 39 checks at both tiers:
+- **Tests:** `later_test.skn`, 39 checks at both tiers:
   - twenty fibers waiting on one promise, and timeouts;
   - a delay forced by ten fibers at once, computed once, with its failure
     cached and the self-reference error;
@@ -352,7 +352,7 @@ done.**
 
 **9.2, `match` (2026-11-14): done.**
 
-- **`match` in `norn.core`:** `(match x pattern [:when guard] body …)`.
+- **`match` in `skein.core`:** `(match x pattern [:when guard] body …)`.
   The first clause that matches gives the value. A guard sees the
   pattern's names. When nothing matches, it's a `MatchError` with the
   value (`:value`). The patterns:
@@ -379,7 +379,7 @@ done.**
   each time, for ever. A nested run now forces the stream itself and calls
   the primitive again. `core_test` checks it with a macro that maps over
   `(range)`.
-- **Tests:** `match_test.norn`, 34 checks at both tiers: every kind of
+- **Tests:** `match_test.skn`, 34 checks at both tiers: every kind of
   pattern, nesting, guards falling through, `recur` in a body, the
   `MatchError`, mistakes found when expanding, and how the code grows.
 
@@ -422,7 +422,7 @@ describe.**
 - **Blame, as Racket does it:**
   - a bad argument blames the calling module (with its file):
     `ct2.lib/add: its 2nd argument should be Integer, got "2", blaming
-    ct2.user (…/ct2/user.norn)`;
+    ct2.user (…/ct2/user.skn)`;
   - a bad result blames the function's own module;
   - a `fn-of` argument's bad result blames the function it was given.
 - **`(declare (optimize …) (type …))`** is recorded in `%declarations`
@@ -441,7 +441,7 @@ describe.**
     behind delays (each deref a generic function call now), and checked
     namespaces before the cheap flag. Cached loads don't expand, so they
     don't pay it.
-- **Tests:** `contracts_test.norn`, 31 checks at both tiers, with modules
+- **Tests:** `contracts_test.skn`, 31 checks at both tiers, with modules
   in a temporary folder:
   - arguments and results, and their blame;
   - `(Vec T)`, the rest of the arguments, `(U …)`, `(? T)`, `(-> …)`;
@@ -493,7 +493,7 @@ describe.**
 - **Slot readers are generic functions** (decision 13). A subclass can
   specialise one, and two classes can have readers of the same name.
 - **Speed.** This was measured at each step:
-  - A first version cost readers and `slot-value` 2–3.5× (a Norn
+  - A first version cost readers and `slot-value` 2–3.5× (a Skein
     `slot-value`, readers as two calls deep).
   - Now a method whose body never calls the next method is *direct*: it
     takes no next-method argument, and alone it is the effective method,
@@ -512,7 +512,7 @@ describe.**
 - **Not done:** the long form of `define-method-combination`, and slots on
   metaclasses (a metaclass is for specialising the protocol; data about a
   class goes in its `:meta`).
-- **Tests:** `mop_test.norn`, 34 checks at both tiers: classes' classes,
+- **Tests:** `mop_test.skn`, 34 checks at both tiers: classes' classes,
   printing (in collections, inherited, and the plain default),
   `initialize-instance` through `(C …)`, `make` and `make-instance`,
   readers specialised and shared, a metaclass auditing slot reads and
@@ -523,7 +523,7 @@ describe.**
 
 **9.6, processes and supervisors (2026-11-14): done.**
 
-- **`norn.actor`** (`norn.process` is the operating system's processes).
+- **`skein.actor`** (`skein.process` is the operating system's processes).
   A process is a fiber with a mailbox:
   - `spawn-process`, `self`, `send` (to a process or a registered name;
     to one that has ended, dropped), `register!` and `whereis`;
@@ -567,7 +567,7 @@ describe.**
   mentions the names a pattern binds, so lint doesn't call them unused).
 - **Not done:** distribution (processes on other machines), and a
   process's crash report is the fiber's ("Fiber N failed: …").
-- **Tests:** `actor_test.norn`, 44 checks at both tiers: messages,
+- **Tests:** `actor_test.skn`, 44 checks at both tiers: messages,
   selective receive and timeouts, names, crash reasons, links (abnormal,
   normal, trapped, to a process already ended), `exit!` and `:kill`,
   monitors, a supervisor restarting a crashed child under its name, the
@@ -575,7 +575,7 @@ describe.**
   supervisor under a supervisor, and `ask` timing out. Run ten times at
   both tiers without a failure.
 
-**9.7, `norn.stm` (2026-11-14): done.**
+**9.7, `skein.stm` (2026-11-14): done.**
 
 - **Refs and transactions,** MVCC as Clojure's:
   - `ref` (options `:validator` and `:max-history`), `dosync`, `alter`,
@@ -628,7 +628,7 @@ describe.**
   against a younger one); here a long transaction under steady writes to
   its refs can lose again and again, up to `*max-retries*`. History is
   fixed, not grown on a fault.
-- **Tests:** `stm_test.norn`, 38 checks at both tiers: transactions and
+- **Tests:** `stm_test.skn`, 38 checks at both tiers: transactions and
   nesting, one moment throughout, a conflict running a transaction
   again, write skew without and with `ensure`, `commute` not conflicting,
   12 fibers transferring at once, history, validators and watches, values
@@ -637,7 +637,7 @@ describe.**
 
 **9.8, the full FFI (2026-11-14): done.**
 
-- **Memory** (`norn.ffi`):
+- **Memory** (`skein.ffi`):
   - addresses are integers;
   - `alloc` (bytes, or room for a type) and `free!`, and `with-alloc`;
   - `mem-get` and `mem-set!` for each C type at an address and offset;
@@ -658,15 +658,15 @@ describe.**
   `callback-address`, `free-callback!`, and a `[:callback params ret]`
   parameter, which takes a callback or a plain function (made a callback
   once and kept):
-  - during a call from Norn, on its thread, f runs there and then, as a
+  - during a call from Skein, on its thread, f runs there and then, as a
     nested run;
   - from another thread (the blocking pool, or one of C's own), the call
     goes to a fiber serving the callback, while that thread waits;
   - an error in f can't unwind through C: C gets 0, and the error is
-    signalled when the call from Norn returns (from another thread, it's
+    signalled when the call from Skein returns (from another thread, it's
     reported).
 
-  `qsort` sorts with a Norn comparator both ways, fast and `:blocking`.
+  `qsort` sorts with a Skein comparator both ways, fast and `:blocking`.
 - **`function-at`:** a C function known by its address (a function
   pointer C returned).
 - **Checked signatures:** `(defcfun strlen libc "strlen" [s :string]
@@ -676,15 +676,15 @@ describe.**
   still works, unchecked.
 - **Unsafe modules:** a module that uses the raw FFI says `(:unsafe)` in
   its `ns`.
-  - The expander refuses `norn.ffi`'s raw functions and the
+  - The expander refuses `skein.ffi`'s raw functions and the
     `%ffi-`/`%mem-` primitives under them anywhere else.
   - The REPL's `user` may use them.
   - A module that doesn't say it may still call one that does, and
     layouts (`defcstruct`, `sizeof`) are for anyone.
-  - `lib_test.norn` says `(:unsafe)` now.
+  - `lib_test.skn` says `(:unsafe)` now.
 - **Not done in 9.8, then done in 9.8b:** structs by value, variadic
   functions, unions and bit fields, and reusing a freed callback's code.
-- **Tests:** `ffi_test.norn`, 43 checks at both tiers:
+- **Tests:** `ffi_test.skn`, 43 checks at both tiers:
   - memory in every C type;
   - layouts against C's rules, nested structs and arrays read and
     written, and `struct tm` from `gmtime_r`;
@@ -719,7 +719,7 @@ describe.**
 - **A freed callback's trampoline** is reused by the next callback with
   its signature, so executable memory doesn't grow with callbacks made
   and freed.
-- **Against C itself:** `tests/norn/ffi_fixture.c`, which `ffi_test.norn`
+- **Against C itself:** `tests/skein/ffi_fixture.c`, which `ffi_test.skn`
   builds with `cc` into a shared library. It covers:
   - layouts as C computes them (padding, bit fields, unions);
   - each kind of struct by value, as arguments and results, and with
@@ -733,17 +733,17 @@ describe.**
 - **Not done:** x86-64 (System V's classification of each eight bytes,
   and `%al` for a variadic call, which Cranelift can't set) and Windows:
   they come with M12's ports, and are an error until then.
-- **A race it showed up** (from 8.3): the expander loads `norn.validate`
+- **A race it showed up** (from 8.3): the expander loads `skein.validate`
   the first time a macro expands, and another fiber expanding meanwhile
   skipped the checks. Now it waits for the load. (That wasn't all of the
   flaky `pattern_test`, though: see 9.9.)
-- **Tests:** `ffi_test.norn`, now 78 checks at both tiers. Run ten times
+- **Tests:** `ffi_test.skn`, now 78 checks at both tiers. Run ten times
   at both tiers without a failure.
 
 **9.9, SQLite (2026-11-14): done.**
 
-- **`norn.sqlite`,** written in Norn on `norn.ffi` and the system's
-  libsqlite3 (`NORN_SQLITE` names another). It's the FFI's first real
+- **`skein.sqlite`,** written in Skein on `skein.ffi` and the system's
+  libsqlite3 (`SKEIN_SQLITE` names another). It's the FFI's first real
   user, and needed nothing new from it.
   - `open` (a path or `":memory:"`; `:readonly`, `:create`,
     `:busy-timeout`, `:blocking`), `close!` and `with-connection`.
@@ -762,7 +762,7 @@ describe.**
   or `:exclusive`) commits, or rolls back on any error, which goes on.
   One inside another is a savepoint, rolled back alone.
 - **Fibers share a connection** safely: a lock per connection (on
-  `norn.sync`'s semaphore) lets one fiber at a time use it, and a
+  `skein.sync`'s semaphore) lets one fiber at a time use it, and a
   transaction keeps it for its fiber until the transaction ends.
 - **Errors** are `DatabaseError`s, with `ConstraintError` and `BusyError`
   under them, carrying SQLite's `:code`, `:extended-code`, message and
@@ -778,14 +778,14 @@ describe.**
   `eval` while it compiles itself twice. `cargo test` runs every suite in
   one runtime, so for that long the other suites' `eval` skipped the
   expander. Errors then came from the seed compiler's checks, not
-  `norn.validate`'s. It showed after every rebuild, when an empty module
+  `skein.validate`'s. It showed after every rebuild, when an empty module
   cache made those stages slow: with a fresh cache it failed 4 runs out
   of 4. `compiler_test` now runs each stage through that stage's own
   `eval`, installing nothing, and 5 fresh-cache runs out of 5 pass.
 - **Not done:** Studio's Databases panel (it can come now that the
   library has landed), streaming a large result rather than a vector, and
   user-defined SQL functions (callbacks would do it).
-- **Tests:** `sqlite_test.norn`, 39 checks at both tiers:
+- **Tests:** `sqlite_test.skn`, 39 checks at both tiers:
   - values round-tripping, and parameters of each kind, with their
     mistakes;
   - changes and ids, and errors with their classes and codes;
@@ -798,7 +798,7 @@ describe.**
 
 **9.10, pseudo-terminals (2026-11-14): done.**
 
-- **`norn.process/start-pty`** starts a program on a pseudo-terminal
+- **`skein.process/start-pty`** starts a program on a pseudo-terminal
   (`openpty`), rows × cols (24 × 80), with options as for `start`.
   - The child gets a new session, with the terminal as its controlling
     terminal (`setsid`, `TIOCSCTTY`), so `^C` at the terminal is a
@@ -809,20 +809,20 @@ describe.**
   - `TERM` is `xterm-256color` unless `:env` says otherwise.
 - **Streams:** `:in` (what's typed) and `:out` (what the terminal shows:
   standard output and error together, and the echo) are the master's.
-  They're the reactor's pipe kinds, so `norn.io` reads and writes them.
+  They're the reactor's pipe kinds, so `skein.io` reads and writes them.
   A read once the child has gone (`EIO`) is the end of input.
 - **`resize`** sets the size (`TIOCSWINSZ`; the child gets SIGWINCH).
 - **Something to know, found writing the tests:** on macOS a program's
   exit waits until its last terminal output is read. A `wait` with that
   output unread never returns. `start-pty`'s docstring says to read `:out`
   as the program runs, as a terminal emulator does.
-- **Tests:** `pty_test.norn`, 13 checks at both tiers: size, a terminal
+- **Tests:** `pty_test.skn`, 13 checks at both tiers: size, a terminal
   for stdin and stdout, `TERM`, echo and `\r\n`, the end of output,
   resizing, `^C` as SIGINT, and `cat` ended by `^D`.
 
-**9.11, `norn.bin` (2026-11-14): done.**
+**9.11, `skein.bin` (2026-11-14): done.**
 
-- **A binary format for Norn values:**
+- **A binary format for Skein values:**
   - `encode` and `decode`, and `write-file` and `read-file`;
   - `NRNB`, a version byte, then tagged values, with LEB128 counts and
     zigzag integers;
@@ -844,28 +844,28 @@ describe.**
   - bad input is always a `ParseError`: 20,000 mutated encodings gave a
     value or a `ParseError`, nothing else.
 - **Random values** (1,500 in the suite, seeded) round-trip equal, with
-  the same hash, printed the same, and through text with `norn.edn` too.
+  the same hash, printed the same, and through text with `skein.edn` too.
 - **Gaps it found:**
   - **The printer writes a queue as `#queue [...]`, which the reader
     didn't read.** It does now (its items are data, not evaluated, as
     `#bytes`'s are).
   - **Deep nesting crashed the process.** The reader overflowed the
     native stack between 20,000 and 40,000 levels: 200 KB of `[` killed
-    it, which matters for `norn.edn`'s promise about untrusted text.
-    It's an error past 10,000 levels now, and so is `norn.bin` both
+    it, which matters for `skein.edn`'s promise about untrusted text.
+    It's an error past 10,000 levels now, and so is `skein.bin` both
     ways.
   - **Still open:** printing and `=` overflow too, between 40,000 and
     70,000 levels. Since reading stops at 10,000, only a value built in
     code that deep reaches them. The fix is a stack that grows (the
     `stacker` crate) or rewrites without recursion, a choice for later.
-- **Tests:** `bin_test.norn`, 128 checks at both tiers.
+- **Tests:** `bin_test.skn`, 128 checks at both tiers.
 
 **9.12, the smaller libraries (2026-11-14): done.**
 
-- **`norn.compress`:** deflate, zlib and gzip (flate2's pure-Rust
+- **`skein.compress`:** deflate, zlib and gzip (flate2's pure-Rust
   backend), `crc32`, and a `:max-size` limit (256 MiB) on what
   decompressing makes.
-- **`norn.crypto`,** on ring, which rustls already links:
+- **`skein.crypto`,** on ring, which rustls already links:
   - SHA-256/384/512 (and SHA-1 for old protocols);
   - HMAC, with `hmac-valid?` in constant time;
   - PBKDF2;
@@ -874,13 +874,13 @@ describe.**
   - `constant-time=`.
 
   Checked against FIPS 180's, RFC 4231's and RFC 6070's examples.
-- **`norn.uuid`:** version 4 (secure random) and version 7 (ordered by
+- **`skein.uuid`:** version 4 (secure random) and version 7 (ordered by
   time) as canonical strings, `parse` (braces, no dashes, any case),
   `valid?`, `version`, `timestamp-ms` and bytes both ways.
-- **`norn.csv`** (RFC 4180): `read-csv`, `read-maps`, `write-csv` and
+- **`skein.csv`** (RFC 4180): `read-csv`, `read-maps`, `write-csv` and
   `write-maps`. Quoted fields hold separators, doubled quotes and line
   breaks; `:separator` and `:quote` are options.
-- **`norn.toml`** (TOML 1.0): `read-string` and `write-string`.
+- **`skein.toml`** (TOML 1.0): `read-string` and `write-string`.
   - It reads every value kind: four kinds of string with their escapes
     and line-ending backslashes, integers in four bases with
     underscores, floats with `inf`/`nan`, and dates and times (an offset
@@ -890,40 +890,40 @@ describe.**
   - What the spec forbids (a key or table twice, leading zeros, bad
     escapes…) is a `ParseError` with its line.
   - It reads the example at toml.io.
-- **`norn.zip`:**
+- **`skein.zip`:**
   - `entries`, `read-entry`, `unzip`, `extract!` and `zip`;
   - stored and deflated entries, UTF-8 names, and CRCs checked;
   - for untrusted archives, a total `:max-size`, and `extract!` refuses
     a name that would land outside its folder before writing anything;
   - the system's `unzip -t` passes our archives, and we read its `zip`'s.
-- **`norn.schedule`:**
+- **`skein.schedule`:**
   - cron expressions: five fields with ranges, lists, steps and names,
     either-day matching as cron does, and `@daily` and the rest;
   - `next-run` and `next-runs` in a zone;
   - `schedule` runs a function in a fiber each time it's due, and
     `stop!` stops it.
-- **`norn.data`:** `diff`, as clojure.data's: `[only-in-a only-in-b
+- **`skein.data`:** `diff`, as clojure.data's: `[only-in-a only-in-b
   in-both]`, by key, member and index.
 - **Gaps they found:**
   - **Sorted maps and sets weren't functions of their keys**, as maps
     and sets are. Now they are.
   - **There's no metadata on values:** no `meta` or `with-meta`. The
-    reader keeps `^…` only for the expander. `norn.toml` keeps its
+    reader keeps `^…` only for the expander. `skein.toml` keeps its
     marks beside the data instead. Clojure code expects metadata, so
     it's a question for sealing.
 - **Not done:** ZIP64, and encrypted or other-method zip entries.
-- **Tests:** `small_libs_test.norn`, 105 checks at both tiers. They're
+- **Tests:** `small_libs_test.skn`, 105 checks at both tiers. They're
   checked against the system's `gzip`, `zip` and `unzip` as well as the
   RFCs' vectors.
 
 **Found and fixed (after 9.12): the intermittent crash.**
 
 - **What happened.** With every suite running in one runtime
-  (`norn_suites`), the process died now and then (SIGSEGV or SIGBUS), in
+  (`skein_suites`), the process died now and then (SIGSEGV or SIGBUS), in
   the GC's tracing or the interpreter's frames. That was about 1 run in 10,
   and 9.9's build did it too. It needed the SQLite suite alongside a
   broad mix of the others, and more than one carrier: with
-  `NORN_THREADS=1` it never happened.
+  `SKEIN_THREADS=1` it never happened.
 - **The cause.** A carrier keeps one free stack segment cached
   (`Vm::spare`, the "hot split" cache), and the cache isn't a GC root. It
   was dropped before a collection at a safepoint, and when a carrier
@@ -938,12 +938,12 @@ describe.**
   callback raised, kept until C returns, could hold a condition that
   wasn't rooted meanwhile. Both are fixed.
 - **How it was found.** First bisecting suites and tests, then
-  `NORN_THREADS=1` and `=2` (it needed two carriers, and two made it
-  frequent). Then a heap-check build: `norn-rt`'s new `gc-check` feature
+  `SKEIN_THREADS=1` and `=2` (it needed two carriers, and two made it
+  frequent). Then a heap-check build: `skein-rt`'s new `gc-check` feature
   (MMTk's valid-object bit) checks every pointer the GC follows. It found
   no bad one, so the damage was in a stack segment, and a crash in
   `backtrace` pointed there.
-- **The test:** `crates/norn/tests/io.rs`
+- **The test:** `crates/skein/tests/io.rs`
   `a_collection_during_a_native_call_spares_the_cached_segment`. One fiber
   comes back across a segment boundary and enters a native call while
   another collects. It crashed 6 runs out of 6 without the fix, and
@@ -952,13 +952,13 @@ describe.**
 **The M9a done-check (2026-11-15).**
 
 - **Studio's panels:** the API workbench, the terminal and the Databases
-  view run on `norn.http`, the pty support and SQLite.
+  view run on `skein.http`, the pty support and SQLite.
 - **Checked signatures:** every public function of the twenty libraries
   M9a and the stdlib batch added has one:
-  - `norn.actor`, `bin`, `cli`, `compress`, `crypto`, `csv`, `data`,
+  - `skein.actor`, `bin`, `cli`, `compress`, `crypto`, `csv`, `data`,
     `ffi`, `http`, `process`, `property`, `schedule`, `sqlite`, `stm`,
     `terminal`, `time`, `toml`, `uri`, `uuid` and `zip`.
-  - The exceptions are listed in `contracts_test.norn`, which checks the
+  - The exceptions are listed in `contracts_test.skn`, which checks the
     rest:
     - ten functions that take nothing a type can say (no arguments,
       only a function, or a process or its name);
@@ -979,13 +979,13 @@ describe.**
     plain test, as a class does.
   - 10,000 inserts take 110 ms (93 ms with no signatures). The rest is the
     check on each `sqlite/execute!` call.
-- **Blame:** `contracts_test.norn` checks both sides.
-- **A crash held in the debugger:** `actor_test.norn`
+- **Blame:** `contracts_test.skn` checks both sides.
+- **A crash held in the debugger:** `actor_test.skn`
   `a-crash-stays-in-the-debugger-while-it-is-restarted`. Under
   `*debugger* :park`, the supervisor restarts the child and the new one
   answers, while the crash waits in the debugger.
 - **Tiers:** every suite passes at tier 0 and tier 1.
-- **Found on the way:** `norn fmt` indented a body under the parameter
+- **Found on the way:** `skein fmt` indented a body under the parameter
   vector when a result type came first (`(^Map [a]` and the body on the
   next line). A leading `^hint` now belongs to what follows it.
 

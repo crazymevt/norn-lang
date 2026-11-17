@@ -1,0 +1,132 @@
+;;;; Exact base-10 arithmetic on an integer coefficient and a scale.
+
+(ns skein.decimal
+  (:refer-core :exclude [compare])
+  (:require [skein.math :as math] [skein.string :as str]))
+
+(defclass Decimal () ((coefficient :required true) (scale :required true))
+  (:doc "An exact decimal number: an integer coefficient and a scale, the
+  number of digits after the point (decimal and parse make one)."))
+
+(defmethod initialize-instance :after ((x Decimal) _)
+  (when-not (and (integer? (:coefficient x)) (integer? (:scale x)))
+    (error "Decimal expects an integer coefficient and scale")))
+
+(defn decimal? "Is x a Decimal?" ^Boolean [x] (instance? Decimal x))
+
+(defn decimal
+  "coefficient × 10^(-scale). One argument constructs a scale-zero decimal."
+  (^Decimal [^Integer coefficient] (decimal coefficient 0))
+  (^Decimal [^Integer coefficient ^Integer scale] (Decimal :coefficient coefficient :scale scale)))
+
+(defn parse
+  "Parse decimal text exactly, including optional sign and exponent."
+  ^Decimal [^String s]
+  (if-let [[_ sign whole fraction only-fraction exponent]
+           (re-matches #"([+-]?)(?:([0-9]+)(?:\.([0-9]*))?|\.([0-9]+))(?:[eE]([+-]?[0-9]+))?" s)]
+    (let [fraction (or fraction only-fraction "")
+          coefficient (parse-long (str (or whole "0") fraction))
+          scale (- (count fraction) (if exponent (parse-long exponent) 0))]
+      (decimal (if (= sign "-") (- coefficient) coefficient) scale))
+    (error ParseError :source "Decimal" :message (str "Invalid decimal text: " (pr-str s)))))
+
+(defn text
+  "Write decimal text preserving scale. Negative scales use exponent notation."
+  ^String [^Decimal x]
+  (let [{:keys [coefficient scale]} (instance->map x)
+        digits (str (abs coefficient))
+        sign (if (neg? coefficient) "-" "")
+        point (- (count digits) scale)]
+    (cond (neg? scale) (str sign digits "E+" (- scale))
+          (zero? scale) (str coefficient)
+          (pos? point) (str sign (subs digits 0 point) "." (subs digits point))
+          (<= point -6) (str sign digits "E-" scale)
+          :else (str sign "0." (str/repeat-str (- point) "0") digits))))
+
+;; Scale is unbounded, so text like "1e-1000000000000" parses. Exact
+;; arithmetic between scales that far apart would need that many digits,
+;; so rescaling by more than this many places is an error instead.
+(def ^:private max-shift 100000)
+
+(defn- power-of-ten [exp]
+  (when (> exp max-shift)
+    (error (str "Decimal operation needs a shift of " exp " digits, more than the limit of " max-shift)))
+  (math/expt 10 exp))
+
+(defn- times-power [n exp] (if (or (zero? n) (zero? exp)) n (* n (power-of-ten exp))))
+
+(defn- align [a b]
+  (let [scale (max (:scale a) (:scale b))]
+    [(times-power (:coefficient a) (- scale (:scale a)))
+     (times-power (:coefficient b) (- scale (:scale b))) scale]))
+
+(defn add "a + b, exactly: the scale is the larger of theirs." ^Decimal [^Decimal a ^Decimal b] (let [[a b scale] (align a b)] (decimal (+ a b) scale)))
+(defn subtract "a - b, exactly: the scale is the larger of theirs." ^Decimal [^Decimal a ^Decimal b] (let [[a b scale] (align a b)] (decimal (- a b) scale)))
+(defn multiply "a × b, exactly: the scale is the sum of theirs (1.5 × 2.25 is 3.375)." ^Decimal [^Decimal a ^Decimal b] (decimal (* (:coefficient a) (:coefficient b)) (+ (:scale a) (:scale b))))
+
+(defn- digit-count [n] (count (str (abs n))))
+
+(defn- sign [n] (cond (pos? n) 1 (neg? n) -1 :else 0))
+
+(defn compare
+  "Compare by numeric value, ignoring scale. Values of different magnitude
+  compare without rescaling, so any two decimals can be compared."
+  ^Integer [^Decimal a ^Decimal b]
+  (let [ca (:coefficient a) cb (:coefficient b) sa (sign ca) sb (sign cb)]
+    (cond (not= sa sb) (skein.core/compare sa sb)
+          (zero? sa) 0
+          :else
+          ;; Digits before the point (possibly negative) give the magnitude.
+          ;; When those agree, the scales differ by no more than the
+          ;; coefficients' digit counts, so aligning is cheap.
+          (let [ma (- (digit-count ca) (:scale a))
+                mb (- (digit-count cb) (:scale b))]
+            (if (not= ma mb)
+              (* sa (sign (- ma mb)))
+              (let [[x y _] (align a b)] (skein.core/compare x y)))))))
+
+(defn- rounded-quotient [numerator denominator mode]
+  (when-not (contains? #{:toward-zero :floor :ceiling :half-up :half-even :unnecessary} mode)
+    (error "Unknown decimal rounding mode" mode))
+  (let [negative? (not= (neg? numerator) (neg? denominator))
+        a (abs numerator) b (abs denominator)
+        q (quot a b) r (mod a b)
+        up? (and (pos? r)
+                 (case mode
+                   :toward-zero false
+                   :floor negative?
+                   :ceiling (not negative?)
+                   :half-up (>= (* 2 r) b)
+                   :half-even (or (> (* 2 r) b) (and (= (* 2 r) b) (odd? q)))
+                   :unnecessary (error "Decimal rounding is required")))
+        magnitude (if up? (inc q) q)]
+    (if negative? (- magnitude) magnitude)))
+
+(defn- scale-down
+  "n divided by divisor × 10^places, rounded. Every divisor above 2|n| gives
+  the same rounded result, so places never needs to exceed (digit-count n) + 1."
+  [n divisor places mode]
+  (rounded-quotient n (times-power divisor (min places (inc (digit-count n)))) mode))
+
+(defn quantize
+  "Change scale, rounding when necessary. Default :half-even. Other modes
+  are :half-up, :toward-zero, :floor, :ceiling and :unnecessary."
+  (^Decimal [^Decimal x ^Integer scale] (quantize x scale :half-even))
+  (^Decimal [^Decimal x ^Integer scale ^Keyword mode] (let [shift (- scale (:scale x)) n (:coefficient x)]
+                                                        (decimal (if (neg? shift)
+                                                                   (scale-down n 1 (- shift) mode)
+                                                                   (times-power n shift)) scale))))
+
+(defn divide
+  "Divide to an explicit scale, rounding as in quantize."
+  (^Decimal [^Decimal a ^Decimal b ^Integer scale] (divide a b scale :half-even))
+  (^Decimal [^Decimal a ^Decimal b ^Integer scale ^Keyword mode]
+   (let [shift (+ scale (:scale b) (- (:scale a))) a (:coefficient a) b (:coefficient b)]
+     (decimal (if (neg? shift)
+                (scale-down a b (- shift) mode)
+                (rounded-quotient (times-power a shift) b mode)) scale))))
+
+;; As text it reads back: #skein/decimal "12.30" (pr-str, EDN), or 12.30
+;; (str, print).
+(defmethod tagged-form ((d Decimal)) ['skein/decimal (text d)])
+(defmethod print-object ((d Decimal)) (if *print-readably* (tagged-text d) (text d)))

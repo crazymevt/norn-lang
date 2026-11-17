@@ -1,6 +1,0 @@
-;; norn.image's public interface, recorded by norn api-diff --record.
-{
- "diff-text" {:arglists ["[a b]"], :kind :function}
- "info-text" {:arglists ["[]" "[summary]"], :kind :function}
- "summary" {:arglists ["[]"], :kind :function}
-}

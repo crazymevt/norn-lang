@@ -1,4 +1,4 @@
-// The editor protocol's data (norn --server): one Norn map per line. Its
+// The editor protocol's data (skein --server): one Skein map per line. Its
 // responses hold only maps, vectors, strings, keywords, numbers, symbols,
 // nil and booleans (values come back printed, as strings), so this reads
 // just those. Keywords and symbols read as strings (":k" without the
@@ -73,12 +73,12 @@ function read(text) {
   return form();
 }
 
-/** A string as Norn source. */
+/** A string as Skein source. */
 function str(s) {
   return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + '"';
 }
 
-/** A request map as Norn data: keys are keywords; values are numbers,
+/** A request map as Skein data: keys are keywords; values are numbers,
  * strings, or {kw: "name"} for a keyword. */
 function request(m) {
   const val = (v) =>

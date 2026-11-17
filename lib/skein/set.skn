@@ -1,0 +1,60 @@
+;;;; skein.set — set algebra and relations (sets of maps).
+;;;;
+;;;; The operations keep the kind of their first argument: a sorted set
+;;;; stays sorted.
+
+(ns skein.set)
+
+(defn union "Everything in any of the sets." (^Set [] #{}) (^(? Set) [^(? Set) s] s)
+  (^(? Set) [^(? Set) s1 ^(? Set) s2] (if (< (count s1) (count s2)) (into s2 s1) (into s1 s2)))
+  (^(? Set) [^(? Set) s1 ^(? Set) s2 & ^(? Set) more] (reduce union (union s1 s2) more)))
+
+(defn intersection "What every set has." (^(? Set) [^(? Set) s] s)
+  (^(? Set) [^(? Set) s1 ^(? Set) s2] (reduce (fn [acc x] (if (contains? s2 x) acc (disj acc x))) s1 s1))
+  (^(? Set) [^(? Set) s1 ^(? Set) s2 & ^(? Set) more] (reduce intersection (intersection s1 s2) more)))
+
+(defn difference "What s1 has and the others don't (any collections: (difference s (keys m)))." (^(? Set) [^(? Set) s] s)
+  (^(? Set) [^(? Set) s1 s2] (reduce disj s1 s2))
+  (^(? Set) [^(? Set) s1 s2 & more] (reduce difference (difference s1 s2) more)))
+
+(defn subset? "Is every member of a in b?" ^Boolean [^(? Set) a ^(? Set) b] (and (<= (count a) (count b)) (every? (fn [x] (contains? b x)) a)))
+(defn superset? "Is every member of b in a?" ^Boolean [^(? Set) a ^(? Set) b] (subset? b a))
+(defn disjoint? "Do a and b have no members in common?" ^Boolean [^(? Set) a ^(? Set) b] (not-any? (fn [x] (contains? b x)) a))
+
+(defn select "The members of s for which pred is true." ^(? Set) [pred ^(? Set) s] (reduce (fn [acc x] (if (pred x) acc (disj acc x))) s s))
+
+(defn map-invert "m with keys and values swapped." ^Map [^(? Map) m] (reduce-kv (fn [acc k v] (assoc acc v k)) {} m))
+
+(defn rename-keys "m with the keys in kmap renamed to kmap's values." ^(? Map) [^(? Map) m ^Map kmap]
+  (reduce-kv (fn [acc old new] (if (contains? m old) (assoc acc new (get m old)) acc))
+             (apply dissoc m (keys kmap)) kmap))
+
+(defn project "The relation xrel (a set of maps) keeping only keys ks." ^Set [^(? Collection) xrel ^(? Collection) ks] (set (map (fn [r] (select-keys r ks)) xrel)))
+
+(defn rename "The relation xrel with keys renamed by kmap." ^Set [^(? Collection) xrel ^Map kmap] (set (map (fn [r] (rename-keys r kmap)) xrel)))
+
+(defn index "The maps of xrel grouped by their values for ks: {(select-keys r ks) #{r …}}." ^Map [^(? Collection) xrel ^(? Collection) ks]
+  (reduce (fn [m r] (update m (select-keys r ks) (fn [rs] (conj (or rs #{}) r)))) {} xrel))
+
+(defn join
+  "The natural join of two relations (on their shared keys, or on km: a map
+  of xrel's keys to yrel's)."
+  (^Set [^(? Collection) xrel ^(? Collection) yrel]
+   (if (and (seq xrel) (seq yrel))
+     (let [ks (filter (set (keys (first xrel))) (keys (first yrel)))]
+       (join xrel yrel (zipmap ks ks)))
+     #{}))
+  (^Set [^(? Collection) xrel ^(? Collection) yrel ^Map km]
+   ;; (the smaller relation indexed, the larger walked, as Clojure's does;
+   ;; each pair merged x then y either way)
+   (if (<= (count xrel) (count yrel))
+     (let [idx (index xrel (keys km)) back (map-invert km) yks (vals km)]
+       (persistent! (reduce (fn [out y]
+                              (reduce (fn [out x] (conj! out (merge x y)))
+                                      out (get idx (rename-keys (select-keys y yks) back))))
+                            (transient #{}) yrel)))
+     (let [idx (index yrel (vals km)) xks (keys km)]
+       (persistent! (reduce (fn [out x]
+                              (reduce (fn [out y] (conj! out (merge x y)))
+                                      out (get idx (rename-keys (select-keys x xks) km))))
+                            (transient #{}) xrel))))))

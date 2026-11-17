@@ -1,0 +1,10 @@
+;; skein.markdown's public interface, recorded by skein api-diff --record.
+{
+ "*starts*" {:kind :var, :dynamic true}
+ "blocks" {:arglists ["[lines]"], :kind :function, :signature [{:result "Vector", :args ["Vector"]}]}
+ "html" {:arglists ["[md]"], :kind :function, :signature [{:result "String", :args ["String or Vector"]}]}
+ "inlines" {:arglists ["[s]"], :kind :function, :signature [{:result "Vector", :args ["String"]}]}
+ "parse" {:arglists ["[text]"], :kind :function, :signature [{:result "Vector", :args ["Any"]}]}
+ "parse-lines" {:arglists ["[text]"], :kind :function, :signature [{:result "Vector", :args ["Any"]}]}
+ "text" {:arglists ["[md]"], :kind :function, :signature [{:result "String", :args ["String or Vector"]}]}
+}

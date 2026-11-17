@@ -1,0 +1,957 @@
+;;;; The standard libraries (lib/skein/*.skn): loaded with require.
+
+(ns lib-test (:require [skein.bytes :as b] [skein.io :as io] [skein.fs :as fs] [skein.sys :as sys]
+                       [skein.process :as proc] [skein.time :as t] [skein.signal :as sig]
+                       [skein.net :as net] [skein.ffi :as ffi] [skein.rope :as rope]
+                       [skein.string :as str] [skein.regex :as re] [skein.json :as json]
+                       [skein.edn :as edn] [skein.format :as fmt] [skein.pprint :as pp] [skein.ndjson :as ndjson]
+                       [skein.math :as math] [skein.set :as set] [skein.walk :as walk]
+                       [skein.random :as random] [skein.async :as as] [skein.sync :as sync]
+                       [skein.cache :as cache] [skein.log :as log] [skein.fmt :as codefmt] [skein.lint :as lint]
+                       [skein.bench :as bench] [skein.doc :as ndoc] [skein.image :as image] [skein.check :as check]
+                       [skein.test :refer [is]])
+    (:unsafe))
+
+(defmacro fails [expr]
+  `(try ~expr :no-error (~'catch Error e# :error)))
+
+;;; ---- skein.bytes ----
+(def hello (b/utf8 "héllo"))
+(is (= 6 (count hello)))
+(is (= [104 195 169 108 108 111] (vec (seq hello))))
+(is (= 195 (nth hello 1)))
+(is (= 195 (get hello 1)))
+(is (= "héllo" (b/utf8-string hello)))
+(is (= "68c3a96c6c6f" (b/hex hello)))
+(is (= hello (b/unhex "68C3A96C6C6F")))
+(is (= "aMOpbGxv" (b/base64 hello)))
+(is (= "__4" (b/base64 (bytes [255 254]) :url)))
+(is (= "//4=" (b/base64 (bytes [255 254]))))
+(is (= (bytes [255 254]) (b/unbase64 "__4")))
+(is (= hello (read-string (pr-str hello))))
+(is (= "#bytes \"0102\"" (pr-str (bytes [1 2]))))
+(is (= #bytes "c3a9" (b/slice hello 1 3)))
+(is (= (bytes [1 2 3 4]) (b/concat-bytes (bytes [1 2]) (bytes []) (bytes [3 4]))))
+(is (= true (= (bytes [1 2]) (bytes [1 2]))))
+(is (= true (= (hash (bytes [1 2])) (hash (b/unhex "0102")))))
+(is (= false (= (bytes [1 2]) [1 2])))
+(is (= false (= (bytes [104 105]) "hi")))
+(is (= Bytes (class-of hello)))
+(is (= true (bytes? hello)))
+(is (= "�" (b/utf8-string (bytes [255]) true)))
+(is (= :error (fails (b/utf8-string (bytes [255])))))
+(is (= :error (fails (bytes [256]))))
+(is (= :error (fails (b/unhex "abc"))))
+(is (= :error (fails (b/unbase64 "a"))))
+(is (= 1 (count (into #{} [(bytes [1]) (bytes [1])]))))
+
+;;; ---- skein.io: whole files, the file system, paths ----
+(def dir (io/path (sys/temp-dir) (str "skein-lib-test-" (sys/pid) "-" (nano-time))))
+(defn- f [& parts] (apply io/path dir parts))
+(io/mkdirs! (f "sub" "deeper"))
+(io/write-text (f "a.txt") "one\ntwo\r\nthree")
+(io/append-text (f "a.txt") "\nfour")
+(io/write-bytes (f "sub" "b.bin") (bytes [1 2 3]))
+(spit (f "sub" "deeper" "c.skn") "(+ 1 2)")
+(is (= ["one" "two" "three" "four"] (io/lines (f "a.txt"))))
+(is (= "one\ntwo\r\nthree\nfour" (io/read-text (f "a.txt"))))
+(is (= (bytes [1 2 3]) (io/read-bytes (f "sub" "b.bin"))))
+(is (= "(+ 1 2)" (slurp (f "sub" "deeper" "c.skn"))))
+(is (= :dir (:type (io/info dir))))
+(is (= [:file 3] (let [i (io/info (f "sub" "b.bin"))] [(:type i) (:size i)])))
+(is (= true (integer? (:modified (io/info (f "a.txt"))))))
+(is (= nil (io/info (f "nope"))))
+(is (= [true false true false] [(io/exists? (f "a.txt")) (io/exists? (f "nope")) (io/directory? (f "sub")) (io/file? (f "sub"))]))
+(is (= ["a.txt" "sub"] (io/list-dir dir)))
+(is (= [(f "a.txt") (f "sub") (f "sub" "b.bin") (f "sub" "deeper") (f "sub" "deeper" "c.skn")] (fs/walk dir)))
+(is (= [(f "sub" "b.bin") (f "sub" "deeper" "c.skn")] (fs/glob (str dir "/sub/**/*.*"))))
+(is (= [(f "sub" "deeper" "c.skn")] (fs/glob (str dir "/**/*.skn"))))
+(is (= [] (fs/glob (str dir "/nope/**/*.skn"))) "a missing folder matches nothing")
+(is (= 3 (io/copy! (f "sub" "b.bin") (f "copy.bin"))))
+(io/rename! (f "copy.bin") (f "moved.bin"))
+(is (= [false true] [(io/exists? (f "copy.bin")) (io/exists? (f "moved.bin"))]))
+(io/delete! (f "moved.bin"))
+(is (= false (io/exists? (f "moved.bin"))))
+(is (= :error (fails (io/delete! (f "sub")))))
+(is (= :error (fails (io/read-text (f "nope")))))
+(io/write-bytes (f "bad.txt") (bytes [255 254]))
+(is (= :error (fails (io/read-text (f "bad.txt")))))
+(is (= "y.skn" (io/file-name "x/y.skn")))
+(is (= ["x" "skn" "y"] [(io/parent "x/y.skn") (io/extension "x/y.skn") (io/stem "x/y.skn")]))
+(is (= [nil nil "/"] [(io/parent "c.txt") (io/parent "/") (io/parent "/c.txt")]) "a bare name has no parent")
+(is (= "a/b/c" (io/path "a" "b" "c")))
+(is (= nil (io/extension "README")))
+(is (= true (= (io/absolute "x") (io/path (sys/cwd) "x"))))
+(is (nil? (io/canonical "/no/such/path/here")))
+(is (= (io/canonical (io/parent (sys/cwd))) (io/canonical (io/path (sys/cwd) "." "..")))
+    "canonical resolves . and ..")
+(let [links (str dir "-links")]
+  (io/mkdirs! links)
+  (proc/sh "ln" "-s" (f "a.txt") (io/path links "to-file"))
+  (proc/sh "ln" "-s" (f "sub") (io/path links "to-dir"))
+  (proc/sh "ln" "-s" (f "gone") (io/path links "dangling"))
+  (is (= :symlink (:type (io/info (io/path links "to-file")))) "info tells a link from its target")
+  (is (= [true false] [(io/file? (io/path links "to-file")) (io/directory? (io/path links "to-file"))])
+      "file? follows a link (a CLI in ~/.local/bin is often one)")
+  (is (= [false true] [(io/file? (io/path links "to-dir")) (io/directory? (io/path links "to-dir"))]))
+  (is (= [false false] [(io/file? (io/path links "dangling")) (io/directory? (io/path links "dangling"))]))
+  (io/delete! links :recursive true))
+
+;;; ---- skein.io: streams ----
+(io/with-open [h (io/open (f "s.txt") :write)]
+  (io/write h "héllo\n")
+  (io/write h (bytes [119 111 114 108 100])))
+(is (= "héllo\nworld" (io/read-text (f "s.txt"))))
+(def h2 (io/open (f "s.txt") :append))
+(io/write h2 "\nagain")
+(io/close h2)
+(io/close h2)
+(is (= :error (fails (io/write h2 "x"))))
+(is (= ["héllo" "world" "again" nil]
+       (io/with-open [h (io/open (f "s.txt") :read)]
+         (let [r (io/line-reader h)] [(io/read-line r) (io/read-line r) (io/read-line r) (io/read-line r)]))))
+(is (= "héllo\nworld\nagain" (io/with-open [h (io/open (f "s.txt") :read)] (bytes->string (io/read-all h)))))
+(is (= :file (handle-kind (io/with-open [h (io/open (f "s.txt") :read)] h))))
+(is (= :error (fails (io/open (f "s.txt") :sideways))))
+(io/with-open [a (io/open (f "w1.txt") :write) b (io/open (f "w2.txt") :write)]
+  (io/write a "one")
+  (io/write b "two"))
+(is (= ["one" "two"] [(io/read-text (f "w1.txt")) (io/read-text (f "w2.txt"))]) "with-open binds several")
+(is (= "one" (io/with-open [a (io/open (f "w1.txt") :read) r (io/line-reader a)] (io/read-line r))) "a later init sees the earlier")
+(io/close (io/open (f "rw.txt") :read-write))
+(is (= "" (io/read-text (f "rw.txt"))) ":read-write creates a missing file")
+(spit (f "b.bin") (bytes [1 2 255]))
+(is (= [1 2 255] (vec (seq (io/read-bytes (f "b.bin"))))) "spit writes bytes as they are")
+(defclass SpitPoint () (x))
+(defmethod print-object ((p SpitPoint)) (str "<" (:x p) ">"))
+(spit (f "b.txt") (SpitPoint :x 5))
+(is (= "<5>" (slurp (f "b.txt"))) "and anything else as str does")
+(when (= "skein" (io/file-name (:executable (sys/info)))) ; (under the Rust test harness, the executable is the harness)
+  (is (= {:out "nil\n" :err "a :b <1>\nc"}
+         (select-keys (proc/sh (:executable (sys/info)) "-e"
+                               (str "(require '[skein.io :as io]) (defclass P () (x)) (defmethod print-object ((p P)) \"<1>\")"
+                                    " (io/eprintln \"a\" :b (P :x 1)) (io/eprint \"c\")"))
+                      [:out :err]))
+      "eprint and eprintln write to standard error"))
+
+;;; an unreachable stream is closed by its cleanup (observed through a
+;;; cleanup of our own on the same stream, which runs in the same pass:
+;;; counting handles would also count other suites' running in parallel)
+(def leaked (io/open (f "s.txt") :read))
+(is (%handle-live? leaked))
+(def leak-cleaned (chan 1))
+(add-cleanup! leaked (fn [] (offer! leak-cleaned :cleaned)))
+(def leaked nil)
+(gc)
+(is (= :cleaned (first (alts! [leak-cleaned (timeout 5000)]))))
+
+;;; ---- skein.fs: watching ----
+(def w (fs/watch dir :recursive true))
+(sleep 200)
+(io/write-text (f "watched.txt") "hi")
+(def ev (first (alts! [(:events w) (timeout 10000)])))
+(is (= true (and (map? ev) (some? (:kind ev)) (vector? (:paths ev)))))
+(fs/unwatch w)
+
+;;; ---- skein.sys ----
+(def info (sys/info))
+(is (= true (every? (fn [k] (contains? info k)) [:os :family :arch :endian :cores :page-size :pid :temp-dir :cwd :skein-version :build])))
+(is (= true (keyword? (sys/os))))
+(is (= true (pos? (sys/cores))))
+(is (= true (string? (sys/getenv "PATH"))))
+(is (= nil (sys/getenv "SKEIN_SURELY_UNSET_VARIABLE")))
+(is (= (sys/getenv "PATH") (sys/getenv :PATH) (sys/getenv 'PATH)) "a keyword or symbol names a variable")
+(is (= true (map? (sys/env))))
+(is (= true (pos? (count (sys/args)))))
+(is (= true (pos? (:carriers (sys/runtime)))))
+
+(io/delete! dir :recursive true)
+(is (= false (io/exists? dir)))
+
+;;; ---- skein.process ----
+(is (= {:exit 0 :signal nil :out "hello world\n" :err ""} (proc/sh "echo" "hello" "world")))
+(is (= "piped in" (:out (proc/sh "cat" :in "piped in"))))
+(is (= [3 "err\n"] (let [r (proc/sh "sh" "-c" "echo err >&2; exit 3")] [(:exit r) (:err r)])))
+(is (= "/" (:out (proc/sh "sh" "-c" "cd . && pwd | tr -d '\\n'" :dir "/"))))
+(is (= "yes" (:out (proc/sh "sh" "-c" "printf %s \"$SKEIN_TEST_VAR\"" :env {"SKEIN_TEST_VAR" "yes"}))))
+(let [p (proc/start "sh" :args ["-c" "echo one; echo two; sleep 30"])
+      r (io/line-reader (:out p))]
+  (is (= ["one" "two"] [(io/read-line r) (io/read-line r)]))
+  (proc/kill p)
+  (is (= {:exit nil :signal :term} (proc/wait p)) "by name")
+  (doseq [k [:in :out :err :process]] (io/close (k p))))
+(is (= :error (fails (proc/sh "/no/such/program"))))
+(let [e (try (proc/sh "/no/such/program") (catch Error e e))]
+  (is (instance? FileNotFound e) "a missing program is FileNotFound")
+  (is (= "/no/such/program" (:path e))))
+(is (instance? FileNotFound (try (proc/sh "true" :dir "/no/such/dir") (catch Error e e))) "and so is a missing :dir")
+(is (= "" (:out (proc/sh "sh" "-c" "printf %s \"$HOME\"" :clear-env true))) "sh takes :clear-env")
+(let [p (proc/start "cat")]
+  (io/write (:in p) "x")
+  (io/close (:in p))
+  (is (= "x" (bytes->string (io/read-all (:out p)))))
+  (proc/wait p)
+  (is (nil? (proc/close p)) "close closes everything start gave")
+  (is (every? (fn [k] (not (%handle-live? (k p)))) [:in :out :err :process]))
+  (proc/close p))
+(is (nil? (io/close nil)) "closing nil does nothing")
+
+;;; ---- skein.time ----
+(is (= "1970-01-01T00:00:00Z" (t/format (t/of-epoch-ms 0))))
+(is (= "2026-11-13T07:05:00.500Z" (t/format (t/parse "2026-11-13T08:05:00.5+01:00"))))
+(is (= "2026-11-13T08:05:00.500+01:00" (t/format (t/parse "2026-11-13T08:05:00.5+01:00") 3600)))
+(is (= -1000 (t/epoch-ms (t/parse "1969-12-31T23:59:59Z"))))
+(is (= {:year 2024 :month 2 :day 29 :hour 23 :minute 59 :second 59 :nanos 0 :weekday 4 :yearday 60 :offset 0}
+       (t/fields (t/parse "2024-02-29T23:59:59Z"))))
+(is (= (t/parse "2026-03-01T12:00:00Z") (t/from-fields {:year 2026 :month 3 :day 1 :hour 13 :offset 3600})))
+(is (= :error (fails (t/from-fields {:year 2026 :month 2 :day 29}))))
+(is (= :error (fails (t/parse "2026-13-01"))))
+(is (= :error (fails (t/parse "yesterday"))))
+(is (= 86400000 (t/millis (t/between (t/parse "2026-01-01") (t/parse "2026-01-02")))))
+(is (= 5400 (t/seconds (t/duration :hours 1 :minutes 30))))
+(is (= (t/parse "2026-01-01T01:30:00Z") (t/plus (t/parse "2026-01-01") (t/duration :minutes 90))))
+(is (= true (t/before? (t/parse "2026-01-01") (t/parse "2026-01-02"))))
+(is (= true (integer? (t/local-offset))))
+(is (= true (let [a (t/now) _ (sleep 2) b (t/now)] (t/after? b a))))
+(is (= true (instance? t/Instant (t/now))))
+
+;;; ---- skein.signal ----
+(let [l (sig/listen :usr1)]
+  (sig/raise :usr1)
+  (is (= :usr1 (first (alts! [(:signals l) (timeout 5000)]))))
+  (sig/stop! l))
+(let [l (sig/listen :usr2)]
+  (proc/sh "kill" "-USR2" (str (sys/pid)))
+  (is (= :usr2 (first (alts! [(:signals l) (timeout 5000)]))))
+  (sig/stop! l))
+(is (= :error (fails (sig/listen :kill))))
+(is (= :error (fails (sig/listen :segv))) "the runtime keeps it")
+(let [l (sig/listen :abrt)] (sig/stop! l))
+;; The skein command, for the checks that run one (none when this file runs
+;; elsewhere, as in the Rust test harness: that would run the harness).
+(def skein-exe (let [e (:executable (sys/info))] (when (and e (= "skein" (io/file-name e))) e)))
+
+;; Once the last listener stops, a signal does what it did before: SIGTERM
+;; ends the process again (it used to be ignored from then on).
+(when skein-exe
+  (let [code "(do (require '[skein.signal :as sig])
+                (let [a (sig/listen :term) b (sig/listen :term)]
+                  (sig/stop! a) (sig/raise :term)
+                  (prn (first (alts! [(:signals b) (timeout 5000)])))
+                  (sig/stop! b))
+                (sig/raise :term) (sleep 2000) (prn :alive))"
+        r (proc/sh skein-exe "-e" code)]
+    (is (= ":term\n" (:out r)) "one listener left still gets it")
+    (is (= :term (:signal r)))))
+
+;; A pipeline's fiber is its caller's to await: f's error reaches them, and
+;; isn't also printed as a detached fiber's failure would be (quire
+;; finding).
+(when skein-exe
+  (let [r (proc/sh skein-exe "-e" "(do (require '[skein.async :as a]) (let [to (chan 4) p (a/pipeline 2 to (fn [x] (if (= x 3) (/ 1 0) x)) (a/to-chan! [1 2 3 4]))] (prn (a/into [] to)) (sleep 100) (prn (try (await p) (catch ArithmeticError _ :raised)))))")]
+    (is (= "[1 2]\n:raised\nnil\n" (:out r)))
+    (is (not (str/includes? (:err r) "failed")) "nothing on standard error")))
+
+;; An error nothing handles shows where it happened: error's condition
+;; has no trace of its own, and the fiber's end used to take its stack
+;; after unwinding (quire finding: every trace was %finish-unwind).
+(when skein-exe
+  (let [r (proc/sh skein-exe "-e" "(do (defn bt-inner [] (error \"deep\")) (defn bt-outer [] (inc (bt-inner))) (bt-outer))")]
+    (is (str/includes? (:err r) "deep\n  at user/bt-outer"))
+    (is (not (str/includes? (:err r) "%finish-unwind")))))
+
+;; Ctrl-C is a program's own while it listens for :int: the skein command
+;; doesn't interrupt the evaluation as well (pulse finding). Without a
+;; listener it does.
+(when skein-exe
+  (let [r (proc/sh skein-exe "-e" "(do (require '[skein.signal :as sig])
+                                      (let [l (sig/listen :int)]
+                                        (sig/raise :int)
+                                        (prn (first (alts! [(:signals l) (timeout 5000)])))
+                                        (sleep 200)
+                                        (prn :cleaned-up)))")]
+    (is (= ":int\n:cleaned-up\nnil\n" (:out r)))
+    (is (= 0 (:exit r))))
+  (let [r (proc/sh skein-exe "-e" "(do (%raise-signal :int) (sleep 2000) (prn :not-interrupted))")]
+    (is (= "" (:out r)))
+    (is (= 1 (:exit r)))))
+
+;;; ---- skein.net ----
+;; This file's directory, for the test certificates (runners use different
+;; working directories).
+(def here (let [loc (%location)]
+            (io/parent (loop [i (dec (count loc))] (if (= (nth loc i) \:) (subs loc 0 i) (recur (dec i)))))))
+(def certs (io/path here "certs"))
+
+(defn- serve-lines
+  "Answer each line on each accepted connection with line!, n connections."
+  [l n & tls-opts]
+  (spawn-detached
+    (dotimes [_ n]
+      (let [c (apply net/accept l tls-opts)]
+        (spawn-detached
+          (let [r (io/line-reader c)]
+            (loop [] (when-let [line (io/read-line r)] (io/write c (str line "!\n")) (recur)))
+            (io/close c)))))))
+
+(let [l (net/listen "127.0.0.1" 0)
+      port (net/port (net/local-address l))
+      server (serve-lines l 25)
+      talk (fn [i] (let [c (net/connect "127.0.0.1" port)
+                         r (io/line-reader c)]
+                     (io/write c (str "a" i "\nb" i "\n"))
+                     (let [x [(io/read-line r) (io/read-line r)]]
+                       (net/shutdown-output c)
+                       (let [after (io/read-line r)] (io/close c) (conj x after)))))]
+  (is (= (mapv (fn [i] [(str "a" i "!") (str "b" i "!") nil]) (range 25))
+         (mapv await (mapv (fn [i] (spawn-detached (talk i))) (range 25)))))
+  (await server)
+  (is (= true (string? (net/local-address l))))
+  (io/close l))
+
+(let [l (net/listen "127.0.0.1" 0)
+      port (net/port (net/local-address l))
+      _server (serve-lines l 3 :tls true :cert-file (io/path certs "server.pem") :key-file (io/path certs "server.key"))
+      talk (fn [msg] (let [c (net/connect "localhost" port :tls true :ca-file (io/path certs "ca.pem"))
+                           r (io/line-reader c)]
+                       (io/write c (str msg "\n"))
+                       (let [x (io/read-line r)] (io/close c) [(handle-kind c) x])))]
+  (is (= [[:tls "one!"] [:tls "two!"]] (mapv await (mapv (fn [m] (spawn-detached (talk m))) ["one" "two"]))))
+  ;; Without the private CA the server isn't trusted.
+  (is (= :error (fails (net/connect "localhost" port :tls true))))
+  (io/close l))
+
+(let [a (net/udp "127.0.0.1" 0)
+      b (net/udp "127.0.0.1" 0)]
+  (net/send-to a "ping" "127.0.0.1" (net/port (net/local-address b)))
+  (let [m (net/receive b)]
+    (is (= ["ping" true] [(bytes->string (:data m)) (= (:from m) (net/local-address a))])))
+  (io/close a)
+  (io/close b))
+
+(is (= :error (fails (net/connect "127.0.0.1" 1))))
+(is (= true (pos? (count (net/resolve "localhost")))))
+
+;;; ---- skein.ffi ----
+(def libc (ffi/library :c))
+(def libm (ffi/library :m))
+(ffi/defcfun c-strlen libc "strlen" [:string] :usize)
+(ffi/defcfun c-abs libc "abs" [:int] :int)
+(ffi/defcfun c-getpid libc "getpid" [] :int)
+(ffi/defcfun c-sqrt libm "sqrt" [:double] :double)
+(ffi/defcfun c-sqrtf libm "sqrtf" [:float] :float)
+(ffi/defcfun c-getenv libc "getenv" [:string] :string)
+(ffi/defcfun c-memcpy libc "memcpy" [:out :bytes :usize] :pointer)
+(ffi/defcfun c-toupper libc "toupper" [:int] :int)
+(ffi/defcfun c-usleep libc "usleep" [:uint] :int :blocking true)
+(is (= 5 (c-strlen "hello")))
+(is (= 6 (c-strlen "héllo")))
+(is (= 42 (c-abs -42)))
+(is (= (sys/pid) (c-getpid)))
+(is (= 1.5 (c-sqrt 2.25)))
+(is (= 1.5 (c-sqrtf 2.25)))
+(is (= (sys/getenv "PATH") (c-getenv "PATH")))
+(is (= nil (c-getenv "SKEIN_SURELY_UNSET_VARIABLE")))
+(is (= (bytes [1 2 3]) (second (c-memcpy 3 (bytes [1 2 3]) 3))))
+(is (= 65 (c-toupper 97)))
+(is (= [0 0 0 0] (mapv await (mapv (fn [_] (spawn-detached (c-usleep 20000))) (range 4)))))
+(is (= :error (fails (ffi/function libc "no_such_symbol_xyz" [] :void))))
+(is (= :error (fails (c-abs 1 2))))
+(is (= :error (fails (c-abs 3000000000))))
+(is (= :error (fails (ffi/function libc "abs" [:widget] :int))))
+(is (= :error (fails (ffi/library "/no/such/library.dylib"))))
+
+;;; ---- fiber dumps ----
+(let [ch (chan)
+      waiting (spawn-detached (take! ch))
+      _ (sleep 20)
+      dump (fiber-dump)]
+  (is (= true (string? dump)))
+  (is (= true (> (count dump) 20)))
+  (put! ch :done)
+  (is (= :done (await waiting))))
+
+;;; ---- skein.rope ----
+(def r0 (rope/rope "hello\nworld\n"))
+(def r1 (rope/insert r0 5 ", there"))
+(is (= "hello, there\nworld\n" (rope/text r1)))
+(is (= "hello\nworld\n" (rope/text r0)))
+(is (= "there\nworld\n" (rope/text (rope/delete r1 0 7))))
+(is (= 19 (rope/length r1)))
+(is (= 3 (rope/line-count r1)))
+(is (= "world" (rope/line r1 1)))
+(is (= "" (rope/line r1 2)))
+(is (= nil (rope/line r1 3)))
+(is (= 13 (rope/line-start r1 1)))
+(is (= 12 (rope/line-end r1 0)))
+(is (= 1 (rope/line-of r1 14)))
+(is (= "lo, th" (rope/slice r1 3 9)))
+(is (= \e (rope/char-at r1 1)))
+(is (= "HELLO, there\nworld\n" (rope/text (rope/replace r1 0 5 "HELLO"))))
+;; a big rope: many chunks, still balanced, every line findable
+(def big-text (apply str (map (fn [i] (str "line " i "\n")) (range 2000))))
+(def big (rope/rope big-text))
+(is (= (count big-text) (rope/length big)))
+(is (= big-text (rope/text big)))
+(is (= 2001 (rope/line-count big)))
+(is (= "line 1234" (rope/line big 1234)))
+(is (= 1234 (rope/line-of big (rope/line-start big 1234))))
+(is (= true (< (#'skein.rope/height big) 12)))
+(def edited (reduce (fn [r i] (rope/insert r (* i 7) "é")) big (range 300)))
+(is (= (+ 300 (count big-text)) (rope/length edited)))
+(is (= (reduce (fn [s i] (str (subs s 0 (* i 7)) "é" (subs s (* i 7)))) big-text (range 300)) (rope/text edited)))
+(is (= (subs big-text 9) (rope/text (rope/delete big 0 9))))
+(is (= true (< (#'skein.rope/height edited) 16)))
+(is (= (subs big-text 5000 5100) (rope/slice big 5000 5100)))
+(is (= "héllo" (rope/text (rope/insert (rope/rope "hllo") 1 "é"))))
+(is (= \l (rope/char-at (rope/rope "héllo") 2)))
+
+;;; ---- skein.string ----
+(is (= "HÉLLO" (str/upper-case "héllo")))
+(is (= "hello" (str/lower-case "HELLO")))
+(is (= "Hello" (str/capitalize "hELLO")))
+(is (= "a b" (str/trim "  a b \n")))
+(is (= "a " (str/triml "  a ")))
+(is (= "  a" (str/trimr "  a ")))
+(is (= "a" (str/trim-newline "a\r\n\n")))
+(is (= true (str/blank? " \t")))
+(is (= true (str/blank? nil)))
+(is (= false (str/blank? " x ")))
+(is (= 2 (str/index-of "héllo" "l")))
+(is (= 3 (str/index-of "héllo" "l" 3)))
+(is (= nil (str/index-of "héllo" "z")))
+(is (= 3 (str/last-index-of "héllo" \l)))
+(is (= 2 (str/last-index-of "héllo" "l" 2)))
+(is (= true (str/includes? "héllo" "él")))
+(is (= true (str/starts-with? "héllo" "hé")))
+(is (= false (str/starts-with? "h" "hé")))
+(is (= true (str/ends-with? "héllo" "lo")))
+(is (= ["a" "b" "c"] (str/split "a,b,c" ",")))
+(is (= ["a" "b,c"] (str/split "a,b,c" "," 2)))
+(is (= ["a" "b" "c"] (str/split "a1b22c" #"\d+")))
+(is (= ["h" "é" "l"] (str/split "hél" "")))
+(is (= ["a" "b" ""] (str/split-lines "a\r\nb\n")))
+(is (= "1, 2, 3" (str/join ", " [1 2 3])))
+(is (= "ab:c" (str/join [\a "b" :c])))
+(is (= "" (str/join "," [])))
+(is (= "x-y-z" (str/replace "x.y.z" "." "-")))
+(is (= "x-y.z" (str/replace-first "x.y.z" \. \-)))
+(is (= "a<1>b<22>" (str/replace "a1b22" #"(\d+)" "<$1>")))
+(is (= "a2b23" (str/replace "a1b22" #"\d+" (fn [m] (str (inc (parse-long m)))))))
+(is (= "A-B" (str/replace "a-b" #"(\w)" (fn [[_ c]] (str/upper-case c)))))
+(is (= "x+y" (str/replace "x.y" "." (fn [_] "+"))))
+(is (= ["e\u0301" "🇫🇷" "a"] (str/graphemes "e\u0301🇫🇷a")))
+(is (= 3 (str/grapheme-count "e\u0301🇫🇷a")))
+(is (= "ae\u0301" (str/reverse "e\u0301a")))
+(is (= 4 (str/width "日本")))
+(is (= 1 (str/width "e\u0301")))
+(is (= "日" (str/truncate "日本" 3)))
+(is (= "hel…" (str/truncate "hello" 4 "…")))
+(is (= "hello" (str/truncate "hello" 5 "…")))
+(is (= "  日" (str/pad-left "日" 4)))
+(is (= "ab.." (str/pad-right "ab" 4 ".")))
+(is (= " ab " (str/center "ab" 4)))
+(let [red (str (char 27) "[31m" "日本" (char 27) "[0m")]
+  (is (= 4 (str/width red)) "escape sequences take no columns")
+  (is (= (str "  " red) (str/pad-left red 6)))
+  (is (= (str red "..") (str/pad-right red 6 ".")))
+  (is (= 3 (str/width (str (char 27) "]8;;http://x" (char 7) "abc" (char 27) "]8;;" (char 7)))) "a hyperlink's too"))
+(is (= "a&lt;b" (str/escape "a<b" {\< "&lt;"})))
+;;; ---- regexes ----
+(is (= true (regex? #"a+")))
+(is (= "#\"\\d+\"" (pr-str #"\d+")))
+(is (= #"a+" (re-pattern "a+")))
+(is (= "123" (re-find #"\d+" "ab123c")))
+(is (= ["k=v" "k" "v"] (re-find #"(\w)=(\w)" "k=v")))
+(is (= nil (re-find #"\d" "abc")))
+(is (= "123" (re-matches #"\d+" "123")))
+(is (= nil (re-matches #"\d+" "123a")))
+(is (= "ab" (re-matches #"a|ab" "ab")))
+(is (= ["1" "22" "333"] (re-seq #"\d+" "1a22b333")))
+(is (= {:match "2026-11" :start 3 :end 10 :groups ["2026" "11"] :named {:y "2026" :m "11"}}
+       (re/match #"(?<y>\d{4})-(?<m>\d\d)" "on 2026-11!")))
+(is (= 2 (count (re/match-all #"é" "éaé"))))
+(is (= 2 (:start (second (re/match-all #"é" "éaé")))))
+(is (= "ü" (re/find #"\p{L}" "1ü")))
+(is (= ["a" "b"] (re/split #"\s*,\s*" "a , b")))
+(is (= "a.b" (re/find (re/literal "a.b") "xa.by")))
+(is (= nil (re/find (re/literal "a.b") "axb")))
+(is (= true (re/matches? #"[a-z]+" "abc")))
+(is (= :error (fails (re-pattern "("))))
+(is (= #{#"a" #"b"} (hash-set #"b" #"a")))
+;;; ---- skein.json ----
+(is (= {:a 1, :b [true false nil], :c "é\n", :d 1.5} (json/read-string "{\"a\":1,\"b\":[true,false,null],\"c\":\"\\u00e9\\n\",\"d\":1.5}")))
+(is (= {"a" 1} (json/read-string "{\"a\": 1}" :keys identity)))
+;; :keys, as skein.yaml, skein.toml and skein.csv take it (sweep: JSON had
+;; :keywords true/false alone)
+(is (= {"A" {"B" 1}} (json/read-string "{\"a\": {\"b\": 1}}" :keys str/upper-case)))
+(is (= [{:a [{:b 1}]}] (ndjson/read-string "{\"a\": [{\"b\": 1}]}")))
+;; EDN files, as the other formats have them
+(let [path (io/path (sys/temp-dir) (str "skein-edn-" (sys/pid) "-" (nano-time) ".edn"))]
+  (edn/write-file path {:a [1 2] :b "x"} :pretty true)
+  (is (= {:a [1 2] :b "x"} (edn/read-file path)))
+  (io/delete! path))
+(is (= 123456789012345678901234567890 (json/read-string "123456789012345678901234567890")))
+(is (= "😀" (json/read-string "\"\\ud83d\\ude00\"")))
+(is (= :error (fails (json/read-string "{\"a\" 1}"))))
+(is (= :error (fails (json/read-string "[1,]"))))
+(is (= :error (fails (json/read-string "01"))))
+(is (= :error (fails (json/read-string "[1] 2"))))
+(is (= true (str/includes? (try (json/read-string "{\n  \"a\": x}") (catch Error e (condition-message e))) "line 2, column 8")))
+(is (= "{\"a\":[1,2.5,\"x\",null]}" (json/write-string {:a [1 2.5 "x" nil]})))
+(is (= "[\"k\",\"ns/s\",\"c\"]" (json/write-string [:k 'ns/s \c])))
+(is (= "[1,2,3]" (json/write-string (map inc [0 1 2]))))
+(is (= "[0,1,2]" (json/write-string (range 3))))
+(is (= "0.5" (json/write-string 1/2)))
+(is (= "\"\\u00e9\"" (json/write-string "é" :ascii true)))
+(is (= "{\n  \"a\": [\n    1\n  ]\n}" (json/write-string {:a [1]} :pretty true)))
+(is (= :error (fails (json/write-string ##NaN))))
+(is (= :error (fails (json/write-string {[1] 2}))))
+(let [v {:name "skein" :tags ["lisp" "rust"] :version {:major 0 :minor 7} :big 99999999999999999999}]
+  (is (= v (json/read-string (json/write-string v))))
+  (is (= v (json/read-string (json/write-string v :pretty true)))))
+;;; ---- skein.edn ----
+(is (= (quote {:a [1 2/3 "s" \c #{x}]}) (edn/read-string "{:a [1 2/3 \"s\" \\c #{x}]}")))
+(is (= nil (edn/read-string "")))
+(is (= :none (edn/read-string "  " :eof :none)))
+(is (= [1 :b "c"] (edn/read-all "1 :b \"c\"")))
+(let [v {:x '(a b) :y #bytes "00ff" :z [1.5 nil true] :q (conj (queue) 1) :r 1/3 :s #{\a 'b/c}}]
+  (is (= v (edn/read-string (edn/write-string v))))
+  ;; (:pretty, as skein.json has: ledger finding)
+  (is (= v (edn/read-string (edn/write-string v :pretty true)))))
+(is (= "{:a [1 2 3],\n :b \"x\"}" (edn/write-string (sorted-map :a [1 2 3] :b "x") :pretty true :width 12)))
+(defclass EdnPoint () (x))
+(doseq [bad [(atom 1) [1 {:f inc}] (sorted-map :v #'inc) (list (EdnPoint :x 1))]]
+  (let [e (try (edn/write-string bad) nil (catch TypeError e e))]
+    (is (some? e) (str "no EDN form: " (pr-str bad))))
+  (is (thrown? TypeError (edn/write-string bad :pretty true)) "checked when pretty too"))
+;;; ---- format ----
+(is (= "x=42 y=hi" (format "x=%d y=%s" 42 "hi")))
+(is (= "  42|42  |00042|+42" (format "%4d|%-4d|%05d|%+d" 42 42 42 42)))
+(is (= "3.14|3.142e+00|0.0001|1e+10" (format "%.2f|%.3e|%g|%g" 3.14159 3.14159 0.0001 1e10)))
+(is (= "ff|FF|17|101" (format "%x|%X|%o|%b" 255 255 15 5)))
+(defclass FmtPoint () (x))
+(defmethod print-object ((p FmtPoint)) (str "<" (:x p) ">"))
+(is (= "<1> [<2>] <3>" (format "%s %s %S" (FmtPoint :x 1) [(FmtPoint :x 2)] (FmtPoint :x 3))) "%s prints as str does")
+(is (= "1,234,567|-1,234.50" (format "%,d|%,.2f" 1234567 -1234.5)))
+(is (= "\"s\" s 100%" (format "%S %s 100%%" "s" "s")))
+(is (= "123456789012345678901234567890" (format "%d" 123456789012345678901234567890)))
+(is (= "0.50" (format "%.2f" 1/2)))
+(is (= "日本 |" (format "%-5s|" "日本")))
+(is (= "hé" (format "%.2s" "héllo")))
+(is (= :error (fails (format "%d"))))
+(is (= :error (fails (format "%d" "x"))))
+(is (= "1,234.57" (fmt/number 1234.567)))
+(is (= "1,234" (fmt/number 1234)))
+(is (= "26%" (fmt/percent 0.256)))
+(is (= "25.6%" (fmt/percent 0.2561 :decimals 1)) ":decimals, as number takes it (loglens finding)")
+(is (= "1.5 KB" (fmt/bytes-size 1536)))
+(is (= "512 B" (fmt/bytes-size 512)))
+(is (= "1h 2m" (fmt/duration 3725000)))
+(is (= "1.5s" (fmt/duration 1500)))
+;; rounded, not cut short, and a minute that rounds up is one (loglens finding)
+(is (= ["0.4ms" "9.5ms" "20ms" "999ms" "1.0s" "59.9s" "1m 0s" "1m 0s" "2d 3h"]
+       (mapv fmt/duration [0.4 9.5 19.6 999.4 999.7 59940 59960 60000 (* 1000 60 60 51)])))
+(is (= ["1st" "2nd" "3rd" "11th" "22nd" "113th"] (mapv fmt/ordinal [1 2 3 11 22 113])))
+(is (= "2 files" (fmt/plural 2 "file")))
+;;; ---- skein.pprint ----
+(is (= "{:a 1, :b 2}" (pp/pprint-str {:a 1 :b 2})))
+(is (= "[1\n 2\n 3]" (pp/pprint-str [1 2 3] 4)))
+(is (= "(defn f\n  [x]\n  (+ x 1))" (pp/pprint-str '(defn f [x] (+ x 1)) 12)))
+(let [big {:name "a fairly long string value" :items (vec (range 30)) :nested {:k [:a :b :c] :more "text"}}
+      out (pp/pprint-str big 40)]
+  (is (= big (read-string out)))
+  (is (= true (every? (fn [l] (<= (str/width l) 40)) (remove (fn [l] (str/includes? l "(range")) (str/split-lines out)))))
+  (is (= true (> (count (str/split-lines out)) 3))))
+
+;;; ---- skein.math ----
+(is (= 1.5 (math/sqrt 2.25)))
+;; percentiles, interpolated as numpy and spreadsheets do (loglens finding)
+(is (= [12 52 55 31 20] [(math/percentile [12 20 31 40 55] 0) (math/percentile [12 20 31 40 55] 95)
+                         (math/percentile [55 40 31 20 12] 100) (math/percentile [12 20 31 40 55] 50)
+                         (math/percentile [12 20 31 40 55] 25)]))
+(is (= 98/5 (math/percentile [20 12] 95)) "exact for exact numbers")
+(is (nil? (math/percentile [] 50)) "nothing: nil, as median gives")
+(is (thrown? Error (math/percentile [1 2] 101)))
+(is (= 3.0 (math/cbrt 27)))
+(is (= true (math/approx= 1.0 (math/exp 0))))
+(is (= 3.0 (math/log 2 8)))
+(is (= 2.0 (math/log10 100)))
+(is (= true (math/approx= 1.0 (math/sin (/ math/PI 2)))))
+(is (= true (math/approx= (/ math/PI 4) (math/atan 1 1))))
+(is (= 5.0 (math/hypot 3 4)))
+(is (= 1024.0 (math/pow 2 10)))
+(is (= [2 -3 3 -2] [(math/floor 2.7) (math/floor -2.1) (math/ceil 2.1) (math/ceil -2.7)]))
+(is (= [2 -2 3 -3] [(math/trunc 2.7) (math/trunc -2.7) (math/round 2.5) (math/round -2.5)]))
+(is (= [2 4] [(math/round 2.5 :even) (math/round 3.5 :even)]))
+(is (= 1 (math/floor 3/2)))
+(is (= 2 (math/round 3/2)))
+(is (= 100000000000000000000 (math/floor 1e20)))
+(is (= :error (fails (math/floor ##NaN))))
+(is (= 1267650600228229401496703205376 (math/expt 2 100)))
+(is (= 1/8 (math/expt 2 -3)))
+(is (= 8/27 (math/expt 2/3 3)))
+(is (= 1.5 (math/round-to 1.4999 2)))
+(is (= [6 0 3] [(math/gcd 12 18) (math/gcd) (math/gcd -3)]))
+(is (= 36 (math/lcm 12 18)))
+(is (= 1000000000000 (math/gcd 1000000000000000000000000 1000000000000)))
+(is (= 3 (math/isqrt 15)))
+(is (= 1000000000000000000000 (math/isqrt 1000000000000000000000000000000000000000000)))
+(is (= [-1 0 1 -1.0] [(math/signum -5) (math/signum 0) (math/signum 1/2) (math/signum -0.5)]))
+(is (= [true false false] [(math/nan? ##NaN) (math/nan? 1) (math/nan? ##Inf)]))
+(is (= [true true false] [(math/infinite? ##-Inf) (math/finite? 1/3) (math/finite? ##NaN)]))
+(is (= 5 (math/clamp 9 0 5)))
+(is (= 2.5 (math/lerp 0 10 0.25)))
+(is (= 2 (math/mean [1 2 3])))
+(is (= 5/2 (math/median [4 1 3 2])))
+(is (= 2/3 (math/variance [1 2 3])))
+;;; ---- skein.set ----
+(is (= #{1 2 3} (set/union #{1} #{2} #{3 1})))
+(is (= #{2} (set/intersection #{1 2} #{2 3})))
+(is (= #{1} (set/difference #{1 2} #{2 3})))
+(is (= [true false] [(set/subset? #{1} #{1 2}) (set/subset? #{3} #{1 2})]))
+(is (= true (set/superset? #{1 2} #{2})))
+(is (= true (sorted? (set/union (sorted-set 3 1) #{2}))))
+(is (= #{2 4} (set/select even? #{1 2 3 4})))
+(is (= {1 :a} (set/map-invert {:a 1})))
+(is (= {:x 1 :b 2} (set/rename-keys {:a 1 :b 2} {:a :x})))
+(def people #{{:name "ann" :city 1} {:name "bo" :city 2}})
+(def cities #{{:city 1 :cname "Oslo"} {:city 2 :cname "Rome"}})
+(is (= #{{:name "ann" :city 1 :cname "Oslo"} {:name "bo" :city 2 :cname "Rome"}} (set/join people cities)))
+;; the smaller relation is the one indexed, whichever comes first; the
+;; result is the same (loglens finding: 95,000 rows indexed to walk 25)
+(let [big (set (for [i (range 200)] {:id (mod i 5) :n i})) small #{{:id 1 :p "a"} {:id 2 :p "b"} {:id 9 :p "z"}}]
+  (is (= 80 (count (set/join big small))))
+  (is (= (set/join big small) (set/join small big)))
+  (is (= (set/join big (set/rename small {:id :k}) {:id :k})
+         (set (map (fn [r] (assoc r :k (:id r))) (set/join big small))))))
+(is (= #{{:name "ann"} {:name "bo"}} (set/project people [:name])))
+(is (= {{:city 1} #{{:name "ann" :city 1}}} (select-keys (set/index people [:city]) [{:city 1}])))
+;;; ---- skein.walk ----
+(is (= [2 [3 {:a 4}] '(5)] (walk/postwalk (fn [x] (if (number? x) (inc x) x)) [1 [2 {:a 3}] '(4)])))
+(is (= true (list? (walk/postwalk identity '(1 2)))))
+(is (= true (sorted? (walk/postwalk identity (sorted-map 1 2)))))
+(is (= {:a {:b 1}} (walk/keywordize-keys {"a" {"b" 1}})))
+(is (= {"a" [{"b" 1}]} (walk/stringify-keys {:a [{:b 1}]})))
+(is (= '(+ x (* x 2)) (walk/postwalk-replace {'y 'x} '(+ y (* y 2)))))
+(is (= [1 :a 2 3 4] (walk/leaves [1 {:a 2} #{3} '(4)])))
+(is (= false (contains? (set (walk/leaves (walk/macroexpand-all '(when a (when b c))))) 'when)))
+;;; ---- skein.random ----
+(let [g1 (random/generator 42) g2 (random/generator 42)]
+  (is (= (mapv (fn [_] (random/int g1 1000)) (range 20)) (mapv (fn [_] (random/int g2 1000)) (range 20)))))
+(is (= false (= (random/int (random/generator 1) 1000000000) (random/int (random/generator 2) 1000000000))))
+(is (= true (every? (fn [x] (and (<= 0 x) (< x 10))) (repeatedly 200 (fn [] (random/int 10))))))
+(is (= #{0 1 2 3} (set (repeatedly 200 (fn [] (random/int 4))))))
+(is (= true (every? (fn [x] (and (<= 5 x) (< x 8))) (repeatedly 100 (fn [] (random/int nil 5 8))))))
+(is (= true (let [x (random/float)] (and (<= 0.0 x) (< x 1.0)))))
+(is (= true (let [x (random/int (math/expt 10 30))] (and (<= 0 x) (< x (math/expt 10 30))))))
+(is (= (set (range 20)) (set (random/shuffle (range 20)))))
+(is (= (random/shuffle (random/generator 7) (range 20)) (random/shuffle (random/generator 7) (range 20))))
+(is (= 5 (count (set (random/sample (range 100) 5)))))
+(is (= true (contains? #{:a :b} (random/choice [:a :b]))))
+(is (= :b (random/weighted {:a 0 :b 1})))
+(is (= true (re/matches? #"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}" (random/uuid))))
+(is (= 2 (count (set (map (fn [g] (random/int g 1000000000)) (random/split (random/generator 3)))))))
+(is (= true (math/approx= 0.0 (math/mean (repeatedly 4000 random/gaussian)) 0.1)))
+(is (= true (< 0.4 (/ (count (filter true? (repeatedly 400 random/boolean))) 400.0) 0.6)))
+(is (= true (<= 0 (rand-int 5) 4)))
+(is (= (set (range 10)) (set (shuffle (range 10)))))
+;;; ---- skein.async ----
+(is (= [1 2 3] (as/into [] (as/to-chan! [1 2 3]))))
+(is (= 6 (as/reduce + 0 (as/to-chan! [1 2 3]))))
+(is (= [2 3 4] (as/into [] (as/map inc (as/to-chan! [1 2 3])))))
+(is (= [2] (as/into [] (as/filter even? (as/to-chan! [1 2 3])))))
+(is (= [1 3] (as/into [] (as/transduce-chan (comp (filter odd?) (take 2)) (as/to-chan! [1 2 3 4 5])))))
+(is (= #{1 2 3 4} (set (as/into [] (as/merge [(as/to-chan! [1 2]) (as/to-chan! [3 4])])))))
+(let [[evens odds] (as/split even? (as/to-chan! (range 6)))
+      e (spawn-detached (as/into [] evens))]
+  (is (= [1 3 5] (as/into [] odds)))
+  (is (= [0 2 4] (await e))))
+(let [out (chan)
+      p (as/pipeline 4 out (fn [x] (sleep (rand-int 3)) (* x x)) (as/to-chan! (range 20)))]
+  (is (= (mapv (fn [x] (* x x)) (range 20)) (as/into [] out)))
+  (is (= nil (await p))))
+;; pipeline keeps at most n calls of f going (book finding 7)...
+(let [now (atom 0) peak (atom 0) out (chan)]
+  (as/pipeline 3 out (fn [x] (swap! peak max (swap! now inc)) (sleep (rand-int 4)) (swap! now dec) x)
+               (as/to-chan! (range 40)))
+  (is (= (range 40) (as/into [] out)))
+  (is (<= 1 @peak 3)))
+;; ...and a failing f stops it: to is closed, and the fiber it returns
+;; raises f's error.
+(let [out (chan)
+      p (as/pipeline 3 out (fn [x] (sleep 2) (if (= x 4) (/ 1 0) x)) (as/to-chan! (range 10)))]
+  (is (= [0 1 2 3] (as/into [] out)))
+  (is (= :divided-by-zero (handler-case (await p) (ArithmeticError [_] :divided-by-zero)))))
+(let [out (chan 1)
+      p (as/pipeline 2 out (fn [_] (error "nope")) (as/to-chan! [1 2 3]) false)]
+  (is (= {:error "nope"} (settle p)))
+  (is (= false (closed? out))))
+(is (= "TypeError" (handler-case (as/pipeline 0 (chan) inc (chan)) (TypeError [e] (name (class-name (class-of e)))))))
+(let [src (chan) m (as/mult src) a (as/tap m (chan 10)) b (as/tap m (chan 10))]
+  (as/onto-chan! src [1 2])
+  (is (= [[1 2] [1 2]] [(as/into [] a) (as/into [] b)])))
+(let [src (chan) p (as/pub src :topic) x (as/sub p :x (chan 10)) y (as/sub p :y (chan 10))]
+  (as/onto-chan! src [{:topic :x :v 1} {:topic :y :v 2} {:topic :x :v 3}])
+  (is (= [[1 3] [2]] [(mapv :v (as/into [] x)) (mapv :v (as/into [] y))])))
+(let [d (chan 2 :dropping)]
+  (is (= [true true true] [(put! d 1) (put! d 2) (put! d 3)]))
+  (close! d)
+  (is (= [1 2] (as/into [] d))))
+(let [s (chan 2 :sliding)]
+  (put! s 1) (put! s 2) (put! s 3)
+  (close! s)
+  (is (= [2 3] (as/into [] s))))
+;;; ---- skein.sync ----
+(let [s (sync/semaphore 2) active (atom 0) peak (atom 0)]
+  (with-scope [sc]
+    (dotimes [_ 8]
+      (spawn sc (sync/with-permit s
+                  (let [n (swap! active inc)] (swap! peak max n))
+                  (sleep 5)
+                  (swap! active dec)))))
+  (is (= 2 (deref peak)))
+  (is (= 2 (sync/available s))))
+(let [s (sync/semaphore 1)]
+  (is (= [true false] [(sync/try-acquire! s) (sync/try-acquire! s)])))
+(let [l (sync/latch 3) done (atom 0)]
+  (dotimes [_ 3] (spawn-detached (sleep 2) (swap! done inc) (sync/count-down! l)))
+  (is (= true (sync/await-latch l)))
+  (is (= 3 (deref done)))
+  (is (= false (sync/await-latch (sync/latch 1) 10))))
+(let [b (sync/barrier 3) log (atom [])]
+  (with-scope [sc]
+    (dotimes [i 3]
+      (spawn sc (swap! log conj [:a i]) (sync/arrive! b) (swap! log conj [:b i]) (sync/arrive! b))))
+  (is (= true (every? (fn [e] (= :a (first e))) (take 3 (deref log))))))
+(let [rl (sync/rate-limiter 20 5)]
+  (is (= 5 (count (filter true? (repeatedly 5 (fn [] (sync/try-take! rl)))))))
+  (is (= false (sync/try-take! rl 3)))
+  (let [t0 (nano-time)]
+    (sync/take-token! rl 2)
+    (is (< 50000000 (- (nano-time) t0)))))
+(let [calls (atom 0) f (sync/once (fn [] (swap! calls inc) (sleep 5) :v))]
+  (is (= [:v :v :v] (mapv await (mapv (fn [_] (spawn-detached (f))) (range 3)))))
+  (is (= 1 (deref calls))))
+;;; ---- skein.cache ----
+(let [c (cache/lru 2)]
+  (cache/store! c :a 1) (cache/store! c :b 2)
+  (is (= 1 (cache/lookup c :a)))
+  (cache/store! c :c 3)
+  (is (= [1 nil 3] [(cache/lookup c :a) (cache/lookup c :b) (cache/lookup c :c)]))
+  (is (= 2 (cache/size c)))
+  (cache/evict! c :a)
+  (is (= :none (cache/lookup c :a :none)))
+  (cache/clear! c)
+  (is (= 0 (cache/size c))))
+(let [c (cache/ttl 300)]
+  (cache/store! c :a 1)
+  (is (= 1 (cache/lookup c :a)))
+  (sleep 400)
+  (is (= nil (cache/lookup c :a))))
+(let [calls (atom 0) f (cache/memo-lru (fn [x] (swap! calls inc) (* x 2)) 10)]
+  (is (= [2 2 4] [(f 1) (f 1) (f 2)]))
+  (is (= 2 (deref calls))))
+(let [calls (atom 0) f (memoize (fn [x] (swap! calls inc) x))]
+  (f 1) (f 1)
+  (is (= 1 (deref calls))))
+;;; ---- skein.fmt ----
+(def messy "(ns  demo\n    (:require [x :as y]))\n\n\n\n(defn   foo\n\"doc\n  string\"\n      [x   y]\n   (let [a   1\n           b 2]   ; note\n  (when (pos? x)\n        (println \"hi\" ,  a)\n    (+ a b x y)\n    )))\n(foo 1\n 2)\n(some-call\n      arg1 arg2)\n'(a   b)\n#bytes   \"00ff\"\n(cond (a) b\n   (c) d)\n(handler-case\n (risky)\n (Error [e] e))\n(comment\n  (foo 1 2) ; c\n  )")
+(def tidy "(ns demo\n  (:require [x :as y]))\n\n(defn foo\n  \"doc\n  string\"\n  [x y]\n  (let [a 1\n        b 2]   ; note\n    (when (pos? x)\n      (println \"hi\", a)\n      (+ a b x y))))\n(foo 1\n     2)\n(some-call\n arg1 arg2)\n'(a b)\n#bytes \"00ff\"\n(cond (a) b\n      (c) d)\n(handler-case\n  (risky)\n  (Error [e] e))\n(comment\n  (foo 1 2) ; c\n  )\n")
+(is (= tidy (codefmt/format-string messy)))
+(is (= tidy (codefmt/format-string tidy)))
+(is (codefmt/same-code? messy tidy))
+(is (not (codefmt/same-code? "(a b)" "(a c)")))
+(is (codefmt/formatted? tidy))
+(is (= "" (codefmt/format-string "  \n\n")))
+(is (= "(a)\n" (codefmt/format-string "(a)")))
+(is (= "#\"a b\"\n" (codefmt/format-string "#\"a b\"")))
+(is (= "[1\n 2]\n" (codefmt/format-string "[1\n        2]")))
+(is (= "{:a 1,\n :b 2}\n" (codefmt/format-string "{:a 1,   \n   :b 2}")))
+(is (= "(my-indented-macro 1\n  2)\n"
+       (do (eval '(defmacro my-indented-macro {:indent 1} [a & body] `(do ~a ~@body)))
+           (codefmt/format-string "(my-indented-macro 1\n 2)"))))
+;; (and one defined in the text being formatted, read but never run)
+(is (= "(defmacro ^:private in-file \"doc\" {:indent 1} [a & body] a)\n(in-file 1\n  2)\n"
+       (codefmt/format-string "(defmacro ^:private in-file \"doc\" {:indent 1} [a & body] a)\n(in-file 1\n 2)")))
+(is (= {"in-file" 1 "other" 0} (codefmt/indent-hints "(defmacro in-file {:indent 1} [a] a) (defmacro other {:indent 0} [] 1) (defmacro plain [] 1)")))
+(is (nil? (resolve 'in-file)) "nothing was defined")
+;; (a result type before an arity's parameters doesn't move its body)
+(is (= "(defn f\n  (^Map [^Map a]\n   (g a)\n   (h a)))\n"
+       (codefmt/format-string "(defn f\n  (^Map [^Map a]\n          (g a)\n   (h a)))")))
+(is (thrown? Error (codefmt/format-string "(a")))
+(is (thrown? Error (codefmt/format-string "a)")))
+(is (every? (fn [f] (codefmt/formatted? (slurp f)))
+            [(io/path here "../../lib/core/core.skn") (io/path here "../../lib/skein/fmt.skn") (io/path here "lib_test.skn")]))
+
+;;; ---- skein.lint ----
+(def lint-sample "(ns lint-sample (:require [skein.string :as str]))\n(defn helper [a b] (+ a b))\n(defn uses [x]\n  (let [unused 1 _fine 2 y (helper x)]\n    (def inner 3)\n    (try (str/upper-case (missing y)) (catch Error e :x))))\n(defn shadowy [when] (when when 1))\n(defgeneric area (shape))\n(defmethod area ((s String) extra) 1)\n(filter odd? [1] [2])\n(defn ok [] (let [{:keys [a]} {:a 1}] a))\n")
+(def lint-found (set (map (juxt :line :kind :message) (lint/lint-string lint-sample "sample.skn"))))
+(is (= #{[3 :arity "helper called with 1 argument; it takes 2"]
+         [3 :def-in-fn "def of inner inside a function"]
+         [3 :unresolved "unresolved symbol missing"]
+         [3 :unused "unused local unused"]
+         [7 :shadow "local when shadows skein.core's when"]
+         [9 :method-shape "method for area takes 2 arguments; the generic takes 1"]
+         [10 :arity "filter called with 3 arguments; it takes 1 or 2"]}
+       lint-found))
+(is (= [] (lint/lint-string "(ns lint-clean)\n(defn f [x] (let [y (inc x)] (* y 2)))\n(f 1)\n")))
+;; (a module named as one of Skein's own is never loaded: ledger finding)
+(is (= [:shadowed] (mapv :kind (lint/lint-string "(ns skein.csv)\n(defn f [] 1)\n" "csv.skn"))))
+(is (= [] (lint/lint-string (first (%find-lib "skein.csv")) "lib/skein/csv.skn")) "the library itself isn't")
+;; (skein.* is Skein's: its library and first-party packages')
+(is (= [:reserved] (mapv :kind (lint/lint-string "(ns skein.mine)\n(defn f [] 1)\n" "src/skein/mine.skn"))))
+(is (= [] (lint/lint-string "(ns skein.ui.widgets)\n(defn f [] 1)\n" "lib/skein/ui/widgets.skn")) "a first-party package's")
+(is (= [] (lint/lint-string "(ns my.skein.thing)\n(defn f [] 1)\n" "src/my/skein/thing.skn")))
+(is (lint/first-party? "skein.html.writer"))
+(is (not (lint/first-party? "skein.htmlx")))
+;; (a folder below with its own skein.edn is a project of its own, linted
+;; in its folder, where its source paths are known: lang-tests' are)
+(let [d (io/path (sys/temp-dir) (str "lint-nested-" (sys/pid) "-" (nano-time)))]
+  (io/mkdirs! (io/path d "app" "src" "app"))
+  (io/write-text (io/path d "top.skn") "(ns top)\n(defn f [] (missing))\n")
+  (io/write-text (io/path d "app" "skein.edn") "{:name app :paths [\"src\"]}\n")
+  (io/write-text (io/path d "app" "src" "app" "main.skn") "(ns app.main (:require [app.util :as u]))\n(defn f [] (u/g))\n")
+  (let [out (%with-out-str (fn [] (lint/main d)))]
+    (is (str/includes? out "top.skn:2: unresolved"))
+    (is (not (str/includes? out "app/main.skn")) "the project below isn't linted from here"))
+  (io/delete! d :recursive true))
+;; (a Java habit says what Skein has instead: pulse finding)
+(is (= ["unresolved symbol Math/round (Skein has no Java classes: try skein.math/round)"
+        "unresolved symbol Thread/sleep (Skein has no Java classes: use sleep)"
+        "unresolved symbol Widget/make"]
+       (mapv :message (lint/lint-string "(ns lint-java)\n(defn f [] (Math/round 2.5) (Thread/sleep 1) (Widget/make))\n"))))
+(is (= :read (:kind (first (lint/lint-string "(a")))))
+(is (= "f.skn:3: unused: unused local x" (lint/format-warning {:file "f.skn" :line 3 :kind :unused :message "unused local x"})))
+(is (= [] (lint/lint-file (io/path here "../../lib/skein/lint.skn"))))
+
+;;; ---- documentation and REPL tools ----
+(defn documented
+  "Adds one."
+  {:since "0.7" :see-also [inc] :examples [[(documented 1) 2]] :deprecated "use inc"}
+  [x]
+  (inc x))
+(let [d (definition 'documented)]
+  (is (= "Adds one." (:doc d)))
+  (is (= '([x]) (:arglists d)))
+  (is (= "0.7" (:since d)))
+  (is (= "lib-test" (:ns d)))
+  (is (str/ends-with? (:file d) "lib_test.skn")))
+(is (= "skein.core" (:ns (definition 'map))))
+(is (= '([f] [f coll] [f c1 c2] [f c1 c2 c3] [f c1 c2 c3 & more]) (:arglists (definition 'map))))
+(is (= '([test & body]) (:arglists (definition 'when))))
+(is (nil? (definition 'no-such-thing-anywhere)))
+(is (str/starts-with? (source-text 'documented) "(defn documented\n  \"Adds one.\""))
+(is (str/starts-with? (source-text 'rope/insert) "(defn insert"))
+(is (str/starts-with? (source-text 'juxt) "(defn juxt"))
+;; Definitions typed in (the REPL, -e, the editor) keep their text as typed.
+(load-string "(defn typed-in\n  \"Typed.\"\n  [x] ; a comment\n  x)")
+(is (= "(defn typed-in\n  \"Typed.\"\n  [x] ; a comment\n  x)" (source-text 'typed-in)))
+;; The terminal REPL (input from a pipe): definitions are recorded, and the
+;; end of input at a debugger prompt aborts the evaluation and ends it.
+(when skein-exe
+  (let [repl (fn [in] (proc/sh skein-exe :in in))
+        r (repl "(defn f\n  \"Adds one.\"\n  [x] ; one more\n  (inc x))\n(doc f)\n(source f)\n(def a 1) (def b 2)\n(source b)\n")]
+    (is (str/includes? (:out r) "  Adds one.\n"))
+    (is (str/includes? (:out r) "(defn f\n  \"Adds one.\"\n  [x] ; one more\n  (inc x))\n"))
+    (is (str/includes? (:out r) "(def b 2)\n"))
+    (let [r (repl "(/ 1 0)\n")]
+      (is (= 0 (:exit r)))
+      (is (str/includes? (:out r) "debug[")))
+    (let [r (repl "(with-scope [s] (spawn s (/ 1 0)) (await (spawn s 5)))\n:r 0 7\n(+ 1 2)\n")]
+      (is (str/includes? (:out r) "debug[") "a fiber the evaluation spawned gets the prompt")
+      (is (str/includes? (:out r) "> 5\n"))
+      (is (str/includes? (:out r) "> 3\n")))))
+(let [t (%doc-text 'documented)]
+  (is (str/includes? t "lib-test/documented"))
+  (is (str/includes? t "DEPRECATED: use inc"))
+  (is (str/includes? t "(documented 1) ;=> 2")))
+;; primitives, generic functions with methods, protocols, classes, signatures
+(is (str/includes? (%doc-text 'inc) "x plus one.") "a primitive's, from skein.core-docs")
+(is (str/includes? (%doc-text 'print-object) "The text obj prints as") "a generic's, despite its methods")
+(load-string "(defprotocol Measured \"Things with a size.\" (size-of [m] \"Its size.\"))")
+(is (str/includes? (%doc-text 'size-of) "Its size.") "a protocol's function")
+(is (str/includes? (%doc-text 'skein.syntax/Syntax) "A datum with its scopes") "a class's (:doc …)")
+(require 'skein.uri)
+(is (str/includes? (%doc-text 'skein.uri/resolve) "Checked: (String or Map, String or Map) -> String"))
+(is (contains? (set (apropos "rope")) 'skein.rope/rope))
+(is (= 'skein.core/swap-vals! (first (apropos #"^swap-v"))))
+(is (not-any? (fn [s] (or (str/includes? (str s) "/%") (str/includes? (str s) "$"))) (apropos "reader"))
+    "the runtime's own names and compile-time copies are left out")
+(is (contains? (set (find-doc "grapheme")) 'skein.string/graphemes))
+(is (str/includes? (ndoc/ns-summary "skein.rope") "insert"))
+(is (not (str/includes? (ndoc/ns-summary "skein.rope") "branch?")))
+(is (= [] (check/example-failures)))
+(is (= [[:deprecated "lib-test/documented is deprecated: use inc"]]
+       (mapv (juxt :kind :message) (lint/lint-string "(lib-test/documented 1)\n"))))
+(defclass inspected () ((a :initform 1) (b)))
+(is (= {:type "lib-test/inspected" :value "#lib-test/inspected{:a 1, :b 2}" :items [[:a "1"] [:b "2"]]}
+       (inspect (inspected :b 2))))
+(is (= {:type "skein.core/Vector" :value "[1 2]" :count 2 :items [[0 "1"] [1 "2"]]} (inspect [1 2])))
+(is (= 1 (count (:items (inspect (vec (range 10)) 1)))))
+(defn traced-add [a b] (+ a b))
+(defn traced-twice [x] (traced-add x x))
+(trace traced-add traced-twice)
+(def trace-out (%with-out-str (fn [] (traced-twice 2))))
+(untrace)
+(is (= "→ (lib-test/traced-twice 2)\n  → (lib-test/traced-add 2 2)\n  ← lib-test/traced-add 4\n← lib-test/traced-twice 4\n" trace-out))
+(is (= "" (%with-out-str (fn [] (traced-twice 2)))))
+(let [r (bench/run (fn [] (+ 1 2)) :warmup-ms 5 :ms 20)]
+  (is (pos? (:runs r)))
+  (is (<= (:min-ns r) (:mean-ns r)))
+  (is (str/includes? (bench/report "x" r) " runs, ")))
+;; one batch: no spread to give, and one run is "1 run" (loglens finding)
+(is (= "slow: 3.00 s (1 run, 1 GC)" (bench/report "slow" {:mean-ns 3e9 :stddev-ns 0.0 :runs 1 :batches 1 :gcs 1})))
+(is (= "no differences\n" (image/diff-text {"a" {"x" 1}} {"a" {"x" 1}})))
+(is (= "~ a/x\n- a/y\n+ a/z\n+ namespace b (1 var)\n"
+       (image/diff-text {"a" {"x" 1 "y" 2}} {"a" {"x" 3 "z" 4} "b" {"q" 1}})))
+(is (contains? (image/summary) "skein.core"))
+;; The runtime's bookkeeping (atoms such as the definitions index, which any
+;; evaluation changes) and modules' phase instances (skein.io$1) aren't
+;; differences: a new definition is.
+(let [core ["skein.core" "skein.compiler" "skein.expander" "skein.syntax" "lib-test"]
+      before (select-keys (image/summary) core)]
+  (eval '(defmacro image-probe-macro [x] `(inc ~x)))
+  (eval '(defn image-probe [] (image-probe-macro 1)))
+  (is (= "+ lib-test/image-probe\n+ lib-test/image-probe-macro\n" (image/diff-text before (select-keys (image/summary) core))))
+  (is (= "no differences\n" (image/diff-text {"a" {"x" 1}} {"a" {"x" 1} "skein.io$1" {}}))))
+
+;;; ---- skein.log ----
+(let [events (atom [])]
+  (log/set-sink! (fn [e] (swap! events conj e)))
+  (log/info "hello" :port 80)
+  (log/debug "hidden" :x (swap! events conj :evaluated))
+  (log/set-level! :debug 'lib-test)
+  (log/debug "shown")
+  (log/set-level! :info 'lib-test)
+  (binding [log/*level* :error] (log/warn "unseen?"))
+  (log/set-sink! nil)
+  (is (= ["hello" "shown" "unseen?"] (mapv :msg (filter map? (deref events)))))
+  (is (= [[:port 80]] (:data (first (deref events)))))
+  (is (= :info (:level (first (deref events)))))
+  (is (= "lib-test" (:ns (first (deref events)))))
+  (is (= nil (some (fn [e] (= e :evaluated)) (deref events)))))
+(is (= 3 (log/spy (+ 1 2))))
+
+;; Character positions in non-ASCII strings come from a per-thread cache:
+;; check them against a vector of characters, on strings made fresh each
+;; round (so collections happen meanwhile and the cache must notice).
+(let [alphabet (vec "aé🙂z \nß漢")
+      rand-str (fn [n] (apply str (repeatedly n #(rand-nth alphabet))))
+      ok (atom true)]
+  (dotimes [_ 400]
+    (let [n (rand-int 60) s (rand-str n) cs (vec s)
+          i (rand-int (inc n)) j (+ i (rand-int (inc (- n i))))
+          c (rand-nth alphabet)
+          expected-index (first (keep-indexed (fn [k x] (when (and (>= k i) (= x c)) k)) cs))]
+      (when-not (and (= n (count s))
+                     (= (apply str (subvec cs i j)) (subs s i j))
+                     (= (get cs i) (nth s i nil))
+                     (= (seq (map #(nth s %) (range n))) (seq cs))
+                     (= (seq (reverse (map #(nth s %) (range n)))) (seq (reverse cs)))
+                     (= expected-index (str/index-of s (str c) i))
+                     (= (when-let [m (re-find #"[🙂漢]" (subs s i))] m)
+                        (when-let [k (first (keep-indexed (fn [k x] (when (contains? #{\🙂 \漢} x) k)) (subvec cs i)))]
+                          (str (get cs (+ i k))))))
+        (reset! ok [s i j c]))))
+  (is (= true @ok) "nth, subs, count, index-of and re-find agree with the characters"))

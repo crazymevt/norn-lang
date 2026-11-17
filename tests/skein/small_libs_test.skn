@@ -1,0 +1,284 @@
+;;;; The smaller libraries (M9 part 9.12): skein.compress, skein.crypto,
+;;;; skein.uuid, skein.csv, skein.toml, skein.zip, skein.schedule and skein.data.
+
+(ns small-libs-test
+  (:require [skein.test :refer [is deftest testing]] [skein.compress :as z] [skein.crypto :as c]
+            [skein.uuid :as uuid] [skein.csv :as csv] [skein.toml :as toml] [skein.zip :as zip]
+            [skein.schedule :as sch] [skein.data :as data] [skein.time :as t] [skein.bytes :as b]
+            [skein.io :as io] [skein.sys :as sys] [skein.process :as proc] [skein.string :as str]))
+
+(defn- message [f] (try (f) nil (catch Error e (condition-message e))))
+(defn- class-of-error [f] (try (f) nil (catch Error e (name (class-name (class-of e))))))
+
+(def dir (io/path (sys/temp-dir) (str "skein-small-libs-" (sys/pid) "-" (nano-time))))
+(io/mkdirs! dir)
+
+(defn- installed?
+  "Is program name on PATH? (Checks against the system's tools skip
+  without them.)"
+  [name]
+  (= 0 (:exit (proc/sh "sh" "-c" (str "command -v " name)))))
+
+(deftest compression
+  (let [s (apply str (repeat 1000 "hello skein "))]
+    (doseq [f [:gzip :zlib :raw]]
+      (is (= (bytes s) (z/decompress (z/compress s :format f) :format f)) (str f)))
+    (is (< (count (z/compress s)) 100) "it compresses")
+    (is (= (bytes s) (z/gunzip (z/gzip s))))
+    (testing "a limit on what comes out"
+      (is (str/includes? (message (fn [] (z/decompress (z/compress s) :max-size 100))) "larger than :max-size")))
+    (is (= "ParseError" (class-of-error (fn [] (z/gunzip (bytes [1 2 3]))))))
+    (testing "against the system's gzip"
+      (let [path (io/path dir "x.gz")]
+        (io/write-bytes path (z/gzip s))
+        (is (= s (:out (proc/sh "gzip" "-dc" path)))))))
+  (is (= 0xcbf43926 (z/crc32 "123456789")) "the standard check value"))
+
+;; Decompressing as it's read, and a stream of bytes in hand (loglens
+;; finding: a big .gz log had to be decompressed whole).
+(deftest decompressing-as-it-is-read
+  (let [lines (vec (for [i (range 20000)] (str "line " i)))
+        text (str (str/join "\n" lines) "\n")]
+    (doseq [f [:gzip :zlib :raw]]
+      (let [r (io/line-reader (z/decompress-stream (io/bytes-stream (z/compress text :format f)) :format f))]
+        (is (= lines (loop [out []] (if-let [l (io/read-line r)] (recur (conj out l)) out))) (str f))))
+    (testing "two gzip members, one after the other, as gunzip reads them"
+      (is (= "ab" (bytes->string (io/read-all (z/decompress-stream (io/bytes-stream (bytes-concat (z/gzip "a") (z/gzip "b")))))))))
+    (testing "from a file, the file closed with it"
+      (let [path (io/path dir "lines.gz")]
+        (io/write-bytes path (z/gzip text))
+        (let [f (io/open path :read) s (z/decompress-stream f)]
+          (is (= "line 0" (io/read-line (io/line-reader s))))
+          (io/close s)
+          (is (thrown? Error (io/read f 10)) "closed"))))
+    (testing "a limit, bad data, and a stream closed early"
+      (is (thrown-with-msg? Error #"larger than :max-size" (io/read-all (z/decompress-stream (io/bytes-stream (z/gzip text)) :max-size 1000))))
+      (is (thrown? ParseError (io/read-all (z/decompress-stream (io/bytes-stream "not gzip at all")))))
+      (let [s (z/decompress-stream (io/bytes-stream (z/gzip text)))]
+        (io/read s 10)
+        (io/close s)
+        (is (thrown-with-msg? Error #"ended or been closed" (io/read s 10)))))))
+
+(deftest a-stream-of-bytes-in-hand
+  (is (= ["a" "b" ""] (let [r (io/line-reader (io/bytes-stream "a\nb\n\n"))] [(io/read-line r) (io/read-line r) (io/read-line r)])))
+  (is (= (bytes [1 2 3]) (io/read-all (io/bytes-stream (bytes [1 2 3])))))
+  (is (nil? (io/read (io/bytes-stream "") 10)) "empty: the end at once"))
+
+(deftest cryptography
+  (testing "digests (FIPS 180's examples)"
+    (is (= "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" (c/hex (c/sha256 "abc"))))
+    (is (= "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+           (c/hex (c/sha512 "abc"))))
+    (is (= "a9993e364706816aba3e25717850c26c9cd0d89d" (c/hex (c/digest :sha1 "abc")))))
+  (testing "HMAC (RFC 4231, case 1)"
+    (let [key (b/unhex "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
+          tag (c/hmac :sha256 key "Hi There")]
+      (is (= "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7" (c/hex tag)))
+      (is (c/hmac-valid? :sha256 key "Hi There" tag))
+      (is (not (c/hmac-valid? :sha256 key "Hi there" tag)))))
+  (testing "PBKDF2 (RFC 6070)"
+    (is (= "0c60c80f961f0e71f3a9b524af6012062fe037a6" (c/hex (c/pbkdf2 "password" "salt" :alg :sha1 :iterations 1 :length 20))))
+    (is (= "4b007901b765489abead49d926f721d065a429c1" (c/hex (c/pbkdf2 "password" "salt" :alg :sha1 :iterations 4096 :length 20)))))
+  (testing "secure random"
+    (is (= 32 (count (c/random-bytes 32))))
+    (is (not= (c/random-bytes 16) (c/random-bytes 16)))
+    (is (re-find #"^[A-Za-z0-9_-]{43}$" (c/random-token)) "32 bytes, URL-safe"))
+  (is (c/constant-time= "secret" "secret"))
+  (is (not (c/constant-time= "secret" "secreT")))
+  (is (not (c/constant-time= "secret" "secrets"))))
+
+(deftest uuids
+  (let [a (uuid/v4)]
+    (is (uuid/valid? a))
+    (is (= 4 (uuid/version a)))
+    (is (contains? #{\8 \9 \a \b} (nth a 19)) "RFC 9562's variant")
+    (is (not= a (uuid/v4))))
+  (testing "version 7: ordered by time"
+    (let [early (uuid/v7 1000) late (uuid/v7 2000)]
+      (is (= 7 (uuid/version early)))
+      (is (neg? (compare early late)))
+      (is (= 1000 (uuid/timestamp-ms early)))))
+  (is (= "6ba7b810-9dad-11d1-80b4-00c04fd430c8" (uuid/parse "{6BA7B810-9DAD-11D1-80B4-00C04FD430C8}")))
+  (is (= "6ba7b810-9dad-11d1-80b4-00c04fd430c8" (uuid/parse "6ba7b8109dad11d180b400c04fd430c8")))
+  (is (some? (message (fn [] (uuid/parse "not-a-uuid")))))
+  (is (= "ParseError" (class-of-error (fn [] (uuid/parse "not-a-uuid")))))
+  (is (= uuid/nil-uuid (uuid/from-bytes (bytes (repeat 16 0)))))
+  (let [u (uuid/v4)] (is (= u (uuid/from-bytes (uuid/->bytes u))))))
+
+(deftest csv-files
+  (is (= [["a" "b"] ["1" "x, y"] ["q\"uote" "multi\nline"] ["" "last"]]
+         (csv/read-csv "a,b\n1,\"x, y\"\n\"q\"\"uote\",\"multi\nline\"\r\n,last")))
+  (is (= [["a" "b"]] (csv/read-csv "a,b\n")) "a last line break ends the row, not a new one")
+  (is (= [["a" "" ""]] (csv/read-csv "a,,")) "empty fields")
+  (is (= [{:id "1" :name "ada"} {:id "2" :name "alan"}] (csv/read-maps "id,name\n1,ada\n2,alan\n")))
+  (is (= [{"id" "1"}] (csv/read-maps "id\n1\n" :keys identity)))
+  (is (= "a,b\r\n1,\"x, y\"\r\n,\"q\"\"t\"\r\n" (csv/write-csv [["a" "b"] [1 "x, y"] [nil "q\"t"]])))
+  (is (= [["a;b" "c"]] (csv/read-csv (csv/write-csv [["a;b" "c"]] :separator \;) :separator \;)))
+  (is (= [{:id "1" :name "ada"}] (csv/read-maps (csv/write-maps [{:id 1 :name "ada"}]))))
+  (is (str/includes? (message (fn [] (csv/read-csv "\"open"))) "never closed"))
+  (testing "malformed CSV is a ParseError, with its line"
+    (doseq [[text line] [["\"open" 1] ["a\n\"b\"c" 2] ["a\nb\rc" 2] ["a\n\"x\ny\"\n\"open" 4]]]
+      (let [e (try (csv/read-csv text) nil (catch ParseError e e))]
+        (is (= line (:line e)) (pr-str text)))))
+  (testing "read-maps: a row whose fields don't match the header"
+    (let [line-of (fn [text] (try (csv/read-maps text) nil (catch ParseError e (:line e))))]
+      (is (= 3 (line-of "a,b\n1,2\n1,2,3\n")) "too many")
+      (is (= 2 (line-of "a,b\n1\n")) "too few")
+      (is (= 4 (line-of "a,b\r\n\"x\ny\",2\r\n4\r\n")) "a line break inside quotes counts"))
+    (is (= [{:a "1" :b "2"} {:a "3"}] (csv/read-maps "a,b\n1,2,9\n3\n" :strict false)))
+    (is (= [{:a "1" :b "2"} {:a "3" :b "4"}] (csv/read-maps "a,b\n1,2\n\n3,4\n\n")) "blank lines are skipped")
+    (is (= [{:a "1"} {:a ""}] (csv/read-maps "a\n1\n\n")) "but are empty fields in one column")))
+
+(def toml-example
+  "# This is a TOML document
+title = \"TOML Example\"
+
+[owner]
+name = \"Tom Preston-Werner\"
+dob = 1979-05-27T07:32:00-08:00
+
+[database]
+enabled = true
+ports = [ 8000, 8001, 8002 ]
+data = [ [\"delta\", \"phi\"], [3.14] ]
+temp_targets = { cpu = 79.5, case = 72.0 }
+
+[servers]
+
+[servers.alpha]
+ip = \"10.0.0.1\"
+role = \"frontend\"
+
+[servers.beta]
+ip = \"10.0.0.2\"
+role = \"backend\"
+")
+
+(deftest toml-files
+  (is (= {:title "TOML Example"
+          :owner {:name "Tom Preston-Werner" :dob (t/parse "1979-05-27T15:32:00Z")}
+          :database {:enabled true :ports [8000 8001 8002] :data [["delta" "phi"] [3.14]] :temp_targets {:cpu 79.5 :case 72.0}}
+          :servers {:alpha {:ip "10.0.0.1" :role "frontend"} :beta {:ip "10.0.0.2" :role "backend"}}}
+         (toml/read-string toml-example))
+      "the example at toml.io")
+  (testing "values"
+    (is (= {:hex 3735928559 :oct 493 :bin 13 :big 1000000 :neg -17 :flt 6.626e-34 :inf ##-Inf :date "1979-05-27"
+            :time "07:32:00" :local "1979-05-27T07:32:00"}
+           (toml/read-string "hex = 0xDEAD_BEEF\noct = 0o755\nbin = 0b1101\nbig = 1_000_000\nneg = -17\nflt = 6.626e-34\ninf = -inf\ndate = 1979-05-27\ntime = 07:32:00\nlocal = 1979-05-27T07:32:00\n")))
+    (is (NaN? (:x (toml/read-string "x = nan"))))
+    (is (= {:lit "C:\\Users\\x" :esc "tab\there \u00e9" :ml "Roses are red\nViolets"
+            :joined "The quick brown fox." :lml "raw \\n\n"}
+           (toml/read-string "lit = 'C:\\Users\\x'\nesc = \"tab\\there \\u00E9\"\nml = \"\"\"\nRoses are red\nViolets\"\"\"\njoined = \"\"\"The quick \\\n   brown fox.\"\"\"\nlml = '''raw \\n\n'''\n"))))
+  (testing "keys and tables"
+    (is (= {:a {:b {:c 1 :d 2}} "quoted key" "x"}
+           (update-keys (toml/read-string "a.b.c = 1\na.b.d = 2\n\"quoted key\" = \"x\"\n") (fn [k] (if (= k (keyword "quoted key")) "quoted key" k)))))
+    (is (= {:fruits [{:name "apple" :varieties [{:name "red"} {:name "green"}]} {:name "banana"}]}
+           (toml/read-string "[[fruits]]\nname = \"apple\"\n[[fruits.varieties]]\nname = \"red\"\n[[fruits.varieties]]\nname = \"green\"\n[[fruits]]\nname = \"banana\"\n"))
+        "arrays of tables, nested")
+    (is (= {"a b" 1} (toml/read-string "\"a b\" = 1" :keys identity))))
+  (testing "what the spec forbids"
+    (doseq [[bad why] [["a = 1\na = 2" "defined already"] ["[t]\n[t]" "defined twice"] ["a = " "a value expected"]
+                       ["a = \"open" "isn't closed"] ["x = 1 2" "more on the line"] ["t = {a = 1}\n[t]" "defined already"]
+                       ["n = 01" "not a value"] ["n = 1__0" "not a value"] ["s = \"\\q\"" "unknown escape"]]]
+      (let [m (message (fn [] (toml/read-string bad)))]
+        (is (and m (str/includes? m why)) (str (pr-str bad) ": " m)))
+      (is (= "ParseError" (class-of-error (fn [] (toml/read-string bad)))))))
+  (testing "writing"
+    (let [m {:title "x" :n 1 :f 2.5 :ok true :owner {:name "Ada" :tags ["a" "b"]} :items [{:a 1} {:a 2}] "odd key" "y"}]
+      (is (= (update-keys m (fn [k] (if (string? k) (keyword k) k))) (toml/read-string (toml/write-string m))) "round trip")))
+  (testing "files"
+    (io/with-temp-file [p]
+      (toml/write-file p {:a 1 :t {:b "x"}})
+      (is (= {:a 1 :t {:b "x"}} (toml/read-file p)))
+      (is (= {"a" 1 "t" {"b" "x"}} (toml/read-file p :keys identity))))))
+
+(deftest zip-archives
+  (let [files {"a.txt" (apply str (repeat 100 "hello ")) "dir/b.bin" (bytes [1 2 3]) "ünï.txt" "x"}
+        z (zip/zip (assoc files "dir/" nil) :modified 1700000000000)]
+    (is (= #{"a.txt" "dir/b.bin" "ünï.txt" "dir/"} (set (map :name (zip/entries z)))))
+    (is (= :deflated (:method (first (filter (fn [e] (= "a.txt" (:name e))) (zip/entries z))))) "deflated when it helps")
+    (is (= (update-vals files (fn [x] (if (string? x) (bytes x) x))) (zip/unzip z)))
+    (is (= 1700000000000 (:modified (first (zip/entries z)))) "MS-DOS time (to two seconds; this one's even)")
+    (is (= 1700000000000 (:modified (first (zip/entries (zip/zip {"x" "y"} :modified 1700000001999)))))
+        "an odd second goes down to the even one")
+    (testing "the system's unzip reads ours, and we read its zip's (where they're installed)"
+      (when (every? installed? ["zip" "unzip"])
+        (let [path (io/path dir "ours.zip")]
+          (io/write-bytes path z)
+          (is (str/includes? (:out (proc/sh "unzip" "-t" path)) "No errors detected")))
+        (proc/sh "sh" "-c" (str "cd " dir " && mkdir -p src/sub && printf one > src/one.txt && seq 1 2000 > src/sub/nums.txt && cd src && zip -qr ../theirs.zip ."))
+        (let [theirs (io/read-bytes (io/path dir "theirs.zip"))]
+          (is (= "one" (bytes->string (zip/read-entry theirs "one.txt"))))
+          (is (= 2000 (count (remove empty? (str/split-lines (bytes->string (zip/read-entry theirs "sub/nums.txt")))))))
+          (is (= 2 (count (zip/extract! theirs (io/path dir "out"))))))))
+    (testing "untrusted archives"
+      (is (str/includes? (message (fn [] (zip/extract! (zip/zip {"../evil" "x"}) (io/path dir "no")))) "outside the folder"))
+      (is (str/includes? (message (fn [] (zip/extract! (zip/zip {"/etc/evil" "x"}) (io/path dir "no")))) "outside the folder"))
+      (is (not (io/exists? (io/path dir "no"))) "nothing written")
+      (is (str/includes? (message (fn [] (zip/unzip (zip/zip {"big" (apply str (repeat 100000 "a"))}) :max-size 1000))) ":max-size"))
+      (let [z2 (vec (zip/zip {"a" "hello"}))
+            damaged (bytes (assoc z2 (+ 30 1 2) (bit-xor (nth z2 33) 1)))]
+        (is (some? (message (fn [] (zip/unzip damaged)))) "a damaged entry"))
+      (is (= "ParseError" (class-of-error (fn [] (zip/entries (bytes [1 2 3])))))))))
+
+(deftest schedules
+  (let [from (t/parse "2026-11-14T10:07:30Z") ; (a Saturday)
+        runs (fn [e] (mapv t/format (sch/next-runs e from 3)))]
+    (is (= ["2026-11-16T09:00:00Z" "2026-11-16T09:15:00Z" "2026-11-16T09:30:00Z"] (runs "*/15 9-17 * * mon-fri")))
+    (is (= ["2026-11-15T03:00:00Z" "2026-11-16T03:00:00Z" "2026-11-17T03:00:00Z"] (runs "0 3 * * *")))
+    (is (= ["2026-12-01T00:00:00Z" "2027-01-01T00:00:00Z" "2027-02-01T00:00:00Z"] (runs "@monthly")))
+    (is (= ["2026-11-14T10:10:00Z" "2026-11-14T11:05:00Z" "2026-11-14T11:10:00Z"] (runs "5,10 * * * *")))
+    (is (= ["2026-11-20T00:00:00Z" "2026-11-27T00:00:00Z" "2026-12-04T00:00:00Z"] (runs "0 0 13 * fri"))
+        "both days restricted: either will do, as in cron")
+    (is (= ["2028-02-29T00:00:00Z" "2032-02-29T00:00:00Z" "2036-02-29T00:00:00Z"] (runs "0 0 29 2 *")))
+    (is (= [] (runs "0 0 31 2 *")) "a day that never comes")
+    (is (= ["2026-11-15T00:00:00Z"] (mapv t/format (sch/next-runs "0 0 * * 7" from 1))) "7 is Sunday too")
+    (is (= "2026-11-14T12:00:00+01:00" (t/format (sch/next-run "0 12 * * *" from :zone 3600) 3600)) "in a zone (11:07 there)"))
+  (is (str/includes? (message (fn [] (sch/parse "61 * * * *"))) "outside 0-59"))
+  (is (str/includes? (message (fn [] (sch/parse "* * *"))) "five fields"))
+  (is (= ["ParseError" "ParseError" "ParseError"]
+         (mapv (fn [e] (class-of-error #(sch/parse e))) ["61 * * * *" "* * *" "x * * * *"]))
+      "bad cron text (it was a SimpleError)")
+  (when (seq (t/available-zones))
+    (testing "across clock changes (it skipped the skipped time, and ran the repeated one twice)"
+      (let [ny "America/New_York"
+            runs (fn [e from n] (mapv #(t/format % ny) (sch/next-runs e (t/parse from) n :zone ny)))]
+        (is (= ["2026-11-01T01:30:00-04:00" "2026-11-02T01:30:00-05:00" "2026-11-03T01:30:00-05:00"]
+               (runs "30 1 * * *" "2026-10-31T12:00:00Z" 3))
+            "a repeated time runs once, the first time")
+        (is (= ["2026-11-02T01:30:00-05:00"] (runs "30 1 * * *" "2026-11-01T05:45:00Z" 1))
+            "not again, in the repeat")
+        (is (= ["2026-03-08T03:00:00-04:00" "2026-03-09T02:30:00-04:00"] (runs "30 2 * * *" "2026-03-07T12:00:00Z" 2))
+            "a skipped time runs at the change")
+        (is (= ["2026-03-08T03:00:00-04:00" "2026-03-09T02:00:00-04:00"] (runs "0 2,3 * * *" "2026-03-07T12:00:00Z" 2))
+            "once, when the time after it is due too")
+        (is (= ["2026-03-09T00:30:00-04:00"] (runs "30 0 * * 1" "2026-03-08T04:00:00Z" 1)) "the day after a change")
+        (testing "a minute or hour of * follows the clock, as in Vixie cron"
+          (is (= ["2026-11-01T00:00:00-04:00" "2026-11-01T01:00:00-04:00" "2026-11-01T01:00:00-05:00" "2026-11-01T02:00:00-05:00"]
+                 (runs "0 * * * *" "2026-10-31T23:30:00-04:00" 4))
+              "both of a repeated hour")
+          (is (= ["2026-11-01T01:40:00-04:00" "2026-11-01T01:00:00-05:00" "2026-11-01T01:20:00-05:00"]
+                 (runs "*/20 1 * * *" "2026-11-01T05:30:00Z" 3)))
+          (is (= ["2026-03-08T01:30:00-05:00" "2026-03-08T03:30:00-04:00"] (runs "30 * * * *" "2026-03-08T06:00:00Z" 2))
+              "none in a skipped one"))
+        (is (= ["2026-04-05T01:45:00+11:00" "2026-04-05T01:30:00+10:30"]
+               (mapv #(t/format % "Australia/Lord_Howe")
+                     (sch/next-runs "*/15 * * * *" (t/parse "2026-04-04T14:40:00Z") 2 :zone "Australia/Lord_Howe")))
+            "a half-hour change"))))
+  (testing "running"
+    (let [s (sch/schedule "* * * * *" (fn [] nil))]
+      (is (= 0 (sch/runs s)) "not before it's due")
+      (sch/stop! s))))
+
+(deftest diffs
+  (is (= [{:b 2} {:b 3 :c 4} {:a 1}] (data/diff {:a 1 :b 2} {:a 1 :b 3 :c 4})))
+  (is (= [[1] [5] [nil 2 3]] (data/diff [1 2 3] [5 2 3])))
+  (is (= [nil [nil nil 3] [1 2]] (data/diff [1 2] [1 2 3])))
+  (is (= [#{1} #{3} #{2}] (data/diff #{1 2} #{2 3})))
+  (is (= [nil nil 1] (data/diff 1 1)))
+  (is (= [1 "1" nil] (data/diff 1 "1")))
+  (is (= [{:a {:y 2}} {:a {:y 3}} {:a {:x 1}}] (data/diff {:a {:x 1 :y 2}} {:a {:x 1 :y 3}})) "nested"))
+
+(deftest sorted-collections-are-functions
+  ;; (a gap 9.12 found: maps and sets were; sorted ones weren't)
+  (is (= [2 :no 1 0] [((sorted-set 1 2) 2) ((sorted-set 1 2) 5 :no) ((sorted-map :a 1) :a) ((sorted-map :a 1) :b 0)])))

@@ -1,0 +1,52 @@
+(ns chat.main
+  "chat's command line: serve a chat, or talk in one."
+  (:require [chat.client :as client]
+            [chat.server :as server]
+            [skein.cli :as cli]
+            [skein.io :as io]
+            [skein.signal :as signal]))
+
+(defn- serve [{:keys [options]}]
+  (let [s (server/start! (:host options) (:port options) :max-clients (:max-clients options)
+                         :tls (some? (:cert options)) :cert-file (:cert options) :key-file (:key options))
+        sigs (signal/listen :int :term)]
+    (println (str "chat: listening on " (:host options) ":" (:port s) (when (:cert options) " (TLS)")))
+    (<! (:signals sigs))
+    ((:stop s))
+    (signal/stop! sigs)
+    0))
+
+(defn- talk [{:keys [options args]}]
+  (let [c (apply client/connect! (:host args) (:port args)
+                 (concat (when (:tls options) [:tls true]) (when (:ca-file options) [:ca-file (:ca-file options)])))]
+    (let [printer (spawn-detached (loop [] (when-let [l (<! (:lines c))] (println l) (recur))) (println "* disconnected"))]
+      (loop []
+        (when-let [l (io/read-line)]
+          (client/say! c l)
+          (when-not (= "/quit" l) (recur))))
+      ;; (what's still on its way, until the server lets go: at most 2 s)
+      (client/say! c "/quit")
+      (deref (future (await printer)) 2000 nil)
+      (client/leave! c)
+      0)))
+
+(def spec
+  {:name "chat"
+   :summary "A chat server over TCP or TLS, and a client for it."
+   :version "0.1.0"
+   :commands [{:name "serve" :summary "Run a chat server"
+               :options [{:name :host :value "HOST" :default "127.0.0.1"}
+                         {:name :port :short \p :type :int :default 6667}
+                         {:name :max-clients :type :int :default 1000}
+                         {:name :cert :value "PEM" :doc "Serve TLS with this certificate (and --key)"}
+                         {:name :key :value "PEM"}]
+               :run serve}
+              {:name "talk" :summary "Talk in a chat: lines you type are sent, what's said is shown"
+               :options [{:name :tls} {:name :ca-file :value "PEM"}]
+               :args [{:name :host} {:name :port :type :int}]
+               :run talk}]})
+
+(defn main
+  "chat's entry point: its command-line arguments in, its exit status out."
+  [& args]
+  (cli/run spec (vec args)))

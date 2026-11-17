@@ -1,4 +1,4 @@
-# Norn — Language Design (draft 0.1)
+# Skein — Language Design (draft 0.1)
 
 > A general-purpose Lisp that takes CLOS, the condition system and images from
 > Common Lisp; immutable data and identity/state separation from Clojure;
@@ -35,7 +35,7 @@ Status: **draft for discussion**. Every section marks decisions as
 |---|---|---|
 | Common Lisp | Lisp-2, mutable conses everywhere, `nil` = `()` = false pun, global symbol-interned packages | Hostile to concurrency and to hygiene |
 | Clojure | JVM startup/stack traces, no TCO (`recur`), lazy-seq + dynamic-binding surprises, no restarts, single-dispatch protocols, no method combination | We control the VM |
-| Racket | Weak shared-memory parallelism (places/futures), no images | Core goals of Norn |
+| Racket | Weak shared-memory parallelism (places/futures), no images | Core goals of Skein |
 
 ---
 
@@ -86,13 +86,13 @@ CL/Racket conveniences.
 |---|---|---|
 | `var` | Late-bound global with root value + fiber-local dynamic bindings | All top-level definitions; redefinable |
 | `atom` | Lock-free CAS cell, `swap!` / `reset!` | Uncoordinated shared state |
-| `ref` + `dosync` | MVCC software transactional memory | Coordinated multi-cell updates (**[decided]**: the `norn.stm` library, not the core) |
+| `ref` + `dosync` | MVCC software transactional memory | Coordinated multi-cell updates (**[decided]**: the `skein.stm` library, not the core) |
 | `volatile` | Unsynchronized cell, fiber-confined | Hot local state |
 | `chan` | CSP channel, buffered/unbuffered | Pipelines, coordination |
 | `process` | Fiber + mailbox (actor) | Isolated stateful services |
 
 **Status (M9 part 9.7):** `ref` and `dosync` are built, as the
-`norn.stm` library: `alter`, `ref-set`, `commute`, `ensure`, `io!` and
+`skein.stm` library: `alter`, `ref-set`, `commute`, `ensure`, `io!` and
 `after-commit`, MVCC as Clojure's (without its barging).
 
 ### 3.3 Sequences and laziness **[decided, 2026-11-13]**
@@ -224,7 +224,7 @@ M9 added:
 - Multiple inheritance with C3 linearization (CL's CPL is close; C3 is
   more predictable).
 - **Every value has a class.** The builtin classes are capitalised vars in
-  `norn.core`, so they never clash with functions of the same name:
+  `skein.core`, so they never clash with functions of the same name:
   `Object`, `Number`, `Integer`, `Float`, `String`, `Symbol`, `Keyword`,
   `Null`, `Boolean`, `Character`, `Collection`, `Sequential`, `List`,
   `Vector`, `Seq`, `Map`, `Set`, `Function`, `GenericFunction`, `Class`,
@@ -300,7 +300,7 @@ Mutable objects are opt-in and **owned** **[decided, 2026-11-13]**:
   races into clear errors, for one load and compare per access.
 - **Cost:** a hidden owner word, on instances of mutable classes only.
 
-*Status:* built in M7 (`norn-vm/src/owned.rs`). Details decided while
+*Status:* built in M7 (`skein-vm/src/owned.rs`). Details decided while
 building:
 - A shared object's single-slot reads don't take its lock; only changes
   do. A read is one atomic word; use `locking` when several reads must
@@ -345,8 +345,8 @@ hooks haven't been specialised.
 
 **Status (M3):** §5.2 and §5.3 are implemented, along with the debugger and an
 editor protocol (a subset of §5.1). See [runtime.md §5.4](runtime.md). M9b
-added xref (`norn.xref`, the `:who-calls` and `:calls` ops) and profiling
-(`norn.prof`, the `:profile` op: stacks sampled at safepoints, at either
+added xref (`skein.xref`, the `:who-calls` and `:calls` ops) and profiling
+(`skein.prof`, the `:profile` op: stacks sampled at safepoints, at either
 tier) and source-drift tracking (`unsaved-definitions`, the `:unsaved`
 op). Not yet built: who-specialises, and output capture for editor
 evaluations.
@@ -358,7 +358,7 @@ evaluations.
 - **Network REPL protocol** (in the spirit of Swank/nREPL) is part of the
   runtime, not a library: eval, completion, docs, inspect, xref (who-calls,
   who-specialises), macroexpand, list/attach fibers, profile.
-  - **M3 builds the core of it** (`norn --server PORT`). Messages are Norn
+  - **M3 builds the core of it** (`skein --server PORT`). Messages are Skein
     data, one map per line, so any editor can speak it with a socket and a
     small reader.
   - **Ops:**
@@ -521,7 +521,7 @@ long-lived, fault-isolated services.
            [(child counter 0)]))
 ```
 
-**Status (M9 part 9.6):** built as `norn.actor`. A child has an id, which
+**Status (M9 part 9.6):** built as `skein.actor`. A child has an id, which
 is also its registered name when it's a keyword: `(child :counter counter
 0)`. `send` to a registered name works, and `ask` is the usual way to get
 an answer (`[:get reply]`, delivering a promise). A crashed process tells
@@ -559,18 +559,18 @@ folds over them cheap.
 
 A snapshot of the heap (code, classes, generic functions, vars, data), and
 optionally parked fibers, in an mmap-able, relocatable format. Image files
-use the extension `.nimg`. Loading means
+use the extension `.skimg`. Loading means
 mapping the file, which gives instant startup.
 
 ```clojure
-(save-image "app.nimg"
+(save-image "app.skimg"
   :entry  #'myapp/main
   :fibers :parked          ; :none | :parked
   :shake  true)            ; tree-shake unreachable code for deployment
 ```
 
 ```sh
-norn --image app.nimg
+skein --image app.skimg
 ```
 
 ### 7.2 Images and concurrency **[decided]**
@@ -587,13 +587,13 @@ norn --image app.nimg
 
 ### 7.3 Layered images **[decided]**
 
-`base.nimg` (runtime + compiler + stdlib) → `deps.nimg` → `app.nimg`. Each layer
+`base.skimg` (runtime + compiler + stdlib) → `deps.skimg` → `app.skimg`. Each layer
 stores only its delta. This makes dev images fast to save, and deployment
 images small.
 
 ### 7.4 Images vs reproducibility **[decided]**
 
-Source modules are the source of truth; `norn build` produces images
+Source modules are the source of truth; `skein build` produces images
 deterministically from source. Dev images are "pets" (source-drift tracking,
 §5.1, keeps them honest); build images are "cattle".
 
@@ -613,10 +613,10 @@ Images work as described above, with these details and gaps (runtime.md §7.5):
   process's exit status.
 - **Layers** use `(save-image f :layered true)`, which saves a delta against
   the image the process started from.
-- **`norn build`** writes images without fibers and byte-for-byte
+- **`skein build`** writes images without fibers and byte-for-byte
   reproducibly.
-- **`:shake`** (`norn build --shake`, `:keep`) leaves out what the entry
-  doesn't reach, read from compiled code (`norn.xref`): sealed modules'
+- **`:shake`** (`skein build --shake`, `:keep`) leaves out what the entry
+  doesn't reach, read from compiled code (`skein.xref`): sealed modules'
   names and what only they kept, generic functions' methods for classes
   nothing kept makes, the symbols nothing saved refers to, and the
   compiler when nothing kept evaluates. Lookups by computed names are
@@ -636,7 +636,7 @@ Images work as described above, with these details and gaps (runtime.md §7.5):
 
 ```clojure
 (ns myapp.core
-  (:require [norn.async :as a]
+  (:require [skein.async :as a]
             [myapp.db :refer [query]]))
 ```
 
@@ -646,13 +646,13 @@ Images work as described above, with these details and gaps (runtime.md §7.5):
   inlining and dead-code elimination (Clojure's direct linking, but per module
   and reversible: unsealing at the REPL deoptimises).
 - **Sealing, as built [decided, 2026-11-16]:**
-  - The standard library is sealed as it loads; a release build (`norn
-    build`, `norn package`) seals the modules it loaded. The REPL, `norn
-    run` and `norn dev` leave a project's modules open.
+  - The standard library is sealed as it loads; a release build (`skein
+    build`, `skein package`) seals the modules it loaded. The REPL, `skein
+    run` and `skein dev` leave a project's modules open.
   - Redefining a var of a sealed module unseals it, with a warning the
-    first time. `norn lint` reports it (`sealed`).
-  - Each sealed module's interface is recorded under `api/` by `norn
-    api-diff --record`, and `norn api-diff` (and a test, for the standard
+    first time. `skein lint` reports it (`sealed`).
+  - Each sealed module's interface is recorded under `api/` by `skein
+    api-diff --record`, and `skein api-diff` (and a test, for the standard
     library) reports breaking changes against it.
   - Direct linking, inlining and deoptimisation come with M10, which they
     pay off in: today a call through a var is one load, at both tiers.
@@ -672,9 +672,9 @@ Images work as described above, with these details and gaps (runtime.md §7.5):
 ### 8.3 Compilation pipeline **[open: implementation]**
 
 **Status (M4):**
-- **The compiler is written in Norn and self-hosts.** It emits the same
+- **The compiler is written in Skein and self-hosts.** It emits the same
   register bytecode as the seed.
-- **The IR (M10 part 1):** `norn.compiler/analyze` turns kernel forms into
+- **The IR (M10 part 1):** `skein.compiler/analyze` turns kernel forms into
   a tree of nodes with names resolved (locals to bindings, globals to
   vars), macros expanded and functions named; `generate` turns that into
   bytecode. A tree rather than ANF, so the bytecode stays the same byte
@@ -685,7 +685,7 @@ Images work as described above, with these details and gaps (runtime.md §7.5):
 - **Destructuring** is a set of macros (`destructure`).
 
 ```
-reader → expander (hygiene, phases) → core forms → Norn IR (CPS/ANF)
+reader → expander (hygiene, phases) → core forms → Skein IR (CPS/ANF)
       → optimiser (inlining, type inference, unboxing, escape analysis)
       → backend: bytecode interpreter  |  native via Cranelift (JIT & AOT)
 ```
@@ -708,7 +708,7 @@ Dynamically typed with **optional, gradual annotations**: CL-style
 ```
 
 As built (M9 parts 9.3 and 9.4):
-- **Types are Norn's classes:** `^Integer x`, `^String [...]` for the
+- **Types are Skein's classes:** `^Integer x`, `^String [...]` for the
   result, `(? T)` (nil-able), `(U A B)`, `(Vec T)`, `(Map K V)`,
   `(-> A … R)` and `Any`.
 - **A signature is checked dynamically** on calls from other modules (and
@@ -738,13 +738,13 @@ As built (M9 parts 9.3 and 9.4):
   `TypeError`s being caught, and adding one isn't a breaking change.
 - **Which libraries are signed [decided, 2026-11-16].** Every standard
   library's public functions carry checked signatures, except:
-  - `norn.core`, whose primitives check their arguments natively, and a
+  - `skein.core`, whose primitives check their arguments natively, and a
     contract on `map` or `+` would slow every program;
   - the tools (`fmt`, `lint`, `test`, `doc`, `deps`, `dev`…) and
-    `norn.syntax`, which the expander calls constantly;
-  - until M10's part 5 drops the checks types prove: `norn.string`,
-    `norn.math`, `norn.regex` and `norn.bytes`. With the checks inlined
-    (part 4), norn.string signed was still 10–25 ns a call slower at tier
+    `skein.syntax`, which the expander calls constantly;
+  - until M10's part 5 drops the checks types prove: `skein.string`,
+    `skein.math`, `skein.regex` and `skein.bytes`. With the checks inlined
+    (part 4), skein.string signed was still 10–25 ns a call slower at tier
     1 for its thinnest functions, and their primitives already reject
     wrong types with `TypeError`. Signing them breaks no one, since a
     `ContractError` is a `TypeError`.
@@ -758,22 +758,22 @@ As built (M9 parts 9.3 and 9.4):
 - **[open]** Whether to target a second host later (e.g. WASM), or stay with
   the native runtime only.
 
-**Status (M9 part 9.8):** `norn.ffi` has `defcfun` with checked
+**Status (M9 part 9.8):** `skein.ffi` has `defcfun` with checked
 signatures, `defcstruct`, memory access and callbacks from C (on the
 calling thread, or posted to a fiber from any other). A module using it
 says `(:unsafe)` in its `ns`. Since 9.8b it also has unions, bit fields,
 structs by value (calls and callbacks) and variadic functions, on arm64
 and (since M12's Linux work) x86-64 System V; Windows waits for M12.
 
-### 9.1 UI: `norn.ui` **[decided, 2026-11-13]**
+### 9.1 UI: `skein.ui` **[decided, 2026-11-13]**
 
-The UI is drawn by Norn's own engine, JavaFX-style: a retained tree of real
-controls that we draw on the GPU and style with CSS-like themes. The Norn
+The UI is drawn by Skein's own engine, JavaFX-style: a retained tree of real
+controls that we draw on the GPU and style with CSS-like themes. The Skein
 editor is its first user. (The reference point is the author's Xeon Studio
 editor, built on JavaFX and RichTextFX.)
 
-- **A package, not the stdlib.** `norn.ui` and its backends live in their
-  own repository, `norn-ui`, versioned from 0.1 with semver from the
+- **A package, not the stdlib.** `skein.ui` and its backends live in their
+  own repository, `skein-ui`, versioned from 0.1 with semver from the
   start; the editor pins a version. The widget API will change far faster
   than the language and shouldn't be sealed at M8, the core shouldn't
   carry a GPU stack, and backends need their own release cycle.
@@ -785,8 +785,8 @@ editor, built on JavaFX and RichTextFX.)
     the carriers (runtime.md §5.5).
 
   Both serve other uses too (audio, game loops). Until loadable extensions
-  have a stable ABI, linking is static: the `norn-ui` repository builds its
-  own `norn` binary from the runtime crates plus the UI crates. Loadable
+  have a stable ABI, linking is static: the `skein-ui` repository builds its
+  own `skein` binary from the runtime crates plus the UI crates. Loadable
   extensions come later, perhaps with M9's full FFI.
 - **Own drawing, with the OS for the rest.** The OS still supplies the
   menu bar, file dialogs, clipboard, IME, accessibility, drag and drop and
@@ -801,16 +801,16 @@ editor, built on JavaFX and RichTextFX.)
     layout, GPU painting, hit-testing, scrolling, caret blink and
     animation.
 
-  Norn (`norn.ui`) owns declarative views over atom state, tree diffing,
+  Skein (`skein.ui`) owns declarative views over atom state, tree diffing,
   event handlers, commands and the widget library.
-  - Norn sends tree patches. Rust sends semantic events over channels (a
+  - Skein sends tree patches. Rust sends semantic events over channels (a
     click on node N; text field N changed). Raw pointer motion never
     crosses.
-  - The editor surface asks Norn for the lines in its viewport, so a
+  - The editor surface asks Skein for the lines in its viewport, so a
     keystroke sends only the changed lines and their style spans; the rope
-    stays Norn data.
-  - A thin design, with Norn computing layout and display lists every
-    frame, was rejected: it puts Norn on every frame's critical path before
+    stays Skein data.
+  - A thin design, with Skein computing layout and display lists every
+    frame, was rejected: it puts Skein on every frame's critical path before
     M10's optimiser.
 - **Text** shaping and layout (font fallback, bidi, line breaking) live in
   the shared engine (`parley` or `cosmic-text`), never per backend.
@@ -837,11 +837,11 @@ editor, built on JavaFX and RichTextFX.)
   rectangle, and the backend places a real OS view there, keeping its
   position and clipping in step with layout and scrolling.
   - Webviews use `wry` (WKWebView, WebKitGTK, WebView2), with two-way
-    JavaScript↔Norn messages on channels and custom URL schemes. They're a
-    separate optional package, `norn-ui-webview`, so apps that don't use
+    JavaScript↔Skein messages on channels and custom URL schemes. They're a
+    separate optional package, `skein-ui-webview`, so apps that don't use
     one don't link WebKit.
   - Other OS views (PDF, video, maps) come the same way.
-  - Custom controls can be written in Norn on a canvas node, with drawing
+  - Custom controls can be written in Skein on a canvas node, with drawing
     commands and damage tracking.
   - Known limits:
     - native views sit above our drawing, so our popups (menus,
@@ -850,15 +850,15 @@ editor, built on JavaFX and RichTextFX.)
       transforms;
     - focus moving between our controls and a native view needs care;
     - headless screenshots show a placeholder for them.
-- **Processes.** The editor is its own Norn process with the UI engine
-  linked in; the code being edited runs in a separate `norn` process over
+- **Processes.** The editor is its own Skein process with the UI engine
+  linked in; the code being edited runs in a separate `skein` process over
   the editor protocol. A crash or runaway loop in user code can't freeze the
   editor, and the language runtime never loads a GPU stack. Other people's
-  GUI apps run `norn.ui` in their own process.
+  GUI apps run `skein.ui` in their own process.
 - **Live programming applies to UIs too.** Redefining a view function at
   the REPL updates the open window. Windows are image resources, so a
   restored image reopens them through `on-image-restore`.
-- **Scope of `norn.ui` 0.1**, drawn from Xeon Studio (about 18k lines of
+- **Scope of `skein.ui` 0.1**, drawn from Xeon Studio (about 18k lines of
   Clojure):
   - window, title bar, menus (app and context), dialogs, tooltips, themes;
   - resizable splits, dock areas with tabs that drag between them, an
@@ -869,8 +869,8 @@ editor, built on JavaFX and RichTextFX.)
     inline results, squiggles, a gutter, completion and signature popups;
   - a REPL console, rich text flow (Markdown, chat), a cell-grid terminal
     view, SVG icons.
-- **The editor is essentially Xeon Studio rebuilt in Norn** (decided
-  2026-11-13), on `norn.ui`, with its full feature set:
+- **The editor is essentially Xeon Studio rebuilt in Skein** (decided
+  2026-11-13), on `skein.ui`, with its full feature set:
   - the explorer with Git status, and the project, outline and
     source-control views;
   - dock areas with tabs that drag between them;
@@ -880,29 +880,29 @@ editor, built on JavaFX and RichTextFX.)
   - the API/HTTP workbench and the Databases view;
   - AI chat (the Claude Code and Codex CLIs) and team chat.
 
-  Language support starts with Norn only. Common Lisp, Clojure and Racket
+  Language support starts with Skein only. Common Lisp, Clojure and Racket
   support (Swank, nREPL, their indentation and highlighting) can come
-  later, if wanted. So `norn.ui` 0.1 needs everything in the scope list
+  later, if wanted. So `skein.ui` 0.1 needs everything in the scope list
   above: the terminal's cell-grid view, the virtualized grid, rich text
   flow for Markdown and chat, and the code-editor surface.
 - **Phased panels** (decided 2026-11-13; team chat added 2026-11-14).
   M7.6's editor ships without four panels; its done-check is unchanged
-  (Norn's own development happens in the editor). Three of them arrive when
+  (Skein's own development happens in the editor). Three of them arrive when
   their library lands, so the editor exercises that library too:
   - the API/HTTP workbench follows M9's HTTP client;
   - the Databases view follows M9's database drivers (SQLite first);
-  - the terminal panel follows pseudo-terminal support in `norn.process`
+  - the terminal panel follows pseudo-terminal support in `skein.process`
     (in M9's library list; small, so it can come earlier if convenient).
 
   Team chat needs no new library: it uses the `claude` and `codex`
-  command-line tools, `norn.json`, and Git worktrees through `git`. It
+  command-line tools, `skein.json`, and Git worktrees through `git`. It
   comes after M7.6.
 
   Everything else is in M7.6: the explorer, Git status and source control
   (through the `git` command), project and outline views, dock tabs, the
   REPL, Problems, Debugger and Inspector, Markdown preview, and AI chat (the
-  `claude` and `codex` command-line tools plus `norn.json`).
-  `norn.ui` 0.1 still includes the terminal cell-grid view and the
+  `claude` and `codex` command-line tools plus `skein.json`).
+  `skein.ui` 0.1 still includes the terminal cell-grid view and the
   virtualized grid, as general widgets, but they can land in a later 0.x
   release if M7.5 runs long.
 
@@ -927,26 +927,26 @@ would compromise three of the five principles.
 
 ### 10.2 Bootstrapping (assuming A) **[proposed]**
 
-The compiler is written in Norn and lives in the base image (like SBCL).
+The compiler is written in Skein and lives in the base image (like SBCL).
 The Rust core holds only the runtime.
 
 ```
-norn-rt  (Rust)   GC, scheduler, object layout, primitives, image I/O, FFI, Cranelift glue
-norn0    (Rust)   tiny interpreter for core forms; exists only to bootstrap
-compiler (Norn)   expander + optimiser + codegen; compiled by norn0, then by itself
-stdlib   (Norn)
-→ base.nimg
+skein-rt  (Rust)   GC, scheduler, object layout, primitives, image I/O, FFI, Cranelift glue
+skein0    (Rust)   tiny interpreter for core forms; exists only to bootstrap
+compiler (Skein)   expander + optimiser + codegen; compiled by skein0, then by itself
+stdlib   (Skein)
+→ base.skimg
 ```
 
 ### 10.3 Milestones **[superseded — see [runtime.md §12](runtime.md#12-revised-milestones)]**
 
 | # | Milestone | Done when |
 |---|---|---|
-| M0 | Reader, printer, persistent data structures, `norn0` interpreter, basic REPL | `(reduce + (range 1e6))` at a REPL |
+| M0 | Reader, printer, persistent data structures, `skein0` interpreter, basic REPL | `(reduce + (range 1e6))` at a REPL |
 | M1 | **Fibers + scheduler + safepoints + atoms + channels** (concurrency from day one) | 1M fibers ping-ponging across all cores |
 | M2 | Generic functions, `defclass`, method combination, dispatch caches | Shapes example + live `defmethod` under load |
 | M3 | Condition system, restarts, parked-fiber debugger over the REPL protocol | Fix a crashed fiber from the editor and resume it |
-| M4 | Compiler in Norn → Cranelift; self-host; proper tail calls | Compiler compiles itself |
+| M4 | Compiler in Skein → Cranelift; self-host; proper tail calls | Compiler compiles itself |
 | M5 | Images: save/load, layering, `on-image-restore`, parked fibers | Sub-50ms startup of a saved app image |
 | M6 | Hygienic macros + modules/phases, `#lang`, sealing | Stdlib rebuilt as sealed modules |
 | M7 | MOP completeness, STM, processes/supervisors, FFI, gradual types, contracts | — |
@@ -958,20 +958,20 @@ stdlib   (Norn)
 1. ~~**Host**~~ — decided: own Rust runtime (§10.1, [runtime.md](runtime.md)).
 2. ~~**Laziness**~~ — decided: eager, type-preserving core with explicit
    lazy streams (§3.3).
-3. ~~**STM**~~ — decided: a library, `norn.stm` (§3.2).
+3. ~~**STM**~~ — decided: a library, `skein.stm` (§3.2).
 4. ~~**Mutable objects**~~ — decided: opt-in, owned by a fiber, checked
    (§4.2).
-5. ~~**Primary audience**~~ — decided: Norn is a general-purpose language,
+5. ~~**Primary audience**~~ — decided: Skein is a general-purpose language,
    developed by one person to start with. Its first real program is a
-   VS Code-style editor made for Norn, written in Norn (runtime.md §12,
-   M7.6), on `norn.ui`, a versioned package in its own repository (§9.1).
+   VS Code-style editor made for Skein, written in Skein (runtime.md §12,
+   M7.6), on `skein.ui`, a versioned package in its own repository (§9.1).
    M7.5 adds the runtime hooks it needs.
 6. ~~**The editor's UI technology**~~ — decided: our own GPU drawing of a
    retained, themed control tree (JavaFX-style), with OS views such as
-   webviews embeddable; `norn.ui` is a separate package (§9.1).
+   webviews embeddable; `skein.ui` is a separate package (§9.1).
 7. ~~**License**~~ — decided: MIT.
 8. ~~**Versioning**~~ — decided: semantic versioning per module, enforced
-   by `norn api-diff`; a breaking change needs a major version and a
+   by `skein api-diff`; a breaking change needs a major version and a
    deprecation period of at least one minor release.
 9. ~~**Complex numbers**~~ — decided: later, as a library type rather than
    part of the core numeric tower.

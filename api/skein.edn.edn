@@ -1,0 +1,8 @@
+;; skein.edn's public interface, recorded by skein api-diff --record.
+{
+ "read-all" {:arglists ["[s & {:as opts}]"], :kind :function, :signature [{:result "Vector", :args ["String"], :rest "Any"}]}
+ "read-file" {:arglists ["[path & opts]"], :kind :function, :signature [{:result "Any", :args ["String"], :rest "Any"}]}
+ "read-string" {:arglists ["[s & {:keys [eof], :as opts}]"], :kind :function, :signature [{:result "Any", :args ["String"], :rest "Any"}]}
+ "write-file" {:arglists ["[path x & opts]"], :kind :function, :signature [{:result "Any", :args ["String" "Any"], :rest "Any"}]}
+ "write-string" {:arglists ["[x & {:keys [pretty width]}]"], :kind :function, :signature [{:result "String", :args ["Any"], :rest "Any"}]}
+}

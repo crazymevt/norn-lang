@@ -1,0 +1,5 @@
+;; skein.check's public interface, recorded by skein api-diff --record.
+{
+ "example-failures" {:arglists ["[]"], :kind :function}
+ "main" {:arglists ["[& args]"], :kind :function}
+}

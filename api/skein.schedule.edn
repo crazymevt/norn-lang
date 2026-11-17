@@ -1,0 +1,9 @@
+;; skein.schedule's public interface, recorded by skein api-diff --record.
+{
+ "next-run" {:arglists ["[c]" "[c from & {:or {zone :utc}, :keys [zone]}]"], :kind :function, :signature [{:result "nil or Instant", :args ["String or Map"]} {:result "nil or Instant", :args ["String or Map" "Instant"], :rest "Any"}]}
+ "next-runs" {:arglists ["[c from n & opts]"], :kind :function, :signature [{:result "Vector", :args ["String or Map" "Instant" "Integer"], :rest "Any"}]}
+ "parse" {:arglists ["[expr]"], :kind :function, :signature [{:result "Map", :args ["String"]}]}
+ "runs" {:arglists ["[s]"], :kind :function, :signature [{:result "Integer", :args ["Map"]}]}
+ "schedule" {:arglists ["[c f & {:or {zone :utc}, :keys [zone]}]"], :kind :function, :signature [{:result "Map", :args ["String or Map" "Any"], :rest "Any"}]}
+ "stop!" {:arglists ["[s]"], :kind :function, :signature [{:result "Any", :args ["Map"]}]}
+}

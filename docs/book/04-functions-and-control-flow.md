@@ -157,7 +157,7 @@ way to accept named options.
 
 ## Destructuring
 
-Data in Norn is mostly vectors and maps, and functions often need a few
+Data in Skein is mostly vectors and maps, and functions often need a few
 parts of them. *Destructuring* lets a binding name those parts directly.
 It works anywhere a name is bound: `let`, function parameters, `loop`,
 `for`, `doseq`, and the binding conditionals later in this chapter.
@@ -182,7 +182,7 @@ ranges, since it only reads items by position.
 
 ```clojure
 (let [[x [y z]] [1 [2 3]]] (+ x y z)) ; => 6
-(let [[first-char] "norn"] first-char) ; => \n
+(let [[first-char] "skein"] first-char) ; => \n
 ```
 
 ### Map patterns
@@ -497,7 +497,7 @@ Three relatives cover other cases:
 
 ## Loops and recursion
 
-Norn has no `for (i = 0; …)` loop that updates a counter. Repetition is
+Skein has no `for (i = 0; …)` loop that updates a counter. Repetition is
 either a sequence function such as `map` or `reduce`, which is the usual
 choice, or recursion.
 
@@ -545,7 +545,7 @@ collection, is in [Chapter 6](06-sequences-and-transducers.md).
 ### Proper tail calls
 
 Clojure needs `recur` because the JVM cannot reuse a stack frame for an
-ordinary call. Norn can. **Every call in tail position is a proper tail
+ordinary call. Skein can. **Every call in tail position is a proper tail
 call**: it replaces the caller's frame instead of adding one. So a
 function can call itself, or call another function that calls it back,
 any number of times, and the stack does not grow.
@@ -568,10 +568,10 @@ later in the file. See [Chapter 8](08-modules-and-projects.md).)
 `recur` is still worth using in a self-recursive loop: it says to the
 reader, and to the compiler, that the jump must be a tail call, and the
 compiler reports an error if it isn't. A plain tail call carries no such
-check. `trampoline` exists for code ported from Clojure; in Norn you don't
+check. `trampoline` exists for code ported from Clojure; in Skein you don't
 need it.
 
-Calls that are *not* in tail position do use stack. Norn's stacks live on
+Calls that are *not* in tail position do use stack. Skein's stacks live on
 the heap and grow as needed, so ordinary recursion goes deep:
 
 ```clojure

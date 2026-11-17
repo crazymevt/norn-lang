@@ -1,0 +1,57 @@
+(ns loglens.report
+  "What the requests say: by route, by user's plan, the slow and the
+  failing, as numbers people read; and how two reports differ."
+  (:require [skein.data :as data]
+            [skein.format :as fmt]
+            [skein.math :as math]
+            [skein.set :as set]
+            [skein.string :as str]))
+
+(defn- p95 [xs] (math/percentile xs 95))
+
+(defn summarize
+  "A summary of requests (from logs/read-requests), users being a relation
+  (a set of maps {:id :name :plan}): {:requests :errors :bytes :routes {route
+  {:count :errors :p50-ms :p95-ms}} :plans {plan count}}."
+  [requests users]
+  (let [rel (set requests)
+        by-route (set/index rel [:route])
+        ;; (each request with its user's plan: a join on :user = :id)
+        joined (set/join rel (set/rename users {:id :user}))]
+    {:requests (count requests)
+     :errors (count (filter (fn [r] (>= (:status r) 500)) requests))
+     :bytes (reduce + 0 (map :bytes requests))
+     :routes (into (sorted-map)
+                   (for [[k rs] by-route]
+                     (let [ms (map :ms rs)]
+                       [(:route k) {:count (count rs)
+                                    :errors (count (filter (fn [r] (>= (:status r) 500)) rs))
+                                    :p50-ms (math/median ms)
+                                    :p95-ms (p95 ms)}])))
+     :plans (into (sorted-map) (for [[k rs] (set/index joined [:plan])] [(:plan k) (count rs)]))}))
+
+(defn text
+  "Summary s as lines of text for people."
+  [s]
+  (str/join "\n"
+            (concat
+             [(str (fmt/plural (:requests s) "request") ", " (fmt/percent (/ (:errors s) (max 1 (:requests s))) :decimals 1)
+                   " failed, " (fmt/bytes-size (:bytes s)) " sent")]
+             (for [[r {:keys [count errors p50-ms p95-ms]}] (:routes s)]
+               (str "  " (str/pad-right r 22) (str/pad-left (fmt/number count) 8)
+                    "  p50 " (fmt/duration p50-ms) "  p95 " (fmt/duration p95-ms)
+                    (when (pos? errors) (str "  " (fmt/plural errors "error")))))
+             [(str "  by plan: " (str/join ", " (for [[p n] (:plans s)] (str p " " (fmt/number n)))))])))
+
+(defn changes
+  "How summary b differs from a, as lines of text (nil if it doesn't)."
+  [a b]
+  (let [[before after _] (data/diff (:routes a) (:routes b))]
+    (seq (for [r (sort (distinct (concat (keys before) (keys after))))
+               :let [x (get-in a [:routes r]) y (get-in b [:routes r])]]
+           (cond (nil? x) (str "new route " r)
+                 (nil? y) (str "gone: " r)
+                 :else (str r ": " (str/join ", " (for [k [:count :errors :p50-ms :p95-ms]
+                                                        :when (not= (get x k) (get y k))
+                                                        :let [show (if (#{:p50-ms :p95-ms} k) fmt/duration fmt/number)]]
+                                                    (str (name k) " " (show (get x k)) " → " (show (get y k)))))))))))

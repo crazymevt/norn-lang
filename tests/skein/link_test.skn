@@ -1,0 +1,184 @@
+;;;; Linked calls (M10 part 3): tier 1 compiles a call through a var (or of
+;;;; the running function itself) against the closure it holds then, behind
+;;;; a guard, and pushes the callee's frame itself. Run at both tiers, these
+;;;; check that what's linked behaves as a call through the var: a
+;;;; redefinition takes effect at once, in a loop already running too.
+;;;; (Calls run 300 times or more, so tier 1 has compiled them: at its
+;;;; default, a function is queued to compile once entered 100 times, and
+;;;; `many` waits for the compile thread before running them again.)
+
+(ns link-test
+  (:require [skein.test :refer [is deftest testing]] [skein.string :as str]))
+
+(defn- compiled!
+  "Wait for tier 1's compile thread to finish what's queued (at most 5 s)."
+  []
+  (loop [k 0] (when (and (pos? (:pending (jit-stats))) (< k 5000)) (sleep 1) (recur (inc k)))))
+
+(defn- many
+  "(f i) for i below n, then, once what that queued is compiled, again: the
+  last value."
+  [n f]
+  (let [run #(loop [i 0 v nil] (if (= i n) v (recur (inc i) (f i))))]
+    (run)
+    (compiled!)
+    (run)))
+
+(defn- redefine
+  "Define again in this namespace, as at the REPL (a string, so the
+  definition isn't one inside a function)."
+  [src]
+  (load-string (str "(in-ns 'link-test) " src)))
+
+;; (twice makes a closure, so it isn't inlined: via-twice's call of it is
+;; a linked one)
+(defn twice [x] ((fn [y] (* 2 y)) x))
+(defn via-twice [x] (twice x))
+
+(deftest a-redefinition-takes-effect-in-linked-callers
+  ;; (through apply too: a direct call inlines via-twice into the caller,
+  ;; and via-twice's own code, linked to twice, would never run)
+  (is (= [10 10] (many 300 (fn [_] [(via-twice 5) (apply via-twice [5])]))))
+  (redefine "(defn twice [x] (* 3 x))")
+  (is (= 15 (via-twice 5)) "the caller, compiled against the old twice, calls the new one")
+  (is (= [15 15] (many 300 (fn [_] [(via-twice 5) (apply via-twice [5])]))) "and again once it has compiled again")
+  (testing "a var that comes to hold something else callable"
+    (redefine "(def twice {5 :five})")
+    (is (= :five (via-twice 5)))
+    (redefine "(def twice (fn [x] (* 4 x)))")
+    (is (= 20 (via-twice 5))))
+  (when (= 1 (:tier (jit-stats)))
+    (is (pos? (:linked (jit-stats))) "tier 1 linked calls")
+    (is (pos? (:relinked (jit-stats))) "and compiled callers again after a redefinition")))
+
+(defn step [i] 1)
+(defn- count-steps [n] (loop [i 0 s 0] (if (= i n) s (recur (inc i) (+ s (step i))))))
+
+(deftest a-redefinition-reaches-a-loop-already-running
+  (let [steps (spawn-detached (loop [i 0] (let [s (step i)] (if (or (= s 2) (> i 100000000)) s (recur (inc i))))))]
+    (sleep 30)
+    (redefine "(defn step [i] 2)")
+    (is (= 2 (await steps)) "the loop sees the new step")
+    (is (= 2000 (count-steps 1000)))))
+
+(deftest redefining-a-sealed-modules-function
+  (load-string "(ns link-demo) (defn f [x] (+ x 1))")
+  (load-string "(ns link-user) (defn call-f [x] (link-demo/f x))")
+  (seal! 'link-demo)
+  (let [call-f (resolve 'link-user/call-f)]
+    (is (= 6 (many 300 (fn [_] (call-f 5)))))
+    (let [warned (atom [])]
+      (handler-bind [Warning (fn [w] (swap! warned conj (condition-message w)) (muffle-warning))]
+        (load-string "(in-ns 'link-demo) (defn f [x] (+ x 100)) (in-ns 'link-test)"))
+      (is (str/includes? (first @warned) "unseals link-demo") "with the warning")
+      (is (= 105 (call-f 5)) "its linked caller calls the new one"))))
+
+(defn arities ([] :none) ([a] [:one a]) ([a b] [:two a b]) ([a b & more] [:more a b more]))
+(defn wide [a b c d e f g h] [a b c d e f g h])
+(defn- locals [x] (let [y (if (pos? x) x nil) z (when y (inc y))] [x y z]))
+
+(deftest arities-arguments-and-registers
+  (is (= [:none [:one 1] [:two 1 2] [:more 1 2 '(3)]]
+         (many 300 (fn [_] [(arities) (arities 1) (arities 1 2) (arities 1 2 3)]))))
+  (is (= [1 2 3 4 5 6 7 8] (many 300 (fn [i] (wide 1 2 3 4 5 6 7 8)))))
+  (is (= [[3 3 4] [-1 nil nil]] (many 300 (fn [_] [(locals 3) (locals -1)])))))
+
+(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(defn down [n acc] (if (zero? n) acc (down (dec n) (conj acc n))))
+(defn evens? [n] (if (zero? n) true (odds? (dec n))))
+(defn odds? [n] (if (zero? n) false (evens? (dec n))))
+
+(deftest recursion
+  (is (= 6765 (many 30 (fn [_] (fib 20)))) "itself (SELF)")
+  (is (= [3 2 1] (many 300 (fn [_] (down 3 [])))) "in tail position")
+  (is (= 100000 (count (down 100000 []))) "a tail call in place: the stack doesn't grow")
+  (is (= true (many 300 (fn [_] (evens? 1000)))) "mutual, in tail position")
+  (is (= 200000 (letfn [(deep [n] (if (zero? n) 0 (inc (deep (dec n)))))] (deep 200000)))
+      "deep enough to need more stack segments"))
+
+;;; Generic calls (M10 part 6.4): a call of a generic function whose dispatch
+;;; has seen one class is linked to that class's effective method, behind a
+;;; guard on the function, the argument's class, and its methods' and the
+;;; classes' epochs. Each change below must take effect at once.
+
+(defgeneric describe-it (x))
+(defclass Beast () ((name :initform "beast")))
+(defclass Bird (Beast) ())
+(defmethod describe-it ((b Beast)) [:beast (:name b)])
+(defn via-describe [x] (describe-it x))
+
+(deftest linked-generic-calls-follow-their-changes
+  (let [b (Beast)]
+    (is (= [:beast "beast"] (many 300 (fn [_] (via-describe b)))))
+    (testing "another class at the same call site"
+      (is (= [:beast "beast"] (via-describe (Bird))) "an inherited method")
+      (is (thrown? Error (via-describe 5)) "no applicable method"))
+    (testing "a method redefined"
+      (redefine "(defmethod describe-it ((b Beast)) [:redefined (:name b)])")
+      (is (= [:redefined "beast"] (via-describe b)))
+      (is (= [:redefined "beast"] (many 300 (fn [_] (via-describe b))))))
+    (testing "a more specific method added"
+      (redefine "(defmethod describe-it ((b Bird)) :bird)")
+      (is (= :bird (via-describe (Bird))))
+      (is (= [:redefined "beast"] (via-describe b))))
+    (testing "a :before method added"
+      (redefine "(def before-count (atom 0))")
+      (redefine "(defmethod describe-it :before ((b Beast)) (swap! before-count inc))")
+      (via-describe b)
+      (is (= 1 @(var-get (resolve 'link-test/before-count)))))
+    (testing "the class redefined"
+      (redefine "(defclass Beast () ((name :initform \"beast\") (legs :initform 4)))")
+      (is (= [:redefined "beast"] (via-describe (Beast)))))))
+
+;;; Keyword reads (M10 part 6.4): (:k x) with a keyword constant is read
+;;; natively from an instance that isn't mutable, or a map; anything else
+;;; goes the general way.
+
+(defclass Spot () ((x :initform 1) (y :initform 2)))
+(defclass Box () ((v :initform 0 :mutable true)) (:mutable))
+(defn read-x [o] (:x o))
+(defn read-v [o] (:v o))
+
+(deftest keyword-reads
+  (is (= 1 (many 300 (fn [_] (read-x (Spot))))))
+  (is (= [7 nil nil 5] [(read-x (Spot :x 7)) (read-x nil) (read-x {}) (read-x {:x 5})]))
+  (is (nil? (read-x [1 2])) "a vector's get of a keyword")
+  (testing "a mutable instance: its owner checked as before"
+    (let [b (Box)]
+      (is (= 0 (many 300 (fn [_] (read-v b)))))
+      (is (thrown? Error (await (spawn-detached (read-v b))))
+          "another fiber can't read what this one owns")))
+  (testing "an instance from before its class changed"
+    (let [old (Spot :x 3)]
+      (redefine "(defclass Spot () ((y :initform 2)))")
+      (is (nil? (read-x old)) "a slot the class no longer has"))))
+
+;;; Calls of closures held in locals (M10 part 7.3): tier 1 writes their
+;;; frame itself when the closure has a fixed arity for the arguments and
+;;; the frame fits; anything else goes the general way.
+
+(defn apply-local [f & args]
+  (let [g f]
+    (case (count args)
+      0 (g)
+      1 (g (first args))
+      2 (g (first args) (second args))
+      (apply g args))))
+
+(deftest local-closure-calls
+  (let [k 10
+        add-k (fn [x] (+ x k))
+        arities (fn ([] :none) ([a] [:one a]) ([a b] [:two a b]))
+        rest-args (fn [a & more] [a more])]
+    (is (= 11 (many 300 (fn [_] (apply-local add-k 1)))) "an upvalue")
+    (is (= [:none [:one 1] [:two 1 2]] [(apply-local arities) (apply-local arities 1) (apply-local arities 1 2)]))
+    (is (= [1 [2]] (apply-local rest-args 1 2)) "a rest parameter: the general way")
+    (is (= 6 (apply-local + 1 5)) "a primitive")
+    (testing "a closure compiled late, called before and after"
+      (let [fresh (fn [x] (* x 3))]
+        (is (= [3 30] [(apply-local fresh 1) (many 300 (fn [_] (apply-local fresh 10)))]))))
+    (testing "deep: frames past a segment's end"
+      (let [down (fn down [n] (if (zero? n) :bottom (let [f down] (f (dec n)))))]
+        (is (= :bottom (down 20000)))))
+    (testing "an error in the callee"
+      (is (thrown? Error (apply-local (fn [x] (/ x 0)) 1))))))

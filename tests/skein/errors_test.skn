@@ -1,0 +1,159 @@
+;;;; The runtime's errors as conditions (M9 part 9.13): each has a class a
+;;;; handler can choose by, and slots saying what went wrong, whether Rust
+;;;; or a library raised it, and through fibers too.
+
+(ns errors-test
+  (:require [skein.test :refer [is deftest testing]] [skein.io :as io] [skein.net :as net]
+            [skein.json :as json] [skein.uri :as uri] [skein.http :as http] [skein.sys :as sys]
+            [skein.string :as str]))
+
+(defn- caught
+  "The condition f signals (nil if none)."
+  [f]
+  (try (f) nil (catch Error e e)))
+
+(defn- class-of-name [c] (when c (name (class-name (class-of c)))))
+
+(def here (let [loc (%location)] (io/parent (subs loc 0 (str/last-index-of loc ":")))))
+
+(defclass ErrPoint () ((x)))
+
+(deftest program-mistakes-are-runtime-errors
+  (let [c (caught (fn [] (+ 1 :a)))]
+    (is (= "TypeError" (class-of-name c)))
+    (is (= ["a number" :a] [(:expected c) (:value c)])))
+  (let [c (caught (fn [] (count 5 6)))]
+    (is (= "ArityError" (class-of-name c)))
+    (is (= 2 (:given c))))
+  (let [c (caught (fn [] (nth [1 2] 5)))]
+    (is (= ["IndexError" 5] [(class-of-name c) (:index c)])))
+  (is (= "ArithmeticError" (class-of-name (caught (fn [] (/ 1 0))))))
+  (testing "they're RuntimeErrors, with the restarts they always had"
+    (is (instance? RuntimeError (caught (fn [] (/ 1 0)))))
+    (is (= 42 (handler-bind [ArithmeticError (fn [_] (invoke-restart 'use-value 42))] (/ 1 0)))))
+  (testing "the most specific class, where core's primitives used to say RuntimeError"
+    (is (= ["TypeError" "TypeError"] [(class-of-name (caught (fn [] (conj 1 2)))) (class-of-name (caught (fn [] (conj (ErrPoint :x 1) 2))))]))
+    (is (= ["TypeError" "TypeError" "TypeError"]
+           (mapv (fn [f] (class-of-name (caught f))) [(fn [] (first 5)) (fn [] (seq :k)) (fn [] (count 5))])))
+    (let [c (caught (fn [] (quot 7.5 2)))]
+      (is (= ["TypeError" 7.5] [(class-of-name c) (:value c)]) "quot, rem and mod take integers"))
+    (is (= ["TypeError" "TypeError"] [(class-of-name (caught (fn [] (rem 1 2.0)))) (class-of-name (caught (fn [] (mod 1.5 1))))]))
+    (let [c (caught (fn [] (subs "abc" 2 9)))]
+      (is (= ["IndexError" 9] [(class-of-name c) (:index c)]) "as nth says it"))
+    (is (= ["IndexError" -1] ((juxt class-of-name :index) (caught (fn [] (subs "abc" -1))))))))
+
+(deftest a-java-habit-says-what-skein-has
+  ;; (pulse finding: Math/round was only "unable to resolve")
+  (is (str/ends-with? (condition-message (caught (fn [] (eval '(Math/round 2.5)))))
+                      "in this context (Skein has no Java classes: try skein.math/round)"))
+  (is (str/ends-with? (condition-message (caught (fn [] (eval '(System/getenv "HOME")))))
+                      "(Skein has no Java classes: use skein.sys/getenv)"))
+  (is (str/ends-with? (condition-message (caught (fn [] (eval '(nosuch/thing)))))
+                      "Unable to resolve symbol: nosuch/thing in this context")))
+
+(deftest the-world-outside-is-io-errors
+  (testing "files"
+    (let [missing (io/path (sys/temp-dir) (str "skein-errors-test-" (nano-time)) "nothing")
+          c (caught (fn [] (io/read-text missing)))]
+      (is (= "FileNotFound" (class-of-name c)))
+      (is (= [missing :not-found] [(:path c) (:reason c)]))
+      (is (instance? IOError c) "under IOError")
+      (is (not (instance? RuntimeError c)) "not a mistake in the program")
+      (is (= "default" (handler-bind [FileNotFound (fn [_] (invoke-restart 'use-value "default"))] (io/read-text missing)))
+          "use-value still offered")))
+  (testing "connections"
+    ;; (port 1: nothing listens there. A port just freed could be taken by
+    ;; a suite running beside this one before the connect.)
+    (let [port 1
+          c (caught (fn [] (net/connect "127.0.0.1" port)))]
+      (is (= "ConnectionError" (class-of-name c)))
+      (is (= :refused (:reason c)))
+      (is (= (str "127.0.0.1:" port) (:address c)))))
+  (testing "accepting on a closed listener (it was a RuntimeError)"
+    (let [l (net/listen "127.0.0.1" 0)]
+      (io/close l)
+      (let [c (caught (fn [] (net/accept l)))]
+        (is (= ["ConnectionError" :closed] [(class-of-name c) (:reason c)]))))
+    (let [l (net/listen "127.0.0.1" 0)
+          f (spawn-detached (caught (fn [] (net/accept l))))]
+      (sleep 20)
+      (io/close l)
+      (is (= ["ConnectionError" :closed] ((juxt class-of-name :reason) (await f))) "closed while waiting")))
+  (testing "TLS"
+    (let [certs (io/path here "certs")
+          s (http/serve (fn [_] {:status 200 :body "ok"}) :tls true
+                        :cert-file (io/path certs "server.pem") :key-file (io/path certs "server.key"))
+          c (caught (fn [] (http/get (str "https://localhost:" (:port s) "/") :keep-alive false)))]
+      (is (= "TlsError" (class-of-name c)) "an untrusted certificate")
+      (is (instance? ConnectionError c))
+      (http/stop! s))))
+
+(deftest timeouts
+  (let [s (http/serve (fn [_] (sleep 1000) {:status 200}))
+        c (caught (fn [] (http/get (str "http://127.0.0.1:" (:port s) "/") :timeout 100)))]
+    (is (= "TimeoutError" (class-of-name c)))
+    (is (= 100 (:after c)))
+    (http/stop! s)))
+
+(deftest text-that-isnt-what-it-should-be
+  (let [c (caught (fn [] (json/read-string "{\"a\": [1, 2,\n  }")))]
+    (is (= "ParseError" (class-of-name c)))
+    (is (= ["JSON" 2 3] [(:source c) (:line c) (:column c)])))
+  (let [c (caught (fn [] (load-string "(defn f []\n  (+ 1 2")))]
+    (is (= "ParseError" (class-of-name c)) "Skein source"))
+  (let [c (caught (fn [] (read-string "(1 2")))]
+    (is (= ["ParseError" "<string>" 1 5] [(class-of-name c) (:source c) (:line c) (:column c)]) "where it stopped"))
+  (let [c (caught (fn [] (read-string "[1\n  2 )")))]
+    (is (= [2 5] [(:line c) (:column c)])))
+  (is (= ["ParseError" "URI"] ((juxt class-of-name :source) (caught (fn [] (uri/parse "http://h:8x/"))))))
+  (let [s (net/listen "127.0.0.1" 0)
+        port (net/port (net/local-address s))]
+    (spawn-detached (let [c (net/accept s)] (io/read c 100) (io/write c "NOT HTTP\r\n\r\n") (io/close c)))
+    (is (= "ParseError" (class-of-name (caught (fn [] (http/get (str "http://127.0.0.1:" port "/") :keep-alive false)))))
+        "a server that doesn't speak HTTP")
+    (io/close s)))
+
+(deftest a-fibers-condition-survives-it
+  ;; (await and a scope signal the very condition the fiber ended with)
+  (let [c (caught (fn [] (await (spawn-detached (io/read-text "/no/such/file/here")))))]
+    (is (= ["FileNotFound" "/no/such/file/here"] [(class-of-name c) (:path c)])))
+  (let [c (caught (fn [] (with-scope [s] (spawn s (+ 1 :b)))))]
+    (is (= ["TypeError" :b] [(class-of-name c) (:value c)])))
+  (testing "a condition of one's own, with its data"
+    (let [c (caught (fn [] (await (spawn-detached (error TimeoutError :message "slow" :after 7)))))]
+      (is (= ["TimeoutError" 7 "slow"] [(class-of-name c) (:after c) (condition-message c)])))))
+
+(deftest wrong-arguments-are-type-errors-not-crashes
+  ;; (a number where a collection goes read an object's kind from a
+  ;; non-object, and a string as a symbol read a symbol's fields: both
+  ;; crashed the process)
+  (doseq [f [(fn [] (vec 1)) (fn [] (set 1)) (fn [] (apply + 1 2)) (fn [] (resolve "map"))
+             (fn [] (take! 1)) (fn [] (int "a")) (fn [] (numerator 1.5)) (fn [] (exit "a"))]]
+    (is (= "TypeError" (class-of-name (caught f))))))
+
+(deftest every-public-core-name-has-a-docstring
+  (is (= [] (vec (sort (for [[s v] (ns-publics 'skein.core)
+                             :when (and (not= "%" (subs (str s) 0 1)) (nil? (:doc (definition v))))]
+                         s)))))
+  (is (some? (:doc (definition '/))) "/ too, whose name is a slash"))
+
+(def standard-libraries
+  "Every library that comes with Skein but skein.core."
+  '[skein.actor skein.api-diff skein.async skein.bench skein.bin skein.buffer skein.bytes skein.cache skein.cbor
+    skein.check skein.cli skein.compress skein.cover skein.crypto skein.csv skein.data skein.decimal skein.deps
+    skein.dev skein.doc skein.edn skein.expand skein.ffi skein.fmt skein.format skein.fs skein.http
+    skein.image skein.io skein.json skein.lint skein.log skein.lsp skein.markdown skein.math skein.ndjson
+    skein.net skein.new skein.package skein.pprint skein.process skein.prof skein.property skein.random
+    skein.regex skein.rope skein.run skein.schedule skein.set skein.shake skein.signal skein.sqlite skein.stm
+    skein.string skein.sync skein.syntax skein.sys skein.terminal skein.test skein.time skein.toml
+    skein.uri skein.uuid skein.validate skein.walk skein.xml skein.xref skein.yaml skein.zip])
+
+(deftest every-public-library-name-has-a-docstring
+  ;; (functions, macros, classes and vars alike: pulse found macros and
+  ;; classes without, which this left out)
+  (doseq [l standard-libraries] (require l))
+  (is (= [] (vec (for [l standard-libraries
+                       [s v] (sort-by (fn [[s _]] (str s)) (ns-publics l))
+                       :when (and (not= "%" (subs (str s) 0 1))
+                                  (nil? (:doc (definition v))))]
+                   (symbol (str l) (str s)))))))

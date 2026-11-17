@@ -9,18 +9,18 @@ explain themselves with `--help`, catch typos, and use color only when
 someone is looking.
 
 This chapter builds one such program, `notes`, which keeps short notes in
-a folder. Along the way it covers `norn.cli`, which turns a description of
+a folder. Along the way it covers `skein.cli`, which turns a description of
 the command line into a parser, help text, and dispatch to subcommands, and
-`norn.terminal`, which styles output and reads keys one at a time for
+`skein.terminal`, which styles output and reads keys one at a time for
 interactive programs. [Chapter 21](21-the-operating-system.md) covered the
-raw materials, `norn.sys/program-args` and `norn.sys/exit`. Here you put
+raw materials, `skein.sys/program-args` and `skein.sys/exit`. Here you put
 them to work.
 
 ## Arguments, output, and exit status
 
-Run a script as `norn notes.norn add buy milk`, and
-`norn.sys/program-args` returns `["add" "buy" "milk"]`, the arguments after
-the script's path. When the program is done, `norn.sys/exit` ends it with a
+Run a script as `skein notes.skn add buy milk`, and
+`skein.sys/program-args` returns `["add" "buy" "milk"]`, the arguments after
+the script's path. When the program is done, `skein.sys/exit` ends it with a
 status. By convention:
 
 - 0 means success.
@@ -37,24 +37,24 @@ another program might read through a pipe. Standard error is for messages
 to the person running the program: errors, warnings, and progress. Keeping
 them apart means `notes list | wc -l` counts notes, not error messages.
 
-`println` writes to standard output. `norn.io` has `eprintln` and `eprint`,
+`println` writes to standard output. `skein.io` has `eprintln` and `eprint`,
 which print to standard error the way `println` and `print` print to
 standard output:
 
 ```clojure
-(require '[norn.io :as io :refer [eprintln]] '[norn.string :as str])
+(require '[skein.io :as io :refer [eprintln]] '[skein.string :as str])
 
 (eprintln "notes: something went wrong") ; prints to standard error
 ```
 
-`norn.log` ([Chapter 21](21-the-operating-system.md)) also writes to
+`skein.log` ([Chapter 21](21-the-operating-system.md)) also writes to
 standard error, and suits messages that need levels and timestamps.
 
 ## Describing the command line
 
 Parsing arguments by hand starts simple and goes wrong fast: options in any
 order, `--name=value` and `--name value`, `-abc` for three flags, values
-that should be numbers, a `--help` that drifts out of date. `norn.cli`
+that should be numbers, a `--help` that drifts out of date. `skein.cli`
 handles all of that from a description of the command line, called a
 spec. A spec is a map, so it's ordinary data you can build, inspect, and
 test.
@@ -63,7 +63,7 @@ Here is a first spec for `notes`. For now it takes words to add as a note,
 an option for the folder, and a flag for more output:
 
 ```clojure
-(require '[norn.cli :as cli])
+(require '[skein.cli :as cli])
 
 (def first-spec
   {:name "notes"
@@ -114,13 +114,13 @@ dash. A negative number such as `-5` also counts as an argument.
 
 What makes an option a flag is what it lacks. An option with no `:value`,
 `:type`, `:choices`, or `:multiple` is a flag. That's convenient, and it's
-also the most common mistake with `norn.cli`. Leave out `:value` on an
+also the most common mistake with `skein.cli`. Leave out `:value` on an
 option that should take one, and its value becomes a stray argument:
 
 ```clojure
 (def oops {:name "notes" :options [{:name :tag :short \t}]})
 
-(cli/parse oops ["-t" "work"]) ; !! norn.cli/UsageError
+(cli/parse oops ["-t" "work"]) ; !! skein.cli/UsageError
 
 (condition-message (handler-case (cli/parse oops ["-t" "work"])
                      (cli/UsageError [e] e)))
@@ -128,7 +128,7 @@ option that should take one, and its value becomes a stray argument:
 ```
 
 `-t` was taken as a flag, and `"work"` had nowhere to go. A bad command
-line signals a `norn.cli/UsageError` whose message is written for the
+line signals a `skein.cli/UsageError` whose message is written for the
 person at the keyboard.
 
 ### Types, choices, and the rest
@@ -331,7 +331,7 @@ A program's last line hands that status to `exit`:
 
 <!-- skip -->
 ```clojure
-(norn.sys/exit (cli/run spec))
+(skein.sys/exit (cli/run spec))
 ```
 
 That line ends the process, so this chapter calls `cli/run` with explicit
@@ -341,12 +341,12 @@ argument vectors instead and looks at the status it returns.
 
 Each subcommand needs a `:run` function. They share a few helpers for
 storage. The notes live in one EDN file in the folder, read and written
-with `norn.edn` ([Chapter 20](20-data-formats.md)). `write-atomic!`
+with `skein.edn` ([Chapter 20](20-data-formats.md)). `write-atomic!`
 replaces the file all at once, so a crash never leaves half a file
 ([Chapter 19](19-files-and-streams.md)).
 
 ```clojure
-(require '[norn.edn :as edn] '[norn.terminal :as term])
+(require '[skein.edn :as edn] '[skein.terminal :as term])
 
 (defn store-path [dir] (io/path dir "notes.edn"))
 
@@ -470,13 +470,13 @@ Run 'notes list --help' for usage.
 
 Because the spec, the commands, and the storage are all ordinary
 functions and data, you can test the whole program this way, from
-`norn.test` ([Chapter 25](25-testing.md)), without starting a process.
+`skein.test` ([Chapter 25](25-testing.md)), without starting a process.
 
 ## Styling output
 
 Color helps people scan output: ids in one color, tags in another, errors
 in red. It also gets in the way when output goes to a file or another
-program, which then has escape codes in its input. `norn.terminal` takes
+program, which then has escape codes in its input. `skein.terminal` takes
 care of the difference.
 
 `term/style` wraps text in ANSI escape codes for attributes such as
@@ -556,7 +556,7 @@ pad styled text or style padded text; `show-note` does the second with the
 id. To fit output to the terminal, `term/size`
 returns `{:rows :cols}`, or nil when nothing says.
 
-`norn.terminal` also has functions that return control sequences for you
+`skein.terminal` also has functions that return control sequences for you
 to print: `cursor-to`, `cursor-up` and its relatives, `clear`,
 `hide-cursor` and `show-cursor`, `alternate-screen` and `main-screen`, and
 `title`:
@@ -585,7 +585,7 @@ keyword, with modifiers as flags: `{:key :up}`, `{:key :right :ctrl true}`,
 `key-name` turns a key into text such as `"ctrl+c"`.
 
 Raw mode needs a real terminal, which these examples don't have. But the
-keys are decoded by ordinary Norn code over the bytes a terminal sends,
+keys are decoded by ordinary Skein code over the bytes a terminal sends,
 and `decode-keys` runs that decoder on bytes you give it. An arrow key, for
 instance, arrives as three bytes: Escape, `[`, and a letter.
 
@@ -690,23 +690,23 @@ untouched, and turn on mouse reports and bracketed paste. See
 kitty keyboard protocol, and for `suspend!`, which handles Ctrl-Z.
 
 Two more things come up in full-screen programs. To redraw when the window
-changes size, listen for `:winch` with `norn.signal`
+changes size, listen for `:winch` with `skein.signal`
 ([Chapter 21](21-the-operating-system.md)) and call `term/size` again. And
 to test a raw-mode program end to end, run it on a pseudo-terminal with
-`norn.process/start-pty`, write key bytes to its input, and read what it
+`skein.process/start-pty`, write key bytes to its input, and read what it
 draws.
 
 ## The whole program
 
-Here is `notes.norn` in full. Each piece ran in this chapter. The `ns`
+Here is `notes.skn` in full. Each piece ran in this chapter. The `ns`
 form gathers the requires, the spec names each `:run` directly, and the
 last line hands the exit status to the operating system.
 
 <!-- skip -->
 ```clojure
 (ns notes
-  (:require [norn.cli :as cli] [norn.edn :as edn] [norn.io :as io :refer [eprintln]]
-            [norn.string :as str] [norn.sys :as sys] [norn.terminal :as term]))
+  (:require [skein.cli :as cli] [skein.edn :as edn] [skein.io :as io :refer [eprintln]]
+            [skein.string :as str] [skein.sys :as sys] [skein.terminal :as term]))
 
 (defn store-path [dir] (io/path dir "notes.edn"))
 
@@ -810,11 +810,11 @@ last line hands the exit status to the operating system.
 Run it from a shell:
 
 ```sh
-norn notes.norn add buy milk -t home
-norn notes.norn add -t work call Ada
-norn notes.norn list
-norn notes.norn lsit; echo "status $?"
-NOTES_DIR=elsewhere norn notes.norn list; echo "status $?"
+skein notes.skn add buy milk -t home
+skein notes.skn add -t work call Ada
+skein notes.skn list
+skein notes.skn lsit; echo "status $?"
+NOTES_DIR=elsewhere skein notes.skn list; echo "status $?"
 ```
 
 ```text
@@ -829,8 +829,8 @@ notes: no notes
 status 1
 ```
 
-In a terminal, the ids are yellow and the tags cyan. `norn notes.norn pick`
-opens the picker, and `norn notes.norn list | cat` is plain again.
+In a terminal, the ids are yellow and the tags cyan. `skein notes.skn pick`
+opens the picker, and `skein notes.skn list | cat` is plain again.
 
 To ship `notes` as a program of its own, build it into an image with an
 entry function ([Chapter 27](27-images-and-deployment.md)). The entry
@@ -846,7 +846,7 @@ so it replaces the last line:
 
 - Use exit status 0 for success, 1 for a failure, and 2 for a bad command
   line. Results go to standard output and messages to standard error.
-- A `norn.cli` spec is data: `:options`, `:args`, and `:commands`, each a
+- A `skein.cli` spec is data: `:options`, `:args`, and `:commands`, each a
   map. `cli/parse` turns arguments into `{:options :args :command}` or
   signals a `UsageError` with a message meant for users.
 - An option without `:value`, `:type`, `:choices`, or `:multiple` is a
@@ -855,7 +855,7 @@ so it replaces the last line:
 - `--help`, `--version`, and the help text come from the spec, so they
   stay accurate. `cli/usage` returns the text.
 - `cli/run` prints help, reports usage errors, calls the chosen command's
-  `:run`, and returns the status for `norn.sys/exit`.
+  `:run`, and returns the status for `skein.sys/exit`.
 - `term/style` colors text only when the output can show it, following
   `NO_COLOR`, `FORCE_COLOR`, and the terminal. Bind `term/*color*` to
   decide yourself, and measure styled text with `term/width`.

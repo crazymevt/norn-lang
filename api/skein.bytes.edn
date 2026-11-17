@@ -1,0 +1,19 @@
+;; skein.bytes's public interface, recorded by skein api-diff --record.
+{
+ "base64" {:arglists ["[b]" "[b alphabet]"], :kind :function, :signature [{:result "String", :args ["Bytes"]} {:result "String", :args ["Bytes" "Any"]}]}
+ "concat-bytes" {:arglists ["[& bs]"], :kind :function}
+ "decode-chunk" {:arglists ["[state chunk]"], :kind :function, :signature [{:result "Vector", :args ["Map" "Bytes"]}]}
+ "decode-text" {:arglists ["[data encoding]"], :kind :function, :signature [{:result "String", :args ["Bytes" "Keyword"]}]}
+ "decoder" {:arglists ["[encoding]"], :kind :function, :signature [{:result "Map", :args ["Keyword"]}]}
+ "finish-decoder" {:arglists ["[{:keys [encoding pending offset]}]"], :kind :function, :signature [{:result "Any", :args ["Map"]}]}
+ "float-bytes" {:arglists ["[n width order]"], :kind :function, :signature [{:result "Bytes", :args ["Number" "Integer" "Keyword"]}]}
+ "hex" {:arglists ["[b]"], :kind :function, :signature [{:result "String", :args ["Bytes"]}]}
+ "read-float" {:arglists ["[b offset width order]"], :kind :function, :signature [{:result "Float", :args ["Bytes" "Integer" "Integer" "Keyword"]}]}
+ "read-uint" {:arglists ["[b offset width order]"], :kind :function, :signature [{:result "Integer", :args ["Bytes" "Integer" "Integer" "Keyword"]}]}
+ "slice" {:arglists ["[b start]" "[b start end]"], :kind :function, :signature [{:result "Bytes", :args ["Bytes" "Integer"]} {:result "Bytes", :args ["Bytes" "Integer" "Integer"]}]}
+ "uint-bytes" {:arglists ["[n width order]"], :kind :function, :signature [{:result "Bytes", :args ["Integer" "Integer" "Keyword"]}]}
+ "unbase64" {:arglists ["[s]"], :kind :function, :signature [{:result "Bytes", :args ["String"]}]}
+ "unhex" {:arglists ["[s]"], :kind :function, :signature [{:result "Bytes", :args ["String"]}]}
+ "utf8" {:arglists ["[s]"], :kind :function, :signature [{:result "Bytes", :args ["Any"]}]}
+ "utf8-string" {:arglists ["[b]" "[b lossy?]"], :kind :function, :signature [{:result "String", :args ["Bytes"]} {:result "String", :args ["Bytes" "Any"]}]}
+}

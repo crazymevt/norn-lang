@@ -1,0 +1,26 @@
+[package]
+name = "skein"
+description = "The skein command: REPL and script runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "skein"
+path = "src/main.rs"
+
+# A test-only binary with a demonstration extension, for the M7.5 done-check
+# (crates/skein/tests/ext.rs): primitives, native handles, posting from the
+# main thread through run_with_main_thread.
+[[bin]]
+name = "skein-ext-demo"
+path = "src/bin/ext_demo.rs"
+
+[dependencies]
+skein-rt = { path = "../skein-rt" }
+skein-vm = { path = "../skein-vm" }
+ctrlc = "3"
+rustyline = "15"

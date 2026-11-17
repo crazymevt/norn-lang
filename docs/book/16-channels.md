@@ -4,14 +4,14 @@
 
 Fibers that only compute and return a value need nothing more than `spawn`
 and `await`. Fibers that cooperate while they run, one producing values as
-another consumes them, need a way to pass values between them. In Norn that
+another consumes them, need a way to pass values between them. In Skein that
 way is the channel. This chapter shows how to make channels and send values
 through them, how closing works, how buffers change who waits for whom, how
 to wait on several channels at once and give up after a time limit, and how
 to build producer-consumer arrangements and pipelines. It ends with
-`norn.async`, a library of ready-made channel connectors.
+`skein.async`, a library of ready-made channel connectors.
 
-The core functions here are in `norn.core`, so you can use them without a
+The core functions here are in `skein.core`, so you can use them without a
 `require`. Channels are the CSP model (communicating sequential processes)
 that Clojure's core.async also follows; if you know core.async, most of this
 chapter will look familiar, and the differences are pointed out as they come.
@@ -38,7 +38,7 @@ second fiber. With only one fiber, `put!` would wait forever for a taker
 that never comes.
 
 `>!` and `<!` are other names for `put!` and `take!`. In core.async, `>!` and
-`<!` work only inside `go` blocks and the `!!` forms block a thread. Norn has
+`<!` work only inside `go` blocks and the `!!` forms block a thread. Skein has
 no such split. Every fiber can park, so there is one `put!` and one `take!`,
 and they work everywhere.
 
@@ -180,7 +180,7 @@ a small fixed buffer when profiling shows fibers waiting for each other on a
 busy channel. Use dropping and sliding channels when losing values is an
 acceptable answer to overload. Unlike core.async, a channel doesn't take a
 transducer; to transform the values on a channel, use
-`norn.async/transduce-chan`, at the end of this chapter.
+`skein.async/transduce-chan`, at the end of this chapter.
 
 ## Without waiting: offer! and poll!
 
@@ -431,20 +431,20 @@ Failure flows the other way, through the scope:
 
 Most values you send on channels are immutable, so the sender and the
 receiver can both use them freely. A mutable object, one made from a class
-declared `(:mutable)` or a buffer from `norn.buffer/mutable`, belongs to the
+declared `(:mutable)` or a buffer from `skein.buffer/mutable`, belongs to the
 fiber that made it, and other fibers get an `OwnershipError` if they touch
 it. Sending it on a channel hands it over: the fiber that takes it becomes
 its owner. [Chapter 10](10-protocols-and-extension.md) covers ownership.
 
-## The norn.async library
+## The skein.async library
 
-`norn.async` builds common connections out of the primitives in this
+`skein.async` builds common connections out of the primitives in this
 chapter. Load it with an alias; several of its names (`map`, `filter`,
 `reduce`, `into`, `merge`) are the same as core functions, so don't refer
 them:
 
 ```clojure
-(require '[norn.async :as a])
+(require '[skein.async :as a])
 ```
 
 Every connector in it starts detached fibers that run until their source
@@ -592,7 +592,7 @@ value's topic, and `(a/sub p topic ch)` subscribes a channel to one topic:
 ```
 
 The `:scroll` event has no subscribers, so it goes nowhere. `a/unsub`
-removes a subscription. `norn doc norn.async` lists the whole library.
+removes a subscription. `skein doc skein.async` lists the whole library.
 
 ## Summary
 
@@ -612,7 +612,7 @@ removes a subscription. `norn doc norn.async` lists the whole library.
   bounds a single operation or a whole loop.
 - Put the fibers of a worker pool or a pipeline in a scope, so that one
   failure stops all of them and reaches the caller.
-- `norn.async` adds collection adapters, `map`, `filter`,
+- `skein.async` adds collection adapters, `map`, `filter`,
   `transduce-chan`, `merge`, `split`, `pipeline`, `mult` and `pub`. They run
   in detached fibers, so close their sources. If `pipeline`'s `f` fails, it
   closes `to`, and the fiber it returns raises the error.

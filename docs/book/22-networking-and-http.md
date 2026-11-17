@@ -2,9 +2,9 @@
 
 [Contents](README.md) · Previous: [21. The operating system](21-the-operating-system.md) · Next: [23. Databases](23-databases.md) <!-- nav -->
 
-This chapter covers talking to other machines. It starts with `norn.net`,
+This chapter covers talking to other machines. It starts with `skein.net`,
 which opens TCP connections, UDP sockets, and TLS, and then moves up to
-`norn.http`, an HTTP/1.1 client and server, and `norn.uri`, which parses
+`skein.http`, an HTTP/1.1 client and server, and `skein.uri`, which parses
 and builds the URLs that HTTP uses. Along the way you'll build a small JSON
 service and its client.
 
@@ -14,7 +14,7 @@ picks, talks to it, and stops it. Only the last section reaches the
 internet.
 
 Two ideas from earlier chapters carry most of the weight here. A socket is
-a stream, so the `norn.io` functions from
+a stream, so the `skein.io` functions from
 [Chapter 19](19-files-and-streams.md) read and write it. And network
 operations park the fiber that makes them, never the thread underneath, so
 a server can give every connection a fiber of its own
@@ -26,7 +26,7 @@ TCP gives you a two-way stream of bytes between two programs. One side
 listens on a port and accepts connections. The other side connects to it.
 
 ```clojure
-(require '[norn.net :as net] '[norn.io :as io] '[norn.string :as str])
+(require '[skein.net :as net] '[skein.io :as io] '[skein.string :as str])
 
 (def listener (net/listen "127.0.0.1" 0))
 
@@ -146,7 +146,7 @@ looks a name up without connecting, and returns its addresses:
 (net/resolve "no-such-host.invalid") ; !! ConnectionError
 ```
 
-Name lookups run on Norn's blocking pool, so a slow DNS server parks only
+Name lookups run on Skein's blocking pool, so a slow DNS server parks only
 the fiber that asked.
 
 ## UDP
@@ -176,17 +176,17 @@ Pass a size as its second argument to read less.
 ## TLS
 
 TLS encrypts a TCP connection and lets the client check who it's talking
-to. In `norn.net`, TLS is an option on `connect` and `accept`. A client
+to. In `skein.net`, TLS is an option on `connect` and `accept`. A client
 trusts the operating system's root certificates, which is what you want
 for public servers. For your own servers, you can name a certificate file
 to trust with `:ca-file`.
 
 A TLS server needs a certificate and its private key. For this example,
 make a self-signed certificate for `localhost` with the `openssl` command,
-run through `norn.process` ([Chapter 21](21-the-operating-system.md)):
+run through `skein.process` ([Chapter 21](21-the-operating-system.md)):
 
 ```clojure
-(require '[norn.process :as proc])
+(require '[skein.process :as proc])
 
 (:exit (proc/sh "openssl" "req" "-x509" "-newkey" "rsa:2048" "-nodes"
                 "-keyout" "key.pem" "-out" "cert.pem" "-days" "1"
@@ -244,11 +244,11 @@ failures handles this one too.
 
 ## URIs
 
-Before HTTP, a short look at the addresses it uses. `norn.uri` parses a URI
+Before HTTP, a short look at the addresses it uses. `skein.uri` parses a URI
 into a map of its parts, as they are written:
 
 ```clojure
-(require '[norn.uri :as uri])
+(require '[skein.uri :as uri])
 
 (uri/parse "https://ann@example.com:8443/a/b?x=1&y=2#top")
 ; => {:scheme "https" :user-info "ann" :host "example.com" :port 8443
@@ -272,8 +272,8 @@ gets a vector of its values. `query-pairs` keeps every pair in order.
 `query-string` goes the other way and does the encoding for you:
 
 ```clojure
-(uri/query-params "q=norn+lisp&tag=a&tag=b&flag")
-; => {"q" "norn lisp" "tag" ["a" "b"] "flag" ""}
+(uri/query-params "q=skein+lisp&tag=a&tag=b&flag")
+; => {"q" "skein lisp" "tag" ["a" "b"] "flag" ""}
 
 (uri/query-string [["q" "a & b"] ["tag" ["x" "y"]]])
 ; => "q=a%20%26%20b&tag=x&tag=y"
@@ -303,12 +303,12 @@ browser follows a link:
 ## An HTTP server
 
 HTTP is text over TCP. A client writes a request, and the server writes a
-response. `norn.http` lets you work with both as maps. A server is a
+response. `skein.http` lets you work with both as maps. A server is a
 function from a request map to a response map, which `serve` runs for every
 request:
 
 ```clojure
-(require '[norn.http :as http])
+(require '[skein.http :as http])
 
 (defn hello [req]
   {:status 200
@@ -357,7 +357,7 @@ handler that keeps the last request it saw so you can look at one:
 ; => {:method :get :path "/greet" :query "name=Ada%20Lovelace"
 ;     :query-params {"name" "Ada Lovelace"} :body nil :scheme :http}
 
-(get (:headers @last-request) "user-agent") ; => "norn"
+(get (:headers @last-request) "user-agent") ; => "skein"
 
 (http/stop! peek-server)
 ```
@@ -511,7 +511,7 @@ fetch one by id.
 Start with the data:
 
 ```clojure
-(require '[norn.json :as json])
+(require '[skein.json :as json])
 
 (def notes (atom {:next 1 :items {}}))
 
@@ -548,7 +548,7 @@ together:
 ```
 
 The routes read `:json` from the request and put `:json` in the response,
-which HTTP knows nothing about. Middleware closes the gap. In Norn, as in
+which HTTP knows nothing about. Middleware closes the gap. In Skein, as in
 Clojure's Ring, middleware is a function that takes a handler and returns a
 new handler that does something before and after it:
 
@@ -630,7 +630,7 @@ you want to send and read the body in pieces.
 
 A response body that is a sequence is sent piece by piece as the sequence
 produces it, using HTTP's chunked encoding. To produce the pieces over
-time, make the sequence lazy. Norn's sequence functions are eager by
+time, make the sequence lazy. Skein's sequence functions are eager by
 default ([Chapter 6](06-sequences-and-transducers.md)), so `(lazy ...)`
 marks where laziness starts:
 
@@ -644,7 +644,7 @@ marks where laziness starts:
 ```
 
 Each tick takes 200 ms, so the whole body takes a second. A body that is a
-`norn.io` stream, such as an open file, is sent the same way.
+`skein.io` stream, such as an open file, is sent the same way.
 
 ### Reading a response as it arrives
 
@@ -653,7 +653,7 @@ you read as the data arrives. `with-response` sends the request this way
 and closes the body when its form ends, however it ends:
 
 ```clojure
-(require '[norn.time :as t])
+(require '[skein.time :as t])
 
 (def started (t/monotonic-nanos))
 
@@ -666,7 +666,7 @@ and closes the body when its form ends, however it ends:
 ```
 
 The first line arrives well before the server has produced the last one.
-Any `norn.io` stream function works on the body: `read`, `read-line`,
+Any `skein.io` stream function works on the body: `read`, `read-line`,
 `copy-stream!` to save it to a file, or `text-reader` to decode it.
 
 If you read the body to its end, the client returns the connection to its
@@ -699,7 +699,7 @@ chunked. That lets you upload a file without reading it into memory first:
 
 On the server, the request body still arrives whole, so the handler sees
 bytes. A streamed response body can even be the `:body` of another
-request, which turns a Norn program into a proxy that never holds the
+request, which turns a Skein program into a proxy that never holds the
 whole body.
 
 ## Forms and file uploads
@@ -778,11 +778,11 @@ Two cautions for programs that talk to the outside world. Always pass a
 calling fiber forever. And treat a status outside 2xx as data to check,
 since the client doesn't signal an error for it.
 
-`norn.http` speaks HTTP/1.1. HTTP/2 and WebSockets aren't built.
+`skein.http` speaks HTTP/1.1. HTTP/2 and WebSockets aren't built.
 
 ## Summary
 
-- Sockets are `norn.io` streams. `norn.net/listen` and `accept` serve TCP,
+- Sockets are `skein.io` streams. `skein.net/listen` and `accept` serve TCP,
   `connect` opens it, and port 0 picks a free port. Give each connection a
   fiber.
 - UDP sockets send and receive single datagrams with `send-to` and
@@ -790,7 +790,7 @@ since the client doesn't signal an error for it.
 - TLS is `:tls true` on `connect` and `accept`. A client trusts the
   system's roots or a `:ca-file`, and an untrusted server fails at
   `connect` with a `TlsError`.
-- `norn.uri` parses URIs into maps of parts, builds and decodes query
+- `skein.uri` parses URIs into maps of parts, builds and decodes query
   strings, percent-encodes, and resolves relative references.
 - An HTTP server is a function from a request map to a response map, run by
   `serve`. Middleware is a function from handler to handler.

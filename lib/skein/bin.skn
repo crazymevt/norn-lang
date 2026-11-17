@@ -1,0 +1,40 @@
+;;;; skein.bin — Skein values as bytes (M9 part 9.11): a compact, versioned
+;;;; binary form of data, read back as an equal value.
+;;;;
+;;;;   (def b (encode {:id 7 :tags #{:a :b} :at 1.5}))
+;;;;   (decode b)  ; => {:id 7 :tags #{:a :b} :at 1.5}
+;;;;
+;;;; Every kind of data: nil, booleans, integers of any size, floats
+;;;; (##NaN and ##Inf too), ratios, characters, strings, keywords, symbols,
+;;;; lists (and any realized sequence, as a list), vectors, maps, sets,
+;;;; sorted maps and sets, queues, Bytes, regexes, and instances of
+;;;; (immutable) classes. Not functions, vars, atoms, channels, fibers,
+;;;; handles or mutable objects, nor metadata. A keyword or symbol used
+;;;; again costs a reference, so maps of records stay small.
+;;;;
+;;;; decode is for untrusted input, as skein.edn's read-string is: it builds
+;;;; data and runs no code. Bad input is a ParseError: a count larger than
+;;;; the bytes left could hold, text that isn't UTF-8, a key twice, nesting
+;;;; deeper than :max-depth (512; 10000 at most), bytes after the value, a version newer
+;;;; than this reader's. An instance is made only of a class in :classes,
+;;;; straight from its slots (no initialize-instance, no code of its own).
+;;;;
+;;;; The format: "NRNB", the version (1), then the value, each a tag byte
+;;;; and its contents; counts are LEB128 varints, integers zigzag varints
+;;;; (larger ones a sign and their bytes), floats 8 bytes little-endian.
+;;;; See crates/skein-vm/src/binfmt.rs.
+
+(ns skein.bin)
+
+(defn encode "Value x as Bytes (an error for what isn't data)." ^Bytes [x] (%bin-write x))
+
+(defn decode
+  "The value Bytes b hold. Options: :classes, the classes instances may be
+  of (none by default); :max-depth (512)."
+  [^Bytes b & {:keys [classes max-depth]}]
+  (%bin-read b (into {} (map (fn [c] [(class-name c) c]) classes)) (or max-depth 512)))
+
+(defn write-file "Write value x to a file, as bytes." [^String path x] (%fs-write (str path) (encode x) false))
+
+(defn read-file "The value in a file written by write-file (options as decode)." [^String path & opts]
+  (apply decode (%fs-read (str path) false) opts))

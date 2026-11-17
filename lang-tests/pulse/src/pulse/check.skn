@@ -1,0 +1,62 @@
+(ns pulse.check
+  "Checking targets: a process per target, under a supervisor, each
+  requesting its URL every so often and recording what it found."
+  (:require [skein.actor :as a]
+            [skein.http :as http]
+            [skein.log :as log]
+            [pulse.store :as store]))
+
+(defn check
+  "Request url once, waiting at most timeout-ms: {:status :ms :ok :error}.
+  ok when the status is below 400 (redirects followed)."
+  [url timeout-ms]
+  (let [start (nano-time)
+        elapsed (fn [] (quot (- (nano-time) start) 1000000))]
+    (try
+      (let [r (http/request {:url url :timeout timeout-ms})]
+        {:status (:status r) :ms (elapsed) :ok (< (:status r) 400) :error nil})
+      (catch Error e
+        {:status nil :ms (elapsed) :ok false :error (condition-message e)}))))
+
+(defn- report-change [name was result]
+  (cond (and (:ok result) (false? was)) (log/info "up again" :target name :status (:status result))
+        (and (not (:ok result)) (not (false? was)))
+        (log/warn "down" :target name :status (:status result) :error (:error result))))
+
+(a/defprocess checker
+  [db target timeout-ms was-ok reply]
+  (let [result (check (:url target) timeout-ms)]
+    (store/record-check! db (:name target) result)
+    (report-change (:name target) was-ok result)
+    (when reply (deliver reply result))
+    (a/receive
+     [:check-now reply] (recur db target timeout-ms (:ok result) reply)
+     :after (* 1000 (:every-s target)) (recur db target timeout-ms (:ok result) nil))))
+
+(defn- child-id [name] [:check name])
+
+(defn- child [db target timeout-ms]
+  (a/child (child-id (:name target)) #'checker db target timeout-ms nil nil))
+
+(defn start
+  "A supervisor with a checker for each of db's targets."
+  [db timeout-ms]
+  (a/supervisor {:max-restarts 10 :max-ms 60000}
+                (mapv (fn [t] (child db t timeout-ms)) (store/targets db))))
+
+(defn watch!
+  "Start checking target (from store/add-target!) under supervisor sup."
+  [sup db target timeout-ms]
+  (a/start-child! sup (child db target timeout-ms)))
+
+(defn unwatch!
+  "Stop checking target name: whether it was being checked."
+  [sup name]
+  (a/stop-child! sup (child-id name)))
+
+(defn check-now!
+  "Check target name now rather than when it's due: the result, or nil if
+  it isn't being checked."
+  [sup name]
+  (when-let [p (some (fn [[id p]] (when (= id (child-id name)) p)) (a/which-children sup))]
+    (a/ask p [:check-now] 30000)))

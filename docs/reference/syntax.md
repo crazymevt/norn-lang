@@ -13,14 +13,14 @@ meaning. Spaces, newlines, and commas separate forms.
 | `42`, `3/4`, `1.5e3`, `##Inf`, `##-Inf`, `##NaN` | Integers, ratios, and floats. |
 | `"line\n"`, `\a`, `\newline` | A string and two character literals. |
 | `item`, `app/item` | Unqualified and namespace-qualified symbols. |
-| `:item`, `:app/item`, `::item`, `::s/item` | Keywords. The double colon qualifies the keyword with the current namespace, or with the namespace an alias stands for: after `(require '[norn.string :as s])`, `::s/item` reads as `:norn.string/item`. An unknown alias is a read error. |
+| `:item`, `:app/item`, `::item`, `::s/item` | Keywords. The double colon qualifies the keyword with the current namespace, or with the namespace an alias stands for: after `(require '[skein.string :as s])`, `::s/item` reads as `:skein.string/item`. An unknown alias is a read error. |
 | `(f x)`, `[x y]`, `{:x x}`, `#{x y}` | A list, vector, map, and set. |
 | `'form`, `@ref`, `#'name` | Reader shorthand for `(quote form)`, `(deref ref)`, and `(var name)`. |
 | `` `form ``, `~x`, `~@xs` | Syntax quote, unquote, and unquote-splicing in a template. |
 | `#(+ % 1)`, `#(vector %1 %2 %&)` | Anonymous function literals. `%` is the first argument and `%&` collects rest arguments. |
 | `#"\d+"` | A compiled regular expression. |
 | `#bytes "6869"`, `#queue [1 2]` | A byte sequence from hexadecimal text and a FIFO queue from literal data. |
-| `#norn/decimal "12.30"`, `#norn/date "2026-11-03"`, `#inst "…"`, `#uuid "…"` | Tagged literals: the value the tag's reader in `*tag-readers*` makes from the form. Norn's decimals and times print so with `pr-str`. |
+| `#skein/decimal "12.30"`, `#skein/date "2026-11-03"`, `#inst "…"`, `#uuid "…"` | Tagged literals: the value the tag's reader in `*tag-readers*` makes from the form. Skein's decimals and times print so with `pr-str`. |
 | `^:private name`, `^{:doc "Text"} name` | Metadata on the following form. |
 | `; text`, `#\| text \|#`, `#_ form`, `#; form` | A line comment, a nestable block comment, and two ways to skip the next form. |
 
@@ -131,10 +131,10 @@ specified keys and match their values. A failed match signals `MatchError`.
 
 **Macro** · `(ns name docstring? clauses…)` enters a namespace. A source
 file beginning with `ns` is compiled as a module and supports forward
-references. The optional docstring says what the module is for; `norn doc`
+references. The optional docstring says what the module is for; `skein doc`
 shows it. In a script
 without `ns`, top-level forms are evaluated in order. Modules have access to
-`norn.core` names by default. Use `(:refer-core :exclude [name…])` or
+`skein.core` names by default. Use `(:refer-core :exclude [name…])` or
 `(:refer-core :rename {old new})` to resolve naming conflicts.
 
 **Function** · `(require spec…)` loads a library once, returning `nil`. A
@@ -143,8 +143,8 @@ and `:refer` brings named public vars into scope. `:refer :all` brings in all
 public vars. `:reload` reloads the library and replaces definitions in place.
 Private definitions are accessible by ordinary names only inside their module.
 
-The module `my.app` is searched as `my/app.norn` under a library root. Norn
-supports bundled libraries, project paths, the `NORN_PATH` environment
+The module `my.app` is searched as `my/app.skn` under a library root. Skein
+supports bundled libraries, project paths, the `SKEIN_PATH` environment
 variable, and paths added with `add-lib-path!`. The file's `ns` form must
 name the module: requiring `my.app` from a file that says `(ns my.other)`
 is an error.
@@ -152,9 +152,9 @@ is an error.
 ```clojure
 (ns reference.syntax-example
   "An example module."
-  (:require [norn.string :as s :refer [join]]))
+  (:require [skein.string :as s :refer [join]]))
 
-(s/upper-case (join " " ["hello" "norn"])) ; => "HELLO NORN"
+(s/upper-case (join " " ["hello" "skein"])) ; => "HELLO SKEIN"
 ```
 
 ## Macros and expansion
@@ -176,14 +176,14 @@ An identifier ending in `#` inside the template generates a fresh local.
 
 A macro body runs at compile time. Use `begin-for-syntax` for helper
 definitions that run at that phase, and `(:require-for-syntax …)` in `ns`
-for compile-time imports. `(for-syntax form)` resolves a form one phase up. See [`norn.syntax`](libraries.md#language-development)
+for compile-time imports. `(for-syntax form)` resolves a form one phase up. See [`skein.syntax`](libraries.md#language-development)
 for syntax objects and structured syntax patterns. Use `macroexpand-1`,
-`macroexpand`, or [`norn expand`](../tooling.md) to examine expanded code.
+`macroexpand`, or [`skein expand`](../tooling.md) to examine expanded code.
 The first two expand `defmacro` and `defsyntax` macros alike and return
-data; `norn expand` also shows how a hygienic macro's names were kept apart.
+data; `skein expand` also shows how a hygienic macro's names were kept apart.
 
 In a module, a macro must be defined before its first use. A call above
-the macro's definition is an error when the module loads, and `norn lint`
+the macro's definition is an error when the module loads, and `skein lint`
 reports it as `:macro-order`.
 
 ## Function contracts

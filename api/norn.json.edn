@@ -1,7 +1,0 @@
-;; norn.json's public interface, recorded by norn api-diff --record.
-{
- "read-file" {:arglists ["[path & opts]"], :kind :function, :signature [{:result "Any", :args ["String"], :rest "Any"}]}
- "read-string" {:arglists ["[s & {:or {keys keyword}, :keys [keys]}]"], :kind :function, :signature [{:result "Any", :args ["String"], :rest "Any"}]}
- "write-file" {:arglists ["[path x & opts]"], :kind :function, :signature [{:result "Any", :args ["String" "Any"], :rest "Any"}]}
- "write-string" {:arglists ["[x & {:keys [pretty ascii]}]"], :kind :function, :signature [{:result "String", :args ["Any"], :rest "Any"}]}
-}

@@ -1,0 +1,409 @@
+;;;; skein.sqlite — SQLite databases (M9 part 9.9), on skein.ffi and the
+;;;; system's libsqlite3 (SKEIN_SQLITE names another).
+;;;;
+;;;;   (def db (open "app.db"))              ; or (open ":memory:")
+;;;;   (execute! db "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+;;;;   (execute! db ["INSERT INTO t (name) VALUES (?)" "ada"])   ; → 1 (rows changed)
+;;;;   (query db ["SELECT * FROM t WHERE id = ?" 1])            ; → [{:id 1 :name "ada"}]
+;;;;   (with-transaction [db] (execute! db …) (execute! db …))
+;;;;
+;;;; SQL comes as a string, or a vector of it and its parameters: ? and ?N
+;;;; take them in order; with a map instead (["… :name …" {:name "ada"}]),
+;;;; :name, @name and $name take theirs by key. Values: nil, integers,
+;;;; doubles, strings, Bytes, booleans (1 and 0) and keywords (their names).
+;;;; Rows are maps, column names as keywords (or vectors: {:as :vectors});
+;;;; INTEGER, REAL, TEXT, BLOB and NULL come back as integers, doubles,
+;;;; strings, Bytes and nil.
+;;;;
+;;;; Statements are prepared once per connection and SQL, and reused. A
+;;;; connection may be shared by fibers: one at a time uses it, and a
+;;;; transaction keeps it for its fiber until it ends. Calls run on the
+;;;; carrier (they're quick for most databases); {:blocking true} runs the
+;;;; ones that do I/O on the blocking pool instead.
+;;;;
+;;;; Errors are DatabaseErrors (ConstraintError and BusyError among them),
+;;;; with SQLite's :code and :extended-code, and the :sql. A value SQLite
+;;;; can't store (an integer beyond 64 bits, say) is one too.
+
+(ns skein.sqlite
+  (:refer-core :exclude [close!])
+  (:require [skein.ffi :as ffi] [skein.sync :as sync] [skein.sys :as sys] [skein.string :as str])
+  (:unsafe))
+
+(defclass DatabaseError (Error) ((code :initform nil) (extended-code :initform nil) (sql :initform nil))
+  (:doc "An error from SQLite, with its :code and :extended-code (SQLite's result
+  codes) and the :sql it ran. ConstraintError and BusyError are kinds of
+  it."))
+(defclass ConstraintError (DatabaseError) ()
+  (:doc "A statement broke a constraint: a UNIQUE or PRIMARY KEY taken, a NOT
+  NULL column left empty, a FOREIGN KEY with nothing to refer to, a CHECK."))
+(defclass BusyError (DatabaseError) ()
+  (:doc "The database was locked by another connection for longer than the busy
+  timeout (SQLITE_BUSY)."))
+
+(defclass Connection ()
+  ((path :initarg :path) (handle :initarg :handle) (epoch :initarg :epoch) (blocking :initarg :blocking)
+                         (statements :initarg :statements) (lock :initarg :lock) (owner :initarg :owner) (depth :initarg :depth))
+  (:doc "An open SQLite database (from open; closed by close!). Fibers may share
+  one: one at a time uses it."))
+
+(defmethod print-object ((c Connection)) (str "#<sqlite " (pr-str (:path c)) (when-not @(:handle c) " closed") ">"))
+
+;; ---- the C library ----
+
+(defn- library-path []
+  (or (sys/getenv "SKEIN_SQLITE")
+      (if (= (sys/os) :macos) "/usr/lib/libsqlite3.dylib" "libsqlite3.so.0")))
+
+(def ^:private lib
+  (try (ffi/library (library-path))
+       (catch Error e
+         (error (str "Can't load SQLite (" (library-path) "): install it, or set SKEIN_SQLITE to its library. "
+                     (condition-message e))))))
+
+(ffi/defcfun c-open lib "sqlite3_open_v2" [path :string out :pointer flags :int vfs :pointer] :int :private true)
+(ffi/defcfun c-close lib "sqlite3_close_v2" [db :pointer] :int :private true)
+(ffi/defcfun c-extended-codes lib "sqlite3_extended_result_codes" [db :pointer on :int] :int :private true)
+(ffi/defcfun c-busy-timeout lib "sqlite3_busy_timeout" [db :pointer ms :int] :int :private true)
+(ffi/defcfun c-errmsg lib "sqlite3_errmsg" [db :pointer] :string :private true)
+(ffi/defcfun c-errstr lib "sqlite3_errstr" [code :int] :string :private true)
+(ffi/defcfun c-extended-errcode lib "sqlite3_extended_errcode" [db :pointer] :int :private true)
+(ffi/defcfun c-prepare lib "sqlite3_prepare_v2" [db :pointer sql :pointer n :int out :pointer tail :pointer] :int :private true)
+(ffi/defcfun c-step lib "sqlite3_step" [stmt :pointer] :int :private true)
+(ffi/defcfun c-step-blocking lib "sqlite3_step" [stmt :pointer] :int :blocking true :private true)
+(ffi/defcfun c-reset lib "sqlite3_reset" [stmt :pointer] :int :private true)
+(ffi/defcfun c-clear-bindings lib "sqlite3_clear_bindings" [stmt :pointer] :int :private true)
+(ffi/defcfun c-finalize lib "sqlite3_finalize" [stmt :pointer] :int :private true)
+(ffi/defcfun c-bind-null lib "sqlite3_bind_null" [stmt :pointer i :int] :int :private true)
+(ffi/defcfun c-bind-int64 lib "sqlite3_bind_int64" [stmt :pointer i :int v :i64] :int :private true)
+;; (the same, for an integer past skein's 63-bit fixnums: its 64 bits, as a u64)
+(ffi/defcfun c-bind-int64-bits lib "sqlite3_bind_int64" [stmt :pointer i :int v :u64] :int :private true)
+(ffi/defcfun c-bind-double lib "sqlite3_bind_double" [stmt :pointer i :int v :double] :int :private true)
+(ffi/defcfun c-bind-text lib "sqlite3_bind_text" [stmt :pointer i :int v :bytes n :int destructor :pointer] :int :private true)
+(ffi/defcfun c-bind-blob lib "sqlite3_bind_blob" [stmt :pointer i :int v :bytes n :int destructor :pointer] :int :private true)
+(ffi/defcfun c-param-count lib "sqlite3_bind_parameter_count" [stmt :pointer] :int :private true)
+(ffi/defcfun c-param-name lib "sqlite3_bind_parameter_name" [stmt :pointer i :int] :string :private true)
+(ffi/defcfun c-column-count lib "sqlite3_column_count" [stmt :pointer] :int :private true)
+(ffi/defcfun c-column-name lib "sqlite3_column_name" [stmt :pointer i :int] :string :private true)
+(ffi/defcfun c-column-type lib "sqlite3_column_type" [stmt :pointer i :int] :int :private true)
+(ffi/defcfun c-column-int64 lib "sqlite3_column_int64" [stmt :pointer i :int] :i64 :private true)
+(ffi/defcfun c-column-double lib "sqlite3_column_double" [stmt :pointer i :int] :double :private true)
+(ffi/defcfun c-column-text lib "sqlite3_column_text" [stmt :pointer i :int] :pointer :private true)
+(ffi/defcfun c-column-blob lib "sqlite3_column_blob" [stmt :pointer i :int] :pointer :private true)
+(ffi/defcfun c-column-bytes lib "sqlite3_column_bytes" [stmt :pointer i :int] :int :private true)
+(ffi/defcfun c-changes lib "sqlite3_changes64" [db :pointer] :i64 :private true)
+(ffi/defcfun c-total-changes lib "sqlite3_total_changes64" [db :pointer] :i64 :private true)
+(ffi/defcfun c-last-insert-rowid lib "sqlite3_last_insert_rowid" [db :pointer] :i64 :private true)
+(ffi/defcfun c-exec lib "sqlite3_exec" [db :pointer sql :string cb :pointer arg :pointer err :pointer] :int :private true)
+(ffi/defcfun c-exec-blocking lib "sqlite3_exec" [db :pointer sql :string cb :pointer arg :pointer err :pointer] :int :blocking true :private true)
+(ffi/defcfun c-libversion lib "sqlite3_libversion" [] :string :private true)
+(ffi/defcfun c-autocommit lib "sqlite3_get_autocommit" [db :pointer] :int :private true)
+
+(def ^:private OK 0)
+(def ^:private ROW 100)
+(def ^:private DONE 101)
+;; (SQLITE_OPEN_READONLY 1, READWRITE 2, CREATE 4, URI 0x40, FULLMUTEX 0x10000)
+(def ^:private TRANSIENT "SQLITE_TRANSIENT: SQLite copies the value." 18446744073709551615)
+
+(defn version "The SQLite library's version." ^String [] (c-libversion))
+
+;; ---- errors ----
+
+(defn- fail! [db-ptr code sql]
+  (let [ext (if db-ptr (c-extended-errcode db-ptr) code)
+        msg (if db-ptr (c-errmsg db-ptr) (c-errstr code))
+        cls (case (bit-and code 255) 19 ConstraintError 5 BusyError 6 BusyError DatabaseError)]
+    (error cls :message (str msg (when sql (str " (in: " sql ")"))) :code (bit-and code 255) :extended-code ext :sql sql)))
+
+(defn- check! [db-ptr code sql]
+  (when-not (= code OK) (fail! db-ptr code sql))
+  code)
+
+;; ---- connections ----
+
+(defn- handle!
+  "Connection c's database pointer: an error once it's closed, or after an
+  image restore (the process it was open in is gone)."
+  [c]
+  (let [h @(:handle c)]
+    (cond (nil? h) (error DatabaseError :message (str "The connection to " (:path c) " is closed"))
+          (not (%handle-current? (:epoch c))) (error DatabaseError :message (str "The connection to " (:path c) " didn't survive the image restore: open it again"))
+          :else h)))
+
+(defn open
+  "Open (creating) the database at path, or \":memory:\". Options:
+  :readonly, :create (true), :busy-timeout ms to wait for another
+  connection's lock (5000), :blocking (I/O on the blocking pool)."
+  ^Connection [^String path & {:keys [readonly create busy-timeout blocking] :or {create true busy-timeout 5000}}]
+  (ffi/with-alloc [out :pointer]
+    (let [flags (bit-or (if readonly 1 (bit-or 2 (if create 4 0))) 0x40 0x10000)
+          rc (c-open (str path) out flags nil)
+          db (ffi/mem-get out :pointer)]
+      (when-not (= rc OK)
+        (let [msg (if (and db (pos? db)) (c-errmsg db) (c-errstr rc))]
+          (when (and db (pos? db)) (c-close db))
+          (error DatabaseError :message (str "Can't open " path ": " msg) :code rc)))
+      (c-extended-codes db 1)
+      (c-busy-timeout db busy-timeout)
+      (make Connection :path (str path) :handle (atom db) :epoch @(:cell lib) :blocking (if blocking true false)
+            :statements (atom {}) :lock (sync/semaphore 1) :owner (atom nil) :depth (atom 0)))))
+
+(defn- with-connection-lock
+  "(f), holding connection c (again, if this fiber holds it already)."
+  [c f]
+  (if (identical? @(:owner c) (current-fiber))
+    (f)
+    (do (sync/acquire! (:lock c))
+        (reset! (:owner c) (current-fiber))
+        (try (f)
+             (finally (reset! (:owner c) nil) (sync/release! (:lock c)))))))
+
+(defn close!
+  "Close connection c (its prepared statements too). Closing it again does
+  nothing."
+  [^Connection c]
+  (with-connection-lock c
+    (fn []
+      (when-let [h @(:handle c)]
+        (when (%handle-current? (:epoch c))
+          (doseq [[_ s] @(:statements c)] (c-finalize s))
+          (c-close h))
+        (reset! (:statements c) {})
+        (reset! (:handle c) nil))
+      nil)))
+
+(defmacro with-connection
+  "(with-connection [name path & options] body…): name is a connection
+  open while body runs, then closed."
+  [[n path & opts] & body]
+  `(let [~n (open ~path ~@opts)]
+     (try ~@body (finally (close! ~n)))))
+
+(defn open? "Is connection c open?" ^Boolean [^Connection c] (some? @(:handle c)))
+
+;; ---- statements ----
+
+(def ^:private max-cached 64)
+
+(defn- prepare!
+  "A prepared statement for sql on c: cached by its text."
+  [c sql]
+  (or (get @(:statements c) sql)
+      (let [h (handle! c)
+            b (bytes sql)
+            text (ffi/alloc (inc (count b)))]
+        (try
+          (ffi/write-bytes! text b)
+          (ffi/with-alloc [outs 16]
+            (check! h (c-prepare h text (count b) outs (+ outs 8)) sql)
+            (let [stmt (ffi/mem-get outs :pointer)
+                  tail (ffi/mem-get outs :pointer 8)
+                  rest (when (and tail (pos? tail)) (str/trim (ffi/string-at tail)))]
+              (when (or (nil? stmt) (zero? stmt))
+                (error DatabaseError :message (str "No statement in: " (pr-str sql)) :sql sql))
+              (when (seq rest)
+                (c-finalize stmt)
+                (error DatabaseError :message (str "One statement at a time (exec! runs several): " (pr-str sql)) :sql sql))
+              (when (>= (count @(:statements c)) max-cached)
+                (let [[k s] (first @(:statements c))] (c-finalize s) (swap! (:statements c) dissoc k)))
+              (swap! (:statements c) assoc sql stmt)
+              stmt))
+          (finally (ffi/free! text))))))
+
+(defn- bind! [h stmt sql i v]
+  (let [rc (cond (nil? v) (c-bind-null stmt i)
+                 (integer? v) (cond (<= -4611686018427387904 v 4611686018427387903) (c-bind-int64 stmt i v)
+                                    (<= -9223372036854775808 v 9223372036854775807)
+                                    (c-bind-int64-bits stmt i (if (neg? v) (+ v 18446744073709551616) v))
+                                    :else (error DatabaseError :message (str "Can't store " v " in SQLite: its integers are 64-bit") :sql sql))
+                 (float? v) (c-bind-double stmt i v)
+                 (string? v) (let [b (bytes v)] (c-bind-text stmt i b (count b) TRANSIENT))
+                 (bytes? v) (c-bind-blob stmt i v (count v) TRANSIENT)
+                 (true? v) (c-bind-int64 stmt i 1)
+                 (false? v) (c-bind-int64 stmt i 0)
+                 (keyword? v) (let [b (bytes (name v))] (c-bind-text stmt i b (count b) TRANSIENT))
+                 (number? v) (c-bind-double stmt i (double v))
+                 :else (error DatabaseError :message (str "Can't store " (pr-str v) " in SQLite") :sql sql))]
+    (check! h rc sql)))
+
+(defn- bind-all! [h stmt sql params]
+  (let [n (c-param-count stmt)]
+    (if (map? params)
+      (doseq [i (range 1 (inc n))]
+        (let [pname (c-param-name stmt i)
+              k (when pname (keyword (subs pname 1)))]
+          (when-not (and k (contains? params k))
+            (error DatabaseError :message (str "No value for parameter " (or pname (str "?" i))) :sql sql))
+          (bind! h stmt sql i (get params k))))
+      (do (when-not (= n (count params))
+            (error DatabaseError :message (str "The statement takes " n " parameters, given " (count params)) :sql sql))
+          (doseq [[i v] (map vector (range 1 (inc n)) params)] (bind! h stmt sql i v))))))
+
+(defn- column [stmt i]
+  (case (c-column-type stmt i)
+    1 (c-column-int64 stmt i)
+    2 (c-column-double stmt i)
+    3 (let [n (c-column-bytes stmt i) p (c-column-text stmt i)]
+        (if (zero? n) "" (bytes->string (ffi/bytes-at p n) true)))
+    4 (let [n (c-column-bytes stmt i)] (if (zero? n) (bytes []) (ffi/bytes-at (c-column-blob stmt i) n)))
+    nil))
+
+(defn- split-sql [q]
+  (cond (string? q) [q []]
+        (vector? q) [(first q) (if (map? (second q)) (second q) (vec (rest q)))]
+        :else (error (str "SQL is a string, or a vector of it and its parameters: " (pr-str q)))))
+
+(defn- run-statement!
+  "Run q on c: (on-row stmt names) for each row, until it returns ::stop;
+  the rows changed (::stopped if on-row stopped it). sqlite3_changes keeps
+  the count of the last INSERT, UPDATE or DELETE, so a statement that
+  changed nothing (CREATE TABLE, say) is 0 by the total count staying put."
+  [c q on-row]
+  (with-connection-lock c
+    (fn []
+      (let [[sql params] (split-sql q)
+            h (handle! c)
+            stmt (prepare! c sql)
+            step (if (:blocking c) c-step-blocking c-step)
+            total (c-total-changes h)]
+        (try
+          (bind-all! h stmt sql params)
+          (let [n (c-column-count stmt)
+                names (mapv (fn [i] (keyword (c-column-name stmt i))) (range n))]
+            (loop []
+              (let [rc (step stmt)]
+                (cond (= rc ROW) (if (= ::stop (on-row stmt names)) ::stopped (recur))
+                      (= rc DONE) (if (= total (c-total-changes h)) 0 (c-changes h))
+                      :else (fail! h rc sql)))))
+          (finally (c-reset stmt) (c-clear-bindings stmt)))))))
+
+;; ---- queries ----
+
+(defn query
+  "The rows q (SQL, or [SQL params…]) gives, as maps of column keywords
+  to values (or, {:as :vectors}, as vectors in column order)."
+  (^Vector [^Connection c ^(U String Vector) q] (query c q nil))
+  (^Vector [^Connection c ^(U String Vector) q ^(? Map) opts]
+   (let [rows (volatile! (transient []))
+         vectors? (= :vectors (:as opts))]
+     (run-statement! c q (fn [stmt names]
+                           (let [n (count names)
+                                 row (if vectors?
+                                       (loop [i 0 r (transient [])] (if (< i n) (recur (inc i) (conj! r (column stmt i))) (persistent! r)))
+                                       (loop [i 0 r (transient {})] (if (< i n) (recur (inc i) (assoc! r (nth names i) (column stmt i))) (persistent! r))))]
+                             (vswap! rows conj! row))))
+     (persistent! @rows))))
+
+(defn- row-vector [stmt n]
+  (loop [i 0 r (transient [])] (if (< i n) (recur (inc i) (conj! r (column stmt i))) (persistent! r))))
+
+(defn- column-names [c q]
+  ;; (a statement's columns, known before any row: from preparing it)
+  (with-connection-lock c
+    (fn []
+      (let [[sql] (split-sql q)
+            stmt (prepare! c sql)]
+        (try (mapv (fn [i] (c-column-name stmt i)) (range (c-column-count stmt)))
+             (finally (c-reset stmt)))))))
+
+(defn query-table
+  "q's result as a table, for showing: {:columns [name …] :rows [[value …]
+  …] :more? bool}, columns named as the statement names them (even with
+  no rows). :limit stops after that many rows, :more? saying whether
+  another followed. A statement that gives no rows (an UPDATE, say) runs
+  and gives {:columns [] :rows [] :changed n}."
+  ^Map [^Connection c ^(U String Vector) q & {:keys [limit]}]
+  (let [rows (volatile! (transient []))
+        more (volatile! false)
+        names (column-names c q)
+        r (run-statement! c q (fn [stmt names]
+                                (if (and limit (>= (count @rows) limit))
+                                  (do (vreset! more true) ::stop)
+                                  (vswap! rows conj! (row-vector stmt (count names))))))]
+    (if (and (empty? names) (not= r ::stopped))
+      {:columns [] :rows [] :more? false :changed r}
+      {:columns names :rows (persistent! @rows) :more? @more})))
+
+(defn each-row
+  "Call (f row) for each row q gives, row a vector in column order, as the
+  rows come (none are held): for exporting a large table. The number of
+  rows."
+  ^Integer [^Connection c ^(U String Vector) q f]
+  (let [n (volatile! 0)]
+    (run-statement! c q (fn [stmt names] (vswap! n inc) (f (row-vector stmt (count names))) nil))
+    @n))
+
+(defn query-one "The first row q gives (a map, or a vector with :as :vectors), or nil."
+  (^(? (U Map Vector)) [^Connection c ^(U String Vector) q] (first (query c q)))
+  (^(? (U Map Vector)) [^Connection c ^(U String Vector) q ^(? Map) opts] (first (query c q opts))))
+
+(defn execute!
+  "Run q, a statement giving no rows (INSERT, UPDATE, CREATE…): the number
+  of rows it changed."
+  ^Integer [^Connection c ^(U String Vector) q]
+  (run-statement! c q (fn [_ _] nil)))
+
+(defn exec!
+  "Run a script: several statements, no parameters."
+  [^Connection c ^String sql]
+  (with-connection-lock c
+    (fn [] (let [h (handle! c)] (check! h ((if (:blocking c) c-exec-blocking c-exec) h sql nil nil nil) sql) nil))))
+
+(defn last-insert-id "The rowid of the last row inserted on c." ^Integer [^Connection c] (c-last-insert-rowid (handle! c)))
+
+(defn in-transaction? "Is c in a transaction?" ^Boolean [^Connection c] (zero? (c-autocommit (handle! c))))
+
+;; ---- transactions ----
+
+(defn transact
+  "(f) in a transaction on c: committed if it returns, rolled back if it
+  doesn't — an error, a warning or restart unwinding past it, or its fiber
+  cancelled. Inside another, a savepoint: rolled back alone. Options:
+  :mode :deferred (the default), :immediate or :exclusive. f's value."
+  ([^Connection c f] (transact c f nil))
+  ([^Connection c f ^(? Map) opts]
+   (with-connection-lock c
+     (fn []
+       (let [depth (swap! (:depth c) inc)
+             sp (str "skein_sp_" depth)
+             done (volatile! false)]
+         (try
+           (if (= depth 1)
+             (exec! c (str "BEGIN " (str/upper-case (name (or (:mode opts) :deferred)))))
+             (exec! c (str "SAVEPOINT " sp)))
+           (unwind-protect
+             (let [v (f)]
+               (exec! c (if (= depth 1) "COMMIT" (str "RELEASE " sp)))
+               (vreset! done true)
+               v)
+             (when-not @done
+               (if (= depth 1)
+                 (when (in-transaction? c) (exec! c "ROLLBACK"))
+                 (exec! c (str "ROLLBACK TO " sp "; RELEASE " sp)))))
+           (finally (swap! (:depth c) dec))))))))
+
+(defmacro with-transaction
+  "(with-transaction [c & options] body…): body in a transaction on c (see
+  transact)."
+  [[c & opts] & body]
+  `(transact ~c (fn [] ~@body) ~(apply hash-map opts)))
+
+(defn tables "The names of c's tables." ^(Vec String) [^Connection c]
+  (mapv :name (query c "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")))
+
+(defn schema
+  "c's tables and views, sorted by name: [{:name :type (:table or :view)} …]."
+  ^(Vec Map) [^Connection c]
+  (mapv (fn [r] (update r :type keyword))
+        (query c "SELECT name, type FROM sqlite_schema WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name COLLATE NOCASE")))
+
+(defn columns
+  "The columns of table (or view) t: [{:name :type :not-null? :primary-key?} …]."
+  ^(Vec Map) [^Connection c ^String t]
+  (mapv (fn [r] {:name (:name r) :type (:type r) :not-null? (= 1 (:notnull r)) :primary-key? (pos? (:pk r))})
+        (query c ["SELECT name, type, \"notnull\", pk FROM pragma_table_info(?)" t])))
+
+(defn quote-name
+  "Name as an SQL identifier, in double quotes: \"my table\"."
+  ^String [^String name]
+  (str "\"" (str/replace (str name) "\"" "\"\"") "\""))

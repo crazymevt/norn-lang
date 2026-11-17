@@ -1,0 +1,19 @@
+;; skein.http's public interface, recorded by skein api-diff --record.
+{
+ "ResponseBody" {:kind :class, :slots ["kind" "left" "on-end" "reader" "state"], :supers ["skein.core/StandardObject"]}
+ "body-text" {:arglists ["[m]"], :kind :function, :signature [{:result "String", :args ["Map"]}]}
+ "close-idle!" {:arglists ["[]"], :kind :function}
+ "delete" {:arglists ["[url & {:as opts}]"], :kind :function, :signature [{:result "Map", :args ["String"], :rest "Any"}]}
+ "form-params" {:arglists ["[req]"], :kind :function, :signature [{:result "Map", :args ["Map"]}]}
+ "get" {:arglists ["[url & {:as opts}]"], :kind :function, :signature [{:result "Map", :args ["String"], :rest "Any"}]}
+ "head" {:arglists ["[url & {:as opts}]"], :kind :function, :signature [{:result "Map", :args ["String"], :rest "Any"}]}
+ "multipart" {:arglists ["[parts & {:keys [boundary]}]"], :kind :function, :signature [{:result "Map", :args ["Sequential"], :rest "Any"}]}
+ "multipart-params" {:arglists ["[m]"], :kind :function, :signature [{:result "Vector", :args ["Map"]}]}
+ "post" {:arglists ["[url body & {:as opts}]"], :kind :function, :signature [{:result "Map", :args ["String" "Any"], :rest "Any"}]}
+ "put" {:arglists ["[url body & {:as opts}]"], :kind :function, :signature [{:result "Map", :args ["String" "Any"], :rest "Any"}]}
+ "reason" {:arglists ["[n]"], :kind :function, :signature [{:result "String", :args ["Integer"]}]}
+ "request" {:arglists ["[req]"], :kind :function, :signature [{:result "Map", :args ["Map"]}]}
+ "serve" {:arglists ["[handler & {:keys [host port tls cert-file key-file max-body idle-timeout on-error]}]"], :kind :function, :signature [{:result "Map", :args ["Any"], :rest "Any"}]}
+ "stop!" {:arglists ["[server]"], :kind :function, :signature [{:result "Any", :args ["Map"]}]}
+ "with-response" {:arglists ["[[sym req] & body]"], :kind :macro}
+}

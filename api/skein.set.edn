@@ -1,0 +1,16 @@
+;; skein.set's public interface, recorded by skein api-diff --record.
+{
+ "difference" {:arglists ["[s]" "[s1 s2]" "[s1 s2 & more]"], :kind :function, :signature [{:result "nil or Set", :args ["nil or Set"]} {:result "nil or Set", :args ["nil or Set" "Any"]} {:result "nil or Set", :args ["nil or Set" "Any"], :rest "Any"}]}
+ "disjoint?" {:arglists ["[a b]"], :kind :function, :signature [{:result "Boolean", :args ["nil or Set" "nil or Set"]}]}
+ "index" {:arglists ["[xrel ks]"], :kind :function, :signature [{:result "Map", :args ["nil or Collection" "nil or Collection"]}]}
+ "intersection" {:arglists ["[s]" "[s1 s2]" "[s1 s2 & more]"], :kind :function, :signature [{:result "nil or Set", :args ["nil or Set"]} {:result "nil or Set", :args ["nil or Set" "nil or Set"]} {:result "nil or Set", :args ["nil or Set" "nil or Set"], :rest "nil or Set"}]}
+ "join" {:arglists ["[xrel yrel]" "[xrel yrel km]"], :kind :function, :signature [{:result "Set", :args ["nil or Collection" "nil or Collection"]} {:result "Set", :args ["nil or Collection" "nil or Collection" "Map"]}]}
+ "map-invert" {:arglists ["[m]"], :kind :function, :signature [{:result "Map", :args ["nil or Map"]}]}
+ "project" {:arglists ["[xrel ks]"], :kind :function, :signature [{:result "Set", :args ["nil or Collection" "nil or Collection"]}]}
+ "rename" {:arglists ["[xrel kmap]"], :kind :function, :signature [{:result "Set", :args ["nil or Collection" "Map"]}]}
+ "rename-keys" {:arglists ["[m kmap]"], :kind :function, :signature [{:result "nil or Map", :args ["nil or Map" "Map"]}]}
+ "select" {:arglists ["[pred s]"], :kind :function, :signature [{:result "nil or Set", :args ["Any" "nil or Set"]}]}
+ "subset?" {:arglists ["[a b]"], :kind :function, :signature [{:result "Boolean", :args ["nil or Set" "nil or Set"]}]}
+ "superset?" {:arglists ["[a b]"], :kind :function, :signature [{:result "Boolean", :args ["nil or Set" "nil or Set"]}]}
+ "union" {:arglists ["[]" "[s]" "[s1 s2]" "[s1 s2 & more]"], :kind :function, :signature [{:result "Set", :args []} {:result "nil or Set", :args ["nil or Set"]} {:result "nil or Set", :args ["nil or Set" "nil or Set"]} {:result "nil or Set", :args ["nil or Set" "nil or Set"], :rest "nil or Set"}]}
+}

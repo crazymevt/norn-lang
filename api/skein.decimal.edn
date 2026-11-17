@@ -1,0 +1,14 @@
+;; skein.decimal's public interface, recorded by skein api-diff --record.
+{
+ "Decimal" {:kind :class, :slots ["coefficient" "scale"], :supers ["skein.core/StandardObject"]}
+ "add" {:arglists ["[a b]"], :kind :function, :signature [{:result "Decimal", :args ["Decimal" "Decimal"]}]}
+ "compare" {:arglists ["[a b]"], :kind :function, :signature [{:result "Integer", :args ["Decimal" "Decimal"]}]}
+ "decimal" {:arglists ["[coefficient]" "[coefficient scale]"], :kind :function, :signature [{:result "Decimal", :args ["Integer"]} {:result "Decimal", :args ["Integer" "Integer"]}]}
+ "decimal?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "divide" {:arglists ["[a b scale]" "[a b scale mode]"], :kind :function, :signature [{:result "Decimal", :args ["Decimal" "Decimal" "Integer"]} {:result "Decimal", :args ["Decimal" "Decimal" "Integer" "Keyword"]}]}
+ "multiply" {:arglists ["[a b]"], :kind :function, :signature [{:result "Decimal", :args ["Decimal" "Decimal"]}]}
+ "parse" {:arglists ["[s]"], :kind :function, :signature [{:result "Decimal", :args ["String"]}]}
+ "quantize" {:arglists ["[x scale]" "[x scale mode]"], :kind :function, :signature [{:result "Decimal", :args ["Decimal" "Integer"]} {:result "Decimal", :args ["Decimal" "Integer" "Keyword"]}]}
+ "subtract" {:arglists ["[a b]"], :kind :function, :signature [{:result "Decimal", :args ["Decimal" "Decimal"]}]}
+ "text" {:arglists ["[x]"], :kind :function, :signature [{:result "String", :args ["Decimal"]}]}
+}

@@ -1,0 +1,111 @@
+;;;; skein.random — random numbers, reproducible when you want them to be.
+;;;;
+;;;; Every function takes an optional generator as its first argument.
+;;;; Without one they use the carrier's own generator (seeded from the clock
+;;;; and the OS). (generator seed) gives a seeded one: the same seed gives
+;;;; the same numbers in the same order. A generator is safe to share
+;;;; between fibers (each call takes the next number atomically), and
+;;;; split gives independent generators for parallel work.
+;;;;
+;;;; Not for cryptography: use skein.crypto (M8) for keys and tokens.
+
+(ns skein.random
+  (:refer-core :exclude [float int boolean shuffle bytes])
+  (:require [skein.math]))
+
+(defclass Generator () ((seed) (counter))
+  (:doc "A seeded, splittable random number generator: the same seed gives the
+  same values (from generator)."))
+
+(defn generator "A generator seeded with integer seed (default: a fresh random seed)."
+  (^Generator [] (generator (%rand-seed)))
+  (^Generator [^Integer seed] (Generator :seed seed :counter (atom 0))))
+
+(defn generator? "Is x a random generator (from generator)?" ^Boolean [x] (instance? Generator x))
+
+(defn- tick! [g] (dec (swap! (:counter g) inc)))
+
+(defn- below [g n]
+  (if g
+    (loop []
+      (let [c (deref (:counter g))
+            [v next] (%rand-below-at (:seed g) c n)]
+        (if (compare-and-set! (:counter g) c next) v (recur))))
+    (%rand-below n)))
+
+(defn split "n generators (default 2) independent of g and of each other." (^Vector [^Generator g] (split g 2))
+  (^Vector [^Generator g ^Integer n] (mapv (fn [_] (generator (%rand-at (:seed g) (tick! g) 0))) (range n))))
+
+(defn float
+  "A float in [0, 1); with bounds, in [lo, hi)."
+  (^Float [] (%rand 1))
+  (^Float [^(U Generator Number) g] (if (generator? g) (%rand-at (:seed g) (tick! g) 1) (* g (%rand 1))))
+  (^Float [^(? Generator) g ^Number lo ^Number hi] (+ lo (* (- hi lo) (if g (float g) (%rand 1))))))
+
+(defn- integer-fixnum? [n] (< n (* 2 (bit-shift-left 1 61))))
+
+(defn- bits62 "62 random bits." [g] (if g (%rand-at (:seed g) (tick! g) 0) (%rand 0)))
+
+(defn- big-below
+  "Uniform in [0, n) for n of any size: rejection sampling on 62-bit chunks."
+  [g n]
+  (let [unit (* 2 (bit-shift-left 1 61))
+        chunks (loop [k 1 m unit] (if (< m n) (recur (inc k) (* m unit)) k))
+        span (reduce (fn [acc _] (* acc unit)) 1 (range chunks))
+        limit (- span (mod span n))
+        draw (fn [] (reduce (fn [acc _] (+ (* acc unit) (bits62 g))) 0 (range chunks)))]
+    (loop [] (let [x (draw)] (if (< x limit) (mod x n) (recur))))))
+
+(defn int
+  "A uniform integer in [0, n), or [lo, hi). Any size."
+  (^Integer [^Integer n] (int nil n))
+  (^Integer [^(? Generator) g ^Integer n]
+   (when-not (pos? n) (error "random/int needs a positive bound, got" n))
+   (if (integer-fixnum? n) (below g n) (big-below g n)))
+  (^Integer [^(? Generator) g ^Integer lo ^Integer hi] (+ lo (int g (- hi lo)))))
+
+(defn boolean "true or false, evenly." (^Boolean [] (boolean nil)) (^Boolean [^(? Generator) g] (= 1 (int g 2))))
+
+(defn gaussian
+  "A normally distributed float: mean 0 and standard deviation 1, or the
+  given mean and sd (Box–Muller)."
+  (^Float [] (gaussian nil))
+  (^Float [^(? Generator) g] (let [u1 (- 1.0 (if g (float g) (%rand 1))) u2 (if g (float g) (%rand 1))]
+                               (* (skein.math/sqrt (* -2.0 (skein.math/log u1))) (skein.math/cos (* 2.0 skein.math/PI u2)))))
+  (^Float [^(? Generator) g ^Number mean ^Number sd] (+ mean (* sd (gaussian g)))))
+
+(defn choice "A random item of coll (nil when empty)." ([coll] (choice nil coll))
+  ([^(? Generator) g coll] (let [v (vec coll)] (when (seq v) (nth v (int g (count v)))))))
+
+(defn shuffle "coll's items in a random order, as a vector (Fisher–Yates)." (^Vector [coll] (shuffle nil coll))
+  (^Vector [^(? Generator) g coll]
+   (loop [i (dec (count coll)) v (vec coll)]
+     (if (pos? i)
+       (let [j (int g (inc i)) a (nth v i)]
+         (recur (dec i) (assoc v i (nth v j) j a)))
+       v))))
+
+(defn sample "k distinct items of coll, chosen at random, as a vector." (^Vector [coll ^Integer k] (sample nil coll k))
+  (^Vector [^(? Generator) g coll ^Integer k] (vec (take k (shuffle g coll)))))
+
+(defn weighted
+  "A key of weights (a map of item → positive number) chosen with
+  probability proportional to its weight."
+  ([^Map weights] (weighted nil weights))
+  ([^(? Generator) g ^Map weights]
+   (let [total (reduce + 0 (vals weights)) r (* total (if g (float g) (%rand 1)))]
+     (loop [es (seq weights) acc 0]
+       (when es
+         (let [[k w] (first es) acc (+ acc w)]
+           (if (or (< r acc) (nil? (next es))) k (recur (next es) acc))))))))
+
+(defn bytes "n random bytes." (^Bytes [^Integer n] (bytes nil n)) (^Bytes [^(? Generator) g ^Integer n] (skein.core/bytes (mapv (fn [_] (int g 256)) (range n)))))
+
+(defn- subvec* [v from to] (mapv (fn [i] (nth v i)) (range from to)))
+
+(defn uuid "A random (version 4) UUID string." (^String [] (uuid nil))
+  (^String [^(? Generator) g]
+   (let [b (vec (map (fn [_] (int g 256)) (range 16)))
+         b (assoc b 6 (bit-or 0x40 (bit-and (nth b 6) 0x0f)) 8 (bit-or 0x80 (bit-and (nth b 8) 0x3f)))
+         hex (fn [from to] (apply str (map (fn [x] (format "%02x" x)) (subvec* b from to))))]
+     (str (hex 0 4) "-" (hex 4 6) "-" (hex 6 8) "-" (hex 8 10) "-" (hex 10 16)))))

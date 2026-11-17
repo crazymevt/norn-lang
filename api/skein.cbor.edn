@@ -1,0 +1,11 @@
+;; skein.cbor's public interface, recorded by skein api-diff --record.
+{
+ "Simple" {:kind :class, :slots ["code"], :supers ["skein.core/StandardObject"]}
+ "Tagged" {:kind :class, :slots ["tag" "value"], :supers ["skein.core/StandardObject"]}
+ "decode" {:arglists ["[data]"], :kind :function, :signature [{:result "Any", :args ["Bytes"]}]}
+ "encode" {:arglists ["[x]"], :kind :function, :signature [{:result "Bytes", :args ["Any"]}]}
+ "read-file" {:arglists ["[path]"], :kind :function, :signature [{:result "Any", :args ["String"]}]}
+ "simple" {:arglists ["[code]"], :kind :function, :signature [{:result "Simple", :args ["Integer"]}]}
+ "tagged" {:arglists ["[tag value]"], :kind :function, :signature [{:result "Tagged", :args ["Integer" "Any"]}]}
+ "write-file" {:arglists ["[path x]"], :kind :function, :signature [{:result "Any", :args ["String" "Any"]}]}
+}

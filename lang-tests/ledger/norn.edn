@@ -1,6 +1,0 @@
-{:name ledger
- :version "0.1.0"
- :paths ["src"]
- :main ledger.main/main
- :deps {norn-html {:git "https://github.com/crazymevt/norn-html" :tag "v0.2.0"}}
- :package {:targets [:cli]}}

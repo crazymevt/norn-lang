@@ -1,5 +1,5 @@
-;; The lang-tests' fixed outputs (run.norn): each program run on a fixed
-;; input in a fresh folder, $TMP, in every mode. A step is `norn run`
+;; The lang-tests' fixed outputs (run.skn): each program run on a fixed
+;; input in a fresh folder, $TMP, in every mode. A step is `skein run`
 ;; with :args, in the project's folder; :copy first copies files or
 ;; folders (relative to the project) into $TMP; :exit is the status it
 ;; must end with (0 unless given). What each step prints

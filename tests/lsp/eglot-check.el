@@ -1,22 +1,22 @@
-;;; eglot-check.el --- norn lsp through Emacs's LSP client -*- lexical-binding: t -*-
+;;; eglot-check.el --- skein lsp through Emacs's LSP client -*- lexical-binding: t -*-
 ;;
-;; Run by crates/norn/tests/lsp.rs (when Emacs 29 or later is installed),
-;; or by hand, in a project with src/geo/shapes.norn as that test writes it:
-;;   NORN=path/to/norn PROJ=path/to/project emacs --batch -Q -l eglot-check.el
+;; Run by crates/skein/tests/lsp.rs (when Emacs 29 or later is installed),
+;; or by hand, in a project with src/geo/shapes.skn as that test writes it:
+;;   SKEIN=path/to/skein PROJ=path/to/project emacs --batch -Q -l eglot-check.el
 ;; Each line it prints is one feature's answer, for the test to check.
 
 (require 'eglot)
 (require 'xref)
 (require 'flymake)
-(define-derived-mode norn-mode prog-mode "Norn")
-(add-to-list 'auto-mode-alist '("\\.norn\\'" . norn-mode))
-(add-to-list 'eglot-server-programs `(norn-mode . (,(getenv "NORN") "lsp")))
+(define-derived-mode skein-mode prog-mode "Skein")
+(add-to-list 'auto-mode-alist '("\\.skn\\'" . skein-mode))
+(add-to-list 'eglot-server-programs `(skein-mode . (,(getenv "SKEIN") "lsp")))
 (setq eglot-sync-connect t eglot-connect-timeout 30 eglot-events-buffer-config '(:size 0))
 (defun say (fmt &rest args) (princ (apply #'format (concat fmt "\n") args)))
 (defun at (line text) (goto-char (point-min)) (forward-line (1- line)) (search-forward text) (backward-char 2))
-(let ((file (expand-file-name "src/geo/shapes.norn" (getenv "PROJ"))))
+(let ((file (expand-file-name "src/geo/shapes.skn" (getenv "PROJ"))))
   (find-file file)
-  (norn-mode)
+  (skein-mode)
   (apply #'eglot (eglot--guess-contact))
   (let ((server (eglot-current-server)))
     (say "connected: %s" (plist-get (eglot--server-info server) :name))

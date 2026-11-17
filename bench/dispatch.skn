@@ -1,0 +1,48 @@
+;;;; M2 done-check: redefine a method while N fibers on N carriers call the
+;;;; generic function in a tight loop. Every caller must switch to the new
+;;;; method, nothing may crash, and the calls must keep flowing.
+;;;; Usage: skein -e '(do (load-file "bench/dispatch.skn") (live-redefinition 8 300))'
+
+(defclass shape () ())
+(defclass circle (shape) ((r :initform 2)))
+(defclass square (shape) ((s :initform 3)))
+
+(defgeneric area (x))
+(defmethod area ((c circle)) (* 3 (:r c) (:r c)))
+(defmethod area ((q square)) (* (:s q) (:s q)))
+
+(defn plain-area [c] (* 3 (:r c) (:r c)))
+
+(defn ns-per-call
+  "Single-fiber cost of calling f on a circle, in nanoseconds."
+  [f n]
+  (let [c (circle) t0 (nano-time)]
+    (loop [i 0] (when (< i n) (f c) (recur (inc i))))
+    (quot (- (nano-time) t0) n)))
+
+(defn live-redefinition [workers ms]
+  (let [stop (atom false)
+        seen (atom [])
+        shapes [(circle) (square)]
+        fibers (mapv (fn [_]
+                       (spawn-detached
+                         (loop [i 0 noticed false]
+                           (if @stop
+                             [i noticed]
+                             (let [r (area (nth shapes (bit-and i 1)))
+                                   noticed (or noticed (when (= r :v2) (swap! seen conj (nano-time)) true))]
+                               (recur (inc i) noticed))))))
+                     (range workers))]
+    (sleep ms)
+    (let [t-switch (nano-time)]
+      (eval '(defmethod area ((c circle)) :v2)) ; a live redefinition, as from the REPL
+      (sleep ms)
+      (reset! stop true)
+      (let [results (mapv await fibers)
+            calls (reduce + (map first results))
+            lag (quot (- (reduce max t-switch @seen) t-switch) 1000)]
+        (assert (every? second results) "a caller never saw the new method")
+        (println workers "fibers on" (carrier-count) "carriers:" calls "generic calls in" (* 2 ms) "ms ="
+                 (quot (* calls 1000) (* 2 ms)) "calls/s; every caller saw the redefinition within" lag "µs; GCs:" (gc-count))
+        (eval '(defmethod area ((c circle)) (* 3 (:r c) (:r c))))
+        :ok))))

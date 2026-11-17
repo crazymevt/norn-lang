@@ -1,0 +1,144 @@
+;;;; The meta-object protocol (M9 part 9.5, design §4.3): metaclasses and
+;;;; generic-function classes, the protocol's generic functions, print-object,
+;;;; initialize-instance, method combinations of one's own, protocols, and
+;;;; slot readers as generic functions. What specialises none of it keeps
+;;;; the fast paths.
+
+(ns mop-test
+  (:require [skein.test :refer [is deftest testing]] [skein.string :as str]))
+
+(defclass Point () ((x :reader px) (y :reader py)))
+(defclass Point3 (Point) ((z :reader pz)))
+(defclass Plain () ((a)))
+
+(deftest classes-have-classes
+  (is (identical? StandardClass (class-of Point)))
+  (is (instance? StandardClass Point))
+  (is (identical? StandardGenericFunction (class-of print-object)))
+  (is (instance? StandardGenericFunction px)))
+
+(defmethod print-object ((p Point)) (str "<" (:x p) "," (:y p) ">"))
+
+(deftest printing
+  (is (= "<1,2>" (pr-str (Point :x 1 :y 2))))
+  (is (= "[<1,2> {:at <3,4>}]" (pr-str [(Point :x 1 :y 2) {:at (Point :x 3 :y 4)}])) "inside collections")
+  (is (= "at <1,2>" (str "at " (Point :x 1 :y 2))))
+  (is (= "<1,2>" (pr-str (Point3 :x 1 :y 2 :z 3))) "a subclass inherits it")
+  (is (= "#mop-test/Plain{:a 1}" (pr-str (Plain :a 1))) "a class without one prints as a record"))
+
+(defclass Circle () ((r) (area)))
+(defmethod initialize-instance ((c Circle) args)
+  (let [c (call-next-method)]
+    (with c :area (* 3 (:r c) (:r c)))))
+
+(deftest making
+  (is (= 12 (:area (Circle :r 2))) "initialize-instance, for (Circle …)")
+  (is (= 27 (:area (make Circle :r 3))) "and for make")
+  (is (= 48 (:area (make-instance Circle :r 4))) "and make-instance itself"))
+
+(deftest readers-are-generic-functions
+  ;; (the method is added from inside a function, run from elsewhere: a
+  ;; defmethod there once replaced its generic function, losing px's
+  ;; other methods)
+  (load-string "(in-ns 'mop-test) (defn add-point3-px [] (defmethod px ((p Point3)) (* 10 (:x p))))")
+  ((var-get (resolve 'mop-test/add-point3-px)))
+  (is (= [1 10 3] [(px (Point :x 1 :y 2)) (px (Point3 :x 1 :y 2 :z 3)) (pz (Point3 :x 1 :y 2 :z 3))]))
+  (testing "two classes may have readers of the same name"
+    (eval '(do (defclass Dog () ((name :reader nickname))) (defclass Cat () ((name :reader nickname)))))
+    (is (= ["Rex" "Tom"] (eval '[(nickname (Dog :name "Rex")) (nickname (Cat :name "Tom"))])))))
+
+(defclass Audited (StandardClass) ())
+(def reads (atom 0))
+(defmethod slot-value-using-class ((_c Audited) _obj _slot) (swap! reads inc) (call-next-method))
+(defmethod make-instance ((_c Audited) & _initargs) (swap! reads + 100) (call-next-method))
+(defclass Account () ((balance)) (:metaclass Audited))
+
+(deftest metaclasses
+  (is (identical? Audited (class-of Account)))
+  (is (instance? StandardClass Account) "a metaclass's instances are classes")
+  (reset! reads 0)
+  (let [a (Account :balance 10)]
+    (is (= 100 @reads) "make-instance, specialised on the metaclass")
+    (is (= [10 10] [(slot-value a :balance) (slot-value a :balance)]))
+    (is (= 102 @reads) "slot-value-using-class, likewise")))
+
+(defclass Logged (StandardGenericFunction) ())
+(def chosen (atom []))
+(defmethod compute-applicable-methods ((_gf Logged) args) (swap! chosen conj (vec args)) (call-next-method))
+(defgeneric greet (x) (:generic-function-class Logged))
+(defmethod greet ((x String)) (str "hi " x))
+(defmethod greet ((x Integer)) (str "number " x))
+
+(deftest generic-function-classes
+  (is (identical? Logged (class-of greet)))
+  (reset! chosen [])
+  (is (= ["hi ann" "hi bob" "number 3"] [(greet "ann") (greet "bob") (greet 3)]))
+  (is (contains? (set @chosen) ["ann"]) "asked, the first time for a class of argument")
+  ;; (a method defined anywhere meanwhile empties the dispatch caches, and
+  ;; other suites run beside this one: one clean try of a few will do)
+  (is (some (fn [_] (reset! chosen []) (greet "carol") (greet 4) (empty? @chosen)) (range 5))
+      "then not again: the dispatch cache keeps the answer"))
+
+(define-method-combination strcat :operator str)
+(defgeneric parts (x) (:method-combination strcat))
+(defmethod parts strcat ((_x Object)) "object")
+(defmethod parts strcat ((_x String)) "string;")
+
+(defmacro first-truthy [& xs] `(or ~@xs))
+(define-method-combination firstly :operator first-truthy)
+(defgeneric pick (x) (:method-combination firstly))
+(defmethod pick firstly ((_x Object)) :object)
+(defmethod pick firstly ((x Integer)) (when (odd? x) :odd))
+
+(defgeneric layers (x y) (:method-combination vector))
+(defmethod layers ((_x Object) _y) :object)
+(defmethod layers ((_x Number) _y) :number)
+(defmethod layers ((_x Integer) _y) :integer)
+(defmethod layers ((_x Object) (_y String)) :string)
+
+(defgeneric noted (x & more) (:method-combination progn))
+(def notes (atom []))
+(defmethod noted ((x Object) & more) (swap! notes conj [:object x more]) :object)
+(defmethod noted ((x Integer) & more) (swap! notes conj [:integer x more]) :integer)
+
+(deftest method-combinations-of-ones-own
+  (is (= "string;object" (parts "s")) "most specific first")
+  (is (= "object" (parts 1)))
+  (testing "a macro as the operator"
+    (is (= [:odd :object] [(pick 3) (pick 4)])))
+  (testing "four methods, and two arguments"
+    (is (= [:integer :number :string :object] (layers 1 "s")))
+    (is (= [:object] (layers :k 2))))
+  (testing "progn, with the rest of the arguments"
+    (reset! notes [])
+    (is (= :object (noted 1 2 3)) "the last method's value")
+    (is (= [[:integer 1 [2 3]] [:object 1 [2 3]]] (mapv (fn [[k x m]] [k x (vec m)]) @notes)))))
+
+(defprotocol Shape "Things with areas." (area [s] "Its area.") (scale [s k]))
+(defclass Square () ((side)))
+(extend-type Square Shape
+             (area [s] (* (:side s) (:side s)))
+             (scale [s k] (Square :side (* k (:side s)))))
+(extend-protocol Shape
+                 Integer (area [n] n) (scale [n k] (* n k)))
+
+(deftest protocols
+  (is (= [9 36 5 10] [(area (Square :side 3)) (area (scale (Square :side 3) 2)) (area 5) (scale 5 2)]))
+  (is (satisfies? Shape (Square :side 1)))
+  (is (satisfies? Shape 7) "a built-in class too")
+  (is (not (satisfies? Shape "no")))
+  (is (= ["mop-test/area" "mop-test/scale"] (mapv (fn [v] (%var-name v)) (:methods Shape))))
+  (testing "a method has one parameter vector (it's a generic function)"
+    (let [msg (try (eval '(defprotocol Twice (twice [x] [x y]))) nil (catch Error e (condition-message e)))]
+      (is (and msg (str/includes? msg "twice has more than one parameter vector")) msg))
+    (is (thrown? Error (eval '(defprotocol Odd (odd-one [x] "doc" "more"))))
+        "a docstring at most after it")))
+
+(deftest the-fast-paths-stay
+  ;; (classes and generic functions that specialise nothing are made, read
+  ;; and dispatched as before)
+  (is (not (%class-hooked? Plain 7)))
+  (is (%class-hooked? Point 1) "Point has a print-object method")
+  (is (not (%class-hooked? Point 6)))
+  (is (%class-hooked? Account 6) "Account has a metaclass")
+  (is (true? (:direct (first (generic-methods (var-get (var pz)))))) "a reader's method is called directly"))

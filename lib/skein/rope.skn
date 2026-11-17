@@ -1,0 +1,171 @@
+;;;; skein.rope — persistent ropes: text that stays cheap to edit as it grows
+;;;; (the Skein editor's buffers).
+;;;;
+;;;; A rope is a height-balanced tree of string chunks; each branch records
+;;;; its length in characters and its number of newlines. Inserting,
+;;;; deleting, slicing and finding lines take O(log n) steps plus the size
+;;;; of one chunk. Ropes are values: every edit returns a new rope sharing
+;;;; most of the old one. Indexes count characters; lines count from 0.
+;;;; Compare ropes by their text: two ropes with equal text may differ in
+;;;; shape.
+
+(ns skein.rope)
+
+(def ^:private chunk-size 512)
+
+;; A leaf is a string; a branch is [::branch length newlines height left right].
+(defn- branch? [r] (and (vector? r) (= ::branch (nth r 0))))
+(defn- stats [r] (if (branch? r) [(nth r 1) (nth r 2)] (%str-stats r)))
+(defn- height [r] (if (branch? r) (nth r 3) 0))
+(defn- left [r] (nth r 4))
+(defn- right [r] (nth r 5))
+
+(defn- node [l r]
+  (let [[ll ln] (stats l) [rl rn] (stats r)]
+    [::branch (+ ll rl) (+ ln rn) (inc (max (height l) (height r))) l r]))
+
+(defn length "The number of characters." ^Integer [^(U String Vector) r] (first (stats r)))
+(defn newlines "The number of newline characters." ^Integer [^(U String Vector) r] (second (stats r)))
+(defn line-count "The number of lines (one more than the newlines)." ^Integer [^(U String Vector) r] (inc (newlines r)))
+(defn rope? "Is x a rope? A string is one: the smallest kind." ^Boolean [x] (or (string? x) (branch? x)))
+
+(defn- rotate-right [n] (let [l (left n)] (node (left l) (node (right l) (right n)))))
+(defn- rotate-left [n] (let [r (right n)] (node (node (left n) (left r)) (right r))))
+
+(defn- balance [n]
+  (if-not (branch? n)
+    n
+    (let [b (- (height (left n)) (height (right n)))]
+      (cond (> b 1) (rotate-right (if (< (height (left (left n))) (height (right (left n))))
+                                    (node (rotate-left (left n)) (right n))
+                                    n))
+            (< b -1) (rotate-left (if (> (height (left (right n))) (height (right (right n))))
+                                    (node (left n) (rotate-right (right n)))
+                                    n))
+            :else n))))
+
+(defn join
+  "The rope of a's text followed by b's."
+  ^(U String Vector) [^(U String Vector) a ^(U String Vector) b]
+  (cond (= 0 (length a)) b
+        (= 0 (length b)) a
+        ;; two small leaves become one
+        (and (string? a) (string? b) (<= (+ (length a) (length b)) chunk-size)) (str a b)
+        (> (height a) (inc (height b))) (balance (node (left a) (join (right a) b)))
+        (> (height b) (inc (height a))) (balance (node (join a (left b)) (right b)))
+        :else (node a b)))
+
+(defn- from-string [s]
+  (let [n (count s)]
+    (if (<= n chunk-size)
+      s
+      (let [mid (quot n 2)]
+        (node (from-string (subs s 0 mid)) (from-string (subs s mid)))))))
+
+(defn rope "A rope of string s (default empty)." (^(U String Vector) [] "") (^(U String Vector) [^(? String) s] (from-string (str s))))
+
+(defn- split
+  "[before after]: the rope cut at character i."
+  [r i]
+  (if (branch? r)
+    (let [ll (length (left r))]
+      (if (<= i ll)
+        (let [[a b] (split (left r) i)] [a (join b (right r))])
+        (let [[a b] (split (right r) (- i ll))] [(join (left r) a) b])))
+    [(subs r 0 i) (subs r i)]))
+
+(defn- clamp [r i] (max 0 (min i (length r))))
+
+(defn- edit-leaf
+  "r with characters start to end replaced by s, when they're in one leaf:
+  only that leaf and the branches above it are rebuilt. nil when the range
+  spans leaves."
+  [r start end s]
+  (if (branch? r)
+    (let [ll (length (left r))]
+      (cond (and (< start ll) (<= end ll))
+            (when-let [l (edit-leaf (left r) start end s)] (balance (node l (right r))))
+            (>= start ll)
+            (when-let [rr (edit-leaf (right r) (- start ll) (- end ll) s)] (balance (node (left r) rr)))
+            :else nil))
+    (let [t (str (subs r 0 start) s (subs r end))]
+      (if (<= (count t) (* 2 chunk-size)) t (from-string t)))))
+
+(defn insert "s inserted at character i." ^(U String Vector) [^(U String Vector) r ^Integer i ^(? String) s]
+  (let [i (clamp r i) s (str s)]
+    ;; (typing and small pastes change one leaf; a big one is split in)
+    (or (when (<= (count s) chunk-size) (edit-leaf r i i s))
+        (let [[a b] (split r i)] (join (join a (rope s)) b)))))
+
+(defn delete "Without the characters from start (inclusive) to end (exclusive)." ^(U String Vector) [^(U String Vector) r ^Integer start ^Integer end]
+  (let [start (clamp r start) end (clamp r end)]
+    (if (>= start end) r
+        (or (edit-leaf r start end "")
+            (let [[a _] (split r start) [_ c] (split r end)] (join a c))))))
+
+(defn replace "The characters from start to end replaced by s." ^(U String Vector) [^(U String Vector) r ^Integer start ^Integer end ^(? String) s]
+  (insert (delete r start end) start s))
+
+(defn text "The rope's text, as a string." ^String [^(U String Vector) r]
+  (if (branch? r) (str (text (left r)) (text (right r))) r))
+
+(defn- collect!
+  "Add the pieces of r's text from start to end to out (a volatile vector)."
+  [r start end out]
+  (if (branch? r)
+    (let [ll (length (left r))]
+      (when (< start ll) (collect! (left r) start (min end ll) out))
+      (when (> end ll) (collect! (right r) (max 0 (- start ll)) (- end ll) out)))
+    (vswap! out conj (subs r start end))))
+
+(defn slice "The text from start (inclusive) to end (exclusive)." ^String [^(U String Vector) r ^Integer start ^Integer end]
+  (let [start (clamp r start) end (clamp r end)]
+    ;; (the leaves in range, read where they are: nothing is rebuilt)
+    (if (>= start end) "" (let [out (volatile! [])] (collect! r start end out) (apply str @out)))))
+
+(defn char-at "The character at index i." ^Character [^(U String Vector) r ^Integer i]
+  (if (branch? r)
+    (let [ll (length (left r))] (if (< i ll) (char-at (left r) i) (char-at (right r) (- i ll))))
+    (nth r i)))
+
+(defn- after-newline
+  "The index just after the k-th newline (k ≥ 1), or nil."
+  [r k]
+  (if (branch? r)
+    (let [ln (newlines (left r))]
+      (if (<= k ln)
+        (after-newline (left r) k)
+        (when-let [j (after-newline (right r) (- k ln))] (+ (length (left r)) j))))
+    (%nth-newline-end r k)))
+
+(defn line-start "The index where line n starts (nil past the last line)." ^(? Integer) [^(U String Vector) r ^Integer n]
+  (cond (zero? n) 0
+        (<= n (newlines r)) (after-newline r n)
+        :else nil))
+
+(defn line-end "The index of line n's newline (or the end of the text)." ^Integer [^(U String Vector) r ^Integer n]
+  (let [next (line-start r (inc n))] (if next (dec next) (length r))))
+
+(defn line-of "The line holding character i." ^Integer [^(U String Vector) r ^Integer i]
+  (if (branch? r)
+    (let [ll (length (left r))]
+      (if (< i ll) (line-of (left r) i) (+ (newlines (left r)) (line-of (right r) (- i ll)))))
+    (%count-newlines r i)))
+
+(defn- take-line!
+  "Add r's text from start up to its next newline to out: true once the
+  newline is found in r."
+  [r start out]
+  (if (branch? r)
+    (let [ll (length (left r))]
+      (if (< start ll)
+        (or (take-line! (left r) start out) (take-line! (right r) 0 out))
+        (take-line! (right r) (- start ll) out)))
+    (if-let [i (%str-index r "\n" start false)]
+      (do (vswap! out conj (subs r start i)) true)
+      (do (vswap! out conj (subs r start)) false))))
+
+(defn line "Line n's text, without its newline." ^(? String) [^(U String Vector) r ^Integer n]
+  ;; (its start found once, then read up to the newline)
+  (when-let [s (line-start r n)]
+    (let [out (volatile! [])] (take-line! r s out) (apply str @out))))

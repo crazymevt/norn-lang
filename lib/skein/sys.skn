@@ -1,0 +1,57 @@
+;;;; skein.sys — the machine and the process. Every value is read when asked,
+;;;; so an image restored on another machine sees that machine.
+
+(ns skein.sys
+  (:refer-core :exclude [exit]))
+
+(defn getenv
+  "An environment variable, or nil: name is a string, or a keyword or symbol
+  naming it ((getenv :HOME)). (Read-only: set a child process's environment
+  with skein.process.)"
+  ^(? String) [^(U String Keyword Symbol) name]
+  (%getenv (if (or (keyword? name) (symbol? name)) (skein.core/name name) (str name))))
+(defn env "All environment variables, as a map of strings." ^Map [] (%env))
+(defn args "The process's command-line arguments (the program first)." ^Vector [] (%args))
+(defn program-args
+  "The running program's own arguments: for `skein script.skn a b`, [\"a\" \"b\"];
+  for a built image, those after the image; for `skein -e` and the REPL, none."
+  ^Vector []
+  (%program-args))
+(defn app-resources
+  "A packaged app's resources folder (where skein package put its image
+  and the files :package :resources named), or nil when this isn't one."
+  ^(? String) []
+  (%getenv "SKEIN_APP_RESOURCES"))
+(defn exit "End the process with status code (default 0)." ([] (skein.core/exit 0)) ([^Integer code] (skein.core/exit code)))
+
+(defn info
+  "Everything at once: {:os :family :arch :endian :cores :page-size :memory
+  :pid :temp-dir :home-dir :user :hostname :cwd :skein-version :build
+  :executable}: :executable is the running program's path."
+  ^Map []
+  (%sys-info))
+
+(defn os "The OS: :macos, :linux, :windows…" ^Keyword [] (:os (info)))
+(defn family "The OS family: :unix or :windows." ^Keyword [] (:family (info)))
+(defn arch "The CPU architecture: :aarch64, :x86_64…" ^Keyword [] (:arch (info)))
+(defn endian "Byte order: :little or :big." ^Keyword [] (:endian (info)))
+(defn cores "Logical CPUs available." ^Integer [] (:cores (info)))
+(defn page-size "The memory page size, in bytes." ^Integer [] (:page-size (info)))
+(defn memory "Total physical memory in bytes, or nil if unknown." ^(? Integer) [] (:memory (info)))
+(defn pid "This process's id." ^Integer [] (:pid (info)))
+(defn temp-dir "The folder for temporary files ($TMPDIR, else the system's)." ^String [] (:temp-dir (info)))
+(defn home-dir "The user's home folder ($HOME), or nil." ^(? String) [] (:home-dir (info)))
+(defn user "The user's name ($USER, else $LOGNAME), or nil." ^(? String) [] (:user (info)))
+(defn hostname "This machine's host name, or nil." ^(? String) [] (:hostname (info)))
+(defn cwd "The current directory." ^(? String) [] (:cwd (info)))
+(defn skein-version "This Skein's version, as text: \"0.0.1\"." ^String [] (:skein-version (info)))
+(defn build "The runtime build fingerprint (images record it)." ^String [] (:build (info)))
+
+(defn runtime
+  "The Skein runtime: {:carriers :carrier-threads :blocking-threads :handles
+  :heap-bytes :gc-count :image}."
+  ^Map []
+  (let [io (%io-stats)]
+    {:carriers (carrier-count) :carrier-threads (:carrier-threads io)
+     :blocking-threads (:blocking-threads io) :handles (:handles io)
+     :heap-bytes (heap-bytes) :gc-count (gc-count) :image (image-info)}))

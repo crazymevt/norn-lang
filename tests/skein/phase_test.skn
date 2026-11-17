@@ -1,0 +1,73 @@
+;;;; Phases (M8 part 8.5): a macro's code runs one phase up, in its own
+;;;; instance of each module it uses, so compiling a module doesn't depend
+;;;; on (or change) anything at run time. The REPL stays permissive. The
+;;;; modules are written to a temporary folder.
+
+(ns phase-test
+  (:require [skein.test :refer [is deftest testing]] [skein.io :as io] [skein.sys :as sys]
+            [skein.string :as str]))
+
+(def dir (io/path (sys/temp-dir) (str "skein-phase-test-" (sys/pid) "-" (nano-time))))
+(io/mkdirs! (io/path dir "pt"))
+(add-lib-path! dir)
+
+(defn- module! [name text] (io/write-text (io/path dir "pt" (str name ".skn")) text))
+(defn- message [f] (try (f) nil (catch Error e (condition-message e))))
+(defn- run [form] (eval form))
+
+;; A counter, to tell its instances apart.
+(module! "counter" (str "(ns pt.counter)\n"
+                        "(def n (atom 0))\n"
+                        "(defn bump! [] (swap! n inc))\n"))
+
+;; Uses the counter at run time and, through a macro, while compiling.
+(module! "user" (str "(ns pt.user\n  (:require [pt.counter :as c])\n  (:require-for-syntax [pt.counter :as c]))\n"
+                     "(defmacro bumped-while-compiling [] (c/bump!))\n"
+                     "(defn compile-count [] (bumped-while-compiling))\n"
+                     "(defn run-count [] (c/bump!))\n"))
+
+;; A macro whose helper is ordinary run-time code: an error.
+(module! "wrong" (str "(ns pt.wrong)\n"
+                      "(defn- helper [x] (list 'quote x))\n"
+                      "(defmacro quoted [x] (helper x))\n"))
+
+;; The same, with the helper defined for compile time.
+(module! "right" (str "(ns pt.right)\n"
+                      "(begin-for-syntax\n  (defn helper [x] (list 'quote x)))\n"
+                      "(defmacro quoted [x] (helper x))\n"
+                      "(defn q [] (quoted (a b)))\n"))
+
+;; A full namespace name in a macro's code means its compile-time instance.
+(module! "full" (str "(ns pt.full\n  (:require [pt.counter])\n  (:require-for-syntax [pt.counter]))\n"
+                     "(defmacro at-compile [] @pt.counter/n)\n"
+                     "(defn seen [] (at-compile))\n"))
+
+(run '(require 'pt.user 'pt.right))
+
+(deftest compile-time-code-has-its-own-instances
+  (testing "the counter bumped while compiling isn't the one bumped at run time"
+    (is (= 1 (run '(pt.user/compile-count))) "compiled once, with its own counter")
+    (is (= 1 (run '(pt.user/run-count))))
+    (is (= 2 (run '(pt.user/run-count))))
+    (is (= 2 (run '@pt.counter/n)) "run time's counter only counted run time"))
+  (testing "they're namespaces of their own"
+    (is (some (fn [n] (= "pt.counter$1" (str n))) (all-ns)))
+    (is (not-any? (fn [n] (str/starts-with? (str n) "skein.core$")) (all-ns)) "the language has one instance")
+    (is (not-any? (fn [n] (str/starts-with? (str n) "skein.syntax$")) (all-ns)))))
+
+(deftest helpers-are-for-compile-time
+  (testing "an ordinary helper is refused, saying what to do"
+    (let [m (message (fn [] (run '(require 'pt.wrong))))]
+      (is (str/includes? m "helper isn't available at compile time here") m)
+      (is (str/includes? m "pt/wrong.skn:3:") m)))
+  (testing "begin-for-syntax defines it for compile time"
+    (is (= '(a b) (run '(pt.right/q))))))
+
+(deftest full-names-mean-the-compile-time-instance
+  (run '(pt.counter/bump!))
+  (run '(require 'pt.full))
+  (is (= 1 (run '(pt.full/seen))) "pt.counter$1/n (bumped once, compiling pt.user), not run time's"))
+
+(deftest the-repl-is-permissive
+  ;; (no ns form: not a module; a REPL macro may use a REPL helper)
+  (is (= 42 (load-string "(defn repl-helper [] 42) (defmacro repl-macro [] (repl-helper)) (repl-macro)"))))

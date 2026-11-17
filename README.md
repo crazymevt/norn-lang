@@ -1,9 +1,12 @@
-# Norn
+# Skein
 
 A general-purpose Lisp in the family of Common Lisp, Clojure and Racket:
 CLOS-style generic functions, the condition system and images; immutable
 data and identity/state separation; hygienic macros and modules — on a Rust
 runtime built for many cores.
+
+Skein was called Norn until 2026-11-17, when another language took that
+name (see [the rename](docs/plans/plan-rename-skein.md)).
 
 - [User documentation](docs/README.md) — getting started, runnable examples,
   language reference, and symbol index.
@@ -17,9 +20,9 @@ plus CLOS-style classes and generic functions (multiple dispatch, method
 combination, live redefinition across all cores), and a Common Lisp-style
 condition system with a debugger: an unhandled error parks the fiber with its
 stack intact, you fix the code, and resume it from the REPL or an editor
-(`norn --server`). The compiler is written in Norn and compiles itself, and hot functions are
+(`skein --server`). The compiler is written in Skein and compiles itself, and hot functions are
 compiled to native code with Cranelift in the background (2–10× faster on
-the benchmarks; `NORN_TIER=0` runs the interpreter alone).
+the benchmarks; `SKEIN_TIER=0` runs the interpreter alone).
 Images save the running heap, parked fibers included (even one waiting in
 the debugger), and start in about 35 ms. I/O never blocks a carrier: files
 on a blocking pool, sockets (TCP, UDP, TLS) and pipes on a reactor, and C
@@ -27,15 +30,15 @@ functions through a basic FFI. One process can hold 10,000 connections on
 two carriers. Numbers promote to bignums and ratios; collections include
 sorted maps and sets, queues, transients and ropes; sequence functions keep
 their collection's type, with explicit lazy streams and transducers. The
-standard library covers I/O and the system (`norn.io`, `norn.fs`,
-`norn.sys`, `norn.process`, `norn.time`, `norn.signal`, `norn.net`,
-`norn.ffi`, `norn.bytes`), text and data (`norn.string`, `norn.regex`,
-`norn.json`, `norn.ndjson`, `norn.xml`, `norn.yaml`, `norn.cbor`, `norn.edn`,
-`norn.decimal`, `norn.buffer`, `norn.format`, `norn.pprint`, `norn.rope`) and
-the rest (`norn.math`, `norn.set`, `norn.walk`, `norn.random`,
-`norn.async`, `norn.sync`, `norn.cache`, `norn.log`). Tools: `norn test`,
-`norn fmt`, `norn lint`, `norn doc`, `norn check` and `norn image`, plus
-`doc`, `source`, `apropos`, `inspect`, `trace` and `norn.bench` at the
+standard library covers I/O and the system (`skein.io`, `skein.fs`,
+`skein.sys`, `skein.process`, `skein.time`, `skein.signal`, `skein.net`,
+`skein.ffi`, `skein.bytes`), text and data (`skein.string`, `skein.regex`,
+`skein.json`, `skein.ndjson`, `skein.xml`, `skein.yaml`, `skein.cbor`, `skein.edn`,
+`skein.decimal`, `skein.buffer`, `skein.format`, `skein.pprint`, `skein.rope`) and
+the rest (`skein.math`, `skein.set`, `skein.walk`, `skein.random`,
+`skein.async`, `skein.sync`, `skein.cache`, `skein.log`). Tools: `skein test`,
+`skein fmt`, `skein lint`, `skein doc`, `skein check` and `skein image`, plus
+`doc`, `source`, `apropos`, `inspect`, `trace` and `skein.bench` at the
 REPL.
 See [runtime.md §12](docs/internals/runtime.md#12-revised-milestones) for what exists
 and what's next.
@@ -46,40 +49,40 @@ Requires Rust (stable, edition 2024).
 
 ```sh
 cargo build --release
-./target/release/norn                       # REPL
-./target/release/norn -e '(reduce + (range 1000000))'
-./target/release/norn test                  # every tests/**/*_test.norn
-./target/release/norn check                 # fmt --check, lint, test, doc examples
-./target/release/norn doc norn.string       # what a library offers
-cargo test                                  # Rust + Norn test suites
-./target/release/norn lang-tests/run.norn   # five real programs at every tier (lang-tests/README.md)
-./target/release/norn bench/compare.norn    # the benchmarks against bench/baseline.edn
+./target/release/skein                       # REPL
+./target/release/skein -e '(reduce + (range 1000000))'
+./target/release/skein test                  # every tests/**/*_test.skn
+./target/release/skein check                 # fmt --check, lint, test, doc examples
+./target/release/skein doc skein.string       # what a library offers
+cargo test                                  # Rust + Skein test suites
+./target/release/skein lang-tests/run.skn   # five real programs at every tier (lang-tests/README.md)
+./target/release/skein bench/compare.skn    # the benchmarks against bench/baseline.edn
 cargo run -p jit-spike --release            # tier-1 platform checks
-./target/release/norn -e '(do (load-file "bench/pingpong.norn") (ping-pong 500000 10))'
+./target/release/skein -e '(do (load-file "bench/pingpong.skn") (ping-pong 500000 10))'
                                             # 1M fibers ping-pong
-./target/release/norn -e '(do (load-file "bench/dispatch.norn") (live-redefinition 8 300))'
+./target/release/skein -e '(do (load-file "bench/dispatch.skn") (live-redefinition 8 300))'
                                             # live defmethod under 8 cores
-NORN_GC_STRESS=2 ./target/release/norn test
+SKEIN_GC_STRESS=2 ./target/release/skein test
                                             # force a GC at every slow-path poll
-./target/release/norn -e '(save-image "dev.nimg")'
-./target/release/norn --image dev.nimg       # carry on from a saved image
-./target/release/norn build app.nimg app.norn --entry app/main
-./target/release/norn --image app.nimg ARGS… # run its entry function
-./target/release/norn -e "(do (require '[norn.process :as p]) (p/sh \"uname\" \"-a\"))"
+./target/release/skein -e '(save-image "dev.skimg")'
+./target/release/skein --image dev.skimg       # carry on from a saved image
+./target/release/skein build app.skimg app.skn --entry app/main
+./target/release/skein --image app.skimg ARGS… # run its entry function
+./target/release/skein -e "(do (require '[skein.process :as p]) (p/sh \"uname\" \"-a\"))"
 ```
 
 ## Layout
 
 ```
-crates/norn-rt   values, heap, objects, collections, printer, namespaces
-crates/norn-vm   reader, seed compiler, interpreter, scheduler, channels, primitives,
+crates/skein-rt   values, heap, objects, collections, printer, namespaces
+crates/skein-vm   reader, seed compiler, interpreter, scheduler, channels, primitives,
                  reactor, blocking pool, sockets, FFI
-crates/norn      the `norn` binary
-lib/core         norn.core, written in Norn
-lib/compiler     the Norn compiler, written in Norn
-lib/norn         the standard libraries (norn.io, norn.net, …)
-tests/norn       Norn test suites
-lang-tests/      five programs written as users would, checking each change to Norn
+crates/skein      the `skein` binary
+lib/core         skein.core, written in Skein
+lib/compiler     the Skein compiler, written in Skein
+lib/skein         the standard libraries (skein.io, skein.net, …)
+tests/skein       Skein test suites
+lang-tests/      five programs written as users would, checking each change to Skein
 bench/           benchmarks
 spikes/          throwaway platform experiments
 docs/            user documentation, language reference, and design documents

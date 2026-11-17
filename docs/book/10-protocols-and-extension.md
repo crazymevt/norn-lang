@@ -58,13 +58,13 @@ a protocol:
 (satisfies? Shape "rect")           ; => false
 ```
 
-Protocols in Norn are a thin layer over what Chapter 9 already showed.
+Protocols in Skein are a thin layer over what Chapter 9 already showed.
 `extend-type` expands into `defmethod` forms, and `area` is an ordinary
 generic function, so you can also write `(defmethod area ((s square)) …)`
 directly, add `:before` methods to it, or call it with `map`. The protocol
 adds a name for the group and the `satisfies?` question. If you come from
 Clojure, where protocols are a separate mechanism from multimethods, this is
-the main difference: in Norn there is one dispatch system, and protocols are
+the main difference: in Skein there is one dispatch system, and protocols are
 a way of organizing it.
 
 Two limits to know. Each protocol entry takes one parameter vector, so a
@@ -142,7 +142,7 @@ is riskier: two libraries might each define one, and the last loaded wins.
 
 Some classes are containers: a playlist holds songs, a deck holds cards, a
 matrix holds rows. You'd like `count`, `first`, `map`, `filter`, `reduce` and
-`for` to work on them directly. Norn lets a class become a collection by
+`for` to work on them directly. Skein lets a class become a collection by
 defining a method on one generic function, `collection-seq`, which returns
 the items:
 
@@ -167,7 +167,7 @@ the items:
 `collection-seq` may return a seq, a built-in collection such as a vector,
 or `nil` when there are no items. The sequence functions then work on what
 it returned. That's why `(map count road-trip)` gave a vector: the songs are
-a vector, and Norn's sequence functions keep the type of their input, as
+a vector, and Skein's sequence functions keep the type of their input, as
 [Chapter 6](06-sequences-and-transducers.md) explains.
 
 ```clojure
@@ -253,7 +253,7 @@ changes, read on.
 
 Immutable instances are the default, and you should reach for them first.
 Occasionally you need an object that changes in place: a connection pool, a
-buffer you fill in a hot loop, a counter many fibers update. Norn supports
+buffer you fill in a hot loop, a counter many fibers update. Skein supports
 this as an opt-in. Mark the class `(:mutable)`, and mark each slot that can
 change with `:mutable true`:
 
@@ -293,7 +293,7 @@ instance makes a copy.
 ### Ownership
 
 Mutable objects bring back the problem that immutable values avoid: two
-fibers changing the same object at once. Norn's answer is ownership. A
+fibers changing the same object at once. Skein's answer is ownership. A
 mutable instance belongs to the fiber that made it, and only that fiber may
 read or change it. Another fiber that tries gets an `OwnershipError`, a
 clear error at the point of the mistake, instead of a race that shows up
@@ -387,7 +387,7 @@ compares the options.
 
 ## Redefining classes while the program runs
 
-Norn is meant to be changed while it runs: you redefine a function at the
+Skein is meant to be changed while it runs: you redefine a function at the
 REPL, and every caller uses the new version on its next call.
 [Chapter 12](12-live-programming.md) is about that workflow. Classes take
 part in it too. Evaluating `defclass` again for an existing class updates
@@ -453,7 +453,7 @@ invalidates it, on every core at once. You don't need to restart anything.
 ## A taste of the metaobject protocol
 
 Classes and generic functions are themselves objects with classes. The
-metaobject protocol (MOP) is the set of generic functions Norn uses to run
+metaobject protocol (MOP) is the set of generic functions Skein uses to run
 the object system: making instances, reading slots, printing, and choosing
 methods. Specializing them changes how the object system behaves for the
 classes you choose. You've already met two of them, `print-object` and
@@ -464,14 +464,14 @@ function is an instance of `StandardGenericFunction`:
 
 ```clojure
 (identical? StandardClass (class-of circle)) ; => true
-(class-of area)                             ; => #<class norn.core/GenericFunction>
+(class-of area)                             ; => #<class skein.core/GenericFunction>
 (instance? StandardGenericFunction area)    ; => true
 (class-name circle)                         ; => user/circle
 (mapv :name (class-slots rect))             ; => [:w :h]
-(class-direct-superclasses circle)          ; => [#<class norn.core/StandardObject>]
+(class-direct-superclasses circle)          ; => [#<class skein.core/StandardObject>]
 (mapv :specs (generic-methods perimeter))
-; => [[#<class user/circle>] [#<class user/rect>] [#<class norn.core/Vector>]
-;     [#<class norn.core/Integer>]]
+; => [[#<class user/circle>] [#<class user/rect>] [#<class skein.core/Vector>]
+;     [#<class skein.core/Integer>]]
 ```
 
 `class-direct-subclasses` goes the other way, and `class-precedence-list`,
@@ -519,7 +519,7 @@ a metaclass the same way, to change how all its classes construct instances.
 Method selection is also open. A generic function made with
 `(:generic-function-class C)`, where `C` is a subclass of
 `StandardGenericFunction`, calls `compute-applicable-methods` and
-`compute-effective-method` methods you specialize on `C`. Norn caches the
+`compute-effective-method` methods you specialize on `C`. Skein caches the
 result for each combination of argument classes, so these run on the first
 call for a combination, not on every call:
 
@@ -536,12 +536,12 @@ call for a combination, not on every call:
 (defmethod shout ((x String)) (str x "!"))
 
 [(shout "hey") (shout "you")] ; => ["hey!" "you!"]
-@lookups ; => [[#<class norn.core/String>]]
+@lookups ; => [[#<class skein.core/String>]]
 ```
 
 Both calls had a `String` argument, so methods were computed once.
 
-Classes and generic functions that specialize none of these keep Norn's fast
+Classes and generic functions that specialize none of these keep Skein's fast
 paths: making, reading and dispatching go straight to the runtime. You pay
 for the MOP only where you use it. The
 [object system design](../internals/design.md#43-meta-object-protocol-decided) and

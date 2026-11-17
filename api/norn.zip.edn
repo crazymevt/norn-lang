@@ -1,8 +1,0 @@
-;; norn.zip's public interface, recorded by norn api-diff --record.
-{
- "entries" {:arglists ["[bs]"], :kind :function, :signature [{:result "Vector", :args ["Bytes"]}]}
- "extract!" {:arglists ["[bs dir & opts]"], :kind :function, :signature [{:result "Vector", :args ["Bytes" "String"], :rest "Any"}]}
- "read-entry" {:arglists ["[bs name & {:or {max-size z/default-max-size}, :keys [max-size]}]"], :kind :function, :signature [{:result "nil or Bytes", :args ["Bytes" "String or Map"], :rest "Any"}]}
- "unzip" {:arglists ["[bs & {:or {max-size z/default-max-size}, :keys [max-size]}]"], :kind :function, :signature [{:result "Map", :args ["Bytes"], :rest "Any"}]}
- "zip" {:arglists ["[entries & {:keys [modified]}]"], :kind :function, :signature [{:result "Bytes", :args ["Map or Sequential"], :rest "Any"}]}
-}

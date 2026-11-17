@@ -65,7 +65,7 @@ method selection.
 **Macro** · `(defmethod name qualifier? ((x Class) y …) body…)` installs
 or replaces a method. An unspecialized parameter such as `y` accepts
 `Object`. A specializer `(eql value)` matches a specific value. When
-comparing applicable methods, Norn checks required arguments from left
+comparing applicable methods, Skein checks required arguments from left
 to right and uses each argument's class precedence list. If no primary
 method applies, the call signals an error.
 
@@ -75,7 +75,7 @@ method applies, the call signals an error.
 (defmethod combine ((x String) (y String)) (str x y))
 (defmethod combine ((x (eql :label)) y) (str "Label " y))
 
-[(combine 2 3) (combine "no" "rn") (combine :label 4)] ; => [5 "norn" "Label 4"]
+[(combine 2 3) (combine "no" "rn") (combine :label 4)] ; => [5 "skein" "Label 4"]
 ```
 
 For value dispatch, give `defgeneric` the option `(:dispatch f)`. It uses
@@ -114,7 +114,7 @@ primary results with a named operator.
 ### Collections a class defines
 
 A class becomes a collection to core functions with methods on three generic
-functions in `norn.core`. `seq`, `count`, `nth`, `first`, `rest`, `next`,
+functions in `skein.core`. `seq`, `count`, `nth`, `first`, `rest`, `next`,
 `vec` and `set` call them for its instances, so `reduce`, `into`,
 transducers, `map`, `sort` and the rest work too. Built-in collections never
 reach them and keep their fast paths.
@@ -134,7 +134,7 @@ reach them and keep their fast paths.
 ```
 
 The methods run as ordinary calls in the calling fiber: their errors reach
-the caller's handlers, and they can park. `norn.buffer/Buffer` defines all
+the caller's handlers, and they can park. `skein.buffer/Buffer` defines all
 three, so `count` and `nth` are constant time for packed buffers.
 
 The metaobject protocol exposes generic functions for object construction,

@@ -69,7 +69,7 @@ to check availability before choosing a recovery.
   (warn "Disk almost full")) ; => nil, and nothing is printed
 ```
 
-See the [reading recovery example](../examples/restarts.norn) for a
+See the [reading recovery example](../examples/restarts.skn) for a
 program that defines its own restarts.
 
 ## Debugging a parked fiber

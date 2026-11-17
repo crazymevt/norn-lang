@@ -7,7 +7,7 @@ there, a line of input that doesn't parse, a division by zero. Most languages
 give you exceptions. Code throws, the stack unwinds to the nearest matching
 `catch`, and whatever was happening at the point of the error is gone.
 
-Norn has exceptions, in the form of `try` and `catch`, but underneath them is
+Skein has exceptions, in the form of `try` and `catch`, but underneath them is
 the Common Lisp condition system, which separates three questions that
 exceptions answer all at once. *Signaling* says that something happened.
 *Handling* decides what to do about it. *Restarting* carries out a recovery
@@ -45,7 +45,7 @@ happened, as `file:line`, when that's known:
 ```clojure
 (handler-case (check-age -1)
   (Error [e] [(class-name (class-of e)) (condition-message e)]))
-; => [norn.core/SimpleError "Age can't be negative: -1"]
+; => [skein.core/SimpleError "Age can't be negative: -1"]
 ```
 
 `handler-case` is the basic way to catch a condition. It's explained in a
@@ -198,7 +198,7 @@ Clojure's `try` works as Clojure programmers expect. It is built from
 ;     [:loading :host] [:failed "No setting :host"] [:done :host]]
 ```
 
-There is no `Exception` or `Throwable` class in Norn. Catch `Error` for
+There is no `Exception` or `Throwable` class in Skein. Catch `Error` for
 errors, or `Condition` for anything at all.
 
 ### ex-info
@@ -232,7 +232,7 @@ your level, without losing the original:
 (try (read-port "")
   (catch ExInfo e
     [(ex-message e) (class-name (class-of (ex-cause e)))]))
-; => ["Empty port setting" norn.core/ArithmeticError]
+; => ["Empty port setting" skein.core/ArithmeticError]
 ```
 
 `ex-info` is good for one-off errors in application code. In a library,
@@ -496,7 +496,7 @@ its callers pick. Here is a small example worked through: parsing order
 lines of the form `item,quantity`.
 
 ```clojure
-(require '[norn.string :as string])
+(require '[skein.string :as string])
 
 (defclass bad-order (Error)
   ((line :required true)))
@@ -608,24 +608,24 @@ covers this in detail.
 If `error` finds no handler that transfers control, it calls the debugger.
 What that means depends on where the code runs.
 
-In a script run with `norn FILE.norn`, or with `norn -e`, the fiber unwinds,
-running its cleanups, and ends with the error. For the main program, Norn
+In a script run with `skein FILE.skn`, or with `skein -e`, the fiber unwinds,
+running its cleanups, and ends with the error. For the main program, Skein
 prints the error with a trace of the calls and exits with status 1:
 
 ```text
-$ norn crash.norn
+$ skein crash.skn
 before
-Error: crash.norn:3: Divide by zero
+Error: crash.skn:3: Divide by zero
   at user/f
-  at norn.core/%with-bindings*
-  at norn.core/%with-bindings*
-  at norn.expander/eval-reader/fn/fn
-  at norn.core/%with-bindings*
-  at norn.core/%unwind-protect*
-  at norn.core/load-file
+  at skein.core/%with-bindings*
+  at skein.core/%with-bindings*
+  at skein.expander/eval-reader/fn/fn
+  at skein.core/%with-bindings*
+  at skein.core/%unwind-protect*
+  at skein.core/load-file
 ```
 
-At the REPL, or in an editor connected to Norn, the fiber stops where it
+At the REPL, or in an editor connected to Skein, the fiber stops where it
 is instead, with its whole stack intact, and waits. You can look at its
 frames and local variables, fix the code, and choose one of the restarts
 that were available when it stopped, including your own. That's the subject

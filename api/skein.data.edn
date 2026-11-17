@@ -1,0 +1,4 @@
+;; skein.data's public interface, recorded by skein api-diff --record.
+{
+ "diff" {:arglists ["[a b]"], :kind :function, :signature [{:result "Vector", :args ["Any" "Any"]}]}
+}

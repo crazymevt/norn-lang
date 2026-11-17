@@ -2,18 +2,18 @@
 
 [Contents](README.md) · Previous: [24. Command-line programs](24-command-line-programs.md) · Next: [26. Tools and performance](26-tools-and-performance.md) <!-- nav -->
 
-Norn ships its test tools in the standard library. `norn.test` gives you
-`deftest` and `is`, fixtures, and a runner that `norn test` drives from the
-shell. `norn.property` generates inputs, finds a failing case, and shrinks
+Skein ships its test tools in the standard library. `skein.test` gives you
+`deftest` and `is`, fixtures, and a runner that `skein test` drives from the
+shell. `skein.property` generates inputs, finds a failing case, and shrinks
 it to the smallest one it can. A definition can carry executable examples in
-its metadata, and `norn check` runs the formatter, the linter, the tests, and
+its metadata, and `skein check` runs the formatter, the linter, the tests, and
 those examples in one command. This chapter builds a small shop project and
 tests it each of these ways.
 
 ## A first test
 
-Tests live in files that end in `_test.norn`, usually under a `tests/` folder
-beside `src/`. Start with a project that has one module. Its `norn.edn` says
+Tests live in files that end in `_test.skn`, usually under a `tests/` folder
+beside `src/`. Start with a project that has one module. Its `skein.edn` says
 where the source is (see [Chapter 8](08-modules-and-projects.md)):
 
 ```edn
@@ -22,7 +22,7 @@ where the source is (see [Chapter 8](08-modules-and-projects.md)):
  :paths ["src"]}
 ```
 
-This is `src/shop/cart.norn`. A cart is a vector of lines, and each line is
+This is `src/shop/cart.skn`. A cart is a vector of lines, and each line is
 a map with a SKU, a quantity, and a unit price in cents.
 
 ```clojure
@@ -48,12 +48,12 @@ a map with a SKU, a quantity, and a unit price in cents.
     (conj cart {:sku sku :qty qty :price price})))
 ```
 
-The test file is a module too. It requires `norn.test` for the testing
-forms and the module under test. Save this as `tests/cart_test.norn`:
+The test file is a module too. It requires `skein.test` for the testing
+forms and the module under test. Save this as `tests/cart_test.skn`:
 
 ```clojure
 (ns shop.cart-test
-  (:require [norn.test :refer [deftest is testing]]
+  (:require [skein.test :refer [deftest is testing]]
             [shop.cart :as cart]))
 
 (deftest totals
@@ -76,16 +76,16 @@ labels the checks inside it, and the label shows up when one of them fails.
 Run the tests from the project root:
 
 ```sh
-norn test
+skein test
 ```
 
 ```text
-tests/cart_test.norn                        5 checks  ok
+tests/cart_test.skn                        5 checks  ok
 2 tests, 5 checks: 5 passed, 0 failed, 0 errors
 ```
 
-With no paths, `norn test` runs every `*_test.norn` file under `tests/`. It
-reads `norn.edn` first, so `shop.cart` resolves from `src/`. The exit status
+With no paths, `skein test` runs every `*_test.skn` file under `tests/`. It
+reads `skein.edn` first, so `shop.cart` resolves from `src/`. The exit status
 is 0 when everything passes and 1 otherwise, which is what a CI job needs.
 
 A test is a function, so you can call it. That's rarely what you want,
@@ -136,7 +136,7 @@ the check matters.
 parameters, and the values that follow fill them in, two at a time here:
 
 ```clojure
-(require '[norn.test :refer [are]])
+(require '[skein.test :refer [are]])
 
 (deftest line-totals
   (are [expected line] (= expected (cart/line-total line))
@@ -156,7 +156,7 @@ second test passes a quantity as a string:
 
 ```clojure
 (ns shop.broken-test
-  (:require [norn.test :refer [deftest is testing]]
+  (:require [skein.test :refer [deftest is testing]]
             [shop.cart :as cart]))
 
 (deftest discount
@@ -168,20 +168,20 @@ second test passes a quantity as a string:
   (is (= 1 (cart/total [{:qty "two" :price 100}]))))
 ```
 
-`norn test tests/broken_test.norn` prints each problem in full, then the
+`skein test tests/broken_test.skn` prints each problem in full, then the
 per-file line and the totals:
 
 ```text
-FAIL in discount (tests/broken_test.norn:8)
+FAIL in discount (tests/broken_test.skn:8)
   a cart over $10 › gets 10% off
   discount applied
   form:     (= 990 (cart/total [{:price 100, :qty 11}]))
   expected: 990
   actual:   1100
-ERROR in crashes (tests/broken_test.norn:11)
+ERROR in crashes (tests/broken_test.skn:11)
   form:     (= 1 (cart/total [{:price 100, :qty "two"}]))
   error:    Expected a number, got String: "two"
-tests/broken_test.norn                      2 checks  1 failed, 1 error
+tests/broken_test.skn                      2 checks  1 failed, 1 error
 2 tests, 2 checks: 0 passed, 1 failed, 1 error
 ```
 
@@ -206,7 +206,7 @@ test.
 
 ## Tests at the REPL
 
-`norn test` is a shell command, but the runner is a library, and while you
+`skein test` is a shell command, but the runner is a library, and while you
 work you usually run tests from the REPL (see
 [Chapter 12](12-live-programming.md)). `run-tests` runs the current
 namespace's tests, or the namespaces you name, prints the same report, and
@@ -214,7 +214,7 @@ returns the totals:
 
 ```clojure
 (in-ns 'shop.cart-test)
-(norn.test/run-tests)
+(skein.test/run-tests)
 ; prints: shop.cart-test                              8 checks  ok
 ; prints: 3 tests, 8 checks: 8 passed, 0 failed, 0 errors
 ```
@@ -224,7 +224,7 @@ is a map with the test's `:name`, its `:pass`, `:fail` and `:error` counts,
 its `:events`, and how long it took in `:ms`:
 
 ```clojure
-(def results (norn.test/run-ns 'shop.broken-test))
+(def results (skein.test/run-ns 'shop.broken-test))
 
 (mapv #(select-keys % [:name :pass :fail :error]) results)
 ; => [{:name "discount" :pass 0 :fail 1 :error 0}
@@ -242,13 +242,13 @@ replaces it in place, so it keeps its position in the run order:
   (testing "no discount yet"
     (is (= 1100 (cart/total [{:qty 11 :price 100}])))))
 
-(mapv first (norn.test/tests 'shop.broken-test)) ; => [discount crashes]
-(def results (norn.test/run-ns 'shop.broken-test))
+(mapv first (skein.test/tests 'shop.broken-test)) ; => [discount crashes]
+(def results (skein.test/run-ns 'shop.broken-test))
 (:fail (first results)) ; => 0
 ```
 
 `run-file` loads a test file and runs it, and `run-files` runs several, as
-`norn test` does. Both return data. Checks in a file that sit outside any
+`skein test` does. Both return data. Checks in a file that sit outside any
 `deftest` still count, under a test named `<load>`, so a file of plain
 top-level checks is a valid test file.
 
@@ -266,7 +266,7 @@ point:
 
 ```clojure
 (ns shop.catalog-test
-  (:require [norn.test :refer [deftest is use-fixtures]]))
+  (:require [skein.test :refer [deftest is use-fixtures]]))
 
 (def ^:dynamic *catalog* nil)
 (def log (atom []))
@@ -289,7 +289,7 @@ point:
 (deftest unknown-prices
   (is (nil? (price-of "ink"))))
 
-(:pass (first (norn.test/run-ns 'shop.catalog-test))) ; => 1
+(:pass (first (skein.test/run-ns 'shop.catalog-test))) ; => 1
 @log ; => [:open :close]
 ```
 
@@ -307,7 +307,7 @@ is what you want when you re-evaluate the file at the REPL.
 When several test files need the same setup, such as a fake server or
 sample data, put it in a module of its own beside them. A project's test
 folders are on the library path, so a module in `tests/` is found as one
-in `src/` is: `tests/shop/fixtures.norn` is `shop.fixtures`.
+in `src/` is: `tests/shop/fixtures.skn` is `shop.fixtures`.
 
 <!-- skip -->
 ```clojure
@@ -319,20 +319,20 @@ in `src/` is: `tests/shop/fixtures.norn` is `shop.fixtures`.
 
 A test file requires it like any module, with `[shop.fixtures :as fx]`.
 Name it without `_test`, so the runner doesn't take it for a test file. The
-test folders are on the path only for the project's own tools, `norn test`,
-`norn lint` and the REPL among them. A package a project uses keeps its
-test folders to itself, and `norn package` includes only what `:main`
+test folders are on the path only for the project's own tools, `skein test`,
+`skein lint` and the REPL among them. A package a project uses keeps its
+test folders to itself, and `skein package` includes only what `:main`
 loads.
 
 ## Choosing what runs
 
-`norn test` takes files and folders. A folder stands for every
-`*_test.norn` file under it, in sorted order.
+`skein test` takes files and folders. A folder stands for every
+`*_test.skn` file under it, in sorted order.
 
 ```sh
-norn test tests/cart_test.norn
-norn test tests/ more-tests/
-norn test --only 'parts|adding'
+skein test tests/cart_test.skn
+skein test tests/ more-tests/
+skein test --only 'parts|adding'
 ```
 
 `--only` takes a regular expression and runs only the tests whose names
@@ -341,11 +341,11 @@ match it. Files still load, so their `<load>` checks still count.
 Test files run in parallel, each on its own fibers (see
 [Chapter 15](15-fibers-and-scopes.md)). Within a file, tests run one after
 another, in the order you defined them. A namespace whose tests share no
-state they change can call `(norn.test/parallel-tests!)` at the top level,
+state they change can call `(skein.test/parallel-tests!)` at the top level,
 and then its tests run concurrently, one fiber each. A file whose tests
 measure the process as a whole, such as a profiler's samples or a timing,
-can call `(norn.test/run-alone!)` instead: it then runs after the others,
-with nothing beside it. `norn test --serial`
+can call `(skein.test/run-alone!)` instead: it then runs after the others,
+with nothing beside it. `skein test --serial`
 turns all of that off and runs everything one at a time, which helps when
 tests share an outside resource, or when output from different files is
 interleaving.
@@ -363,7 +363,7 @@ dynamic bindings that route reports carry into spawned fibers:
       (is (= 5 (await a)))
       (await b))))
 
-(select-keys (last (norn.test/run-ns 'shop.cart-test)) [:name :pass])
+(select-keys (last (skein.test/run-ns 'shop.cart-test)) [:name :pass])
 ; => {:name "in-parallel" :pass 2}
 ```
 
@@ -374,14 +374,14 @@ replaces the report on standard output with TAP version 13, one line per
 test, with failures as `#` comments:
 
 ```sh
-norn test --tap
+skein test --tap
 ```
 
 ```text
 TAP version 13
 1..4
 not ok 1 - shop.broken-test/discount
-  # FAIL in discount (tests/broken_test.norn:8)
+  # FAIL in discount (tests/broken_test.skn:8)
   #   a cart over $10 › gets 10% off
   #   discount applied
   #   form:     (= 990 (cart/total [{:price 100, :qty 11}]))
@@ -389,7 +389,7 @@ not ok 1 - shop.broken-test/discount
   #   actual:   1100
   # 
 not ok 2 - shop.broken-test/crashes
-  # ERROR in crashes (tests/broken_test.norn:11)
+  # ERROR in crashes (tests/broken_test.skn:11)
   #   form:     (= 1 (cart/total [{:price 100, :qty "two"}]))
   #   error:    Expected a number, got String: "two"
   # 
@@ -404,7 +404,7 @@ output. Most CI systems read one of these two formats.
 ## Which lines ran: coverage
 
 Passing tests say the code they ran is right. Coverage says which code
-they ran. `norn test --coverage` counts each line of your project's code
+they ran. `skein test --coverage` counts each line of your project's code
 as the tests run it, and adds a report after the results. Here is a
 project with one module and one test:
 
@@ -429,7 +429,7 @@ project with one module and one test:
 <!-- skip -->
 ```clojure
 (ns geo.shapes-test
-  (:require [norn.test :refer [deftest is]]
+  (:require [skein.test :refer [deftest is]]
             [geo.shapes :as s]))
 
 (deftest areas
@@ -438,12 +438,12 @@ project with one module and one test:
 ```
 
 ```text
-$ norn test --coverage
-tests/shapes_test.norn                      2 checks  ok
+$ skein test --coverage
+tests/shapes_test.skn                      2 checks  ok
 1 test, 2 checks: 2 passed, 0 failed, 0 errors
 
 coverage: 8 of 11 lines (72.7%) in 1 file
-  src/geo/shapes.norn      8/11     72.7%  missed: 8-9, 15
+  src/geo/shapes.skn      8/11     72.7%  missed: 8-9, 15
 ```
 
 No test asks for a circle, an unknown shape or a large one, so lines 8, 9
@@ -457,12 +457,12 @@ parameter vectors are like that.
 `genhtml`, editors' coverage views and CI services read:
 
 ```sh
-norn test --coverage --lcov coverage.info
+skein test --coverage --lcov coverage.info
 ```
 
 ```text
 TN:
-SF:/Users/you/geo/src/geo/shapes.norn
+SF:/Users/you/geo/src/geo/shapes.skn
 DA:1,2
 DA:3,1
 DA:6,2
@@ -473,22 +473,22 @@ end_of_record
 ```
 
 Coverage counts the files under the current folder, but not the test files
-themselves, and in a checkout of Norn, the standard library's modules.
-`norn test --coverage` turns counting on before anything loads, at either
+themselves, and in a checkout of Skein, the standard library's modules.
+`skein test --coverage` turns counting on before anything loads, at either
 tier. Counted modules are compiled fresh rather than taken from the module
 cache. Counting makes code run more slowly, so use it when you want the
-report, not on every run. `norn.cover` has the same reports as functions:
+report, not on every run. `skein.cover` has the same reports as functions:
 `counts`, `report` and `lcov`.
 
 ## Properties
 
 Example-based tests check the cases you thought of. Property-based tests
 check a claim against cases a generator makes up, which finds the ones you
-didn't think of. `norn.property` provides the generators, a runner, and
-`defproperty`, which makes a test that `norn test` runs like any other.
+didn't think of. `skein.property` provides the generators, a runner, and
+`defproperty`, which makes a test that `skein test` runs like any other.
 
 The shop needs to split a bill between several people. Here's a first
-version, in `src/shop/money.norn`:
+version, in `src/shop/money.skn`:
 
 ```clojure
 (ns shop.money)
@@ -506,8 +506,8 @@ states it once, for any total and any number of people:
 
 ```clojure
 (ns shop.money-test
-  (:require [norn.test :refer [deftest is]]
-            [norn.property :as p]
+  (:require [skein.test :refer [deftest is]]
+            [skein.property :as p]
             [shop.money :as money]))
 
 (p/defproperty parts-add-up
@@ -521,14 +521,14 @@ generates integers from 0 up, and `p/integers` with `:min` and `:max`
 generates integers in that range. The body is the claim. A case fails if
 the body returns `false` or `nil`, or signals an error.
 
-Run it with `norn test tests/money_test.norn` and the property fails:
+Run it with `skein test tests/money_test.skn` and the property fails:
 
 ```text
-FAIL in parts-add-up (tests/money_test.norn:6)
+FAIL in parts-add-up (tests/money_test.skn:6)
   form:     (for-all [total (p/naturals) n (p/integers :min 1 :max 10)] (= total (reduce + 0 (money/split-evenly total n))))
   expected: "the property to hold"
   actual:   "falsified with {:n 2, :total 1} (seed 750010872893859933, case 4; rerun with :seed 750010872893859933)"
-tests/money_test.norn                       1 check   1 failed, 0 errors
+tests/money_test.skn                       1 check   1 failed, 0 errors
 1 test, 1 check: 0 passed, 1 failed, 0 errors
 ```
 
@@ -614,7 +614,7 @@ decision. Here the shop rejects it, and an ordinary test says so:
 (deftest negative-totals
   (is (thrown? Error (money/split-evenly -1 2))))
 
-(mapv :fail (norn.test/run-ns 'shop.money-test)) ; => [0 0]
+(mapv :fail (skein.test/run-ns 'shop.money-test)) ; => [0 0]
 ```
 
 ### Generators
@@ -667,7 +667,7 @@ smaller trees to a generator of branches, and a generator of leaves:
   (p/recursive (fn [inner] (p/vectors inner :max 3))
                (p/integers :min 0 :max 9)))
 
-(require '[norn.edn :as edn])
+(require '[skein.edn :as edn])
 
 (:pass? (p/check (p/for-all [x nested] (= x (edn/read-string (pr-str x))))))
 ; => true
@@ -713,36 +713,36 @@ should equal.
 ; prints:     (total [{:price 100, :qty 1} {:price 5, :qty 2}]) ;=> 110
 ```
 
-`norn check` evaluates each example in the definition's namespace and
+`skein check` evaluates each example in the definition's namespace and
 compares the two sides with `=`. Examples are documentation first. They
 show typical calls, and checking them keeps them true. They don't replace
 tests: the first `split-evenly` would have passed an example of
 `(split-evenly 900 3)`.
 
-## `norn check`
+## `skein check`
 
-`norn check` runs every check a project has, in order:
+`skein check` runs every check a project has, in order:
 
-1. `norn fmt --check`, which reports files the formatter would change.
-2. `norn lint`, which reports unresolved names, unused requires, and
+1. `skein fmt --check`, which reports files the formatter would change.
+2. `skein lint`, which reports unresolved names, unused requires, and
    similar problems.
-3. `norn test`, over `tests/`.
+3. `skein test`, over `tests/`.
 4. The documentation examples of every definition loaded by then.
 
 Each step runs even when an earlier one fails, and the command exits 1 if
 any step found a problem. Suppose the shop project has an unused `are`
 left in a `:refer`, and an example on `split-evenly` that expects the extra
-cent at the end. `norn check` reports:
+cent at the end. `skein check` reports:
 
 ```text
 == fmt
 ok
 == lint
-./tests/cart_test.norn:1: unused-require: norn.test/are is referred but never used
+./tests/cart_test.skn:1: unused-require: skein.test/are is referred but never used
 FAILED
 == test
-tests/cart_test.norn                        5 checks  ok
-tests/money_test.norn                       3 checks  ok
+tests/cart_test.skn                        5 checks  ok
+tests/money_test.skn                       3 checks  ok
 5 tests, 8 checks: 8 passed, 0 failed, 0 errors
 ok
 == doc examples
@@ -752,31 +752,31 @@ FAILED
 
 Only loaded definitions have their examples checked, and the tests are what
 load them. A module that no test requires has its examples skipped. Give
-every module at least one test file, and `norn check` covers it. The
+every module at least one test file, and `skein check` covers it. The
 formatter and linter are covered in
 [Chapter 26](26-tools-and-performance.md).
 
 ## Summary
 
-- Tests go in `*_test.norn` files. `deftest` registers a test, `is` checks a
+- Tests go in `*_test.skn` files. `deftest` registers a test, `is` checks a
   claim, `testing` labels checks, and `are` repeats a template over values.
 - `(is (= expected actual))` shows both values on failure. `thrown?` and
   `thrown-with-msg?` expect a condition. An error inside `is` is recorded
   and the test continues.
-- `norn test` runs `tests/` in parallel by file, with `--only`, `--serial`,
+- `skein test` runs `tests/` in parallel by file, with `--only`, `--serial`,
   `--tap` and `--junit FILE`. Its exit status says whether everything
   passed.
-- `norn test --coverage` reports which lines of your code the tests ran,
+- `skein test --coverage` reports which lines of your code the tests ran,
   and `--lcov FILE` writes the counts for other tools.
 - At the REPL, `run-tests` prints a report and `run-ns`, `run-file` and
   `run-files` return results as data.
 - `use-fixtures` wraps tests with `:each` and `:once` fixtures. Put cleanup
   in `finally`.
-- `norn.property` checks claims against generated cases, shrinks failures,
+- `skein.property` checks claims against generated cases, shrinks failures,
   and prints a seed that reproduces them. Build generators for your own
   data with `fmap`, `bind`, `tuple` and `recursive`.
 - `:examples` in a definition's attribute map document typical calls.
-  `norn check` runs them along with the formatter, the linter, and the tests.
+  `skein check` runs them along with the formatter, the linter, and the tests.
 
 ---
 

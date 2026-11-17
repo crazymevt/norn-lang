@@ -1,0 +1,143 @@
+;;;; Software transactional memory (M9 part 9.7): refs changed together in
+;;;; transactions, each seeing one moment, run again on a conflict.
+
+(ns stm-test
+  (:require [skein.test :refer [is deftest testing]]
+            [skein.stm :refer [ref ref? dosync alter commute ensure ref-set io! after-commit
+                               in-transaction? ref-history-count]]))
+
+(defn- message [f] (try (f) nil (catch Error e (condition-message e))))
+
+(deftest refs-and-transactions
+  (let [a (ref 100) b (ref 0)]
+    (is (ref? a))
+    (is (= 10 (dosync (alter a - 10) (alter b + 10))))
+    (is (= [90 10] [@a @b]))
+    (is (= :x (dosync (ref-set a :x))))
+    (is (= :x @a))
+    (testing "inside, a transaction sees its own changes"
+      (is (= [91 91] (dosync (ref-set a 90) (alter a inc) [@a (deref a)]))))
+    (testing "an error: nothing changes"
+      (is (some? (message (fn [] (dosync (alter b + 1000) (/ 1 0))))))
+      (is (= 10 @b)))
+    (testing "a transaction inside one is part of it"
+      (is (= [92 11] (dosync (alter a inc) (dosync (alter b inc)) [@a @b]))))
+    (is (= "alter: not in a transaction (dosync)" (message (fn [] (alter a inc)))))))
+
+(deftest one-moment-throughout
+  ;; (a transaction reads every ref as it was when it began, though another
+  ;; commits in between)
+  (let [a (ref 1) b (ref 1)
+        started (promise) go (promise)
+        seen (spawn-detached (dosync (let [x @a] (deliver started true) @go [x @b])))]
+    @started
+    (dosync (alter a inc) (alter b inc))
+    (deliver go true)
+    (is (= [1 1] (await seen)) "not [1 2]")
+    (is (= [2 2] [@a @b]))))
+
+(deftest a-conflict-runs-it-again
+  (let [r (ref 0) runs (atom 0)
+        started (promise) go (promise)
+        t (spawn-detached (dosync (swap! runs inc) (let [v @r] (deliver started true) @go (ref-set r (+ v 10)))))]
+    @started
+    (dosync (ref-set r 5))
+    (deliver go true)
+    (await t)
+    (is (= 15 @r) "the second run saw 5")
+    (is (= 2 @runs))))
+
+(deftest ensure-prevents-write-skew
+  (let [skew (fn [read]
+               ;; (t reads x and sets y; meanwhile x changes. Only with
+               ;; ensure is that a conflict)
+               (let [x (ref 1) y (ref 0) runs (atom 0)
+                     started (promise) go (promise)
+                     t (spawn-detached (dosync (swap! runs inc)
+                                               (let [v (read x)]
+                                                 (when (= 1 @runs) (deliver started true) @go)
+                                                 (ref-set y v))))]
+                 @started
+                 (dosync (ref-set x 7))
+                 (deliver go true)
+                 (await t)
+                 [@y @runs]))]
+    (is (= [1 1] (skew deref)) "only read: the old value written, once")
+    (is (= [7 2] (skew ensure)) "ensured: run again")))
+
+(deftest commute-doesnt-conflict
+  (let [c (ref 0) runs (atom 0)
+        started (promise) go (promise)
+        t (spawn-detached (dosync (swap! runs inc) (commute c + 10) (deliver started true) @go))]
+    @started
+    (dosync (alter c + 1))
+    (deliver go true)
+    (await t)
+    (is (= 11 @c) "applied again at commit, to the newest value")
+    (is (= 1 @runs)))
+  (is (some? (message (fn [] (let [c (ref 0)] (dosync (commute c inc) (ref-set c 5)))))) "no set after a commute"))
+
+(deftest many-fibers-at-once
+  (let [accounts (mapv (fn [_] (ref 100)) (range 8))
+        counter (ref 0)]
+    (run! await (mapv (fn [i]
+                        (spawn-detached
+                          (dotimes [k 200]
+                            (dosync
+                             (alter (nth accounts (mod (* i k) 8)) - 1)
+                             (alter (nth accounts (mod (+ i k 3) 8)) + 1)
+                             (commute counter inc)))))
+                      (range 12)))
+    (is (= 800 (reduce + (map deref accounts))) "nothing made or lost")
+    (is (= 2400 @counter))))
+
+(deftest history
+  (let [r (ref 0 :max-history 0) runs (atom 0)
+        started (promise) go (promise)
+        t (spawn-detached (dosync (swap! runs inc)
+                                  (when (= 1 @runs) (deliver started true) @go)
+                                  @r))]
+    @started
+    (dosync (ref-set r 1))
+    (deliver go true)
+    (is (= 1 (await t)) "its value at the read point is gone: run again")
+    (is (= 2 @runs))
+    (is (= 0 (ref-history-count r))))
+  (let [r (ref 0)]
+    (dotimes [i 20] (dosync (ref-set r i)))
+    (is (= 10 (ref-history-count r)) ":max-history 10")))
+
+(deftest validators-and-watches
+  (let [r (ref 1 :validator pos?)
+        seen (atom [])]
+    (add-watch r :w (fn [_ _ old new] (swap! seen conj [old new])))
+    (dosync (alter r inc))
+    (is (some? (message (fn [] (dosync (ref-set r -1))))))
+    (is (= 2 @r) "refused")
+    (is (= [[1 2]] @seen) "a watch, after the commit")
+    (remove-watch r :w))
+  (is (some? (message (fn [] (ref 0 :validator pos?))))))
+
+(defclass Box () ((v :mutable true :initform 0)) (:mutable))
+
+(deftest values-only
+  (is (some? (message (fn [] (ref (make Box))))) "a mutable object")
+  (is (some? (message (fn [] (dosync (ref-set (ref 0) (make Box)))))))
+  (is (ref? (ref (share (make Box)))) "a shared one is all right"))
+
+(deftest side-effects
+  (let [r (ref 0) out (atom [])]
+    (is (= "io!: side effects inside a transaction" (message (fn [] (dosync (io! (swap! out conj :no)))))))
+    (is (= [:yes] (do (io! (swap! out conj :yes)) @out)) "outside, it's fine")
+    (let [runs (atom 0) started (promise) go (promise)
+          t (spawn-detached (dosync (swap! runs inc)
+                                    (after-commit (fn [] (swap! out conj [:committed @runs])))
+                                    (let [v @r] (when (= 1 @runs) (deliver started true) @go) (ref-set r (inc v)))))]
+      @started
+      (dosync (ref-set r 10))
+      (deliver go true)
+      (await t)
+      (is (= [:yes [:committed 2]] @out) "once, after the run that committed"))
+    (is (not (in-transaction?)))
+    (is (dosync (in-transaction?)))
+    (is (not (dosync (await (spawn-detached (in-transaction?))))) "a fiber started inside isn't in it")))

@@ -3,20 +3,20 @@
 [Contents](README.md) · Previous: [6. Sequences and transducers](06-sequences-and-transducers.md) · Next: [8. Modules and projects](08-modules-and-projects.md) <!-- nav -->
 
 Most programs read text, take it apart, and put new text together for a
-person to read. This chapter covers how Norn represents strings and
-characters, the `norn.string` toolkit, the difference between a code
+person to read. This chapter covers how Skein represents strings and
+characters, the `skein.string` toolkit, the difference between a code
 point and what a reader sees as one character, regular expressions,
-`format` and the human-friendly formatters in `norn.format`, and three
-libraries for larger jobs: `norn.pprint` for printing nested data,
-`norn.rope` for text you edit in place, and `norn.markdown`.
+`format` and the human-friendly formatters in `skein.format`, and three
+libraries for larger jobs: `skein.pprint` for printing nested data,
+`skein.rope` for text you edit in place, and `skein.markdown`.
 
 A running example ties the middle of the chapter together: a few lines of
 a web server's access log that we parse, summarize, and print as a table.
 
 ## Strings are values
 
-A Norn string is an immutable sequence of Unicode characters, stored as
-UTF-8. Like every other Norn value, a string never changes after you make
+A Skein string is an immutable sequence of Unicode characters, stored as
+UTF-8. Like every other Skein value, a string never changes after you make
 it. Functions that "modify" a string return a new one.
 
 `count`, `nth`, and `subs` all work in characters, never bytes, whatever
@@ -40,7 +40,7 @@ past the end of the string signals an error rather than clamping.
 
 Because a string is a sequence, the sequence functions from
 [Chapter 6](06-sequences-and-transducers.md) work on it, one character at
-a time. Norn's sequence functions are eager and type-preserving where they
+a time. Skein's sequence functions are eager and type-preserving where they
 can be, but a string can only hold characters, so `map` and `filter` over
 a string return a vector of characters. Turn them back into a string with
 `apply str`.
@@ -62,7 +62,7 @@ key when you want case not to matter.
 (compare "a" "b") ; => -1
 ```
 
-Indexing into a string is quick for ASCII text. For other text, Norn keeps
+Indexing into a string is quick for ASCII text. For other text, Skein keeps
 a small per-thread cache of recent positions, so walking through a string
 from start to end costs about what the text does. Random access deep into
 a long non-ASCII string is the slow case. If you need it often, turn the
@@ -95,7 +95,7 @@ does, and so do `sort` and `=`.
 ```
 
 `str` turns a character into a one-character string, and the
-`norn.string` case functions accept a character too.
+`skein.string` case functions accept a character too.
 
 ```clojure
 (str \x) ; => "x"
@@ -134,26 +134,26 @@ function you call writes to standard output.
 
 To build a string from many pieces, collect the pieces in a vector and
 join them at the end instead of calling `str` again and again on a growing
-string. `norn.string/join` takes an optional separator and the items.
+string. `skein.string/join` takes an optional separator and the items.
 
 ```clojure
-(require '[norn.string :as str])
+(require '[skein.string :as str])
 
 (str/join ", " ["red" "green" "blue"]) ; => "red, green, blue"
 (str/join [1 2 3]) ; => "123"
 (str/join "\n" (map #(str "- " %) ["one" "two"])) ; => "- one\n- two"
 ```
 
-The `(require '[norn.string :as str])` form loads the library and gives it
+The `(require '[skein.string :as str])` form loads the library and gives it
 the short alias `str`. That alias doesn't hide the core function `str`:
-`str/join` names a var in `norn.string`, while plain `str` still names the
+`str/join` names a var in `skein.string`, while plain `str` still names the
 core function. [Chapter 8](08-modules-and-projects.md) covers `require` in
 full.
 
-## The norn.string toolkit
+## The skein.string toolkit
 
-`norn.string` collects the everyday string functions. Run `norn doc
-norn.string` for the full list. This section works through them on a real
+`skein.string` collects the everyday string functions. Run `skein doc
+skein.string` for the full list. This section works through them on a real
 task.
 
 Here are three lines from a web server's access log. Each line holds a
@@ -205,7 +205,7 @@ after `trim` removes whitespace at both ends.
 `trim`, `triml`, and `trimr` remove whitespace at both ends, the start, or
 the end. `trim-newline` removes only trailing `\n` and `\r`.
 
-Now we can turn a line into a map. `parse-long` from `norn.core` reads an
+Now we can turn a line into a map. `parse-long` from `skein.core` reads an
 integer from a string, or returns `nil` when the string isn't one.
 
 ```clojure
@@ -301,7 +301,7 @@ noel ; => "noël"
 
 The two spellings of an accented letter look the same but are different
 strings. Here `(char 0x301)` is the combining acute accent.
-`norn.string` doesn't normalize text, so compare strings from different
+`skein.string` doesn't normalize text, so compare strings from different
 sources with care.
 
 ```clojure
@@ -362,7 +362,7 @@ image. `re-pattern` builds one from a string at run time.
 (= #"\d+" (re-pattern "\\d+")) ; => true
 ```
 
-Norn's regexes use the syntax of Rust's `regex` crate. Matching always
+Skein's regexes use the syntax of Rust's `regex` crate. Matching always
 takes time linear in the input, which makes them safe to run on untrusted
 text. The cost of that guarantee is that backreferences and lookaround
 aren't available. Flags go inline at the start of the pattern: `(?i)` for
@@ -371,7 +371,7 @@ match a newline, and `(?x)` to allow whitespace and comments.
 
 ### The core functions
 
-Three functions in `norn.core` cover the common cases. `re-find` returns
+Three functions in `skein.core` cover the common cases. `re-find` returns
 the first match, `re-seq` returns every match, and `re-matches` succeeds
 only when the whole string matches. Each returns the matched text, or
 `nil` when there is no match.
@@ -401,9 +401,9 @@ Destructuring pairs naturally with groups.
   [user host]) ; => ["ada" "example.org"]
 ```
 
-### Match details with norn.regex
+### Match details with skein.regex
 
-`norn.regex` adds positions, named groups, replacement, and splitting.
+`skein.regex` adds positions, named groups, replacement, and splitting.
 Name a group with `(?<name>…)`. `re/match` returns a map with the matched
 text, its start and end indexes (in characters), the groups as a vector,
 and the named groups by keyword.
@@ -413,7 +413,7 @@ precisely than splitting on spaces does, and rejects a line that doesn't
 fit.
 
 ```clojure
-(require '[norn.regex :as re])
+(require '[skein.regex :as re])
 
 (def line-re
   #"(?<date>\S+) (?<time>\S+) (?<method>[A-Z]+) (?<path>\S+) (?<status>\d{3}) (?<bytes>\d+)")
@@ -441,7 +441,7 @@ can't read.
 (mapv :path entries) ; => ["/index.html" "/about" "/login"]
 ```
 
-The rest of `norn.regex`: `find`, `find-all`, and `matches` mirror the
+The rest of `skein.regex`: `find`, `find-all`, and `matches` mirror the
 core functions (and `find` and `match` take a starting index);
 `match-all` gives the details of every match; `found?` and `matches?` are
 predicates; `literal` makes a regex that matches a string exactly, quoting
@@ -499,7 +499,7 @@ built: at read time for a literal, or when `re-pattern` runs.
 ## Formatting with format and printf
 
 `format` builds text from a template with printf-style directives, and
-`printf` prints the result. Both are in `norn.core`. The directives are
+`printf` prints the result. Both are in `skein.core`. The directives are
 `%s` (the value as `str` shows it), `%S` (as `pr-str` shows it), `%d`,
 `%f`, `%e`, `%g`, `%x`, `%X`, `%o`, `%b`, `%c`, `%%` for a percent sign,
 and `%n` for a newline.
@@ -547,13 +547,13 @@ string.
 [(format "%s" nil) (str nil)] ; => ["nil" ""]
 ```
 
-### Numbers for people: norn.format
+### Numbers for people: skein.format
 
-`norn.format` has a handful of functions for presenting quantities to a
+`skein.format` has a handful of functions for presenting quantities to a
 person.
 
 ```clojure
-(require '[norn.format :as fmt])
+(require '[skein.format :as fmt])
 
 (fmt/number 1234567) ; => "1,234,567"
 (fmt/number 1234.5 :decimals 1) ; => "1,234.5"
@@ -596,23 +596,23 @@ row per path.
 ## Pretty printing nested data
 
 `prn` prints a value on one line, which is unreadable once the value is
-large. `norn.pprint/pprint` prints it to fit a width (80 columns by
-default, or the value of `norn.pprint/*width*`). Whatever fits on the rest
+large. `skein.pprint/pprint` prints it to fit a width (80 columns by
+default, or the value of `skein.pprint/*width*`). Whatever fits on the rest
 of a line prints as `pr-str` would show it. A collection that doesn't fit
 puts its items on separate lines, indented under the first.
 
 ```clojure
-(require '[norn.pprint :as pp])
+(require '[skein.pprint :as pp])
 
 (def project
-  [{:name "web" :version "0.3.0" :deps ["norn.string" "norn.regex" "norn.format"]}
+  [{:name "web" :version "0.3.0" :deps ["skein.string" "skein.regex" "skein.format"]}
    {:name "cli" :version "1.0.0"}])
 
 (pp/pprint project 40)
 ; prints: [{:name "web",
 ; prints:   :version "0.3.0",
-; prints:   :deps ["norn.string" "norn.regex"
-; prints:          "norn.format"]}
+; prints:   :deps ["skein.string" "skein.regex"
+; prints:          "skein.format"]}
 ; prints:  {:name "cli", :version "1.0.0"}]
 ```
 
@@ -638,7 +638,7 @@ together and the rest are indented by two.
 ; prints:   (str "Hello, " name "!"))
 ```
 
-`norn expand`, covered in [Chapter 14](14-macros.md), uses the same
+`skein expand`, covered in [Chapter 14](14-macros.md), uses the same
 printer to lay out expanded code.
 
 ## Ropes for text you edit
@@ -647,14 +647,14 @@ A string is the right representation for text you read, transform, and
 write out. It is a poor one for text that changes a little at a time, such
 as an editor buffer: every insertion into a string copies the whole thing.
 
-`norn.rope` provides ropes: persistent trees of string chunks. Inserting,
+`skein.rope` provides ropes: persistent trees of string chunks. Inserting,
 deleting, slicing, and finding a line take a number of steps logarithmic in
-the text's length. Like every Norn collection, a rope is a value. An edit
+the text's length. Like every Skein collection, a rope is a value. An edit
 returns a new rope that shares most of its structure with the old one, so
 keeping every previous version for undo costs little.
 
 ```clojure
-(require '[norn.rope :as rope])
+(require '[skein.rope :as rope])
 
 (def doc (rope/rope "one\ntwo\nthree"))
 
@@ -706,14 +706,14 @@ compare ropes by their text: `(= (rope/text a) (rope/text b))`.
 
 ## Markdown
 
-`norn.markdown` reads Markdown (CommonMark, with GitHub's tables,
-strikethrough, and task lists) into plain Norn data, and renders that data
+`skein.markdown` reads Markdown (CommonMark, with GitHub's tables,
+strikethrough, and task lists) into plain Skein data, and renders that data
 as HTML or plain text. Because the parsed form is ordinary vectors and
 maps, you can inspect it and transform it with the collection functions
 you already know.
 
 ```clojure
-(require '[norn.markdown :as md])
+(require '[skein.markdown :as md])
 
 (md/parse "# Notes\n\nSome *text* and `code`.")
 ; => [:doc [:heading {:level 1} "Notes"]
@@ -722,7 +722,7 @@ you already know.
 
 Each block is a vector that starts with a keyword tag, then an attribute
 map when the block has attributes, then its contents. The namespace
-documentation (`norn doc norn.markdown`) lists every tag. A list's items
+documentation (`skein doc skein.markdown`) lists every tag. A list's items
 hold their text in `:plain` blocks when the list is tight, and a task
 list item records whether it's checked.
 
@@ -737,8 +737,8 @@ list item records whether it's checked.
 it writes. `text` strips the markup.
 
 ```clojure
-(md/html "# Hi\n\nSome *text* & [a link](https://norn.dev).")
-; => "<h1>Hi</h1>\n<p>Some <em>text</em> &amp; <a href=\"https://norn.dev\">a link</a>.</p>\n"
+(md/html "# Hi\n\nSome *text* & [a link](https://skein.dev).")
+; => "<h1>Hi</h1>\n<p>Some <em>text</em> &amp; <a href=\"https://skein.dev\">a link</a>.</p>\n"
 (md/text "# Hi\n\nSome *text*.") ; => "Hi\nSome text.\n"
 ```
 
@@ -757,7 +757,7 @@ heading, which is the start of a table of contents.
 ## Summary
 
 - Strings are immutable UTF-8 values. `count`, `nth`, `subs`, and every
-  index in `norn.string` and `norn.regex` count characters, not bytes.
+  index in `skein.string` and `skein.regex` count characters, not bytes.
 - Sequence functions over a string return vectors of characters. Rebuild a
   string with `apply str` or `str/join`.
 - `str` and `print` make text for people; `pr-str` and `prn` make text that
@@ -767,11 +767,11 @@ heading, which is the start of a table of contents.
   functions, and `truncate` to lay text out in columns.
 - Regexes are values written `#"…"`, with linear-time matching and no
   backreferences. `re-find`, `re-seq`, and `re-matches` cover most needs;
-  `norn.regex` adds positions, named groups, replacement, and splitting.
+  `skein.regex` adds positions, named groups, replacement, and splitting.
 - `format` and `printf` take printf-style directives with widths in display
-  columns; `norn.format` presents numbers, sizes, and durations for people.
-- `norn.pprint` prints nested data to fit a width, `norn.rope` holds text
-  you edit in place, and `norn.markdown` turns Markdown into data and HTML.
+  columns; `skein.format` presents numbers, sizes, and durations for people.
+- `skein.pprint` prints nested data to fit a width, `skein.rope` holds text
+  you edit in place, and `skein.markdown` turns Markdown into data and HTML.
 
 ---
 

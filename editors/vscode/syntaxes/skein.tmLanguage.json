@@ -1,0 +1,429 @@
+{
+  "information_for_contributors": [
+    "Derived from VS Code's Clojure grammar, itself converted from https://github.com/atom/language-clojure (MIT licence, commit 45bdb881).",
+    "Skein's changes: scopes end in .skn, and Skein's condition and resource forms are control keywords."
+  ],
+  "name": "Skein",
+  "scopeName": "source.skn",
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#shebang-comment"
+    },
+    {
+      "include": "#quoted-sexp"
+    },
+    {
+      "include": "#sexp"
+    },
+    {
+      "include": "#keyfn"
+    },
+    {
+      "include": "#string"
+    },
+    {
+      "include": "#vector"
+    },
+    {
+      "include": "#set"
+    },
+    {
+      "include": "#map"
+    },
+    {
+      "include": "#regexp"
+    },
+    {
+      "include": "#var"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#dynamic-variables"
+    },
+    {
+      "include": "#metadata"
+    },
+    {
+      "include": "#namespace-symbol"
+    },
+    {
+      "include": "#symbol"
+    }
+  ],
+  "repository": {
+    "comment": {
+      "begin": "(?<!\\\\);",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.skn"
+        }
+      },
+      "end": "$",
+      "name": "comment.line.semicolon.skn"
+    },
+    "constants": {
+      "patterns": [
+        {
+          "match": "(nil)(?=(\\s|\\)|\\]|\\}))",
+          "name": "constant.language.nil.skn"
+        },
+        {
+          "match": "(true|false)",
+          "name": "constant.language.boolean.skn"
+        },
+        {
+          "match": "(##(?:Inf|-Inf|NaN))",
+          "name": "constant.numeric.symbol.skn"
+        },
+        {
+          "match": "([-+]?\\d+/\\d+)",
+          "name": "constant.numeric.ratio.skn"
+        },
+        {
+          "match": "([-+]?(?:(?:3[0-6])|(?:[12]\\d)|[2-9])[rR][0-9A-Za-z]+N?)",
+          "name": "constant.numeric.arbitrary-radix.skn"
+        },
+        {
+          "match": "([-+]?0[xX][0-9a-fA-F]+N?)",
+          "name": "constant.numeric.hexadecimal.skn"
+        },
+        {
+          "match": "([-+]?0[0-7]+N?)",
+          "name": "constant.numeric.octal.skn"
+        },
+        {
+          "match": "([-+]?[0-9]+(?:(\\.|(?=[eEM]))[0-9]*([eE][-+]?[0-9]+)?)M?)",
+          "name": "constant.numeric.double.skn"
+        },
+        {
+          "match": "([-+]?\\d+N?)",
+          "name": "constant.numeric.long.skn"
+        },
+        {
+          "include": "#keyword"
+        }
+      ]
+    },
+    "keyword": {
+      "match": "(?<=(\\s|\\(|\\[|\\{)):[\\w\\#\\.\\-\\_\\:\\+\\=\\>\\<\\/\\!\\?\\*]+(?=(\\s|\\)|\\]|\\}|\\,))",
+      "name": "constant.keyword.skn"
+    },
+    "keyfn": {
+      "patterns": [
+        {
+          "match": "(?<=(\\s|\\(|\\[|\\{))(if(-[-\\p{Ll}\\?]*)?|when(-[-\\p{Ll}]*)?|for(-[-\\p{Ll}]*)?|cond|do|let(-[-\\p{Ll}\\?]*)?|binding|loop|recur|fn|throw[\\p{Ll}\\-]*|try|catch|finally|handler-case|handler-bind|restart-case|unwind-protect|with-[-\\p{Ll}]+|([\\p{Ll}]*case))(?=(\\s|\\)|\\]|\\}))",
+          "name": "storage.control.skn"
+        },
+        {
+          "match": "(?<=(\\s|\\(|\\[|\\{))(declare-?|(in-)?ns|import|use|require|load|compile|(def[\\p{Ll}\\-]*))(?=(\\s|\\)|\\]|\\}))",
+          "name": "keyword.control.skn"
+        }
+      ]
+    },
+    "dynamic-variables": {
+      "match": "\\*[\\w\\.\\-\\_\\:\\+\\=\\>\\<\\!\\?\\d]+\\*",
+      "name": "meta.symbol.dynamic.skn"
+    },
+    "map": {
+      "begin": "(\\{)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.section.map.begin.skn"
+        }
+      },
+      "end": "(\\}(?=[\\}\\]\\)\\s]*(?:;|$)))|(\\})",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.section.map.end.trailing.skn"
+        },
+        "2": {
+          "name": "punctuation.section.map.end.skn"
+        }
+      },
+      "name": "meta.map.skn",
+      "patterns": [
+        {
+          "include": "$self"
+        }
+      ]
+    },
+    "metadata": {
+      "patterns": [
+        {
+          "begin": "(\\^\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.section.metadata.map.begin.skn"
+            }
+          },
+          "end": "(\\}(?=[\\}\\]\\)\\s]*(?:;|$)))|(\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.metadata.map.end.trailing.skn"
+            },
+            "2": {
+              "name": "punctuation.section.metadata.map.end.skn"
+            }
+          },
+          "name": "meta.metadata.map.skn",
+          "patterns": [
+            {
+              "include": "$self"
+            }
+          ]
+        },
+        {
+          "begin": "(\\^)",
+          "end": "(\\s)",
+          "name": "meta.metadata.simple.skn",
+          "patterns": [
+            {
+              "include": "#keyword"
+            },
+            {
+              "include": "$self"
+            }
+          ]
+        }
+      ]
+    },
+    "quoted-sexp": {
+      "begin": "(['``]\\()",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.section.expression.begin.skn"
+        }
+      },
+      "end": "(\\))$|(\\)(?=[\\}\\]\\)\\s]*(?:;|$)))|(\\))",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.section.expression.end.trailing.skn"
+        },
+        "2": {
+          "name": "punctuation.section.expression.end.trailing.skn"
+        },
+        "3": {
+          "name": "punctuation.section.expression.end.skn"
+        }
+      },
+      "name": "meta.quoted-expression.skn",
+      "patterns": [
+        {
+          "include": "$self"
+        }
+      ]
+    },
+    "regexp": {
+      "begin": "#\"",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.regexp.begin.skn"
+        }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.regexp.end.skn"
+        }
+      },
+      "name": "string.regexp.skn",
+      "patterns": [
+        {
+          "include": "#regexp_escaped_char"
+        }
+      ]
+    },
+    "regexp_escaped_char": {
+      "match": "\\\\.",
+      "name": "constant.character.escape.skn"
+    },
+    "set": {
+      "begin": "(\\#\\{)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.section.set.begin.skn"
+        }
+      },
+      "end": "(\\}(?=[\\}\\]\\)\\s]*(?:;|$)))|(\\})",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.section.set.end.trailing.skn"
+        },
+        "2": {
+          "name": "punctuation.section.set.end.skn"
+        }
+      },
+      "name": "meta.set.skn",
+      "patterns": [
+        {
+          "include": "$self"
+        }
+      ]
+    },
+    "sexp": {
+      "begin": "(\\()",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.section.expression.begin.skn"
+        }
+      },
+      "end": "(\\))$|(\\)(?=[\\}\\]\\)\\s]*(?:;|$)))|(\\))",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.section.expression.end.trailing.skn"
+        },
+        "2": {
+          "name": "punctuation.section.expression.end.trailing.skn"
+        },
+        "3": {
+          "name": "punctuation.section.expression.end.skn"
+        }
+      },
+      "name": "meta.expression.skn",
+      "patterns": [
+        {
+          "begin": "(?<=\\()(ns|declare|def[\\w\\d._:+=><!?*-]*|[\\w._:+=><!?*-][\\w\\d._:+=><!?*-]*/def[\\w\\d._:+=><!?*-]*)\\s+",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.skn"
+            }
+          },
+          "end": "(?=\\))",
+          "name": "meta.definition.global.skn",
+          "patterns": [
+            {
+              "include": "#metadata"
+            },
+            {
+              "include": "#dynamic-variables"
+            },
+            {
+              "match": "([\\p{L}\\.\\-\\_\\+\\=\\>\\<\\!\\?\\*][\\w\\.\\-\\_\\:\\+\\=\\>\\<\\!\\?\\*\\d]*)",
+              "name": "entity.global.skn"
+            },
+            {
+              "include": "$self"
+            }
+          ]
+        },
+        {
+          "include": "#keyfn"
+        },
+        {
+          "include": "#constants"
+        },
+        {
+          "include": "#vector"
+        },
+        {
+          "include": "#map"
+        },
+        {
+          "include": "#set"
+        },
+        {
+          "include": "#sexp"
+        },
+        {
+          "match": "(?<=\\()(.+?)(?=\\s|\\))",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.skn"
+            }
+          },
+          "patterns": [
+            {
+              "include": "$self"
+            }
+          ]
+        },
+        {
+          "include": "$self"
+        }
+      ]
+    },
+    "shebang-comment": {
+      "begin": "^(#!)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.comment.shebang.skn"
+        }
+      },
+      "end": "$",
+      "name": "comment.line.shebang.skn"
+    },
+    "string": {
+      "begin": "(?<!\\\\)(\")",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.string.begin.skn"
+        }
+      },
+      "end": "(\")",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.string.end.skn"
+        }
+      },
+      "name": "string.quoted.double.skn",
+      "patterns": [
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.skn"
+        }
+      ]
+    },
+    "namespace-symbol": {
+      "patterns": [
+        {
+          "match": "([\\p{L}\\.\\-\\_\\+\\=\\>\\<\\!\\?\\*][\\w\\.\\-\\_\\:\\+\\=\\>\\<\\!\\?\\*\\d]*)/",
+          "captures": {
+            "1": {
+              "name": "meta.symbol.namespace.skn"
+            }
+          }
+        }
+      ]
+    },
+    "symbol": {
+      "patterns": [
+        {
+          "match": "([\\p{L}\\.\\-\\_\\+\\=\\>\\<\\!\\?\\*][\\w\\.\\-\\_\\:\\+\\=\\>\\<\\!\\?\\*\\d]*)",
+          "name": "meta.symbol.skn"
+        }
+      ]
+    },
+    "var": {
+      "match": "(?<=(\\s|\\(|\\[|\\{)\\#)'[\\w\\.\\-\\_\\:\\+\\=\\>\\<\\/\\!\\?\\*]+(?=(\\s|\\)|\\]|\\}))",
+      "name": "meta.var.skn"
+    },
+    "vector": {
+      "begin": "(\\[)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.section.vector.begin.skn"
+        }
+      },
+      "end": "(\\](?=[\\}\\]\\)\\s]*(?:;|$)))|(\\])",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.section.vector.end.trailing.skn"
+        },
+        "2": {
+          "name": "punctuation.section.vector.end.skn"
+        }
+      },
+      "name": "meta.vector.skn",
+      "patterns": [
+        {
+          "include": "$self"
+        }
+      ]
+    }
+  }
+}

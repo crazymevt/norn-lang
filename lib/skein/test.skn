@@ -1,0 +1,415 @@
+;;;; skein.test — writing and running tests.
+;;;;
+;;;;   (ns my.lib-test (:require [skein.test :refer [deftest is testing are]]))
+;;;;
+;;;;   (deftest adding
+;;;;     (testing "small numbers"
+;;;;       (is (= 4 (+ 2 2)))
+;;;;       (is (thrown? Error (+ 1 :a)))))
+;;;;
+;;;; Run them with `skein test` (every *_test.skn under tests/), or
+;;;; `skein test path …`, or (run-tests) at the REPL.
+;;;;
+;;;; - `is` checks a form. For (= expected actual …) a failure shows both
+;;;;   values; (thrown? Class body…) and (thrown-with-msg? Class re body…)
+;;;;   check for a condition. An error inside `is` is reported, not raised,
+;;;;   and the test goes on. A failure says where the `is` is (file:line).
+;;;; - An error a test's own code doesn't handle ends that test and is
+;;;;   reported as its error: the handlers of whoever runs the tests (a
+;;;;   handler-case around run-ns, say) are set aside while it runs.
+;;;; - `is` outside any deftest counts toward the file's load (a file can be
+;;;;   a plain script of checks).
+;;;; - Assertions in fibers a test spawns report to that test (dynamic
+;;;;   bindings carry into spawned fibers).
+;;;; - Files run in parallel, each on its own fibers. The tests in a file run
+;;;;   one after another, in definition order, unless its namespace calls
+;;;;   (parallel-tests!): then they run concurrently, one fiber each. A file
+;;;;   that calls (run-alone!) runs after the others, on its own (its tests
+;;;;   measure the process: a profiler's, say). `skein test --serial` runs
+;;;;   everything one at a time.
+
+(ns skein.test
+  (:require [skein.cover :as cover] [skein.io :as io] [skein.string :as str] [skein.walk])
+  ;; (are's code uses postwalk-replace while it expands)
+  (:require-for-syntax [skein.walk]))
+
+(declare %human %tap %junit)
+
+;; ---- the registry: ns name → vector of [test-name fn] in definition order ----------------------
+
+(def ^:private registry (atom {}))
+(def ^:private fixtures (atom {}))
+
+(defn %register-test [ns-name test-name f]
+  (swap! registry update ns-name
+         (fn [tests]
+           (let [tests (or tests [])
+                 i (first (keep (fn [i] (when (= (first (nth tests i)) test-name) i)) (range (count tests))))]
+             (if i (assoc tests i [test-name f]) (conj tests [test-name f]))))))
+
+(defmacro deftest
+  "Define a test: a function of no arguments named name, registered in this
+  namespace so the runner finds it."
+  [name & body]
+  `(do (defn ~name [] ~@body)
+       (%register-test (str (current-ns)) '~name ~name)
+       (var ~name)))
+
+(defn use-fixtures
+  "Wrap this namespace's tests. kind is :each (around every test) or :once
+  (around them all); each fixture is a function of the function it wraps."
+  [kind & fs]
+  (swap! fixtures assoc-in [(str (current-ns)) kind] (vec fs)))
+
+(def ^:private parallel-nss (atom #{}))
+
+(defn parallel-tests!
+  "Let this namespace's tests run concurrently, one fiber each. Only for
+  tests that share no state they change."
+  []
+  (swap! parallel-nss conj (str (current-ns)))
+  nil)
+
+(defn run-alone!
+  "Called at a test file's top level: run the file when no other is
+  running (files run in parallel otherwise), after the rest. For tests
+  that measure the process as a whole: a profiler's samples, timings that
+  other files' work would disturb. The runner finds the call by reading
+  the file before running it. nil."
+  []
+  nil)
+
+(defn- alone?
+  "Does test file p call (run-alone!) at its top level? (Read, not run.)"
+  [p]
+  (try (let [r (%reader (slurp p) p)]
+         (loop []
+           (let [f (%read r)]
+             (cond (%eof? f) false
+                   (and (seq? f) (symbol? (first f)) (= "run-alone!" (name (first f)))) true
+                   :else (recur)))))
+       (catch Error _ false)))
+
+(def ^:dynamic *serial* "When true, nothing runs in parallel." false)
+
+(defn tests "The registered tests of namespace ns-name (a string), in order." [ns-name]
+  (get (deref registry) (str ns-name) []))
+
+;; ---- reporting ------------------------------------------------------------------------------
+
+(def ^:dynamic *report*
+  "Where assertions go: an atom of {:pass n :fail n :error n :events […]} for
+  the running test, or nil."
+  nil)
+
+(def ^:dynamic *test* "The name of the running test." nil)
+(def ^:dynamic *contexts* "The enclosing testing strings, innermost first." ())
+
+(def ^:private stray (atom {:pass 0 :fail 0 :error 0 :events []}))
+
+(defn %report [event]
+  (let [r (or *report* stray)
+        event (assoc event :test *test* :contexts (reverse *contexts*))]
+    (swap! r (fn [st]
+               (let [st (update st (:type event) inc)]
+                 (if (= :pass (:type event)) st (update st :events conj event)))))
+    nil))
+
+(defmacro testing "Run body with string s added to failure reports." [s & body]
+  `(binding [*contexts* (cons ~s *contexts*)] ~@body))
+
+(defn- message-of [e] (if (instance? Condition e) (condition-message e) (str e)))
+
+(defn %thrown [cls f re]
+  (try
+    (f)
+    {:ok false :actual :no-error}
+    (catch Condition e
+      (cond (not (instance? cls e)) {:ok false :actual (class-name (class-of e)) :message (message-of e)}
+            (and re (not (re-find re (str (message-of e))))) {:ok false :actual (message-of e)}
+            :else {:ok true}))))
+
+(defn %guard
+  "Run thunk: [:ok value], or [:error condition] when it raises an error
+  that no handler takes (one that would reach the debugger). A plain
+  signal with no handler still returns nil, as it would outside a test."
+  [thunk]
+  (let [tag (atom nil)
+        me (current-fiber)]
+    (catch-tag tag
+      ;; Only this fiber unwinds to the tag; a spawned fiber that dies ends
+      ;; as it would outside a test (its error shows through await).
+      (binding [*debugger* (fn [c] (when (identical? (current-fiber) me) (throw-tag tag [:error c])))]
+        [:ok (thunk)]))))
+
+(defn- guard-test
+  "%guard for a whole test (or a test file's load): the handlers of
+  whoever runs the tests are set aside meanwhile, so an error the test's
+  own code doesn't handle is the test's, recorded as such, whatever
+  handler-case surrounds the run."
+  [thunk]
+  (%guard (fn [] (binding [skein.core/*handlers* nil] (thunk)))))
+
+(defn %check
+  "Run an assertion's thunk (a map with :pass, :expected and :actual) and
+  report the outcome: whether it passed."
+  [thunk form msg location]
+  (let [[k r] (%guard thunk)]
+    (cond (not= k :ok)
+          (do (%report {:type :error :form form :message msg :error (message-of r) :location location}) false)
+          (:pass r) (do (%report {:type :pass}) true)
+          :else (do (%report {:type :fail :form form :expected (:expected r) :actual (:actual r)
+                              :message msg :location location})
+                    false))))
+
+(defmacro is
+  "Check form: (= expected actual …) compares, showing both on failure;
+  (thrown? Class body…) and (thrown-with-msg? Class regex body…) expect a
+  condition; anything else must be truthy. msg is added to the report. A
+  failure says where the is is, as source:line. Whether it passed, true or
+  false (so a property's body can be an is)."
+  ([form] `(is ~form nil))
+  ([form msg]
+   (let [head (when (seq? form) (first form))
+         thunk (cond
+                 (and (= head '=) (>= (count form) 3))
+                 `(fn []
+                    (let [expected# ~(second form)
+                          actuals# [~@(nnext form)]
+                          bad# (remove (fn [a#] (= expected# a#)) actuals#)]
+                      (if (empty? bad#) {:pass true} {:pass false :expected expected# :actual (first bad#)})))
+
+                 (contains? #{'thrown? 'thrown-with-msg?} head)
+                 (let [[_ cls & more] form
+                       [re body] (if (= head 'thrown-with-msg?) [(first more) (rest more)] [nil more])]
+                   `(fn []
+                      (let [r# (%thrown ~cls (fn [] ~@body) ~re)]
+                        (if (:ok r#) {:pass true} {:pass false :expected '~cls :actual (:actual r#)}))))
+
+                 :else
+                 `(fn [] (let [v# ~form] (if v# {:pass true} {:pass false :expected '~form :actual v#}))))]
+     `(%check ~thunk '~form ~msg ~(%macro-location)))))
+
+(defmacro are
+  "One `is` per group of values: (are [x y] (= x (inc y)) 2 1 3 2)."
+  [argv expr & values]
+  (let [n (count argv)]
+    `(do ~@(map (fn [group] `(is ~(skein.walk/postwalk-replace (zipmap argv group) expr)))
+                (partition n values)))))
+
+;; ---- running --------------------------------------------------------------------------------
+
+(defn- empty-report [] (atom {:pass 0 :fail 0 :error 0 :events []}))
+
+(defn- compose-fixtures [fs]
+  (reduce (fn [wrapped f] (fn [g] (wrapped (fn [] (f g))))) (fn [g] (g)) fs))
+
+(defn- run-one
+  "Run one test, returning its result map."
+  [ns-name test-name f each]
+  (let [r (empty-report)
+        start (nano-time)]
+    (binding [*report* r *test* test-name]
+      (let [[k c] (guard-test (fn [] ((compose-fixtures each) f)))]
+        (when (= k :error)
+          (%report {:type :error :message "the test raised an error" :error (message-of c)}))))
+    (assoc (deref r) :ns ns-name :name (str test-name) :ms (/ (- (nano-time) start) 1e6))))
+
+(defn run-ns
+  "Run namespace ns-name's tests (optionally only those whose names match
+  regex only); a vector of result maps."
+  ([ns-name] (run-ns ns-name nil))
+  ([ns-name only]
+   (let [ns-name (str ns-name)
+         {:keys [each once]} (get (deref fixtures) ns-name)
+         chosen (filter (fn [[n _]] (or (nil? only) (re-find only (str n)))) (tests ns-name))
+         out (atom [])]
+     ((compose-fixtures once)
+      (fn []
+        (if (and (not *serial*) (contains? (deref parallel-nss) ns-name))
+          (reset! out (with-scope [s] (mapv await (mapv (fn [[n f]] (spawn s (run-one ns-name n f each))) chosen))))
+          (doseq [[n f] chosen] (swap! out conj (run-one ns-name n f each))))))
+     (deref out))))
+
+(defn- file-ns
+  "The namespace a test file declares (its first ns form), or nil. (Read as
+  forms, so an ns in a comment doesn't count.)"
+  [text]
+  (let [r (%reader text "<test>")]
+    (loop [i 0]
+      (let [f (try (%read r) (catch Error _ nil))]
+        (cond (or (nil? f) (%eof? f) (> i 20)) nil
+              (and (seq? f) (= 'ns (first f)) (symbol? (second f))) (str (second f))
+              :else (recur (inc i)))))))
+
+(defn run-file
+  "Load a test file and run its tests. Checks made while loading (outside
+  any deftest) count as a test named \"<load>\"."
+  [path & {:keys [only]}]
+  (let [text (slurp path)
+        ns-name (file-ns text)
+        load-report (empty-report)
+        start (nano-time)
+        _ (when ns-name (swap! registry dissoc ns-name))
+        here (current-ns)
+        _ (binding [*report* load-report *test* '<load>]
+            (let [[k c] (guard-test (fn [] (%eval-reader (%reader text path))))]
+              (in-ns here)
+              (when (= k :error)
+                (%report {:type :error :message "loading failed" :error (message-of c)}))))
+        load-result (assoc (deref load-report) :ns (or ns-name path) :name "<load>" :ms (/ (- (nano-time) start) 1e6))
+        results (if ns-name (run-ns ns-name only) [])]
+    {:file (str path)
+     :tests (if (and (zero? (+ (:pass load-result) (:fail load-result) (:error load-result))) (seq results))
+              results
+              (into [load-result] results))}))
+
+(defn- totals [file-results]
+  (let [ts (mapcat :tests file-results)]
+    {:tests (count ts)
+     :pass (reduce + 0 (map :pass ts))
+     :fail (reduce + 0 (map :fail ts))
+     :error (reduce + 0 (map :error ts))}))
+
+(declare find-tests)
+
+(defn run-files
+  "Run test files, in parallel (one fiber per file) unless :serial, those
+  that call (run-alone!) after the rest, one at a time; a directory stands
+  for every *_test.skn under it. Returns {:files […] :totals {…}}, the
+  files in the order given."
+  [paths & {:keys [only serial]}]
+  (let [paths (vec (mapcat (fn [p] (if (str/ends-with? p ".skn") [p] (find-tests p))) paths))
+        run (fn [p] (binding [*serial* (if serial true false)] (run-file p :only only)))
+        files (if serial
+                (mapv run paths)
+                (let [alone (filterv alone? paths)
+                      together (filterv (complement (set alone)) paths)
+                      ran (with-scope [s] (mapv await (mapv (fn [p] (spawn s (run p))) together)))
+                      by-path (zipmap (concat together alone) (concat ran (mapv run alone)))]
+                  (mapv by-path paths)))]
+    {:files files :totals (totals files)}))
+
+(defn run-tests
+  "Run the tests registered in namespaces (default: the current one) and
+  print a report. Returns the totals."
+  [& namespaces]
+  (let [nss (or (seq (map str namespaces)) [(str (current-ns))])
+        files (mapv (fn [n] {:file n :tests (run-ns n)}) nss)
+        result {:files files :totals (totals files)}]
+    (print (%human result))
+    (:totals result)))
+
+;; ---- reporters ------------------------------------------------------------------------------
+
+(defn- counted
+  "n and word, plural unless n is 1: (counted 1 \"check\") is \"1 check\"."
+  [n word]
+  (str n " " word (when-not (= 1 n) "s")))
+
+(defn- describe-event [{:keys [type form expected actual message error contexts location test]}]
+  (str (if (= type :error) "ERROR" "FAIL") " in " test
+       (when location (str " (" location ")"))
+       (when (seq contexts) (str "\n  " (str/join " › " contexts)))
+       (when message (str "\n  " message))
+       "\n  form:     " (pr-str form)
+       (if (= type :error)
+         (str "\n  error:    " error)
+         (str "\n  expected: " (pr-str expected) "\n  actual:   " (pr-str actual)))
+       "\n"))
+
+(defn %human
+  "The default report: failures in full, then one line per file and the totals."
+  [{:keys [files] :as result}]
+  (str (apply str (map describe-event (mapcat :events (mapcat :tests files))))
+       (apply str (map (fn [f]
+                         (let [t (totals [f])
+                               n (+ (:pass t) (:fail t) (:error t))]
+                           (format "%-40s %4d %-6s  %s%n" (:file f) n (if (= 1 n) "check" "checks")
+                                   (if (zero? (+ (:fail t) (:error t))) "ok" (str (:fail t) " failed, " (counted (:error t) "error"))))))
+                       files))
+       (let [t (:totals result)]
+         (str (counted (:tests t) "test") ", " (counted (+ (:pass t) (:fail t) (:error t)) "check") ": "
+              (:pass t) " passed, " (:fail t) " failed, " (counted (:error t) "error") "\n"))))
+
+(defn %tap "TAP version 13: one line per test." [{:keys [files]}]
+  (let [ts (vec (mapcat :tests files))]
+    (str "TAP version 13\n1.." (count ts) "\n"
+         (apply str (map-indexed
+                     (fn [i t]
+                       (let [ok (zero? (+ (:fail t) (:error t)))]
+                         (str (if ok "ok " "not ok ") (inc i) " - " (:ns t) "/" (:name t) "\n"
+                              (when-not ok
+                                (apply str (map (fn [e] (str/join "\n" (map (fn [l] (str "  # " l)) (str/split-lines (describe-event e))))) (:events t))))
+                              (when-not ok "\n"))))
+                     ts)))))
+
+(defn- xml [s] (str/escape (str s) {\& "&amp;" \< "&lt;" \> "&gt;" \" "&quot;"}))
+
+(defn %junit "JUnit XML, one testsuite per file." [{:keys [files]}]
+  (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites>\n"
+       (apply str
+              (map (fn [f]
+                     (do
+                       (str "  <testsuite name=\"" (xml (:file f)) "\" tests=\"" (count (:tests f))
+                            "\" failures=\"" (count (filter (fn [x] (pos? (:fail x))) (:tests f)))
+                            "\" errors=\"" (count (filter (fn [x] (pos? (:error x))) (:tests f))) "\">\n"
+                            (apply str
+                                   (map (fn [x]
+                                          (str "    <testcase classname=\"" (xml (:ns x)) "\" name=\"" (xml (:name x))
+                                               "\" time=\"" (format "%.3f" (/ (:ms x) 1000.0)) "\""
+                                               (if (zero? (+ (:fail x) (:error x)))
+                                                 "/>\n"
+                                                 (str "><failure message=\"" (xml (str (:fail x) " failed, " (counted (:error x) "error"))) "\">"
+                                                      (xml (apply str (map describe-event (:events x))))
+                                                      "</failure></testcase>\n"))))
+                                        (:tests f)))
+                            "  </testsuite>\n")))
+                   files))
+       "</testsuites>\n"))
+
+;; ---- the `skein test` command ----------------------------------------------------------------
+
+(defn- find-tests "Every *_test.skn file under dir, sorted." [dir]
+  (vec (sort (filter (fn [p] (str/ends-with? p "_test.skn")) (%fs-walk (str dir))))))
+
+(defn- add-test-paths!
+  "Put the folders of paths (test files and folders) on the library path,
+  so that test files can require helpers kept beside them."
+  [paths]
+  (doseq [d (distinct (keep (fn [p] (if (io/directory? p) p (io/parent p))) paths))]
+    (add-lib-path! (str (io/absolute d)))))
+
+(defn main
+  "`skein test [options] [paths…]`: run test files (default: every
+  *_test.skn under tests/). Options: --only REGEX (test names), --serial,
+  --tap, --junit FILE, --coverage (which lines ran: a report after the
+  results; see skein.cover) and --lcov FILE (the coverage as an lcov
+  tracefile; implies --coverage). Exits 1 if anything failed. The folders
+  given (or tests/) are on the library path while they run, for helpers
+  the test files share (tests/my/helpers.skn is my.helpers)."
+  [& args]
+  (loop [args args opts {:paths []}]
+    (if-let [a (first args)]
+      (cond (= a "--only") (recur (nnext args) (assoc opts :only (re-pattern (second args))))
+            (= a "--serial") (recur (next args) (assoc opts :serial true))
+            (= a "--tap") (recur (next args) (assoc opts :tap true))
+            (= a "--junit") (recur (nnext args) (assoc opts :junit (second args)))
+            (= a "--coverage") (recur (next args) (assoc opts :coverage true))
+            (= a "--lcov") (recur (nnext args) (assoc opts :coverage true :lcov (second args)))
+            :else (recur (next args) (update opts :paths conj a)))
+      (do
+        ;; (skein test --coverage turns it on before anything loads; from
+        ;; here, only what loads after this counts)
+        (when (:coverage opts) (cover/start!))
+        (let [paths (if (seq (:paths opts)) (:paths opts) ["tests"])
+              _ (add-test-paths! paths)
+              result (run-files paths :only (:only opts) :serial (:serial opts))
+              t (:totals result)]
+          (print (if (:tap opts) (%tap result) (%human result)))
+          (when (:junit opts) (spit (:junit opts) (%junit result)))
+          (when (:coverage opts)
+            (let [cs (cover/counts)]
+              (when-not (:tap opts) (print (str "\n" (cover/report cs))))
+              (when (:lcov opts) (spit (:lcov opts) (cover/lcov cs)))))
+          (if (zero? (+ (:fail t) (:error t))) 0 1))))))

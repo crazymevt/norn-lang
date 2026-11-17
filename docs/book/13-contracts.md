@@ -2,10 +2,10 @@
 
 [Contents](README.md) · Previous: [12. Live programming](12-live-programming.md) · Next: [14. Macros](14-macros.md) <!-- nav -->
 
-Norn is dynamically typed: a function accepts whatever you pass it, and a
+Skein is dynamically typed: a function accepts whatever you pass it, and a
 wrong value shows up as an error somewhere inside, often far from the
 mistake. A *contract* states what a function expects and what it returns,
-and Norn checks it where one module calls another. When a check fails, the
+and Skein checks it where one module calls another. When a check fails, the
 error says which side broke the agreement. This chapter covers checked
 signatures such as `^Integer`, blame, contracts built from predicates with
 `defcontract`, the `*check-contracts*` setting, and what the checks cost.
@@ -23,7 +23,7 @@ the parameter vector. A type here is a class, such as `Integer`,
 ```
 
 Read this as: `restock` takes two integers and returns an integer. The
-`^` is Norn's metadata syntax (see [Chapter 3](03-values-and-expressions.md)),
+`^` is Skein's metadata syntax (see [Chapter 3](03-values-and-expressions.md)),
 so a signature is ordinary code with a few annotations, and a function
 without them is still a valid function.
 
@@ -35,12 +35,12 @@ small modules into a `lib` folder and load them. (Module files and
 `add-lib-path!` are covered in [Chapter 8](08-modules-and-projects.md).)
 
 ```clojure
-(require '[norn.io :as io] '[norn.string :as str])
+(require '[skein.io :as io] '[skein.string :as str])
 
 (io/mkdirs! "lib")
 (add-lib-path! "lib")
 
-(io/write-text "lib/inventory.norn" "
+(io/write-text "lib/inventory.skn" "
 (ns inventory)
 
 (defn restock ^Integer [^Integer on-hand ^Integer delivered]
@@ -108,7 +108,7 @@ Here is a module that calls `inventory`. It processes delivery lines whose
 quantities come from a text file, and it forgets to parse them.
 
 ```clojure
-(io/write-text "lib/orders.norn" "
+(io/write-text "lib/orders.skn" "
 (ns orders
   (:require [inventory :as inv]))
 
@@ -120,14 +120,14 @@ quantities come from a text file, and it forgets to parse them.
 
 (handler-case (orders/receive 10 {:item :bolts :qty "5"})
   (ContractError [e] (:blame e)))
-; => "orders (lib/orders.norn)"
+; => "orders (lib/orders.skn)"
 ```
 
 The REPL called `orders/receive`, but the blame goes to `orders`, the
 module that passed the string to `inventory`, along with its file. When
 the caller is the REPL, the blame says `user`.
 
-Now the other direction. `pallets` divides, and in Norn dividing two
+Now the other direction. `pallets` divides, and in Skein dividing two
 integers that don't divide evenly gives a ratio (see
 [Chapter 3](03-values-and-expressions.md)), not an integer. The function
 breaks its own promise:
@@ -155,7 +155,7 @@ A module's calls to its own functions go straight to the function, with
 no check. Here `inventory2` calls its own `restock` with a string:
 
 ```clojure
-(io/write-text "lib/inventory2.norn" "
+(io/write-text "lib/inventory2.skn" "
 (ns inventory2)
 
 (defn restock ^Integer [^Integer on-hand ^Integer delivered]
@@ -177,7 +177,7 @@ or written at different times, meets, so that's where checking pays off.
 It also means an annotated function costs nothing extra when its own
 module calls it.
 
-This is what *gradual* typing means in Norn. You add signatures where
+This is what *gradual* typing means in Skein. You add signatures where
 they help, usually on a module's public functions, and leave the rest
 alone. There is no static type checker: signatures are checked when calls
 happen, not when code is compiled. If you want every call checked, even
@@ -206,7 +206,7 @@ covers built-in classes and the class hierarchy.
 Here is a module that uses each form:
 
 ```clojure
-(io/write-text "lib/catalog.norn" "
+(io/write-text "lib/catalog.skn" "
 (ns catalog)
 
 (defclass Item () ((sku :initarg :sku) (price :initarg :price)))
@@ -289,7 +289,7 @@ Only these forms are types. A predicate such as `even?` isn't one, and
 writing `^even?` is an error when the module loads:
 
 ```clojure
-(io/write-text "lib/oops.norn" "
+(io/write-text "lib/oops.skn" "
 (ns oops)
 
 (defn half [^even? n] (quot n 2))
@@ -303,7 +303,7 @@ covered below.
 
 ## Functions as arguments
 
-`(-> Integer Integer)` describes a function. Norn can't look inside a
+`(-> Integer Integer)` describes a function. Skein can't look inside a
 function to check it, so instead it checks the function's *use*. The
 function that crosses the boundary is wrapped, and each call to the
 wrapper checks the arguments and the result.
@@ -349,7 +349,7 @@ contract built from predicates and combinators. It uses `fn-of`, which
 takes a vector of argument contracts and a result contract.
 
 ```clojure
-(io/write-text "lib/pricing.norn" "
+(io/write-text "lib/pricing.skn" "
 (ns pricing)
 
 (defn discount [price percent]
@@ -450,7 +450,7 @@ itself:
 
 (handler-case (inventory2/restock-from-text 10 "5")
   (ContractError [e] (:blame e)))
-; => "inventory2 (lib/inventory2.norn)"
+; => "inventory2 (lib/inventory2.skn)"
 ```
 
 Binding the variable around a call that is already compiled changes
@@ -510,11 +510,11 @@ carry signatures, so a wrong argument to one of them is reported at your
 call, blaming your code.
 
 ```clojure
-(require '[norn.csv :as csv])
+(require '[skein.csv :as csv])
 
 (handler-case (csv/write-csv "not rows")
   (ContractError [e] [(:function e) (:expected e)]))
-; => ["norn.csv/write-csv" "Sequential"]
+; => ["skein.csv/write-csv" "Sequential"]
 ```
 
 `(source name)` shows a function's definition, signature included. `doc`

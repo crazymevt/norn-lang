@@ -2,13 +2,13 @@
 
 [Contents](README.md) · Previous: [4. Functions and control flow](04-functions-and-control-flow.md) · Next: [6. Sequences and transducers](06-sequences-and-transducers.md) <!-- nav -->
 
-Most Norn programs are built from a few collection types: lists, vectors,
+Most Skein programs are built from a few collection types: lists, vectors,
 maps, and sets, plus sorted maps and sets and queues. All of them are
 immutable. This chapter shows what each one is for, how to read from and
 update them, how to work with nested data, how collections compare and
 hash, and how transients let you build a collection quickly in a loop.
-It ends with three small libraries for whole-structure work: `norn.set`,
-`norn.walk`, and `norn.data`.
+It ends with three small libraries for whole-structure work: `skein.set`,
+`skein.walk`, and `skein.data`.
 
 The functions that walk a collection item by item, such as `map`,
 `filter`, and `reduce`, are the subject of [Chapter
@@ -17,7 +17,7 @@ collections themselves.
 
 ## Persistent, immutable collections
 
-No operation changes a Norn collection. `conj`, `assoc`, and the other
+No operation changes a Skein collection. `conj`, `assoc`, and the other
 "update" functions return a *new* collection, and the original stays
 exactly as it was.
 
@@ -29,7 +29,7 @@ b ; => [1 2 3 4]
 ```
 
 This would be expensive if every update copied the whole collection. It
-doesn't. Norn's collections are *persistent data structures*: trees in
+doesn't. Skein's collections are *persistent data structures*: trees in
 which the new version shares almost all of its structure with the old one
 and only the path to the change is new. Adding to a million-item vector
 allocates a few small nodes, not a million slots.
@@ -204,12 +204,12 @@ Calling a set returns the member itself, so a set containing `nil` or
 `false` would give a false answer for a member it holds. Use `contains?`
 when that can happen.
 
-The `norn.set` library has the set algebra: `union`, `intersection`,
+The `skein.set` library has the set algebra: `union`, `intersection`,
 `difference`, `subset?`, `superset?`, `select`, and a few functions on
 *relations* (sets of maps) such as `index`, `project`, and `join`.
 
 ```clojure
-(require '[norn.set :as set])
+(require '[skein.set :as set])
 
 (apply set/union (map :tags (vals inventory))) ; => #{:office :writing :paper}
 (set/intersection (:tags pen) (get-in inventory [:ink :tags])) ; => #{:writing}
@@ -228,7 +228,7 @@ quick way to look records up by a field.
 (get (set/index staff [:dept]) {:dept :math}) ; => #{{:name "Edsger" :dept :math}}
 ```
 
-Run `norn doc norn.set` for the rest.
+Run `skein doc skein.set` for the rest.
 
 ## Sorted maps and sets
 
@@ -291,7 +291,7 @@ it's sequential, so it equals a vector or list with the same items:
 
 ## Nested data
 
-Real data nests: maps of maps, maps of vectors of maps. Norn has a
+Real data nests: maps of maps, maps of vectors of maps. Skein has a
 function for each kind of nested access, taking a *path*: a vector of the
 keys (or indexes) to follow.
 
@@ -444,10 +444,10 @@ items so far:
   [(get t :a) (count t) (contains? t :b)]) ; => [1 2 true]
 ```
 
-## Working on whole structures with norn.walk
+## Working on whole structures with skein.walk
 
 Sometimes you want to change something everywhere in a nested structure:
-every string key, every ratio, every map with a certain key. `norn.walk`
+every string key, every ratio, every map with a certain key. `skein.walk`
 does this without you writing the recursion.
 
 `postwalk` calls a function on every node of a structure, children before
@@ -455,7 +455,7 @@ parents, and rebuilds the structure from the results. Here it turns every
 ratio in the inventory into a float, for a report:
 
 ```clojure
-(require '[norn.walk :as walk])
+(require '[skein.walk :as walk])
 
 (walk/postwalk #(if (ratio? %) (double %) %) inventory) ; => {:pen {:price 1.5 :stock 120 :tags #{:office :writing}}
                                                         ;     :notebook {:price 4 :stock 35 :tags #{:office :paper}}
@@ -484,14 +484,14 @@ replaces values by a lookup map.
 (walk/postwalk-replace {:office :work} [:office #{:office :home}]) ; => [:work #{:work :home}]
 ```
 
-## Comparing structures with norn.data
+## Comparing structures with skein.data
 
 `=` tells you whether two values are equal. When they aren't, `diff`
-from `norn.data` tells you how. It returns three things: what is only in
+from `skein.data` tells you how. It returns three things: what is only in
 the first value, what is only in the second, and what they share.
 
 ```clojure
-(require '[norn.data :as data])
+(require '[skein.data :as data])
 
 (data/diff {:a 1 :b 2} {:a 1 :b 3 :c 4}) ; => [{:b 2} {:b 3 :c 4} {:a 1}]
 ```
@@ -516,7 +516,7 @@ is much easier to read as the three-way split.
 
 ## Summary
 
-- Norn's collections are immutable and persistent: updates return new
+- Skein's collections are immutable and persistent: updates return new
   versions that share structure with the old, so keeping old versions is
   cheap and sharing a collection is always safe.
 - Lists add at the front; vectors index and add at the end; maps look up
@@ -533,8 +533,8 @@ is much easier to read as the three-way split.
 - Transients are fiber-owned builders for loops that construct a
   collection. Use the returned value, finish with `persistent!`, and
   prefer them for vectors in this build.
-- `norn.set` has set algebra, `norn.walk` transforms nested structures,
-  and `norn.data/diff` explains how two values differ.
+- `skein.set` has set algebra, `skein.walk` transforms nested structures,
+  and `skein.data/diff` explains how two values differ.
 
 ---
 

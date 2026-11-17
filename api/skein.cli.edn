@@ -1,0 +1,7 @@
+;; skein.cli's public interface, recorded by skein api-diff --record.
+{
+ "UsageError" {:kind :class, :slots ["command" "location" "message" "trace"], :supers ["skein.core/Error"]}
+ "parse" {:arglists ["[spec]" "[spec args]"], :kind :function, :signature [{:result "Map", :args ["Map"]} {:result "Map", :args ["Map" "nil or Sequential"]}]}
+ "run" {:arglists ["[spec]" "[spec args]"], :kind :function, :signature [{:result "Integer", :args ["Map"]} {:result "Integer", :args ["Map" "nil or Sequential"]}]}
+ "usage" {:arglists ["[spec]" "[spec path]"], :kind :function, :signature [{:result "String", :args ["Map"]} {:result "String", :args ["Map" "Sequential"]}]}
+}

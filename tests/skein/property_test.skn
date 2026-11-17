@@ -1,0 +1,105 @@
+;;;; Property-based testing (skein.property), and round trips through the
+;;;; data codecs as properties.
+
+(ns property-test
+  (:require [skein.test :refer [deftest is]] [skein.property :as p]
+            [skein.json :as json] [skein.edn :as edn] [skein.bin :as bin] [skein.cbor :as cbor]
+            [skein.ndjson :as ndjson] [skein.yaml :as yaml] [skein.decimal :as d]
+            [skein.buffer :as buf] [skein.bytes :as b] [skein.rope :as rope] [skein.string :as str]))
+
+(deftest checking-and-shrinking
+  (is (= {:pass? true :runs 100} (select-keys (p/check (p/for-all [v (p/vectors (p/integers))] (= v (reverse (reverse v)))))
+                                              [:pass? :runs])))
+  (let [r (p/check (p/for-all [v (p/vectors (p/integers))] (< (reduce + 0 v) 100)) :seed 42)]
+    (is (false? (:pass? r)))
+    (is (= {:v [100]} (:args r)) "shrunk to the simplest failing case")
+    (is (= r (p/check (p/for-all [v (p/vectors (p/integers))] (< (reduce + 0 v) 100)) :seed 42)) "a seed reproduces it"))
+  (let [r (p/check (p/for-all [x (p/integers)] (if (> x 10) (/ 1 0) true)) :seed 7)]
+    (is (= {:x 11} (:args r)))
+    (is (some? (:error (:failure r))) "a condition counts as a failure"))
+  (is (:pass? (p/check (p/for-all [n (p/naturals) v (p/vectors (p/integers) :max n)] (<= (count v) n))))
+      "a later generator can use an earlier value")
+  (is (= {:s "x"} (:args (p/check (p/for-all [s (p/strings)] (not (re-find #"[xyz]" s))) :seed 3)))))
+
+(deftest generators
+  (is (every? #(<= 3 % 9) (map #(p/generate (p/integers :min 3 :max 9) 30 %) (range 50))))
+  (is (every? #(<= 2 (count %) 4) (map #(p/generate (p/vectors (p/booleans) :min 2 :max 4) 30 %) (range 50))))
+  (is (every? #{:a :b} (map #(p/generate (p/elements [:a :b]) 30 %) (range 20))))
+  (is (every? even? (map #(p/generate (p/such-that even? (p/integers)) 30 %) (range 20))))
+  (is (every? string? (map #(p/generate (p/strings :unicode true) 30 %) (range 20))))
+  (is (= (p/generate (p/maps (p/keyword) (p/floats)) 20 5) (p/generate (p/maps (p/keyword) (p/floats)) 20 5))
+      "a seed gives the same value"))
+
+;;; ---- round trips through the codecs ----
+
+(def ^:private json-scalar
+  (p/one-of (p/constant nil) (p/booleans) (p/integers) (p/floats) (p/strings :unicode true)))
+
+(def ^:private json-value
+  (p/recursive (fn [inner] (p/one-of (p/vectors inner :max 4) (p/maps (p/strings) inner :max 4))) json-scalar))
+
+(def ^:private skein-value
+  (p/recursive (fn [inner] (p/one-of (p/vectors inner :max 4) (p/lists inner :max 4) (p/sets inner :max 4)
+                                     (p/maps inner inner :max 4)))
+               (p/one-of (p/constant nil) (p/booleans) (p/integers) (p/floats) (p/strings :unicode true)
+                         (p/keyword) (p/symbol) (p/chars :unicode true))))
+
+(p/defproperty json-round-trips [x json-value]
+  (= x (json/read-string (json/write-string x) :keys identity)))
+
+(p/defproperty ndjson-round-trips [xs (p/vectors json-value :max 5)]
+  (= xs (ndjson/read-string (ndjson/write-string xs) :keys identity)))
+
+(p/defproperty edn-round-trips [x skein-value]
+  (= x (edn/read-string (pr-str x))))
+
+(p/defproperty bin-round-trips [x skein-value]
+  (= x (bin/decode (bin/encode x))))
+
+(p/defproperty cbor-round-trips
+  [x (p/recursive (fn [inner] (p/one-of (p/vectors inner :max 4) (p/maps (p/one-of (p/integers) (p/strings)) inner :max 4)))
+                  (p/one-of (p/constant nil) (p/booleans) (p/integers :min (- (bit-shift-left 1 70)) :max (bit-shift-left 1 70))
+                            (p/floats) (p/strings :unicode true) (p/byte-strings)))]
+  (= x (cbor/decode (cbor/encode x))))
+
+(p/defproperty yaml-round-trips [x json-value]
+  (= x (yaml/read-string (yaml/write-string x) :keys identity)))
+
+(p/defproperty decimal-text-round-trips [c (p/integers) scale (p/integers :min -20 :max 20)]
+  (let [x (d/decimal c scale)] (= x (d/parse (d/text x)))))
+
+(p/defproperty packed-buffers-round-trip [vs (p/vectors (p/integers :min (- (bit-shift-left 1 31)) :max (dec (bit-shift-left 1 31))))]
+  (= vs (buf/values (buf/pack :i32 vs))))
+
+(p/defproperty hex-and-base64-round-trip [bs (p/byte-strings)]
+  (and (= bs (b/unhex (b/hex bs))) (= bs (b/unbase64 (b/base64 bs)))))
+
+;;; ---- ropes edit as strings do ----
+
+(defn- ceil-log2 [x] (loop [n 0 v 1] (if (>= v x) n (recur (inc n) (* 2 v)))))
+
+(def ^:private rope-edit
+  (p/tuple (p/elements [:insert :delete :replace]) (p/naturals) (p/naturals)
+           (p/one-of (p/strings) (p/constant "line\n") (p/fmap (fn [n] (apply str (repeat n "long text\n"))) (p/integers :min 0 :max 120)))))
+
+(defn- apply-edit [[r s] [op a b text]]
+  (let [n (count s)
+        i (if (zero? n) 0 (mod a (inc n)))
+        j (min n (+ i (mod b 40)))]
+    (case op
+      :insert [(rope/insert r i text) (str (subs s 0 i) text (subs s i))]
+      :delete [(rope/delete r i j) (str (subs s 0 i) (subs s j))]
+      [(rope/replace r i j text) (str (subs s 0 i) text (subs s j))])))
+
+(p/defproperty ropes-edit-as-strings-do {:runs 200}
+  [start (p/fmap (fn [n] (apply str (repeat n "The quick brown fox\n"))) (p/integers :min 0 :max 300))
+   edits (p/vectors rope-edit :max 25)]
+  (let [[r s] (reduce apply-edit [(rope/rope start) start] edits)
+        lines (str/split s #"\n" -1)]
+    (and (= s (rope/text r))
+         (= (count s) (rope/length r))
+         (= (count (filter (fn [c] (= c \newline)) s)) (rope/newlines r))
+         (every? (fn [k] (= (nth lines k) (rope/line r k))) (range (count lines)))
+         (= (subs s (quot (count s) 3) (quot (* 2 (count s)) 3)) (rope/slice r (quot (count s) 3) (quot (* 2 (count s)) 3)))
+         ;; balanced: about the depth of a balanced tree of its leaves
+         (<= (#'skein.rope/height r) (+ 3 (* 2 (ceil-log2 (max 1 (quot (count s) 256)))))))))

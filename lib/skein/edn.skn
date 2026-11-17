@@ -1,0 +1,85 @@
+;;;; skein.edn — Skein data as text: the reader's syntax without evaluation.
+;;;;
+;;;; read-string reads one value and never runs code from the text: it only
+;;;; builds data (lists, vectors, maps, sets, queues, strings, numbers,
+;;;; characters, keywords, symbols, nil and booleans; #bytes, regexes and
+;;;; ##Inf too), and tagged literals: #skein/decimal "12.30", #skein/date
+;;;; "2026-11-03" and Skein's other times, #inst and #uuid, and whatever the
+;;;; :readers given read. write-string writes those, and what it writes
+;;;; read-string reads back as an equal value; anything else (an atom, a
+;;;; function, an instance with no tagged literal) signals TypeError.
+;;;; pr-str prints anything.
+
+(ns skein.edn
+  (:refer-core :exclude [read-string])
+  (:require [skein.io :as io] [skein.pprint]))
+
+(defn- reading
+  "(f) with *tag-readers* and *default-tag-reader* as options say."
+  [{:keys [readers default]} f]
+  (binding [*tag-readers* (merge *tag-readers* readers)
+            *default-tag-reader* (or default *default-tag-reader*)]
+    (f)))
+
+(defn read-string
+  "The first value in s; nil (or :eof's value) when s holds none. A
+  tagged literal, #tag form, is read by *tag-readers* (Skein's decimals and
+  times, #inst, #uuid) and the :readers given ({tag fn}); :default, (fn
+  [tag form]), reads the others, which are otherwise a ParseError."
+  [^String s & {:keys [eof] :as opts}]
+  (reading opts
+           (fn []
+             (let [r (%reader s "<edn>")
+                   v (%read r)]
+               (if (%eof? v) eof v)))))
+
+(defn read-all
+  "Every value in s, as a vector. Options :readers and :default, as
+  read-string's."
+  ^Vector [^String s & {:as opts}]
+  (reading opts
+           (fn []
+             (let [r (%reader s "<edn>")]
+               (loop [out []]
+                 (let [v (%read r)] (if (%eof? v) out (recur (conj out v)))))))))
+
+(defn- check-failed [x]
+  (error TypeError :expected "a value with an EDN form" :value x
+         :message (str "No EDN form for " (pr-str x) " (a " (class-name (class-of x)) ")")))
+
+(defn- check
+  "Signal TypeError, naming it, for the first value in x that has no EDN
+  form."
+  [x]
+  (cond (or (nil? x) (boolean? x) (string? x) (keyword? x) (symbol? x) (char? x) (bytes? x) (regex? x)) nil
+        ;; (an instance with a tagged literal writes as one)
+        (%instance? x) (if-let [[_ form] (tagged-form x)] (check form) (check-failed x))
+        (number? x) nil
+        (map? x) (doseq [[k v] x] (check k) (check v))
+        (or (vector? x) (set? x) (list? x) (seq? x) (stream? x) (queue? x)) (doseq [v x] (check v))
+        :else (check-failed x)))
+
+(defn write-string
+  "Text that read-string reads back as an equal value: x, made of the
+  values read-string makes, decimals and times among them (as tagged
+  literals: #skein/decimal \"12.30\", #inst …, see tagged-form). Anything else
+  in it (an atom, a function, an instance with no tagged literal) signals
+  TypeError naming it; pr-str prints those. :pretty
+  true lays it out over lines, as skein.pprint does (to :width columns,
+  default 80)."
+  ^String [x & {:keys [pretty width]}]
+  (check x)
+  (if pretty
+    (skein.pprint/pprint-str x (or width 80))
+    (pr-str x)))
+
+(defn read-file
+  "The first value in file path (UTF-8): read-string's, options and all."
+  [^String path & opts]
+  (apply read-string (io/read-text path) opts))
+
+(defn write-file
+  "Write x to file path (UTF-8) as write-string writes it (options too),
+  then a newline."
+  [^String path x & opts]
+  (io/write-text path (str (apply write-string x opts) "\n")))

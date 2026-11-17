@@ -1,0 +1,2 @@
+;; Written by skein: the commit of each Git package in the build (see skein deps).
+{:git {skein-html {:git "https://github.com/crazymevt/skein-html", :sha "cc3cb8fa6c3753c15ca41e7e11c3bf640a28a4ea", :tag "v0.3.0"}}}

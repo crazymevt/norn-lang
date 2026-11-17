@@ -1,0 +1,7 @@
+;; skein.fs's public interface, recorded by skein api-diff --record.
+{
+ "glob" {:arglists ["[pattern]"], :kind :function, :signature [{:result "Vector", :args ["String"]}]}
+ "unwatch" {:arglists ["[w]"], :kind :function, :signature [{:result "Any", :args ["Map"]}]}
+ "walk" {:arglists ["[dir]"], :kind :function, :signature [{:result "Vector", :args ["String"]}]}
+ "watch" {:arglists ["[path & {:keys [recursive]}]"], :kind :function, :signature [{:result "Map", :args ["String"], :rest "Any"}]}
+}

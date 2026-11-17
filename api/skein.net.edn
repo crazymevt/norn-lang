@@ -1,0 +1,14 @@
+;; skein.net's public interface, recorded by skein api-diff --record.
+{
+ "accept" {:arglists ["[listener & {:keys [tls cert-file key-file]}]"], :kind :function, :signature [{:result "Handle", :args ["Handle"], :rest "Any"}]}
+ "connect" {:arglists ["[host port & {:keys [tls ca-file server-name]}]"], :kind :function, :signature [{:result "Handle", :args ["String" "Integer"], :rest "Any"}]}
+ "listen" {:arglists ["[host port]"], :kind :function, :signature [{:result "Handle", :args ["String" "Integer"]}]}
+ "local-address" {:arglists ["[h]"], :kind :function, :signature [{:result "String", :args ["Handle"]}]}
+ "peer-address" {:arglists ["[h]"], :kind :function, :signature [{:result "String", :args ["Handle"]}]}
+ "port" {:arglists ["[addr]"], :kind :function, :signature [{:result "Integer", :args ["String"]}]}
+ "receive" {:arglists ["[s]" "[s n]"], :kind :function, :signature [{:result "Map", :args ["Handle"]} {:result "Map", :args ["Handle" "Integer"]}]}
+ "resolve" {:arglists ["[host]" "[host port]"], :kind :function, :signature [{:result "Vector", :args ["String"]} {:result "Vector", :args ["String" "Integer"]}]}
+ "send-to" {:arglists ["[s data host port]"], :kind :function, :signature [{:result "Any", :args ["Handle" "String or Bytes" "String" "Integer"]}]}
+ "shutdown-output" {:arglists ["[h]"], :kind :function, :signature [{:result "Any", :args ["Handle"]}]}
+ "udp" {:arglists ["[host port]"], :kind :function, :signature [{:result "Handle", :args ["String" "Integer"]}]}
+}

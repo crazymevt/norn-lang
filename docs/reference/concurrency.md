@@ -65,8 +65,8 @@ in the order given.
   [(first (alts! [ch])) (take! ch) (put! ch :late)]) ; => [:ready nil false]
 ```
 
-See the [producer and consumer](../examples/channels.norn) for communication
-between fibers. `norn.async` provides channel combinators and `norn.actor`
+See the [producer and consumer](../examples/channels.skn) for communication
+between fibers. `skein.async` provides channel combinators and `skein.actor`
 provides mailbox-based processes and supervision.
 
 ## Atoms and dynamic vars
@@ -93,14 +93,14 @@ outside the function.
 
 ## Transactions over refs
 
-Use [`norn.stm`](libraries.md#concurrency) when several cells must change
+Use [`skein.stm`](libraries.md#concurrency) when several cells must change
 together. `ref` creates a cell, `dosync` runs a transaction, and
 `alter` or `ref-set` records a change to be committed. A transaction may
 retry after a conflict. Put side effects in an `after-commit` callback
 when they must run after a successful commit.
 
 ```clojure
-(require '[norn.stm :as stm])
+(require '[skein.stm :as stm])
 
 (let [from (stm/ref 20)
       to (stm/ref 0)]

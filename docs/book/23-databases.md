@@ -5,7 +5,7 @@
 When a program's data outgrows a file you rewrite whole, reach for a
 database. SQLite is the natural first choice: it's a library rather than a
 server, a database is one file, and it handles far more data and traffic
-than most programs ever see. This chapter covers `norn.sqlite`: opening
+than most programs ever see. This chapter covers `skein.sqlite`: opening
 connections, running statements and queries, passing parameters, handling
 errors, transactions, reading large results a row at a time, looking at the
 schema, and sharing a connection between fibers. It ends with a small
@@ -17,13 +17,13 @@ learn more.
 
 ## Connections
 
-`norn.sqlite` uses the SQLite library that comes with the operating system:
+`skein.sqlite` uses the SQLite library that comes with the operating system:
 `/usr/lib/libsqlite3.dylib` on macOS and `libsqlite3.so.0` on Linux. To use
-a different build, set the `NORN_SQLITE` environment variable to its path
+a different build, set the `SKEIN_SQLITE` environment variable to its path
 before the library loads.
 
 ```clojure
-(require '[norn.sqlite :as db] '[norn.io :as io])
+(require '[skein.sqlite :as db] '[skein.io :as io])
 
 (string? (db/version)) ; => true
 ```
@@ -130,9 +130,9 @@ injection attacks. Use `exec!` for scripts.
 
 ### Values
 
-SQLite stores five kinds of value, and each comes back as a Norn type:
+SQLite stores five kinds of value, and each comes back as a Skein type:
 
-| SQLite | Norn |
+| SQLite | Skein |
 | --- | --- |
 | `INTEGER` | integer |
 | `REAL` | float |
@@ -153,10 +153,10 @@ integers. Keywords are stored as their names and come back as strings.
 A vector or a map is an error. Store structured
 values as text you encode yourself, JSON for instance
 ([Chapter 20](20-data-formats.md)), or split them into columns and tables.
-SQLite integers are 64 bits, so a larger Norn integer can't be stored as
+SQLite integers are 64 bits, so a larger Skein integer can't be stored as
 one: it's a `DatabaseError`.
 Store money as an integer count of cents, or as decimal text written with
-`norn.decimal`, never as a float.
+`skein.decimal`, never as a float.
 
 ## Parameters
 
@@ -219,7 +219,7 @@ Errors from SQLite are `DatabaseError` conditions. Two subclasses mark the
 cases a program most often handles: `ConstraintError`, when a statement
 would break a `UNIQUE`, `NOT NULL`, `CHECK`, or foreign key constraint, and
 `BusyError`, when another connection holds a lock for longer than the busy
-timeout. The classes live in `norn.sqlite`, so write them with the alias:
+timeout. The classes live in `skein.sqlite`, so write them with the alias:
 `db/ConstraintError`.
 
 Each error carries SQLite's result `:code`, its more specific
@@ -324,7 +324,7 @@ already a function.
 ### Nesting and savepoints
 
 A function that uses a transaction may be called from one that already has
-one, as `move-books!` might be called while restocking. In Norn, a
+one, as `move-books!` might be called while restocking. In Skein, a
 transaction inside another becomes a *savepoint*: if the inner one fails,
 only its changes are undone, and the outer transaction carries on.
 
@@ -656,11 +656,11 @@ doesn't exist is refused.
 Finally, the catalog as a CSV file for the shop's spreadsheet. `each-row`
 streams the rows, and each one is written to the file as it arrives, so the
 export uses the same memory for three books or three million.
-`norn.csv/write-csv` ([Chapter 20](20-data-formats.md)) quotes any field
+`skein.csv/write-csv` ([Chapter 20](20-data-formats.md)) quotes any field
 that needs it, such as a title with a comma.
 
 ```clojure
-(require '[norn.csv :as csv])
+(require '[skein.csv :as csv])
 
 (defn export-catalog! [conn path]
   (io/with-atomic-file [out path]
@@ -687,8 +687,8 @@ returns the count from `each-row`.
 ## Summary
 
 - `open` gives a connection to a database file or `":memory:"`;
-  `with-connection` closes it for you. `norn.sqlite` uses the system's
-  SQLite, or the one `NORN_SQLITE` names.
+  `with-connection` closes it for you. `skein.sqlite` uses the system's
+  SQLite, or the one `SKEIN_SQLITE` names.
 - `execute!` runs one statement and returns the rows changed; `exec!` runs
   a script; `query` gives rows as maps with keyword keys (or vectors with
   `{:as :vectors}`), and `query-one` the first row or nil. Name computed

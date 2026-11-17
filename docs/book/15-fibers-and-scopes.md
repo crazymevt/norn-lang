@@ -2,7 +2,7 @@
 
 [Contents](README.md) · Previous: [14. Macros](14-macros.md) · Next: [16. Channels](16-channels.md) <!-- nav -->
 
-Norn runs concurrent work in fibers: lightweight threads that the runtime
+Skein runs concurrent work in fibers: lightweight threads that the runtime
 schedules for you. This chapter shows how to start fibers, wait for their
 results, and keep them organized with scopes, so that no fiber is ever
 forgotten and a failure in one is never silently lost. It then covers
@@ -53,7 +53,7 @@ starts ten thousand and adds up what they return:
 
 Fibers are scheduled onto a small pool of operating system threads called
 carriers, normally one per core. `carrier-count` tells you how many there are,
-and the `NORN_THREADS` environment variable overrides the number. Several
+and the `SKEIN_THREADS` environment variable overrides the number. Several
 fibers run truly in parallel, one on each carrier.
 
 When a fiber waits, for a timer, a channel, a file, or a socket, it parks:
@@ -97,7 +97,7 @@ the program, and, as you'll see under cancellation, it can still be stopped.
 ## Scopes
 
 Every fiber you have seen so far was started inside `with-scope`. That is
-the normal way to start fibers in Norn, and the idea behind it is called
+the normal way to start fibers in Skein, and the idea behind it is called
 structured concurrency: concurrent work has a shape that matches the shape of
 the code.
 
@@ -373,7 +373,7 @@ everything in the scope.
 You have already used `sleep`. Because it parks only the fiber that calls
 it, sleeping is cheap: a thousand fibers asleep use no carrier time at all.
 
-Norn has no special form for "give up after so many milliseconds". You
+Skein has no special form for "give up after so many milliseconds". You
 build time limits from the pieces in this chapter and the next. The most
 direct way is a future, which the next section introduces properly: `deref`
 on a future accepts a time limit and a value to return when time runs out.
@@ -479,7 +479,7 @@ awaited or settled:
 When a detached fiber fails with nobody waiting for it, the runtime
 prints a line such as `Fiber 57 failed: bad input` on standard error, so
 the failure isn't lost entirely. (A future's fiber, and the one
-`norn.async/pipeline` returns, keep their failure for whoever awaits them
+`skein.async/pipeline` returns, keep their failure for whoever awaits them
 instead.)
 And when your program's main code finishes, the process exits without
 waiting for detached fibers that are still running.
@@ -548,7 +548,7 @@ collection, plain `map` is faster. Measure before you switch;
 ## What a child inherits
 
 A fiber starts with a copy of the dynamic environment of the code that
-spawned it. Norn calls this conveyance. Dynamic vars rebound with `binding`
+spawned it. Skein calls this conveyance. Dynamic vars rebound with `binding`
 keep their values in child fibers:
 
 ```clojure
@@ -602,7 +602,7 @@ Two more things are conveyed. A child starts in its parent's current
 namespace. And it inherits the debugger mode: at the REPL and in an editor,
 a fiber whose error nobody handles parks with its stack intact, waiting for
 you to inspect it, fix the code, and pick a restart, and fibers spawned from
-there do the same. Programs run with `norn file.norn` don't park; their
+there do the same. Programs run with `skein file.skn` don't park; their
 failing fibers end with the error, as in every example here. [Chapter
 12](12-live-programming.md) shows the debugger at work on parked fibers.
 

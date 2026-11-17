@@ -20,18 +20,18 @@ groups:
 
 The two benchmark files are new:
 
-- `bench/micro.norn` times core conventions. Each case runs 1,000
+- `bench/micro.skn` times core conventions. Each case runs 1,000
   operations in a loop, and the loop alone is the first row.
-- `bench/workloads.norn` times whole jobs. Each row is the best run in
+- `bench/workloads.skn` times whole jobs. Each row is the best run in
   about 2 seconds. The suite is the baseline for M10's done-check
   ("measured wins on `bench/`").
 
 Both ran at tier 0 (the interpreter, the default) and tier 1 (Cranelift,
-`NORN_TIER=1`) on an Apple M4 with 10 cores. Run them yourself with:
+`SKEIN_TIER=1`) on an Apple M4 with 10 cores. Run them yourself with:
 
 ```sh
-norn bench/micro.norn
-NORN_TIER=1 norn bench/workloads.norn
+skein bench/micro.skn
+SKEIN_TIER=1 skein bench/workloads.skn
 ```
 
 ## Results
@@ -72,11 +72,11 @@ NORN_TIER=1 norn bench/workloads.norn
 | --- | ---: | ---: | --- |
 | JSON: write / read 1 MB | 1.6 / 4.1 | 2.0 / 5.0 | fine |
 | EDN: write / read 1 MB | 1.8 / 6.0 | 2.4 / 7.7 | fine |
-| `norn.bin`: encode / decode | 1.3 / 3.8 | 1.6 / 4.3 | fine |
-| Read `core.norn`'s forms (158 KB) | 2.1 | 2.5 | fine |
-| Format `http.norn` (34 KB) | 13 | 14 | |
-| Lint `http.norn` (34 KB) | **243** | **307** | B8 |
-| Compile and load `http.norn` | 40 | 56 | |
+| `skein.bin`: encode / decode | 1.3 / 3.8 | 1.6 / 4.3 | fine |
+| Read `core.skn`'s forms (158 KB) | 2.1 | 2.5 | fine |
+| Format `http.skn` (34 KB) | 13 | 14 | |
+| Lint `http.skn` (34 KB) | **243** | **307** | B8 |
+| Compile and load `http.skn` | 40 | 56 | |
 | 1,000 inserts into a 1.2 MB rope | 100 | 108 | B2 |
 | 20,000 line lookups in a rope | **2,422** | **2,197** | B2 |
 | Regex, every match in 1.2 MB | 19 | 16 | fine |
@@ -98,12 +98,12 @@ in the collector, not in interpreted code.
 ## A: settle before sealing
 
 1. **The line and text readers expose their insides.**
-   `norn.io/line-reader` and `text-reader` return plain maps
+   `skein.io/line-reader` and `text-reader` return plain maps
    (`{:handle h :buf (atom …)}`). The line reader's buffering has to
    change (see B2), and after sealing its keys would be part of the
    interface. Make both readers opaque objects now. They could also be
    streams themselves, through `stream-read`. Nothing reaches into them
-   today: not the standard library, Norn Studio or norn-ui.
+   today: not the standard library, Skein Studio or skein-ui.
 2. **Whether signatures are checked in release builds.** A checked
    signature costs about 3.5 µs per call from another module (B1). The
    cost is an implementation problem, but whether release builds check

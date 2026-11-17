@@ -1,0 +1,12 @@
+;; skein.prof's public interface, recorded by skein api-diff --record.
+{
+ "folded" {:arglists ["[p]"], :kind :function, :signature [{:result "String", :args ["Any"]}]}
+ "for-editor" {:arglists ["[code ns interval-us]"], :kind :function}
+ "hottest" {:arglists ["[p]"], :kind :function, :signature [{:result "Vector", :args ["Any"]}]}
+ "profile" {:arglists ["[& body]"], :kind :macro}
+ "report" {:arglists ["[p & {:or {min-percent 1, top 20}, :keys [top min-percent]}]"], :kind :function, :signature [{:result "String", :args ["Any"], :rest "Any"}]}
+ "running?" {:arglists ["[]"], :kind :function, :signature [{:result "Boolean", :args []}]}
+ "sample" {:arglists ["[f & opts]"], :kind :function}
+ "start!" {:arglists ["[& {:or {interval-us 1000}, :keys [interval-us]}]"], :kind :function}
+ "stop!" {:arglists ["[]"], :kind :function}
+}

@@ -2,15 +2,15 @@
 
 [Contents](README.md) · Previous: [26. Tools and performance](26-tools-and-performance.md) · Next: [28. Foreign functions](28-foreign-functions.md) <!-- nav -->
 
-A Norn program doesn't have to start from source each time. An image is a
-snapshot of a running Norn heap, written to a file: your code, your data,
+A Skein program doesn't have to start from source each time. An image is a
+snapshot of a running Skein heap, written to a file: your code, your data,
 the namespaces you loaded, and even fibers that were waiting for
 something. Starting from an image skips loading and compiling, and picks up
 where the snapshot left off. This chapter shows how to save images from a
 running program and build them from source, what survives a restore and
 what has to be reconnected, how to inspect and compare images, and how
-`norn package` turns a project into something you can hand to someone who
-doesn't have Norn.
+`skein package` turns a project into something you can hand to someone who
+doesn't have Skein.
 
 [Chapter 12](12-live-programming.md) uses images for development: you save
 a REPL session and come back to it later. Here the focus is on images as the
@@ -23,7 +23,7 @@ or function to call when the image starts, and the image becomes a program.
 Here's one that greets the people named on its command line:
 
 ```clojure
-(require '[norn.process :as proc] '[norn.sys :as sys])
+(require '[skein.process :as proc] '[skein.sys :as sys])
 
 (def greetings (atom 0))
 
@@ -33,7 +33,7 @@ Here's one that greets the people named on its command line:
     (println (str "Hello, " n "!")))
   (count names))
 
-(def saved (save-image "greet.nimg" :entry #'greet))
+(def saved (save-image "greet.skimg" :entry #'greet))
 
 (set (keys saved)) ; => #{:objects :patches :reused :bytes}
 (pos? (:bytes saved)) ; => true
@@ -42,25 +42,25 @@ Here's one that greets the people named on its command line:
 The result says how many objects went into the file and how large it is.
 Pass the entry as a var, `#'greet`, rather than the function itself. The
 image then calls whatever the var holds, which is the same thing here, and
-`norn image info` can name it.
+`skein image info` can name it.
 
-Start the image with `norn --image`. Every argument after the image path
+Start the image with `skein --image`. Every argument after the image path
 goes to the entry function as a string. To run it from the examples, this
-helper calls the same `norn` executable that's running them:
+helper calls the same `skein` executable that's running them:
 
 ```clojure
 (defn run-image [path & args]
   (select-keys (apply proc/sh (:executable (sys/info)) "--image" path args)
                [:exit :out]))
 
-(run-image "greet.nimg" "Ada" "Grace")
+(run-image "greet.skimg" "Ada" "Grace")
 ; => {:exit 2 :out "Hello, Ada!\nHello, Grace!\n"}
 ```
 
 From a shell, that's:
 
 ```sh
-norn --image greet.nimg Ada Grace
+skein --image greet.skimg Ada Grace
 ```
 
 The entry's return value decides the exit status. An integer is the
@@ -76,20 +76,20 @@ back:
 @greetings ; => 0
 ```
 
-Every argument goes to the entry, even `-e`: `(run-image "greet.nimg" "-e"
+Every argument goes to the entry, even `-e`: `(run-image "greet.skimg" "-e"
 "(greet \"Lin\")")` greets `-e` and `(greet "Lin")` and exits with 2. To
 evaluate an expression in the image instead of calling the entry, which is
 handy for poking at a program's state, put `-e` and the expression before
 `--image`:
 
 ```clojure
-(select-keys (proc/sh (:executable (sys/info)) "-e" "(greet \"Lin\")" "--image" "greet.nimg")
+(select-keys (proc/sh (:executable (sys/info)) "-e" "(greet \"Lin\")" "--image" "greet.skimg")
              [:exit :out])
 ; => {:exit 0 :out "Hello, Lin!\n1\n"}
 ```
 
-From a shell, that's `norn -e '(greet "Lin")' --image greet.nimg`. An image
-without an entry also takes `norn --image dev.nimg -e EXPR`.
+From a shell, that's `skein -e '(greet "Lin")' --image greet.skimg`. An image
+without an entry also takes `skein --image dev.skimg -e EXPR`.
 
 An image saved without `:entry` starts a REPL, which is what a development
 image does. `(image-info)` returns the file the running image came from, or
@@ -103,7 +103,7 @@ image does. `(image-info)` returns the file the running image came from, or
 
 An image holds the heap, so everything that lives in the heap survives:
 vars and their values, atoms, classes and their methods, closures,
-namespaces, and the code of every function. Norn compiles each function
+namespaces, and the code of every function. Skein compiles each function
 again for tier 1 as it runs, since images don't store machine code (see
 [Chapter 26](26-tools-and-performance.md#two-tiers)).
 
@@ -122,9 +122,9 @@ message:
   (println (await listener))
   0)
 
-(save-image "parked.nimg" :entry #'deliver-and-wait)
+(save-image "parked.skimg" :entry #'deliver-and-wait)
 
-(run-image "parked.nimg") ; => {:exit 0 :out "the listener got :hello\n"}
+(run-image "parked.skimg") ; => {:exit 0 :out "the listener got :hello\n"}
 ```
 
 The fiber that calls `save-image` is the exception. It goes on in the
@@ -140,16 +140,16 @@ anything that awaits one gets an error:
              (Error [e] (str "await failed: " (condition-message e)))))
   0)
 
-(save-image "no-fibers.nimg" :entry #'check-listener :fibers :none)
+(save-image "no-fibers.skimg" :entry #'check-listener :fibers :none)
 
-(run-image "no-fibers.nimg")
+(run-image "no-fibers.skimg")
 ; => {:exit 0 :out "await failed: Fiber was not saved in the image\n"}
 ```
 
 A program image usually wants `:fibers :none`, so every run starts the same
-way. `norn build`, below, always saves this way.
+way. `skein build`, below, always saves this way.
 
-Facts about the machine aren't in the heap. `norn.sys` reads the
+Facts about the machine aren't in the heap. `skein.sys` reads the
 environment, the command-line arguments, the host name, the core count and
 the like live, so a restored image sees the machine it runs on, not the one
 that saved it.
@@ -163,7 +163,7 @@ is **dead**. Using a dead file handle signals `ResourceLost`, and
 `resource-live?` tells you which ones are dead:
 
 ```clojure
-(require '[norn.io :as io])
+(require '[skein.io :as io])
 
 (def notes (io/open "notes.txt" :write))
 (resource-live? notes) ; => true
@@ -173,10 +173,10 @@ is **dead**. Using a dead file handle signals `ResourceLost`, and
   (handler-case (do (io/write notes "hi") 0)
     (ResourceLost [e] (println "lost:" (class-name (class-of e))) 1)))
 
-(save-image "notes.nimg" :entry #'use-notes)
+(save-image "notes.skimg" :entry #'use-notes)
 
-(:out (run-image "notes.nimg"))
-; => "live? false\nlost: norn.core/ResourceLost\n"
+(:out (run-image "notes.skimg"))
+; => "live? false\nlost: skein.core/ResourceLost\n"
 ```
 
 File handles, sockets and pipes are tracked for you. For a resource of your
@@ -213,9 +213,9 @@ A method that reconnects the resource returns true, which marks it live:
   (println "live?" (resource-live? db) "opened" (:opened db) "times")
   0)
 
-(save-image "conn.nimg" :entry #'report)
+(save-image "conn.skimg" :entry #'report)
 
-(:out (run-image "conn.nimg"))
+(:out (run-image "conn.skimg"))
 ; => "reconnecting to db.local:5432\nlive? true opened 2 times\n"
 ```
 
@@ -261,9 +261,9 @@ return a new object:
   (print (io/read-text "app.log"))
   0)
 
-(save-image "log.nimg" :entry #'log-after-restore)
+(save-image "log.skimg" :entry #'log-after-restore)
 
-(:out (run-image "log.nimg"))
+(:out (run-image "log.skimg"))
 ; => "reconnecting to db.local:5432\nreopening app.log\nbefore the save\nafter the restore\n"
 ```
 
@@ -280,12 +280,12 @@ in the debugger and offers both restarts, so you can choose.
 Saving from a running program captures whatever that program did,
 including state you didn't mean to keep. For a release, build the image
 from source instead, so the same sources always give the same image.
-`norn build` starts a fresh Norn, loads your code, seals the modules it
+`skein build` starts a fresh Skein, loads your code, seals the modules it
 loaded (their interfaces are fixed from then on, as the standard library's
 are), and saves it with `:fibers :none`.
 
-In a project, it needs only the output path. `norn.edn`'s `:main` names the
-entry function, and `norn build` loads its namespace (see
+In a project, it needs only the output path. `skein.edn`'s `:main` names the
+entry function, and `skein build` loads its namespace (see
 [Chapter 8](08-modules-and-projects.md) for projects). Here's a small word
 counter:
 
@@ -298,8 +298,8 @@ counter:
 
 ```clojure
 (ns wc.main
-  (:require [norn.io :as io]
-            [norn.string :as str]))
+  (:require [skein.io :as io]
+            [skein.string :as str]))
 
 (defn counts [text]
   {:lines (count (filter #{\newline} text))
@@ -318,16 +318,16 @@ counter:
 ```
 
 ```sh
-norn build wc.nimg
-norn --image wc.nimg sample.txt
+skein build wc.skimg
+skein --image wc.skimg sample.txt
 ```
 
 ```text
-wc.nimg: 34255 objects, 1920976 bytes
+wc.skimg: 34255 objects, 1920976 bytes
      2      5     24 sample.txt
 ```
 
-On the machine this chapter was written on, `norn --image wc.nimg` ran in
+On the machine this chapter was written on, `skein --image wc.skimg` ran in
 about 0.06 seconds, against about 0.25 seconds to load the same module from
 source and call `main`. The difference grows with the program.
 
@@ -335,33 +335,33 @@ Outside a project, or to choose another entry, name the files to load and
 the entry function:
 
 ```sh
-norn build hello.nimg hello.norn --entry hello/main
+skein build hello.skimg hello.skn --entry hello/main
 ```
 
 Without `--entry`, and outside a project with a `:main`, the image has no
 entry and starts a REPL.
 
 Builds are reproducible. Building twice from the same sources with the same
-`norn` gives byte-for-byte identical files. An image also records a
-fingerprint of the runtime that wrote it, so a different build of `norn`
+`skein` gives byte-for-byte identical files. An image also records a
+fingerprint of the runtime that wrote it, so a different build of `skein`
 refuses it with a message instead of misreading it. Ship an image with the
-`norn` that built it, which is what `norn package` does.
+`skein` that built it, which is what `skein package` does.
 
 ### Layered images
 
 Several programs that share a large base, such as the same libraries, can
 share one base image. Build the base from a file that loads the shared
-libraries, here `(require 'norn.io 'norn.string 'norn.json)` in
-`base.norn`. Then build each program on it with `--image BASE --layered`:
+libraries, here `(require 'skein.io 'skein.string 'skein.json)` in
+`base.skn`. Then build each program on it with `--image BASE --layered`:
 
 ```sh
-norn build base.nimg base.norn
-norn build app.nimg --image base.nimg --layered
+skein build base.skimg base.skn
+skein build app.skimg --image base.skimg --layered
 ```
 
 ```text
-base.nimg: 28366 objects, 1579808 bytes
-app.nimg: 146 objects, 67896 bytes
+base.skimg: 28366 objects, 1579808 bytes
+app.skimg: 146 objects, 67896 bytes
 ```
 
 The layered image holds only what changed since the base: new objects,
@@ -373,25 +373,25 @@ thing from a running process that started from an image.
 
 ### Shaking an image
 
-`wc.nimg` holds the whole of every module `wc` loaded, the compiler and
+`wc.skimg` holds the whole of every module `wc` loaded, the compiler and
 expander, and the index of documentation, though `main` uses a few dozen
 functions. `--shake` leaves out what the entry function can't reach:
 
 ```sh
-norn build wc.nimg --shake
+skein build wc.skimg --shake
 ```
 
 ```text
-wc.nimg: 7379 objects, 385.6 KB, shaken from 1.8 MB (79% smaller): 1331 definitions left out, 13 modules whole, and 2 methods
+wc.skimg: 7379 objects, 385.6 KB, shaken from 1.8 MB (79% smaller): 1331 definitions left out, 13 modules whole, and 2 methods
 ```
 
 It starts from `main` and follows what each function's compiled code
-refers to (`norn.xref` reads it, as [Chapter 12](12-live-programming.md)
+refers to (`skein.xref` reads it, as [Chapter 12](12-live-programming.md)
 shows). Anything reached stays. That includes what the runtime itself calls,
 such as `print-object`. The sealed modules' other names go, and with them
 the code and data only those names kept. A generic function also loses the
 methods for classes nothing kept can make. Your own modules are sealed by
-`norn build`, so they're shaken too. Code the program runs isn't changed,
+`skein build`, so they're shaken too. Code the program runs isn't changed,
 so a shaken `wc` gives the same output as the whole one.
 
 Here the compiler went, because nothing in `wc` evaluates code. Without it,
@@ -402,7 +402,7 @@ Shaking works out three cases from what's reachable:
   language is kept whole, compiler included, and so is each module that
   anything kept uses, since code evaluated later may refer to any of its
   names. Modules nothing uses still go.
-- **The program reads text** (`read-string`, `norn.edn`). Tagged literals
+- **The program reads text** (`read-string`, `skein.edn`). Tagged literals
   such as `#inst` need their readers' libraries, so those are loaded and
   kept.
 - **The program looks things up by a name it computes** (`resolve`,
@@ -410,14 +410,14 @@ Shaking works out three cases from what's reachable:
   will be, so it warns, naming the function that does it:
 
 ```text
-warning: app.plugins/load calls norn.core/resolve: what it looks up may be gone; name it in :keep
+warning: app.plugins/load calls skein.core/resolve: what it looks up may be gone; name it in :keep
 ```
 
 `--keep` keeps a var, or every var of a namespace, besides what's reached.
 Use it for what such code looks up:
 
 ```sh
-norn build app.nimg --shake --keep app.plugins/csv --keep app.formats
+skein build app.skimg --shake --keep app.plugins/csv --keep app.formats
 ```
 
 `(save-image path :entry #'main :shake true :keep [...])` does the same
@@ -428,49 +428,49 @@ because a layer's base keeps everything anyway.
 
 ## Inspecting images
 
-`norn image info` describes an image file: its layers, its size, its entry,
+`skein image info` describes an image file: its layers, its size, its entry,
 and how many public vars each namespace holds:
 
 ```sh
-norn image info wc.nimg
+skein image info wc.skimg
 ```
 
 ```text
-image:      /Users/you/wc/wc.nimg
+image:      /Users/you/wc/wc.skimg
 size:       1920976 bytes
 entry:      #'wc.main/main
 namespaces: 16
 vars:       1203
-  norn.bytes                      16 vars
-  norn.compiler                   25 vars
-  norn.core                      943 vars
-  norn.deps                       10 vars
-  norn.edn                         5 vars
-  norn.expander                   29 vars
-  norn.io                         55 vars
-  norn.io$1                        0 vars
-  norn.pprint                      3 vars
-  norn.process                     7 vars
-  norn.string                     29 vars
-  norn.syntax                     55 vars
-  norn.sys                        23 vars
-  norn.validate                    1 vars
+  skein.bytes                      16 vars
+  skein.compiler                   25 vars
+  skein.core                      943 vars
+  skein.deps                       10 vars
+  skein.edn                         5 vars
+  skein.expander                   29 vars
+  skein.io                         55 vars
+  skein.io$1                        0 vars
+  skein.pprint                      3 vars
+  skein.process                     7 vars
+  skein.string                     29 vars
+  skein.syntax                     55 vars
+  skein.sys                        23 vars
+  skein.validate                    1 vars
   user                             0 vars
   wc.main                          2 vars
 ```
 
 Only the libraries the program uses are in it. A namespace with `$1` in its
 name is the compile-time instance of a module, which macros use (see
-[Chapter 14](14-macros.md)). The shaken `wc.nimg` lists 5 namespaces and
-278 vars: `norn.core`'s 273 that `main` reaches, and 1 of `norn.io`'s.
-`norn image info` works on a shaken image too, since it asks the image for
+[Chapter 14](14-macros.md)). The shaken `wc.skimg` lists 5 namespaces and
+278 vars: `skein.core`'s 273 that `main` reaches, and 1 of `skein.io`'s.
+`skein image info` works on a shaken image too, since it asks the image for
 its contents without compiling anything in it.
 
-`norn image diff` compares two images, var by var. Suppose version 0.2 adds
+`skein image diff` compares two images, var by var. Suppose version 0.2 adds
 a longest-line count to `counts`:
 
 ```sh
-norn image diff wc-0.1.nimg wc.nimg
+skein image diff wc-0.1.skimg wc.skimg
 ```
 
 ```text
@@ -488,13 +488,13 @@ prints `no differences`.
 
 ## Packaging
 
-An image needs a `norn` to run it. `norn package` puts the two together,
+An image needs a `skein` to run it. `skein package` puts the two together,
 with your resources, into something you can give away. It builds the
-project's image with `:main` as the entry, using the same `norn` you run it
-with, then copies that `norn` in under your program's name. Run under
-another name, `norn` looks for an image of that name beside it and runs it.
+project's image with `:main` as the entry, using the same `skein` you run it
+with, then copies that `skein` in under your program's name. Run under
+another name, `skein` looks for an image of that name beside it and runs it.
 
-Give the project a `:package` map in `norn.edn`:
+Give the project a `:package` map in `skein.edn`:
 
 ```edn
 {:name wc
@@ -515,11 +515,11 @@ Give the project a `:package` map in `norn.edn`:
   and the Dock. `:icon` names a PNG, which becomes an `.icns`, or an
   `.icns` file.
 - `:shake true` builds the image with `--shake`, and `:keep` lists names
-  for its `--keep`: `:keep [app.plugins/csv app.formats]`. `norn package`
+  for its `--keep`: `:keep [app.plugins/csv app.formats]`. `skein package`
   prints the shaking report and its warnings.
 
 ```sh
-norn package
+skein package
 ```
 
 ```text
@@ -533,11 +533,11 @@ The command-line archive unpacks to a program and a folder for it:
 ```text
 wc-0.1.0-macos-aarch64/
   bin/wc
-  lib/wc/wc.nimg
+  lib/wc/wc.skimg
   lib/wc/stopwords/en.txt
 ```
 
-`bin/wc` is the launcher, a copy of `norn`. Run it, or link it into a
+`bin/wc` is the launcher, a copy of `skein`. Run it, or link it into a
 folder on your `PATH`, since it finds its image through a symbolic link
 too. Every argument goes to `:main`, including a leading `-e`, and the
 program runs in the caller's folder. To the person running it, it's an
@@ -545,13 +545,13 @@ ordinary program.
 
 ### Finding resources
 
-A packaged program finds its resources through `norn.sys/app-resources`,
+A packaged program finds its resources through `skein.sys/app-resources`,
 which returns the folder that holds the image and the resources, or `nil`
 when the program isn't packaged. Falling back to the project folder lets
 the same code run from source:
 
 ```clojure
-(require '[norn.sys :as sys])
+(require '[skein.sys :as sys])
 
 (defn stopwords-file []
   (io/path (or (sys/app-resources) ".") "stopwords" "en.txt"))
@@ -565,57 +565,57 @@ caller's folder, and don't build paths from the image's location by hand.
 ### The macOS app
 
 The app is `Display Name.app`, with an `Info.plist` built from
-`norn.edn`, the launcher in `Contents/MacOS`, and the image, icon and
+`skein.edn`, the launcher in `Contents/MacOS`, and the image, icon and
 resources in `Contents/Resources`. It also comes zipped for sharing. The app
 runs the same entry function as the command-line program, with no
 arguments when it's opened from Finder.
 
-`norn package` signs the app ad hoc, which needs no Apple Developer
+`skein package` signs the app ad hoc, which needs no Apple Developer
 account. It runs on the Mac that built it. Another Mac blocks a downloaded
 copy the first time it opens. To open it there, try to open the app, then
 go to System Settings > Privacy & Security and choose **Open Anyway**, or
 run `xattr -dr com.apple.quarantine "Word Count.app"` before opening it.
 A public release needs a Developer ID signature and notarization, which
-`norn package` doesn't do.
+`skein package` doesn't do.
 
 ### Native helpers
 
 A library that runs a native program of its own declares it as a helper
-in its `norn.edn`, with candidate paths in its folder. `{os}` and `{arch}`
-are filled in, and `norn package` bundles the first candidate that exists.
-Norn UI declares its renderer this way:
+in its `skein.edn`, with candidate paths in its folder. `{os}` and `{arch}`
+are filled in, and `skein package` bundles the first candidate that exists.
+Skein UI declares its renderer this way:
 
 ```edn
-:helpers {"norn-ui-host" ["target/release/norn-ui-host" "bin/{os}-{arch}/norn-ui-host"]}
+:helpers {"skein-ui-host" ["target/release/skein-ui-host" "bin/{os}-{arch}/skein-ui-host"]}
 ```
 
 Helpers go beside the image in the archive and beside the launcher in the
-app, and they're signed with it. If no candidate exists, `norn package`
-stops and tells you which helper to build. For apps that use Norn UI, the
-launcher points `NORN_UI_HOST` at the bundled renderer.
+app, and they're signed with it. If no candidate exists, `skein package`
+stops and tells you which helper to build. For apps that use Skein UI, the
+launcher points `SKEIN_UI_HOST` at the bundled renderer.
 
 ## Summary
 
 - `(save-image path :entry #'main)` writes the running heap to a file.
-  `norn --image path args…` starts it and calls the entry with the
+  `skein --image path args…` starts it and calls the entry with the
   arguments, and an integer result is the exit status.
 - Values, code, classes and parked fibers survive a restore. `:fibers
-  :none` saves no fibers. `norn.sys` always describes the current machine.
+  :none` saves no fibers. `skein.sys` always describes the current machine.
 - Files, sockets and other outside resources are dead after a restore.
   Register your own with `register-resource!`, then reconnect them in
   `on-image-restore` or lazily through `reconnect` and `ensure-live`.
-- `norn build` makes a reproducible image from source, using `:main` in a
+- `skein build` makes a reproducible image from source, using `:main` in a
   project or `--entry` with files. `--image BASE --layered` makes a small
   image on a shared base.
-- `--shake` (`:shake true` for `save-image` and `norn package`) leaves out
+- `--shake` (`:shake true` for `save-image` and `skein package`) leaves out
   what the entry can't reach, generic functions' methods for classes
   nothing makes, and the compiler when nothing evaluates. It warns about
   lookups by computed names, and `--keep` keeps what they need.
-- `norn image info` describes an image, and `norn image diff` lists the vars
+- `skein image info` describes an image, and `skein image diff` lists the vars
   two images differ in.
-- `norn package` makes a command-line archive and, on macOS, an ad hoc
-  signed app, with the image, a copy of `norn`, resources, and native
-  helpers. Packaged code finds its resources with `norn.sys/app-resources`.
+- `skein package` makes a command-line archive and, on macOS, an ad hoc
+  signed app, with the image, a copy of `skein`, resources, and native
+  helpers. Packaged code finds its resources with `skein.sys/app-resources`.
 
 ---
 

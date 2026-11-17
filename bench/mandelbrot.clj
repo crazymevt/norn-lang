@@ -1,11 +1,11 @@
-;;;; bench/programs.norn's Mandelbrot in Clojure, for comparison, as
+;;;; bench/programs.skn's Mandelbrot in Clojure, for comparison, as
 ;;;; bench/mandelbrot.lisp is in SBCL: the same view, the same escape-time
 ;;;; kernel with smooth colouring (mandelbrot.fractal's escape), with
 ;;;; primitive doubles and longs (type hints, unchecked arithmetic), as a
 ;;;; Clojure program would be written for speed. The JVM compiles hot code
 ;;;; as it runs, so it warms up for about 1 s first; then it prints the best
 ;;;; of the runs in about 2 s, in ms, and the checksum, which must match the
-;;;; Norn program's.
+;;;; Skein program's.
 ;;;;
 ;;;;   clojure -M bench/mandelbrot.clj
 

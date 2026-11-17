@@ -1,6 +1,0 @@
-;; norn.dev's public interface, recorded by norn api-diff --record.
-{
- "after-reload!" {:arglists ["[key f]"], :kind :function}
- "main" {:arglists ["[& args]"], :kind :function}
- "reload!" {:arglists ["[files]"], :kind :function}
-}

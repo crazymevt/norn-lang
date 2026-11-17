@@ -1,8 +1,0 @@
-;; norn.xref's public interface, recorded by norn api-diff --record.
-{
- "callees" {:arglists ["[v]"], :kind :function, :signature [{:result "Vector", :args ["Any"]}]}
- "callers" {:arglists ["[v]"], :kind :function, :signature [{:result "Vector", :args ["Any"]}]}
- "reachable" {:arglists ["[roots]" "[roots refs]"], :kind :function, :signature [{:result "Set", :args ["Any"]} {:result "Set", :args ["Any" "Any"]}]}
- "references" {:arglists ["[]"], :kind :function, :signature [{:result "Map", :args []}]}
- "refers-to" {:arglists ["[x]"], :kind :function, :signature [{:result "Set", :args ["Any"]}]}
-}

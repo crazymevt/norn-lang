@@ -1,0 +1,65 @@
+(ns quire.main
+  "quire's command line: build a site, preview it, start a post."
+  (:require [skein.cli :as cli]
+            [skein.io :as io]
+            [skein.signal :as signal]
+            [skein.string :as str]
+            [skein.time :as t]
+            [quire.build :as build]
+            [quire.markdown :as qmd]
+            [quire.serve :as serve]))
+
+(defn- out-of [options] (or (:out options) (io/path (:dir options) "_site")))
+
+(defn- build-site [{:keys [options]}]
+  (let [r (build/build! (:dir options) (out-of options) :drafts (:drafts options) :zip (:zip options)
+                        :on-bad-post (if (:strict options) :stop :placeholder))]
+    (println (str "Built " (:posts r) " posts into " (out-of options) ": " (:written r) " written, "
+                  (:unchanged r) " unchanged, " (:removed r) " removed"))
+    (doseq [b (:broken r)] (println (str "  can't read " b)))
+    (if (seq (:broken r)) 1 0)))
+
+(defn- serve-site [{:keys [options]}]
+  (let [s (serve/serve! (:dir options) (out-of options) (:port options))
+        sigs (signal/listen :int :term)]
+    (println (str "Serving " (:dir options) " at http://127.0.0.1:" (:port (:server s)) "/ (Ctrl-C stops)"))
+    (<! (:signals sigs))
+    ((:stop s))
+    (signal/stop! sigs)
+    0))
+
+(defn- new-post [{:keys [options args]}]
+  (let [title (str/join " " (:title args))
+        slug (qmd/anchor title)
+        path (io/path (:dir options) "posts" (str slug ".md"))]
+    (if (io/exists? path)
+      (do (println (str "quire: " path " is there already")) 1)
+      (do (io/mkdirs! (io/parent path))
+          (io/write-text path (str "---\ntitle: " title "\ndate: " (t/format-local (t/today) "%F")
+                                   "\ntags: []\ndraft: true\n---\n\n"))
+          (println "Wrote" path)
+          0))))
+
+(def spec
+  {:name "quire"
+   :summary "Make a web site from Markdown posts."
+   :version "0.1.0"
+   :options [{:name :dir :value "DIR" :default "." :doc "The site's folder (site.edn, posts/, static/)"}]
+   :commands [{:name "build" :summary "Build the site"
+               :options [{:name :out :value "DIR" :doc "Where to put it (default: _site in the site's folder)"}
+                         {:name :drafts :doc "Include drafts"}
+                         {:name :zip :doc "Also write site.zip of it all"}
+                         {:name :strict :doc "A post that can't be read stops the build"}]
+               :run build-site}
+              {:name "serve" :summary "Build and serve the site, rebuilding as it changes"
+               :options [{:name :out :value "DIR" :doc "Where to put it (default: _site in the site's folder)"}
+                         {:name :port :short \p :type :int :default 8000}]
+               :run serve-site}
+              {:name "new" :summary "Start a post (a draft)"
+               :args [{:name :title :variadic true}]
+               :run new-post}]})
+
+(defn main
+  "quire's entry point: its command-line arguments in, its exit status out."
+  [& args]
+  (cli/run spec (vec args)))

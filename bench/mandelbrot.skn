@@ -1,0 +1,74 @@
+;;;; Mandelbrot in Skein, beside bench/mandelbrot.lisp (SBCL) and
+;;;; bench/mandelbrot.clj (Clojure): the same view, the same escape-time
+;;;; kernel with smooth colouring, the same output. The kernel is the
+;;;; mandelbrot project's (mandelbrot.fractal/escape, in ../mandelbrot),
+;;;; copied here so the comparison doesn't need that checkout, written as
+;;;; Skein code is (no type hints: tier 1 finds the floats itself).
+;;;; bench/programs.skn runs the same kernel as one of its programs.
+;;;;
+;;;; It warms up for about 1 s (and, at tier 1, waits for what became hot
+;;;; to be compiled), then prints the best of the runs in about 2 s, in ms,
+;;;; and the checksum, which must match the others':
+;;;;
+;;;;   skein bench/mandelbrot.skn             ;  e.g. 29.1 11251 591574
+;;;;   SKEIN_TIER=0 skein bench/mandelbrot.skn ; the interpreter alone
+
+(require '[skein.math :as math])
+
+(defn escape
+  "Smoothed escape count for c, or -1.0 when c stays within the bailout."
+  [re im limit]
+  (let [x (- re 0.25)
+        im2 (* im im)
+        q (+ (* x x) im2)
+        bulb (+ re 1.0)]
+    ;; Points in the main cardioid and period-two bulb are known interior.
+    (if (or (< (* q (+ q x)) (* 0.25 im2))
+            (< (+ (* bulb bulb) im2) 0.0625))
+      -1.0
+      (loop [zr 0.0 zi 0.0 n 0]
+        (let [zr2 (* zr zr)
+              zi2 (* zi zi)
+              radius2 (+ zr2 zi2)]
+          (cond
+            (> radius2 16.0) (- (+ n 1.0) (math/log2 (* 0.5 (math/log2 radius2))))
+            (= n limit) -1.0
+            :else (let [t (* zr zi)]
+                    (recur (+ (- zr2 zi2) re) (+ t t im) (inc n)))))))))
+
+(defn mandelbrot
+  "Every pixel of the view: [interior pixels, the sum of the escape counts'
+  whole parts]."
+  []
+  (let [re -0.7463 im 0.1102 span 0.028 width 200 height 125 limit 220
+        scale (/ span (min width height))
+        left (- re (* width 0.5 scale))
+        top (+ im (* height 0.5 scale))]
+    (loop [y 0 inside 0 total 0]
+      (if (= y height)
+        [inside total]
+        (let [ci (- top (* (+ y 0.5) scale))
+              [i t] (loop [x 0 i 0 t 0]
+                      (if (= x width)
+                        [i t]
+                        (let [n (escape (+ left (* (+ x 0.5) scale)) ci limit)]
+                          (if (neg? n) (recur (inc x) (inc i) t) (recur (inc x) i (+ t (long n)))))))]
+          (recur (inc y) (+ inside i) (+ total t)))))))
+
+(defn- run-for
+  "Run mandelbrot for about ms milliseconds: [the best run in ns, its result]."
+  [ms]
+  (let [end (+ (nano-time) (* ms 1000000))]
+    (loop [best nil result nil]
+      (if (< (nano-time) end)
+        (let [t0 (nano-time)
+              r (mandelbrot)
+              took (- (nano-time) t0)]
+          (recur (if best (min best took) took) r))
+        [best result]))))
+
+(run-for 1000)
+;; (at tier 1, what became hot is compiled on another thread: wait for it)
+(loop [k 0] (when (and (pos? (:pending (jit-stats))) (< k 1000)) (sleep 10) (recur (inc k))))
+(let [[best [inside total]] (run-for 2000)]
+  (println (format "%.3f %d %d" (/ best 1.0e6) inside total)))

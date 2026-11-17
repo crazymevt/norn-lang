@@ -1,40 +1,40 @@
 # lang-tests
 
-Programs written to try Norn the way its users will, before its standard
+Programs written to try Skein the way its users will, before its standard
 library was sealed. What they found is in `docs/plans/todo.md`. Each is a project
-of its own, with its own `norn.edn` and tests (`norn test` in its folder).
+of its own, with its own `skein.edn` and tests (`skein test` in its folder).
 Each was a repository of its own until 2026-11-17, and its history came
 with it (`git log lang-tests/quire`).
 
 - **pulse**: an uptime monitor. SQLite, an HTTP server and client, a
-  supervised process per target, `norn.cli`, `norn.log`, `norn.schedule`.
+  supervised process per target, `skein.cli`, `skein.log`, `skein.schedule`.
 - **ledger**: bank exports to categories and reports. A Git dependency
-  (norn-html), CSV and decimals, TOML, a full-screen terminal browser, EDN
+  (skein-html), CSV and decimals, TOML, a full-screen terminal browser, EDN
   tags and date patterns.
 - **quire**: a static site generator. Markdown and YAML, a `defsyntax`
   template macro, RSS and a sitemap, a zip, pipelines, restarts, a preview
   server that reloads browsers over server-sent events.
 - **chat**: a chat server over TCP and TLS. Many connections, channels,
-  STM, `norn.sync`.
+  STM, `skein.sync`.
 - **loglens**: a log analyzer. Gzip'd JSON Lines as a stream, named regex
-  groups, relations, diffs, percentiles, `norn.bin`, CBOR, `norn.bench`.
+  groups, relations, diffs, percentiles, `skein.bin`, CBOR, `skein.bench`.
 
-## A check on Norn itself
+## A check on Skein itself
 
 They use the language as a program does: libraries together, macros,
 fibers, restarts. So they catch what the unit suites miss, and a change to
-Norn should leave them working. `run.norn` checks that:
+Skein should leave them working. `run.skn` checks that:
 
 ```sh
-./target/release/norn lang-tests/run.norn                 # about a minute
-./target/release/norn lang-tests/run.norn --only quire    # one project (repeatable)
-./target/release/norn lang-tests/run.norn --record        # after a change on purpose
-NORN_LANG_TESTS=1 cargo test --release -p norn --test lang_tests
+./target/release/skein lang-tests/run.skn                 # about a minute
+./target/release/skein lang-tests/run.skn --only quire    # one project (repeatable)
+./target/release/skein lang-tests/run.skn --record        # after a change on purpose
+SKEIN_LANG_TESTS=1 cargo test --release -p skein --test lang_tests
 ```
 
-- **Tests:** each project's `norn test` at tier 0, at tier 1 (the default),
+- **Tests:** each project's `skein test` at tier 0, at tier 1 (the default),
   and with everything compiled from its first call
-  (`NORN_JIT_THRESHOLD=1 NORN_JIT_SYNC=1`).
+  (`SKEIN_JIT_THRESHOLD=1 SKEIN_JIT_SYNC=1`).
 - **Outputs:** the programs on fixed inputs (`outputs.edn`): loglens's
   reports on a generated log, ledger's imports and reports, and quire's
   build of its sample site. What each prints, and the files it writes,
@@ -44,16 +44,16 @@ NORN_LANG_TESTS=1 cargo test --release -p norn --test lang_tests
   recording doesn't depend on the machine. When outputs differ, the
   runner keeps each mode's folder and prints where they are, to compare
   with `diff -r`.
-- **Coverage:** the lines of the standard library (`lib/norn`) the
+- **Coverage:** the lines of the standard library (`lib/skein`) the
   projects' tests reach, against `expected/coverage.edn`: which modules
   real programs leave untouched, and where the next lang-test could go.
   It's a report, not a check: a line or two moves with timing. Modules
-  that `norn test` loads itself, and norn.core and the compiler (loaded
+  that `skein test` loads itself, and skein.core and the compiler (loaded
   at start-up), aren't counted.
 
-ledger and quire depend on [norn-html](https://github.com/crazymevt/norn-html)
-by Git, pinned in their `norn.lock`, so running them needs the network the
-first time (norn caches what it fetches). A project whose `norn.lock`
+ledger and quire depend on [skein-html](https://github.com/crazymevt/skein-html)
+by Git, pinned in their `skein.lock`, so running them needs the network the
+first time (skein caches what it fetches). A project whose `skein.lock`
 names a local folder that isn't there is skipped, and the runner says so.
 
 chat and pulse have no fixed outputs: they're servers, whose output

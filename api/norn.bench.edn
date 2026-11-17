@@ -1,6 +1,0 @@
-;; norn.bench's public interface, recorded by norn api-diff --record.
-{
- "bench" {:arglists ["[expr & opts]"], :kind :macro}
- "report" {:arglists ["[label r]"], :kind :function}
- "run" {:arglists ["[f & {:or {ms 1000, warmup-ms 200}, :keys [warmup-ms ms]}]"], :kind :function}
-}

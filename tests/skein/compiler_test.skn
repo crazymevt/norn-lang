@@ -1,0 +1,98 @@
+;;;; The Skein compiler (lib/compiler/compiler.skn): agreement with the seed
+;;;; compiler, the self-hosting fixpoint, and what changes now that macros run
+;;;; as ordinary code in the compiling fiber.
+
+(ns compiler-test
+  (:require [skein.test :refer [is]]))
+
+;; (compiling core and the compiler again defines their vars again, which
+;; would unseal them: this is the language rebuilding itself, not a change
+;; to it, so quietly, and sealed again after)
+(defn- resealed [f]
+  (try (handler-bind [Warning (fn [_] (muffle-warning))] (f))
+       (finally (seal! 'skein.core) (seal! 'skein.compiler))))
+
+;; The expander (M8) runs in front of the compiler.
+(is (= skein.expander/eval skein.core/eval))
+
+;;; Byte-identical output to the seed compiler on the whole core library
+;;; (compiled in its own namespace) and on the compiler itself (in a scratch
+;;; one: compiling interns the names it defines, and skein.core shouldn't
+;;; gain the compiler's).
+(is (= [] (resealed (fn []
+                      (in-ns 'compiler-test.scratch)
+                      (let [d (skein.compiler/compare-compilers (%compiler-source) "compiler.skn")]
+                        (in-ns 'compiler-test)
+                        d)))))
+(is (= [] (resealed (fn []
+                      (let [saved (current-ns)]
+                        (in-ns 'skein.core)
+                        (let [d (skein.compiler/compare-compilers (%core-source) "core.skn")]
+                          (in-ns saved)
+                          d))))))
+
+;;; The self-hosting fixpoint: the compiler compiled by the seed (stage 1),
+;;; by itself (stage 2) and by stage 2 (stage 3) are the same code.
+(defn snapshot []
+  (into {} (keep (fn [e] (let [v (var-get (second e))]
+                           (when (fn? v) [(first e) (skein.compiler/%signature v)])))
+                 (ns-interns 'skein.compiler))))
+
+;; (each stage compiled by the one before, through its own eval: not by
+;; installing it as everyone's, since other suites share this runtime)
+(defn- compile-by-compiler [src]
+  (let [r (%reader src "compiler.skn")
+        saved (current-ns)
+        ev skein.compiler/eval] ; (this stage's, for the whole load)
+    ;; (inlining off: stage 1 is the seed's, which doesn't inline)
+    (try (binding [skein.compiler/*inline* false] (loop [] (let [f (%read r)] (when-not (%eof? f) (ev f) (recur)))))
+         (finally (in-ns (symbol (str saved)))))))
+
+(def stage1 (snapshot))
+(resealed (fn [] (compile-by-compiler (%compiler-source))))
+(def stage2 (snapshot))
+(resealed (fn [] (compile-by-compiler (%compiler-source))))
+(def stage3 (snapshot))
+(is (= true (> (count stage1) 50)))
+(is (= true (= stage1 stage2)))
+(is (= true (= stage2 stage3)))
+(is (= [] (vec (keep (fn [k] (when (not= (get stage1 k) (get stage3 k)) k)) (keys stage1)))))
+
+;;; Macros are ordinary code in the compiling fiber: they can block.
+(defmacro after-a-wait [] (sleep 5) 42)
+(is (= 42 (after-a-wait)))
+(defmacro from-a-fiber [] (await (spawn-detached (+ 40 2))))
+(is (= 42 (from-a-fiber)))
+
+;;; Compile errors are conditions with restarts.
+(is (= "Unable to resolve symbol: nowhere in this context"
+       (handler-case (eval 'nowhere) (skein.compiler/CompileError [e] (condition-message e)))))
+(is (= 42 (handler-bind [skein.compiler/CompileError (fn [c] (eval '(def nowhere-yet 41)) (invoke-restart 'retry))]
+            (+ 1 (eval 'nowhere-yet)))))
+(is (= :instead (handler-bind [skein.compiler/CompileError (fn [c] (invoke-restart 'use-value :instead))]
+                  (eval '(missing-fn 1)))))
+
+;;; The IR (M10 part 1): analyze's tree, and generate from it.
+(let [ir (skein.compiler/analyze nil '(let* [x 1] (fn* [y] (inc (+ x y)))))
+      [[b init]] (:bindings ir)
+      f (peek (:body (:body ir)))
+      call (peek (:body (:body (first (:arities f)))))
+      x-ref (first (:args (first (:args call))))]
+  (is (= [:let false :const 1] [(:op ir) (:loop ir) (:op init) (:value init)]))
+  (is (= :fn (:op f)))
+  (is (= [:call #'inc] [(:op call) (:var (:f call))]))
+  (is (= [:local b] [(:op x-ref) (:binding x-ref)]) "x inside the fn is the let's binding, by identity"))
+(is (= 7 ((skein.compiler/generate (skein.compiler/analyze nil '(let* [x 1] ((fn* [y] (+ x y)) 6)))))))
+
+;;; Constants are shared by identity, as the seed shares them: the same
+;;; object twice is one constant, two equal ones are two. (The compiler
+;;; finds them by an identity index: a function with many of them, too.)
+(defn- consts-of [form]
+  (:consts (first (:arities (skein.compiler/%signature ((skein.compiler/compile-toplevel form)))))))
+(let [s (str "sh" "ared") t (str "sh" "ared")]
+  (is (= 1 (count (filter (fn [k] (identical? k s)) (consts-of (list 'fn* [] (list 'vector s s s)))))))
+  (is (= 2 (count (filter (fn [k] (= k "shared")) (consts-of (list 'fn* [] (list 'vector s t s t)))))))
+  (let [many (mapv (fn [i] (str "k" i)) (range 300))
+        ks (consts-of (list 'fn* [] (cons 'do (concat many (reverse many) [nil]))))]
+    (is (= 300 (count ks)) "each once")
+    (is (= (count many) (count (filter string? ks))))))

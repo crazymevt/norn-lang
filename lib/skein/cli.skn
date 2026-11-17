@@ -1,0 +1,370 @@
+;;;; skein.cli — command-line parsing: typed options, positional arguments,
+;;;; defaults, subcommands and generated help.
+;;;;
+;;;; A program describes its command line as data, a spec:
+;;;;
+;;;;   {:name "notes" :summary "Keep short notes." :version "1.2"
+;;;;    :options [{:name :verbose :short \v :count true :doc "More output"}
+;;;;              {:name :dir :value "DIR" :default "notes" :env "NOTES_DIR"}]
+;;;;    :commands [{:name "add" :summary "Add a note"
+;;;;                :options [{:name :tag :short \t :multiple true}]
+;;;;                :args [{:name :text :variadic true}]
+;;;;                :run (fn [{:keys [options args]}] …)}]}
+;;;;
+;;;; (run spec) parses (skein.sys/program-args) against it. It prints the
+;;;; help for --help, or a usage error (status 2), or calls the command's
+;;;; :run with what was parsed and returns the exit status. (parse spec
+;;;; args) gives the parsed map alone, and signals UsageError.
+
+(ns skein.cli
+  (:require [skein.string :as str] [skein.sys :as sys]))
+
+(defclass UsageError (Error) ((command :initform []))
+  (:doc "A command line that doesn't fit its spec: an unknown option, a missing
+  argument, a value of the wrong type. :command is the path of the command
+  it was for. run prints it with a pointer to --help (status 2)."))
+
+(defn- fail [path msg] (error UsageError :message msg :command path))
+
+;;; ---- specs ----
+
+(defn- valued? [o] (boolean (or (:value o) (:type o) (:multiple o) (:choices o))))
+
+(defn- option-spec
+  "Option o with what parsing needs filled in: :long, :short as a string,
+  and :kind (:flag, :count, :value or :multiple)."
+  [o]
+  (when-not (keyword? (:name o)) (error "skein.cli: an option needs a keyword :name, not" (pr-str o)))
+  (let [short (when-let [s (:short o)] (str s))]
+    (when (and short (not= 1 (count short)))
+      (error "skein.cli: an option's :short is one character, not" (pr-str (:short o))))
+    (when (and short (re-matches #"[0-9-]" short))
+      (error "skein.cli: an option's :short can't be a digit or -:" (pr-str short)))
+    (assoc o
+           :long (if (contains? o :long) (:long o) (name (:name o)))
+           :short short
+           :kind (cond (:count o) :count (:multiple o) :multiple (valued? o) :value :else :flag))))
+
+(defn- placeholder [x] (or (:value x) (str/upper-case (name (:name x)))))
+
+(defn- check-spec [spec path]
+  (let [opts (map option-spec (:options spec))
+        dup (fn [k] (first (keep (fn [[v n]] (when (and v (> n 1)) v)) (frequencies (map k opts)))))]
+    (when-let [d (dup :long)] (error "skein.cli: two options are --" d))
+    (when-let [d (dup :short)] (error "skein.cli: two options are -" d))
+    (when-let [d (dup :name)] (error "skein.cli: two options are named" d))
+    (when (and (seq (:commands spec)) (seq (:args spec)))
+      (error "skein.cli: a command with subcommands takes no :args of its own:" (str/join " " path)))
+    (doseq [a (:args spec)]
+      (when-not (keyword? (:name a)) (error "skein.cli: an argument needs a keyword :name, not" (pr-str a))))
+    (when (some :variadic (butlast (:args spec)))
+      (error "skein.cli: only the last argument can be :variadic:" (str/join " " path)))
+    (doseq [c (:commands spec)]
+      (when-not (string? (:name c)) (error "skein.cli: a command needs a string :name, not" (pr-str c)))
+      (check-spec c (conj path (:name c))))))
+
+(defn- levels-at
+  "The specs from the root to the command at path."
+  [spec path]
+  (reduce (fn [levels c]
+            (if-let [sub (first (filter #(= c (:name %)) (:commands (peek levels))))]
+              (conj levels sub)
+              (error "skein.cli: no command" (pr-str c) "in" (pr-str (mapv :name (:commands (peek levels)))))))
+          [spec] path))
+
+(defn- builtins
+  "--help (and -h unless an option takes it), and at the root --version
+  when the spec has one."
+  [levels]
+  (let [opts (mapcat (fn [l] (map option-spec (:options l))) levels)
+        longs (set (keep :long opts)) shorts (set (keep :short opts))]
+    (cond-> []
+            (not (longs "help")) (conj {:name ::help :long "help" :short (when-not (shorts "h") "h") :kind :flag
+                                        :doc "Show this help and exit"})
+            (and (:version (first levels)) (not (longs "version")))
+            (conj {:name ::version :long "version" :kind :flag :doc "Show the version and exit"}))))
+
+(defn- option-table
+  "{:long {name option} :short {char option}} for the options in effect
+  at the last of levels: its own, its ancestors' (a deeper one shadows),
+  and the built-in ones."
+  [levels]
+  (reduce (fn [t o]
+            (cond-> t
+                    (:long o) (assoc-in [:long (:long o)] o)
+                    (:short o) (assoc-in [:short (:short o)] o)))
+          {:long {} :short {}}
+          (concat (mapcat (fn [l] (map option-spec (:options l))) levels) (builtins levels))))
+
+;;; ---- values ----
+
+(defn- choices-text
+  "x's :choices as they're typed on the command line (keywords without
+  their colon)."
+  [x]
+  (str/join ", " (map (fn [c] (if (keyword? c) (subs (str c) 1) (str c))) (:choices x))))
+
+(defn- convert
+  "Text s for what (an option or argument's name in messages), as x's
+  :type gives it, and one of its :choices if it has them."
+  [path what x s]
+  (let [type (:type x)
+        bad (fn [expected] (fail path (str what ": expected " expected ", got " (pr-str s))))
+        v (cond (or (nil? type) (= type :string)) s
+                (= type :int) (or (parse-long s) (bad "an integer"))
+                (= type :float) (or (parse-double s) (bad "a number"))
+                (= type :keyword) (keyword s)
+                (= type :boolean) (case (str/lower-case s)
+                                    ("true" "yes" "on" "1") true
+                                    ("false" "no" "off" "0") false
+                                    (bad "true or false"))
+                (ifn? type) (try (type s)
+                                 (catch Error e (fail path (str what ": " (condition-message e)))))
+                :else (error "skein.cli: unknown :type" (pr-str type)))]
+    (when (and (:choices x) (not (some #(= v %) (:choices x))))
+      (fail path (str what ": " (pr-str s) " isn't one of " (choices-text x))))
+    v))
+
+(defn- distance
+  "The edit distance between strings a and b: characters inserted,
+  deleted or changed, and two neighbors swapped, each one edit."
+  [a b]
+  (let [a (vec a) b (vec b) n (count b)]
+    (loop [i 0 prev2 nil prev (vec (range (inc n)))]
+      (if (= i (count a))
+        (peek prev)
+        (let [ai (nth a i)
+              row (reduce (fn [row j]
+                            (let [d (min (inc (peek row)) (inc (nth prev j))
+                                         (+ (nth prev (dec j)) (if (= ai (nth b (dec j))) 0 1)))]
+                              (conj row (if (and prev2 (> j 1) (= ai (nth b (- j 2))) (= (nth a (dec i)) (nth b (dec j))))
+                                          (min d (inc (nth prev2 (- j 2))))
+                                          d))))
+                          [(inc i)] (range 1 (inc n)))]
+          (recur (inc i) prev row))))))
+
+(defn- bare [s] (or (re-find #"[^-].*" s) s))
+
+(defn- suggest
+  "The candidate closest to s, when it's close enough to be a likely typo
+  (leading dashes aside)."
+  [s candidates]
+  (when (seq candidates)
+    (let [d #(distance (bare s) (bare %))
+          best (apply min-key d candidates)]
+      (when (<= (d best) (max 1 (quot (count (bare best)) 3))) best))))
+
+(defn- unknown [path what s candidates]
+  (fail path (str "unknown " what " " (pr-str s)
+                  (when-let [c (suggest s candidates)] (str " (did you mean " (pr-str c) "?)")))))
+
+(defn- store
+  "vals with option o given: s its text (nil for a flag), negated for --no-x."
+  [path vals o flag s negated]
+  (case (:kind o)
+    :flag (assoc vals (:name o) (not negated))
+    :count (update vals (:name o) (fnil inc 0))
+    :value (assoc vals (:name o) (convert path flag o s))
+    :multiple (update vals (:name o) (fnil conj []) (convert path flag o s))))
+
+(defn- take-long
+  "[vals toks] after long option token t (with toks after it)."
+  [path table vals t toks]
+  (let [i (str/index-of t "=")
+        nm (subs t 2 (or i (count t)))
+        inline (when i (subs t (inc i)))
+        o (get-in table [:long nm])
+        negated (when (and (nil? o) (str/starts-with? nm "no-"))
+                  (let [o (get-in table [:long (subs nm 3)])] (when (and o (:negatable o) (= :flag (:kind o))) o)))
+        o (or o negated)
+        flag (str "--" nm)]
+    (cond (nil? o) (unknown path "option" flag (map #(str "--" %) (keys (:long table))))
+          (#{:flag :count} (:kind o))
+          (if inline (fail path (str flag " takes no value")) [(store path vals o flag nil negated) toks])
+          inline [(store path vals o flag inline false) toks]
+          (seq toks) [(store path vals o flag (first toks) false) (next toks)]
+          :else (fail path (str flag " needs a value (" (placeholder o) ")")))))
+
+(defn- take-shorts
+  "[vals toks] after a cluster of short options, t (\"-vx\", \"-ofile\")."
+  [path table vals t toks]
+  (loop [cs (seq (subs t 1)) vals vals]
+    (if-let [c (first cs)]
+      (let [o (get-in table [:short (str c)]) flag (str "-" c)]
+        (cond (nil? o) (unknown path "option" flag [])
+              (#{:flag :count} (:kind o)) (recur (next cs) (store path vals o flag nil false))
+              (next cs) [(store path vals o flag (apply str (next cs)) false) toks]
+              (seq toks) [(store path vals o flag (first toks) false) (next toks)]
+              :else (fail path (str flag " needs a value (" (placeholder o) ")"))))
+      [vals toks])))
+
+(defn- assign-args
+  "The positional texts pos as a map by the specs' names: optional ones
+  get a value only when enough remain for the required ones after them."
+  [path specs pos]
+  (loop [specs specs pos pos out {}]
+    (if-let [a (first specs)]
+      (let [need (count (remove #(or (:optional %) (:variadic %)) (rest specs)))
+            avail (- (count pos) need)
+            what (placeholder a)]
+        (cond (:variadic a)
+              (let [taken (vec (take (max 0 avail) pos))]
+                (when (and (empty? taken) (not (:optional a))) (fail path (str "missing " what)))
+                (recur (rest specs) (drop (count taken) pos)
+                       (assoc out (:name a) (mapv #(convert path what a %) taken))))
+              (and (:optional a) (<= avail 0))
+              (recur (rest specs) pos (if (contains? a :default) (assoc out (:name a) (:default a)) out))
+              (empty? pos) (fail path (str "missing " what))
+              :else (recur (rest specs) (rest pos) (assoc out (:name a) (convert path what a (first pos))))))
+      (do (when (seq pos) (fail path (str "unexpected argument " (pr-str (first pos)))))
+          out))))
+
+(defn- complete-options
+  "vals with every option not given filled in: from its :env variable,
+  its :default, or false, 0 or [] by its kind. A :required one missing
+  is a usage error."
+  [path levels vals]
+  (reduce (fn [vals o]
+            (cond (contains? vals (:name o)) vals
+                  (and (:env o) (sys/getenv (:env o)))
+                  (let [s (sys/getenv (:env o)) what (str "$" (:env o))]
+                    (case (:kind o)
+                      :multiple (assoc vals (:name o) [(convert path what o s)])
+                      :count (assoc vals (:name o) (or (parse-long s) (convert path what {:type :int} s)))
+                      :flag (assoc vals (:name o) (convert path what {:type :boolean} s))
+                      (assoc vals (:name o) (convert path what o s))))
+                  (contains? o :default) (assoc vals (:name o) (:default o))
+                  (:required o) (fail path (str "missing " (if (:long o) (str "--" (:long o)) (str "-" (:short o)))))
+                  :else (case (:kind o) :flag (assoc vals (:name o) false) :count (assoc vals (:name o) 0)
+                              :multiple (assoc vals (:name o) []) vals)))
+          vals
+          ;; deepest first, so a shadowed ancestor option of the same name is skipped
+          (mapcat (fn [l] (map option-spec (:options l))) (rseq levels))))
+
+;;; ---- parsing ----
+
+(defn parse
+  "Command-line arguments args (default (skein.sys/program-args)) parsed
+  against spec:
+    {:options {name value …}  every option, given or filled in
+     :args {name value …}     the positional arguments
+     :command [\"add\"]        the path of subcommand names
+     :spec …}                 the command's spec
+  With --help or --version, {:help true} or {:version true} and the
+  :command path instead. A bad command line signals UsageError, its
+  :command the path parsed so far.
+
+  Options: --name, --name=value or --name value; -x, -xvalue or -x value;
+  -abc for flags together; --no-name for a :negatable flag. -- ends the
+  options. Options may follow positional arguments unless the spec says
+  :options-first; a subcommand's options include its ancestors'."
+  (^Map [^Map spec] (parse spec (sys/program-args)))
+  (^Map [^Map spec ^(? Sequential) args]
+   (check-spec spec [])
+   (loop [toks (seq args) levels [spec] path [] vals {} pos [] raw false]
+     (let [lvl (peek levels) table (option-table levels) t (first toks)]
+       (cond
+         (::help vals) {:help true :command path :spec lvl}
+         (::version vals) {:version true :command path :spec lvl}
+         (nil? toks)
+         (do (when (and (seq (:commands lvl)) (not (:run lvl)))
+               (fail path (str "missing command (one of " (str/join ", " (map :name (:commands lvl))) ")")))
+             {:options (complete-options path levels vals)
+              :args (assign-args path (:args lvl) pos)
+              :command path :spec lvl})
+         (and (not raw) (= t "--")) (recur (next toks) levels path vals pos true)
+         (and (not raw) (str/starts-with? t "--"))
+         (let [[vals toks] (take-long path table vals t (next toks))] (recur toks levels path vals pos raw))
+         (and (not raw) (str/starts-with? t "-") (> (count t) 1)
+              (not (and (re-matches #"-[0-9.].*" t) (nil? (get-in table [:short (subs t 1 2)])))))
+         (let [[vals toks] (take-shorts path table vals t (next toks))] (recur toks levels path vals pos raw))
+         (seq (:commands lvl))
+         (if-let [c (first (filter #(= t (:name %)) (:commands lvl)))]
+           (recur (next toks) (conj levels c) (conj path t) vals [] raw)
+           (unknown path "command" t (map :name (:commands lvl))))
+         :else (recur (next toks) levels path vals (conj pos t) (or raw (boolean (:options-first lvl)))))))))
+
+;;; ---- help ----
+
+(defn- option-label [o]
+  (let [v (when (#{:value :multiple} (:kind o)) (str " " (placeholder o)))]
+    (cond (and (:short o) (:long o)) (str "-" (:short o) ", --" (:long o) v)
+          (:long o) (str "    --" (:long o) v)
+          :else (str "-" (:short o) v))))
+
+(defn- option-notes [o]
+  (let [notes (cond-> []
+                      (#{:multiple :count} (:kind o)) (conj "repeatable")
+                      (:negatable o) (conj (str "--no-" (:long o) " to turn off"))
+                      (:choices o) (conj (str "one of " (choices-text o)))
+                      (and (contains? o :default) (not (contains? #{nil false [] ""} (:default o))))
+                      (conj (str "default " (if (string? (:default o)) (:default o) (pr-str (:default o)))))
+                      (:env o) (conj (str "env " (:env o)))
+                      (:required o) (conj "required"))]
+    (str (:doc o) (when (seq notes) (str (when (:doc o) " ") "(" (str/join "; " notes) ")")))))
+
+(defn- arg-label [a]
+  (let [p (str (placeholder a) (when (:variadic a) "..."))]
+    (if (:optional a) (str "[" p "]") p)))
+
+(defn- section [title rows]
+  (when (seq rows)
+    (let [w (min 28 (apply max (map (comp count first) rows)))]
+      (apply str title ":\n"
+             (map (fn [[l r]]
+                    (cond (str/blank? r) (str "  " l "\n")
+                          (> (count l) w) (str "  " l "\n  " (str/pad-right "" w) "  " r "\n")
+                          :else (str "  " (str/pad-right l w) "  " r "\n")))
+                  rows)))))
+
+(defn usage
+  "The help text for spec, or for the subcommand at path (a vector of
+  command names) within it."
+  (^String [^Map spec] (usage spec []))
+  (^String [^Map spec ^Sequential path]
+   (let [levels (levels-at spec path)
+         lvl (peek levels)
+         prog (str/join " " (cons (or (:name spec) "program") path))
+         [here-builtins root-builtins] ((juxt filter remove) #(or (= ::help (:name %)) (= 1 (count levels)))
+                                                             (builtins levels))
+         own (concat (map option-spec (:options lvl)) here-builtins)
+         own-names (set (map :name own))
+         inherited (concat (remove #(own-names (:name %)) (mapcat (fn [l] (map option-spec (:options l))) (pop levels)))
+                           root-builtins)
+         blocks [(str "Usage: " prog " [options]"
+                      (if (seq (:commands lvl))
+                        (if (:run lvl) " [<command> [args]]" " <command> [args]")
+                        (apply str (map #(str " " (arg-label %)) (:args lvl))))
+                      "\n")
+                 (when-let [text (seq (remove nil? [(:summary lvl) (:doc lvl)]))] (str (str/join "\n\n" text) "\n"))
+                 (section "Commands" (map (fn [c] [(:name c) (or (:summary c) "")]) (:commands lvl)))
+                 (section "Arguments" (keep (fn [a] (when (:doc a) [(placeholder a) (:doc a)])) (:args lvl)))
+                 (section "Options" (map (fn [o] [(option-label o) (option-notes o)]) own))
+                 (section "Global options" (map (fn [o] [(option-label o) (option-notes o)]) inherited))
+                 (when (seq (:commands lvl)) (str "Run '" prog " <command> --help' for a command's options.\n"))]]
+     (str/join "\n" (remove nil? blocks)))))
+
+;;; ---- running ----
+
+(defn run
+  "Parse args (default (skein.sys/program-args)) against spec and act:
+  print the help for --help or the version for --version (status 0);
+  print a usage error to stderr (status 2); or call the :run of the
+  command given (or its nearest ancestor with one) with the parsed map
+  (see parse). Returns the exit status: :run's value when it's an
+  integer, else 0. For a script, (skein.sys/exit (run spec)); a built
+  program's entry function can return it."
+  (^Integer [^Map spec] (run spec (sys/program-args)))
+  (^Integer [^Map spec ^(? Sequential) args]
+   (let [prog (or (:name spec) "program")
+         r (try (parse spec args)
+                (catch UsageError e
+                  (%write-stderr (str prog ": " (condition-message e) "\n"
+                                      "Run '" (str/join " " (cons prog (:command e))) " --help' for usage.\n"))
+                  2))]
+     (cond (integer? r) r
+           (:help r) (do (print (usage spec (:command r))) 0)
+           (:version r) (do (println prog (:version spec)) 0)
+           :else (let [f (some :run (rseq (levels-at spec (:command r))))]
+                   (when-not f (error "skein.cli/run: the spec has no :run for" (pr-str (:command r))))
+                   (let [v (f r)] (if (integer? v) v 0)))))))

@@ -1,0 +1,336 @@
+;;;; skein.property — property-based testing: generated inputs, reproducible
+;;;; seeds, and shrinking.
+;;;;
+;;;;   (ns my.lib-test (:require [skein.test :refer [deftest is]] [skein.property :as p]))
+;;;;
+;;;;   (p/defproperty reversing-twice {:runs 200}
+;;;;     [v (p/vectors (p/integers))]
+;;;;     (= v (reverse (reverse v))))
+;;;;
+;;;; A generator draws numbers from a source and builds a value from them.
+;;;; The source records every draw, so a failing case is that list of
+;;;; numbers. Shrinking edits the list (dropping runs of draws, zeroing and
+;;;; halving them) and replays it, keeping each edit that still fails. Every
+;;;; generator here is built so that smaller draws give simpler values (0,
+;;;; empty, the first choice), so shrinking works for any combination of
+;;;; them, fmap and bind included, with no shrinker of its own.
+;;;;
+;;;; A failure reports its seed: (check p :seed s), or :seed in
+;;;; defproperty's options, reruns exactly the same cases.
+
+(ns skein.property
+  (:refer-core :exclude [keyword symbol])
+  (:require [skein.math :as math] [skein.random :as random] [skein.test :as test]))
+
+;;; ---- sources ----
+
+;; A source gives each draw from a random generator and records it, or
+;; replays recorded draws (a draw past their end is 0).
+(defn- random-source [g] {:g g :drawn (volatile! []) :replay nil :at (volatile! 0)})
+(defn- replay-source [draws] {:g nil :drawn (volatile! []) :replay draws :at (volatile! 0)})
+
+(defn- draw!
+  "A number in [0, n) from source src."
+  [src n]
+  (let [v (if-let [r (:replay src)]
+            (let [i @(:at src)] (vswap! (:at src) inc) (min (dec n) (get r i 0)))
+            (random/int (:g src) n))]
+    (vswap! (:drawn src) conj v)
+    v))
+
+;;; ---- generators ----
+
+(defclass Generator () ((run :required true))
+  (:doc "A generator of random values for property tests, and how they shrink
+  (integers, strings, vectors, fmap… make them; generate runs one)."))
+
+(defn generator?
+  "Is x a generator?"
+  ^Boolean [x]
+  (instance? Generator x))
+
+(defn generate
+  "A value from generator gen. With a seed, the same one each time; size
+  (default 30) bounds numbers and collection lengths."
+  ([^Generator gen] (generate gen 30))
+  ([^Generator gen ^Integer size] (generate gen size (%rand-seed)))
+  ([^Generator gen ^Integer size ^Integer seed] ((:run gen) (random-source (random/generator seed)) size)))
+
+(defn- run-gen [gen src size]
+  (when-not (generator? gen) (error "skein.property: expected a generator, got" gen))
+  ((:run gen) src size))
+
+(defn- gen [f] (Generator :run f))
+
+(defn constant "A generator always giving x." ^Generator [x] (gen (fn [_ _] x)))
+
+(defn fmap "A generator giving (f x) for each x gen gives." ^Generator [f ^Generator g]
+  (gen (fn [src size] (f (run-gen g src size)))))
+
+(defn bind
+  "A generator: a value x from g, then a value from the generator (f x)."
+  ^Generator [^Generator g f]
+  (gen (fn [src size] (run-gen (f (run-gen g src size)) src size))))
+
+(defn- magnitude
+  "A nonnegative integer up to bound, from a draw. The draw is a number of
+  bits, then the bits: so small values need small draws, and a shrunk one
+  gets smaller."
+  [src bound]
+  (if (<= bound 0)
+    0
+    (let [bits (draw! src (inc (count (str (bit-shift-right bound 1)))))
+          limit (min bound (dec (bit-shift-left 1 (* 4 bits))))]
+      (if (zero? limit) 0 (draw! src (inc limit))))))
+
+(defn integers
+  "A generator of integers, shrinking toward 0 (or the bound nearest it).
+  :min and :max bound them; without them, they grow with the size."
+  ^Generator [& {:keys [min max]}]
+  (gen (fn [src size]
+         (let [lo (or min (- (* size size))) hi (or max (* size size))]
+           (when (> lo hi) (error "skein.property/integers: :min is above :max" lo hi))
+           (let [origin (cond (<= lo 0 hi) 0 (pos? lo) lo :else hi)
+                 up (- hi origin) down (- origin lo)]
+             (cond (and (pos? up) (pos? down) (= 1 (draw! src 2))) (- origin (inc (magnitude src (dec down))))
+                   (pos? up) (+ origin (magnitude src up))
+                   :else (- origin (magnitude src down))))))))
+
+(defn naturals "A generator of integers from 0, growing with the size." ^Generator [] (integers :min 0))
+
+(defn booleans "A generator of booleans, shrinking toward false." ^Generator [] (gen (fn [src _] (= 1 (draw! src 2)))))
+
+(defn floats
+  "A generator of finite floats, shrinking toward 0.0: whole numbers,
+  fractions and, now and then, very large or small magnitudes."
+  ^Generator []
+  (gen (fn [src size]
+         (let [whole (run-gen (integers) src size)
+               kind (draw! src 4)]
+           (case kind
+             0 (double whole)
+             1 (/ (double whole) (inc (draw! src 1000)))
+             2 (* (double whole) (math/pow 10.0 (- (draw! src 300) 150)))
+             (+ whole (/ (draw! src 1000000) 1000000.0)))))))
+
+(defn elements "A generator of coll's items, shrinking toward the first." ^Generator [coll]
+  (let [v (vec coll)]
+    (when (empty? v) (error "skein.property/elements needs at least one item"))
+    (gen (fn [src _] (nth v (draw! src (count v)))))))
+
+(defn one-of "A generator of values from one of gens, shrinking toward the first." ^Generator [& ^Generator gens]
+  (let [v (vec gens)]
+    (gen (fn [src size] (run-gen (nth v (draw! src (count v))) src size)))))
+
+(defn frequency
+  "A generator choosing among [weight generator] pairs by weight, shrinking
+  toward the first."
+  ^Generator [& ^Sequential pairs]
+  (let [total (reduce + (map first pairs))]
+    (gen (fn [src size]
+           (let [r (draw! src total)]
+             (loop [[[w g] & more] pairs acc 0]
+               (if (or (nil? more) (< r (+ acc w))) (run-gen g src size) (recur more (+ acc w)))))))))
+
+(defn such-that
+  "A generator of gen's values that satisfy pred, trying up to :tries times."
+  ^Generator [pred ^Generator g & {:keys [tries] :or {tries 100}}]
+  (gen (fn [src size]
+         (loop [n 0]
+           (let [x (run-gen g src size)]
+             (cond (pred x) x
+                   (< n tries) (recur (inc n))
+                   :else (error "skein.property/such-that: no value satisfied the predicate" pred)))))))
+
+(defn- sized-count [src size min max]
+  (let [lo (or min 0) hi (or max (+ lo size))]
+    (+ lo (draw! src (inc (- hi lo))))))
+
+(defn vectors
+  "A generator of vectors of g's values, shrinking toward shorter ones.
+  :min and :max bound the length; without :max it grows with the size."
+  ^Generator [^Generator g & {:keys [min max]}]
+  (gen (fn [src size] (mapv (fn [_] (run-gen g src size)) (range (sized-count src size min max))))))
+
+(defn lists "As vectors, giving lists." ^Generator [^Generator g & {:as opts}]
+  (fmap (fn [v] (apply skein.core/list v)) (apply vectors g (mapcat identity opts))))
+
+(defn sets "A generator of sets of g's values (as many as are distinct)." ^Generator [^Generator g & {:as opts}]
+  (fmap set (apply vectors g (mapcat identity opts))))
+
+(defn maps "A generator of maps from key-gen's values to value-gen's." ^Generator [^Generator key-gen ^Generator value-gen & {:as opts}]
+  (fmap (fn [pairs] (into {} pairs))
+        (apply vectors (gen (fn [src size] [(run-gen key-gen src size) (run-gen value-gen src size)]))
+               (mapcat identity opts))))
+
+(defn tuple "A generator of vectors: a value from each of gens, in order." ^Generator [& ^Generator gens]
+  (gen (fn [src size] (mapv (fn [g] (run-gen g src size)) gens))))
+
+(def ^:private printable (mapv char (range 32 127)))
+
+(defn chars
+  "A generator of characters, shrinking toward \\a: printable ASCII by
+  default, or :unicode for any Unicode scalar value."
+  ^Generator [& {:keys [unicode]}]
+  (if unicode
+    (gen (fn [src _]
+           (let [n (draw! src 0x10F800)]
+             ;; (0x61, a, first; the surrogates skipped)
+             (char (let [c (mod (+ n 0x61) 0x10F800)] (if (>= c 0xD800) (+ c 0x800) c))))))
+    (gen (fn [src _] (nth printable (mod (+ (draw! src (count printable)) 65) (count printable)))))))
+
+(defn strings
+  "A generator of strings of chars's characters (options as chars's, and
+  :min and :max for the length), shrinking toward shorter ones."
+  ^Generator [& {:keys [unicode min max]}]
+  (let [c (chars :unicode unicode)]
+    (fmap (fn [cs] (apply str cs)) (vectors c :min min :max max))))
+
+(def ^:private letters (mapv char (concat (range 97 123) (range 65 91))))
+
+(defn- name-gen []
+  (gen (fn [src size]
+         (apply str (nth letters (draw! src (count letters)))
+                (map (fn [_] (nth letters (draw! src (count letters)))) (range (draw! src (+ 1 (quot size 3)))))))))
+
+(defn keyword "A generator of unqualified keywords." ^Generator [] (fmap skein.core/keyword (name-gen)))
+
+(defn symbol "A generator of unqualified symbols." ^Generator [] (fmap skein.core/symbol (name-gen)))
+
+(defn byte-strings "A generator of Bytes, shrinking toward fewer and smaller bytes." ^Generator [& {:keys [min max]}]
+  (fmap bytes (vectors (integers :min 0 :max 255) :min min :max max)))
+
+(defn recursive
+  "A generator of trees: leaf-gen's values, or (branch inner) where inner
+  generates smaller trees. Depth is bounded by the size."
+  ^Generator [branch ^Generator leaf-gen]
+  (gen (fn [src size]
+         (letfn [(tree [depth]
+                       (if (or (zero? depth) (zero? (draw! src 3)))
+                         (run-gen leaf-gen src size)
+                         (run-gen (branch (gen (fn [_ _] (tree (dec depth))))) src (quot size 2))))]
+           (tree (min 5 (quot size 5)))))))
+
+;;; ---- properties ----
+
+(defclass Property () ((names) (generate) (holds))
+  (:doc "A claim about every value some generators make, for check (from
+  for-all)."))
+
+(defmacro for-all
+  "(for-all [x gen y gen…] body…): a property that body is truthy (and
+  doesn't signal) for generated x, y…. A later generator may use earlier
+  values: [n (naturals) v (vectors (integers) :max n)]."
+  [bindings & body]
+  (let [pairs (partition 2 bindings)
+        names (mapv first pairs)
+        src (gensym "src") size (gensym "size")]
+    `(Property :names '~names
+               :generate (fn [~src ~size]
+                           (let [~@(mapcat (fn [[n g]] [n `(skein.property/%run ~g ~src ~size)]) pairs)]
+                             ~names))
+               :holds (fn [~names] ~@body))))
+
+(defn %run [g src size] (run-gen g src size))
+
+(defn- outcome
+  "How property p does on the draws a source gives: [args nil] when it
+  holds, [args failure] when it doesn't (false, or the condition it
+  signalled). Replaying, generation that fails gives nil (that edit of the
+  draws is no good); otherwise its condition goes on up."
+  [p src size]
+  (when-let [args (if (:replay src)
+                    (try ((:generate p) src size) (catch Error _ nil))
+                    ((:generate p) src size))]
+    (let [r (try (if ((:holds p) args) nil {:result false})
+                 (catch Error e {:error (condition-message e) :condition e}))]
+      [args r])))
+
+(defn- remove-run [draws i k] (into (subvec draws 0 i) (subvec draws (+ i k))))
+
+(defn- candidates
+  "Smaller versions of draws, the biggest steps first: runs of them
+  removed; one draw lowered by one with a later run removed (a shorter
+  collection without one of its items, say: its length and the item's
+  draws go together); each draw zeroed or moved part way to 0; then part
+  of one draw moved onto a later one (so [7 44 49] can become [100])."
+  [draws]
+  (let [n (count draws)
+        removals (for [k [8 7 6 5 4 3 2 1] i (range (- n k) -1 -1)]
+                   (remove-run draws i k))
+        paired (for [i (range n) :when (pos? (nth draws i))
+                     k [1 2 3 4 5 6 7 8] j (range (inc i) (min (- n k -1) (+ i 33)))]
+                 (remove-run (update draws i dec) j k))
+        smaller (for [i (range n) :let [d (nth draws i)] :when (pos? d)
+                      v (distinct [0 (quot d 2) (- d (quot d 4)) (- d (quot d 8)) (dec d)])
+                      :when (< v d)]
+                  (assoc draws i v))
+        moved (for [i (range n) :let [d (nth draws i)] :when (pos? d)
+                    x (distinct [d (quot d 2) 1]) :when (pos? x)
+                    j (range (inc i) (min n (+ i 33))) :when (pos? (nth draws j))]
+                (-> draws (update i - x) (update j + x)))]
+    (concat removals paired smaller moved)))
+
+(defn- simpler? [a b]
+  (or (< (count a) (count b)) (and (= (count a) (count b)) (neg? (compare a b)))))
+
+(defn- shrink
+  "The simplest draws found that still fail, trying at most budget edits,
+  and how many shrinks were kept."
+  [p draws size budget]
+  (let [tries (volatile! 0)]
+    (loop [best draws kept 0]
+      (let [next (some (fn [c]
+                         (when (< @tries budget)
+                           (vswap! tries inc)
+                           (let [src (replay-source c) o (outcome p src size)]
+                             (when (and o (second o))
+                               (let [used @(:drawn src)] (when (simpler? used best) used))))))
+                       (candidates best))]
+        (if next (recur next (inc kept)) [best kept])))))
+
+(defn check
+  "Run property p on :runs (default 100) generated cases, with sizes up to
+  :max-size (default 50). {:pass? true :runs n :seed s}, or for a failure
+  {:pass? false :seed s :run i :args … (shrunk) :original … :failure …},
+  with the arguments by name. :seed reruns a failure's cases exactly."
+  ^Map [^Property p & {:keys [runs seed max-size max-shrinks] :or {runs 100 max-size 50 max-shrinks 5000}}]
+  (let [seed (or seed (abs (%rand-seed)))
+        named (fn [args] (zipmap (map skein.core/keyword (:names p)) args))]
+    (loop [i 0]
+      (if (= i runs)
+        {:pass? true :runs runs :seed seed}
+        (let [size (if (= 1 runs) max-size (quot (* i max-size) (dec runs)))
+              src (random-source (random/generator (+ seed i)))
+              [args failure :as o] (outcome p src size)]
+          (cond (nil? o) (recur (inc i))
+                (nil? failure) (recur (inc i))
+                :else
+                (let [[draws shrinks] (shrink p @(:drawn src) size max-shrinks)
+                      [small small-failure] (outcome p (replay-source draws) size)]
+                  {:pass? false :seed seed :run i :shrinks shrinks
+                   :args (named small) :original (named args)
+                   :failure (dissoc (or small-failure failure) :condition)})))))))
+
+(defn %describe
+  "A failed check's result, as text for a report."
+  ^String [^Map {:keys [seed run args failure]}]
+  (str "falsified with " (pr-str args)
+       (when-let [e (:error failure)] (str ", signalling: " e))
+       " (seed " seed ", case " run "; rerun with :seed " seed ")"))
+
+(defmacro defproperty
+  "(defproperty name {:runs 100 :seed s …} [x gen …] body…): a test (as
+  deftest makes) that the property holds. A failure reports the shrunk
+  arguments and the seed that reproduces it. The options map may be left
+  out."
+  [name & more]
+  (let [[opts bindings & body] (if (map? (first more)) more (cons {} more))]
+    `(test/deftest ~name
+       (let [r# (apply check (for-all ~bindings ~@body) (mapcat identity ~opts))]
+         (test/%report (if (:pass? r#)
+                         {:type :pass}
+                         {:type :fail :form '~(cons 'for-all (cons bindings body))
+                          :expected "the property to hold" :actual (skein.property/%describe r#)
+                          :message nil :location ~(%macro-location)}))
+         r#))))

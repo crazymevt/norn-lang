@@ -1,0 +1,99 @@
+;;;; skein.xref — who refers to what: the vars each definition's code refers
+;;;; to (its callees), and the other way round (its callers), read from
+;;;; compiled code, as it is now.
+;;;;
+;;;;   (callees #'my.app/main)    ; => [#'skein.cli/run #'my.app/spec …]
+;;;;   (callers #'my.app/helper)  ; => [#'my.app/main]
+;;;;
+;;;; A function refers to the vars its code loads, nested functions'
+;;;; included; macros count as they expanded, since what's compiled is the
+;;;; expansion. A var whose value is a generic function refers to what its
+;;;; methods do, and one whose value is data (a map of handlers, say) to
+;;;; what the functions in it do. What a closure captured counts too (a
+;;;; checked function's wrapper holds the var it checks). Nothing is
+;;;; cached: it's read from the code each time, so a redefinition shows at
+;;;; once.
+
+(ns skein.xref)
+
+(defn- value-refs
+  "The vars x (a value) refers to, into out (a transient set): its code's,
+  its methods', or the functions' in it, depth bounded."
+  [x out depth]
+  (cond (> depth 8) out
+        (var? x) (conj! out x)
+        (generic? x) (reduce (fn [o m] (value-refs (:fn m) o (inc depth))) out (generic-methods x))
+        (fn? x) (reduce (fn [o c] (value-refs c o (inc depth))) (reduce conj! out (%fn-vars x)) (%fn-captured x))
+        (map? x) (reduce (fn [o [k v]] (value-refs v (value-refs k o (inc depth)) (inc depth))) out x)
+        (or (vector? x) (set? x) (list? x)) (reduce (fn [o v] (value-refs v o (inc depth))) out x)
+        :else out))
+
+(defn- wrapper?
+  "Is var v the wrapper that checks another module's function's contract
+  for its callers here (a private name%checked the expander makes)?"
+  [v]
+  (some? (re-find #"%checked$" (str v))))
+
+(defn- unwrap
+  "The function var a contract wrapper v checks (v when it isn't one), so
+  callers of a checked function are the code that calls it: the var whose
+  wrapper v is named for (the expander names it ns%f%checked for ns/f), in
+  what it captured (%wrap-for's) or its code (a call site's, M10 part 4)."
+  [v]
+  (or (when (and (wrapper? v) (bound? v))
+        (let [w (name (symbol (subs (str v) 2)))
+              f (var-get v)]
+          (first (filter (fn [c] (and (var? c) (= w (str (apply str (map (fn [ch] (if (= ch \/) "%" (str ch))) (subs (str c) 2)))
+                                                         "%checked"))))
+                         (concat (%fn-captured f) (%fn-vars f))))))
+      v))
+
+(defn refers-to
+  "The vars value x refers to: a function's code (or a generic function's
+  methods'), or the functions' in x when it's data; contract wrappers seen
+  through."
+  ^Set [x]
+  (set (map unwrap (persistent! (value-refs x (transient #{}) 0)))))
+
+(defn- refs-of
+  "The vars var v's value refers to, contract wrappers seen through."
+  [v]
+  (refers-to (when (bound? v) (var-get v))))
+
+(defn callees
+  "The vars var v's value refers to (see the namespace doc), sorted by name,
+  v itself left out."
+  ^Vector [v]
+  (vec (sort-by str (disj (refs-of v) v))))
+
+(defn- all-vars
+  "Every var interned in a loaded namespace (all-ns gives their names)."
+  []
+  (for [ns (all-ns) [_ v] (ns-interns ns)] v))
+
+(defn references
+  "Every loaded var with what it refers to: {var #{var…}} (vars that refer
+  to nothing left out; contract wrappers seen through, and left out
+  themselves)."
+  ^Map []
+  (into {} (keep (fn [v] (when-not (wrapper? v)
+                           (let [r (disj (refs-of v) v)]
+                             (when (seq r) [v r])))))
+        (all-vars)))
+
+(defn callers
+  "The loaded vars whose values refer to var v, sorted by name."
+  ^Vector [v]
+  (vec (sort-by str (for [[w refs] (references) :when (contains? refs v)] w))))
+
+(defn reachable
+  "Every var reachable from roots (vars) through what each refers to,
+  roots included: a set. refs is (references) if it's been taken already."
+  (^Set [roots] (reachable roots (references)))
+  (^Set [roots refs]
+   (loop [seen (set roots) todo (vec roots)]
+     (if (empty? todo)
+       seen
+       (let [v (peek todo)
+             new (remove seen (get refs v))]
+         (recur (into seen new) (into (pop todo) new)))))))

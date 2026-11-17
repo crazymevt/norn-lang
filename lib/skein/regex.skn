@@ -1,0 +1,72 @@
+;;;; skein.regex — regular expressions (the Rust `regex` crate's syntax).
+;;;;
+;;;; Write a regex as #"pattern" (backslashes need no doubling) or build one
+;;;; with re-pattern. Regexes are values: they print as written, compare by
+;;;; pattern and survive images. Matching takes linear time; there are no
+;;;; backreferences or lookaround.
+;;;;
+;;;; skein.core has the short forms re-find, re-matches and re-seq. This
+;;;; library adds match details (positions and named groups), replace and
+;;;; split; skein.string's replace and split accept regexes too.
+
+(ns skein.regex
+  (:refer-core :exclude [find match])
+  (:require [skein.string]))
+
+(defn- result
+  "What re-find and friends return: the matched text, or a vector of it and
+  its groups when the pattern has groups."
+  [m]
+  (when m (let [groups (nth m 2)] (if (= 1 (count groups)) (first groups) groups))))
+
+(defn- details [m]
+  (when m
+    (let [groups (nth m 2) names (nth m 3)]
+      {:match (nth groups 0)
+       :start (nth m 0)
+       :end (nth m 1)
+       :groups (subvec groups 1)
+       ;; (names are keywords already, nil for an unnamed group)
+       :named (loop [i 1 out {}]
+                (if (< i (count names))
+                  (recur (inc i) (if-let [n (nth names i)] (assoc out n (nth groups i)) out))
+                  out))})))
+
+(defn pattern "A regex from string s (an error if s isn't a valid pattern)." ^Regex [^(U String Regex) s] (re-pattern s))
+
+(defn find
+  "The first match of re in s (at or after index from): the matched text, or
+  [text group1 group2 …] when re has groups; nil when there's none."
+  ([^(U Regex String) re ^String s] (result (%re-search re s 0 false)))
+  ([^(U Regex String) re ^String s ^Integer from] (result (%re-search re s from false))))
+
+(defn matches "As find, but re must match the whole of s." [^(U Regex String) re ^String s] (result (%re-search re s 0 true)))
+
+(defn find-all "Every non-overlapping match, as find gives each." ^Vector [^(U Regex String) re ^String s] (mapv result (%re-all re s)))
+
+(defn match
+  "The first match as a map: :match (the text), :start and :end (indexes),
+  :groups (a vector, nil for a group that took no part) and :named (named
+  groups by keyword). nil when there's no match."
+  (^(? Map) [^(U Regex String) re ^String s] (details (%re-search re s 0 false)))
+  (^(? Map) [^(U Regex String) re ^String s ^Integer from] (details (%re-search re s from false))))
+
+(defn match-all "Every match, as match gives each." ^Vector [^(U Regex String) re ^String s] (mapv details (%re-all re s)))
+
+(defn matches? "Does re match the whole of s?" ^Boolean [^(U Regex String) re ^String s] (some? (%re-search re s 0 true)))
+(defn found? "Does re match somewhere in s?" ^Boolean [^(U Regex String) re ^String s] (some? (%re-search re s 0 false)))
+
+(defn replace
+  "s with every match of re replaced: replacement is a string ($1 or ${name}
+  for groups, $$ for a dollar) or a function of the match (as find gives)."
+  ^String [re ^String s replacement]
+  (skein.string/replace s re replacement))
+
+(defn replace-first "As replace, for the first match only." ^String [re ^String s replacement]
+  (skein.string/replace-first s re replacement))
+
+(defn split "The parts of s between matches of re (at most limit parts)."
+  (^Vector [^(U Regex String) re ^String s] (%re-split re s nil))
+  (^Vector [^(U Regex String) re ^String s ^(? Integer) limit] (%re-split re s limit)))
+
+(defn literal "A regex matching string s literally." ^Regex [^String s] (re-quote s))

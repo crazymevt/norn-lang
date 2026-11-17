@@ -1,8 +1,8 @@
-// Part 5: a REPL, "jack-in". Norn: Start REPL runs `norn --server PORT` in
+// Part 5: a REPL, "jack-in". Skein: Start REPL runs `skein --server PORT` in
 // a terminal in the project (the terminal REPL itself, with its own
-// debugger prompt) and connects to its editor protocol (norn --server, one
-// Norn map per line). Evaluations from files then go to it: their values
-// show beside the form, what they print goes to the "Norn Evaluation"
+// debugger prompt) and connects to its editor protocol (skein --server, one
+// Skein map per line). Evaluations from files then go to it: their values
+// show beside the form, what they print goes to the "Skein Evaluation"
 // output, and an error stops in VS Code's debugger (debug.js).
 
 'use strict';
@@ -35,7 +35,7 @@ async function connect(port, ms) {
         s.once('error', reject);
       });
     } catch (e) {
-      if (Date.now() > end) throw new Error(`no Norn REPL answered on port ${port}: ${e.message}`);
+      if (Date.now() > end) throw new Error(`no Skein REPL answered on port ${port}: ${e.message}`);
       await new Promise((r) => setTimeout(r, 150));
     }
   }
@@ -90,7 +90,7 @@ class Repl {
 
   /** Send request m ({op: "eval", …}: op and keyword values as {kw}); its response. */
   request(m) {
-    if (this.closed) return Promise.reject(new Error('the Norn REPL has ended'));
+    if (this.closed) return Promise.reject(new Error('the Skein REPL has ended'));
     const id = this.nextId++;
     const line = edn.request({ op: { kw: m.op }, id, ...Object.fromEntries(Object.entries(m).filter(([k]) => k !== 'op')) });
     return new Promise((resolve) => {
@@ -108,19 +108,19 @@ class Repl {
     if (this.closed) return;
     this.closed = true;
     this.socket.destroy();
-    for (const resolve of this.pending.values()) resolve({ error: 'the Norn REPL has ended' });
+    for (const resolve of this.pending.values()) resolve({ error: 'the Skein REPL has ended' });
     this.pending.clear();
     this.listeners.forEach((f) => f({ event: 'closed' }));
   }
 }
 
-/** Start a REPL for the project at root: `norn --server PORT` in a terminal. */
-async function startRepl(root, nornPath) {
+/** Start a REPL for the project at root: `skein --server PORT` in a terminal. */
+async function startRepl(root, skeinPath) {
   const port = await freePort();
   const terminal = vscode.window.createTerminal({
-    name: `Norn REPL (${path.basename(root)})`,
+    name: `Skein REPL (${path.basename(root)})`,
     cwd: root,
-    shellPath: nornPath,
+    shellPath: skeinPath,
     shellArgs: ['--server', String(port)],
   });
   terminal.show(true);
@@ -204,7 +204,7 @@ function paint(editor) {
     return {
       range: new vscode.Range(r.pos, r.pos),
       renderOptions: { after: { contentText: '⇒ ' + (one.length > 120 ? one.slice(0, 117) + '…' : one) } },
-      hoverMessage: new vscode.MarkdownString().appendCodeblock(r.text, 'norn'),
+      hoverMessage: new vscode.MarkdownString().appendCodeblock(r.text, 'skein'),
     };
   };
   editor.setDecorations(resultStyle, rs.filter((r) => !r.error).map(deco));

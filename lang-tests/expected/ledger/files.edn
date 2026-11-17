@@ -5,5 +5,5 @@
  "list" {}
  "uncategorized" {}
  "report" {}
- "report-html" {"ledger.edn" "4cecafc68a8da54824d5f1792fc054d927b2317dccdcb0ce9141e3fe7712828d"
+ "report-html" {"ledger.edn" "f2d83e44a41da609c62c5821b3fdfce8ec77e1861c421ee01e500f07f0d3ff6b"
    "report.html" "b5b92e43ecf98a1398a7ccc901015363e85c20a93b3d89a29cdef6e9601ad791"}}

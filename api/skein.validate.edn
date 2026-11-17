@@ -1,0 +1,4 @@
+;; skein.validate's public interface, recorded by skein api-diff --record.
+{
+ "validators" {:kind :var}
+}

@@ -3,22 +3,22 @@
 [Contents](README.md) · Previous: [25. Testing](25-testing.md) · Next: [27. Images and deployment](27-images-and-deployment.md) <!-- nav -->
 
 This chapter covers the command-line tools you use every day on a project:
-`norn fmt` for layout, `norn lint` for likely mistakes, `norn doc` and
-docstrings, and `norn expand` for macros. Then it turns to speed: how to
-measure with `time` and `norn.bench`, how to find where the time goes with
-`norn.prof`, what the two execution tiers do, which
+`skein fmt` for layout, `skein lint` for likely mistakes, `skein doc` and
+docstrings, and `skein expand` for macros. Then it turns to speed: how to
+measure with `time` and `skein.bench`, how to find where the time goes with
+`skein.prof`, what the two execution tiers do, which
 operations are cheap and which are expensive in this release, and the
 habits that keep hot code fast.
 
 Each tool is also a library, so the examples below call the library
 functions directly. The shell commands do the same work over files.
 
-## One style: `norn fmt`
+## One style: `skein fmt`
 
-Norn has one code style, and `norn fmt` applies it. There are no options to
+Skein has one code style, and `skein fmt` applies it. There are no options to
 configure. The formatter keeps your line breaks and fixes everything else:
 spacing inside a line, indentation, trailing whitespace, and blank lines.
-Here is a file written in a hurry, `src/report/messy.norn`:
+Here is a file written in a hurry, `src/report/messy.skn`:
 
 ```text
 (ns report.messy)
@@ -33,17 +33,17 @@ Here is a file written in a hurry, `src/report/messy.norn`:
   " (" unit ")" ))
 ```
 
-`norn fmt --check` lists the files it would change and exits 1. `norn fmt`
+`skein fmt --check` lists the files it would change and exits 1. `skein fmt`
 with no flag rewrites them:
 
 ```sh
-norn fmt --check
-norn fmt src/report/messy.norn
+skein fmt --check
+skein fmt src/report/messy.skn
 ```
 
 ```text
-not formatted: ./src/report/messy.norn
-formatted src/report/messy.norn
+not formatted: ./src/report/messy.skn
+formatted src/report/messy.skn
 ```
 
 The file now reads:
@@ -73,11 +73,11 @@ The rules are few:
   argument is on the head's line, and indents by one when it isn't.
 
 The formatter never changes what the code means. The same tokens come out
-in the same order. `norn.fmt/format-string` formats text, and
-`norn.fmt/formatted?` asks whether text is already in the style:
+in the same order. `skein.fmt/format-string` formats text, and
+`skein.fmt/formatted?` asks whether text is already in the style:
 
 ```clojure
-(require '[norn.fmt :as fmt])
+(require '[skein.fmt :as fmt])
 
 (fmt/format-string "(let [x 1\n   y 2]\n      (+ x y ))\n")
 ; => "(let [x 1\n      y 2]\n  (+ x y))\n"
@@ -105,17 +105,17 @@ map:
 
 The hint is recorded when the macro is defined, so it applies where the
 macro is loaded, as in a REPL or an editor session that has loaded your
-code. `norn fmt` run from the shell doesn't load the files it formats, but it reads the hints from the `defmacro` forms in them, so it knows your project's macros as well as the standard library's.
+code. `skein fmt` run from the shell doesn't load the files it formats, but it reads the hints from the `defmacro` forms in them, so it knows your project's macros as well as the standard library's.
 
-## Likely mistakes: `norn lint`
+## Likely mistakes: `skein lint`
 
-`norn lint` reads each file, expands its macros, and reports problems it can
+`skein lint` reads each file, expands its macros, and reports problems it can
 find without running your code. Here's a module with four of them:
 
 ```text
 (ns report.summary
-  (:require [norn.string :as str]
-            [norn.json :as json]))
+  (:require [skein.string :as str]
+            [skein.json :as json]))
 
 (defn mean [xs]
   (let [n (count xs)
@@ -129,18 +129,18 @@ find without running your code. Here's a module with four of them:
 ```
 
 ```sh
-norn lint
+skein lint
 ```
 
 ```text
-./src/report/summary.norn:5: unused: unused local total
-./src/report/summary.norn:10: arity: mean called with 2 arguments; it takes 1
-./src/report/summary.norn:10: unresolved: unresolved symbol mx
-./src/report/summary.norn:1: unused-require: norn.json is required but never used (for its effect alone, require it without :as)
+./src/report/summary.skn:5: unused: unused local total
+./src/report/summary.skn:10: arity: mean called with 2 arguments; it takes 1
+./src/report/summary.skn:10: unresolved: unresolved symbol mx
+./src/report/summary.skn:1: unused-require: skein.json is required but never used (for its effect alone, require it without :as)
 ```
 
 Each warning gives the file, the line of the top-level form it's in, a
-kind, and a message. With no paths, `norn lint` lints the current directory,
+kind, and a message. With no paths, `skein lint` lints the current directory,
 and it exits 1 when it finds anything. The kinds include:
 
 - `unresolved`: a name that is no local, no definition, and no var.
@@ -152,11 +152,11 @@ and it exits 1 when it finds anything. The kinds include:
   name from a namespace the module doesn't require.
 - `deprecated` and `private`: a use of a definition marked deprecated, or of
   another module's private var.
-- `shadowed`: a module named as one that comes with Norn, such as a
-  package's `norn.csv`. `require` finds Norn's own first, so the file is
+- `shadowed`: a module named as one that comes with Skein, such as a
+  package's `skein.csv`. `require` finds Skein's own first, so the file is
   never loaded.
-- `reserved`: a module named under `norn.`, which is Norn's: its standard
-  library's and its first-party packages' (`norn.lint/first-party` lists
+- `reserved`: a module named under `skein.`, which is Skein's: its standard
+  library's and its first-party packages' (`skein.lint/first-party` lists
   those).
 - `shadow`, `def-in-fn`, `method-shape`, `macro`, `macro-order`, `sealed`
   and `phase`, for definitions that hide special forms, `def` inside a
@@ -168,28 +168,28 @@ and it exits 1 when it finds anything. The kinds include:
 The linter evaluates only the forms that change how later forms read and
 expand: `ns`, `in-ns`, `require`, `defmacro`, and the syntax definitions.
 So requiring a module loads it, but your functions never run.
-`norn.lint/lint-string` returns the warnings as data, which is what an
+`skein.lint/lint-string` returns the warnings as data, which is what an
 editor uses to underline them:
 
 ```clojure
-(require '[norn.lint :as lint])
+(require '[skein.lint :as lint])
 
-(lint/lint-string "(defn f [x] (let [y 1] (g x)))" "f.norn")
-; => [{:kind :unresolved :message "unresolved symbol g" :line 1 :file "f.norn"}
-;     {:kind :unused :message "unused local y" :line 1 :file "f.norn"}]
+(lint/lint-string "(defn f [x] (let [y 1] (g x)))" "f.skn")
+; => [{:kind :unresolved :message "unresolved symbol g" :line 1 :file "f.skn"}
+;     {:kind :unused :message "unused local y" :line 1 :file "f.skn"}]
 ```
 
-## Documentation: `norn doc` and docstrings
+## Documentation: `skein doc` and docstrings
 
 [Chapter 2](02-first-steps.md) introduced `doc`, `source` and `apropos` at
-the REPL and `norn doc` in the shell. They read the same definitions your
+the REPL and `skein doc` in the shell. They read the same definitions your
 code makes, so a docstring you write is documentation at once. Docstrings
 are Markdown. After the docstring, an attribute map can say more:
 
 - `:since` names the version that added the definition.
 - `:deprecated` marks it and says what to use instead.
 - `:see-also` lists related names.
-- `:examples` holds executable examples, which `norn check` runs (see
+- `:examples` holds executable examples, which `skein check` runs (see
   [Chapter 25](25-testing.md#examples-in-docstrings)).
 
 ```clojure
@@ -219,39 +219,39 @@ are Markdown. After the docstring, an attribute map can say more:
 ```
 
 `mean` still works, but its documentation says it's deprecated, and
-`norn lint` reports each call to it from another module:
+`skein lint` reports each call to it from another module:
 
 ```text
-report/use.norn:2: deprecated: s/mean is deprecated: use average
+report/use.skn:2: deprecated: s/mean is deprecated: use average
 ```
 
 Deprecating a name this way, and keeping it for a release, gives callers
 time to move.
 
-## Macro expansion: `norn expand`
+## Macro expansion: `skein expand`
 
 When a macro does something you don't expect, look at what it expands to.
-`norn expand` prints each top-level form fully expanded, and `--steps`
+`skein expand` prints each top-level form fully expanded, and `--steps`
 shows each macro step on the way, outermost first, with the names each
 step introduced:
 
 ```sh
-norn expand --steps -e '(when-let [x (first xs)] (inc x))'
+skein expand --steps -e '(when-let [x (first xs)] (inc x))'
 ```
 
 ```text
 ;; <expr>:1:1
-1. norn.core/when-let (defmacro) at <expr>:1:1
+1. skein.core/when-let (defmacro) at <expr>:1:1
    (when-let [x (first xs)] (inc x))
 => (let* [temp__14__auto__ (first xs)]
-     (norn.core/when temp__14__auto__ (norn.core/let [x temp__14__auto__] (inc x))))
-   introduced: let* temp__14__auto__ norn.core/when norn.core/let
-2. norn.core/when (defmacro) at <expr>:1:1
-   (norn.core/when temp__14__auto__ (norn.core/let [x temp__14__auto__] (inc x)))
-=> (if temp__14__auto__ (do (norn.core/let [x temp__14__auto__] (inc x))))
+     (skein.core/when temp__14__auto__ (skein.core/let [x temp__14__auto__] (inc x))))
+   introduced: let* temp__14__auto__ skein.core/when skein.core/let
+2. skein.core/when (defmacro) at <expr>:1:1
+   (skein.core/when temp__14__auto__ (skein.core/let [x temp__14__auto__] (inc x)))
+=> (if temp__14__auto__ (do (skein.core/let [x temp__14__auto__] (inc x))))
    introduced: if do
-3. norn.core/let (defmacro) at <expr>:1:1
-   (norn.core/let [x temp__14__auto__] (inc x))
+3. skein.core/let (defmacro) at <expr>:1:1
+   (skein.core/let [x temp__14__auto__] (inc x))
 => (let* [x temp__14__auto__] (inc x))
    introduced: let*
 Fully expanded:
@@ -263,29 +263,29 @@ Give it a file name in place of `-e` to expand a whole file. At the REPL,
 `macroexpand` and `macro-steps` do the same.
 [Chapter 14](14-macros.md) covers macros and hygiene in full.
 
-## Interfaces: `norn api-diff`
+## Interfaces: `skein api-diff`
 
 A sealed module's public interface is recorded: each function's parameter
 lists and checked signature, each macro's and generic function's parameter
 lists, each class's superclasses and slots, and which vars are dynamic.
-`norn api-diff --record` writes it, a file per module under `api/`.
-`norn api-diff` then compares the modules with what's recorded. Adding is
+`skein api-diff --record` writes it, a file per module under `api/`.
+`skein api-diff` then compares the modules with what's recorded. Adding is
 fine. Removing a name or an arity, changing a signature's types, or
 removing a class's slot breaks the code that used it, so `api-diff` lists
 those as breaking and exits with status 1:
 
 ```text
-BREAKING  norn.csv/read-maps: removed (a function)
-          norn.csv/read-records: added (a function)
-norn api-diff: 1 module, 1 breaking, 1 compatible change
+BREAKING  skein.csv/read-maps: removed (a function)
+          skein.csv/read-records: added (a function)
+skein api-diff: 1 module, 1 breaking, 1 compatible change
 ```
 
 The standard library is checked this way, so a breaking change to it can't
 slip in unnoticed. Use it for your own library too: record its interface
 when you release a version, and compare before the next one. In a
-project, `norn api-diff` with no module names takes the project's own
+project, `skein api-diff` with no module names takes the project's own
 modules, every one under its `:paths`, so a library keeps its `api/` folder
-beside its `norn.edn`.
+beside its `skein.edn`.
 
 ## Measuring
 
@@ -303,14 +303,14 @@ Elapsed time: 11.752583 msecs
 
 One run of an expression tells you little. The first run may include
 compiling, and a collection in the middle of it can double the time.
-`norn.bench` runs an expression many times. It warms up first, for 200 ms
+`skein.bench` runs an expression many times. It warms up first, for 200 ms
 by default, so tier-1 code is compiled. Then it times batches of runs until
 its budget, 1 second by default, is spent, and reports the mean time per
 run, the standard deviation over the batches, the number of runs, and how
 many garbage collections happened while it measured:
 
 ```clojure
-(require '[norn.bench :as bench])
+(require '[skein.bench :as bench])
 
 (defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
 
@@ -356,30 +356,30 @@ A few rules make the numbers worth having:
   primitive, an algorithm, or the collector, not in interpreted code.
 
 The repository has three benchmark suites you can run and read as
-examples: `bench/micro.norn` times single operations,
-`bench/workloads.norn` times whole jobs, and `bench/programs.norn` times
+examples: `bench/micro.skn` times single operations,
+`bench/workloads.skn` times whole jobs, and `bench/programs.skn` times
 small programs (a log report, a ledger, a static site, a chat fan-out and
-a Mandelbrot renderer). `bench/compare.norn` runs all three at both tiers
+a Mandelbrot renderer). `bench/compare.skn` runs all three at both tiers
 and compares them with a recorded baseline, `bench/baseline.edn`, and it
 times the Mandelbrot renderer in SBCL and Clojure too
 (`bench/mandelbrot.lisp`, `bench/mandelbrot.clj`), when `sbcl` or
-`clojure` is installed, for a point of comparison outside Norn.
-`bench/mandelbrot.norn` is the same program in Norn, written and run the
+`clojure` is installed, for a point of comparison outside Skein.
+`bench/mandelbrot.skn` is the same program in Skein, written and run the
 same way, so the three can be timed side by side: each prints its best
 time in milliseconds and the same checksum.
 
-## Finding where the time goes: `norn.prof`
+## Finding where the time goes: `skein.prof`
 
 A benchmark says how long a job takes. A profiler says which code that
-time went to. `norn.prof` samples: about every millisecond, each carrier
+time went to. `skein.prof` samples: about every millisecond, each carrier
 notes the stack of the fiber it's running. The functions that turn up
 most are where the time goes. `profile` runs some code, prints a report,
 and returns the code's value:
 
 <!-- skip -->
 ```clojure
-(require '[norn.prof :as prof]
-         '[norn.string :as str])
+(require '[skein.prof :as prof]
+         '[skein.string :as str])
 
 (defn parse-order [line]
   (let [[item qty price] (str/split line #",")]
@@ -400,23 +400,23 @@ and returns the code's value:
 193 samples, about every 1000 µs, in 0.32 s
 
   self    total   function
- 40.4%  100.0%   norn.core/reduce
+ 40.4%  100.0%   skein.core/reduce
  39.9%   39.9%   user/parse-order
- 18.1%   59.6%   norn.core/map/fn/fn
+ 18.1%   59.6%   skein.core/map/fn/fn
   1.6%   41.5%   user/revenue/fn
-  0.0%   90.2%   norn.core/map
-  0.0%   90.2%   norn.core/transduce
+  0.0%   90.2%   skein.core/map
+  0.0%   90.2%   skein.core/transduce
   0.0%   90.2%   user/revenue
 
 call tree (branches with at least 1% of the samples):
  90.2%  user/revenue
- 90.2%    norn.core/map
- 90.2%      norn.core/transduce
- 90.2%        norn.core/reduce
- 59.6%          norn.core/map/fn/fn
+ 90.2%    skein.core/map
+ 90.2%      skein.core/transduce
+ 90.2%        skein.core/reduce
+ 59.6%          skein.core/map/fn/fn
  41.5%            user/revenue/fn
  39.9%              user/parse-order
-  9.8%  norn.core/reduce
+  9.8%  skein.core/reduce
 ```
 
 The first table lists functions by **self** time, the samples in which
@@ -430,13 +430,13 @@ under it, and a function that calls itself shows once, marked
 Reading a profile takes knowing a few things about how it was made:
 
 - **Anonymous functions are named for where they are.** `user/revenue/fn`
-  is the `fn` inside `revenue`, and `norn.core/map/fn/fn` is a function
+  is the `fn` inside `revenue`, and `skein.core/map/fn/fn` is a function
   two levels inside `map`. Backtraces name them the same way.
 - **A tail call leaves no frame.** `revenue` calls `reduce` last, so the
-  9.8% spent summing shows under a `norn.core/reduce` of its own, not
+  9.8% spent summing shows under a `skein.core/reduce` of its own, not
   under `revenue`.
 - **Primitives have no frames.** Time spent in a primitive written in
-  Rust, such as `str/split` or `parse-long`, counts for the Norn function
+  Rust, such as `str/split` or `parse-long`, counts for the Skein function
   that called it. Samples are taken where code checks in: at a function's
   entry, as it returns, at a loop's turn, and as a primitive returns. A
   sample taken as a function starts counts for its caller, whose time it
@@ -446,7 +446,7 @@ Reading a profile takes knowing a few things about how it was made:
   fiber that called `profile`, stacks start at the code you gave it.
 - **Waiting doesn't count.** A carrier with nothing to run, or one waiting
   in a native call, takes no samples, so a profile counts time spent
-  running Norn code.
+  running Skein code.
 
 Both tiers profile the same way. Tier 1 keeps the same frames, so
 comparing a profile at each tier shows what the compiler speeds up.
@@ -473,7 +473,7 @@ profile running.
 
 ## Two tiers
 
-Norn compiles your code to bytecode, and runs it in one of two ways:
+Skein compiles your code to bytecode, and runs it in one of two ways:
 
 - **Tier 0** is a bytecode interpreter. It starts running code at once,
   with nothing to compile, and it runs everywhere, including platforms
@@ -484,13 +484,13 @@ Norn compiles your code to bytecode, and runs it in one of two ways:
   the compile. It compiles on a thread of its own, the busiest function
   first, while the interpreter goes on running the function; the next
   call or loop turn after that runs the native code. Set the count with
-  `NORN_JIT_THRESHOLD` (1 compiles everything the first time it runs),
-  and turn tier 1 off with the environment variable `NORN_TIER=0`. Tier 1
+  `SKEIN_JIT_THRESHOLD` (1 compiles everything the first time it runs),
+  and turn tier 1 off with the environment variable `SKEIN_TIER=0`. Tier 1
   targets 64-bit ARM macOS and 64-bit ARM and x86 Linux; elsewhere the
   interpreter runs everything.
 
 ```sh
-NORN_TIER=0 norn bench/workloads.norn    # the interpreter alone, to compare
+SKEIN_TIER=0 skein bench/workloads.skn    # the interpreter alone, to compare
 ```
 
 Both tiers lay out stack frames the same way. Tier-1 code can hand any
@@ -556,10 +556,10 @@ These rows are from the survey, at tier 0, unless noted:
 | `try` when nothing goes wrong | 1,580 ns | a plain call: 54 ns |
 | An error signalled and caught | 5,216 ns | |
 | A call with a checked signature, from another module | 790 ns | after the survey's fix; unchecked: 74 ns |
-| `nth` on a library collection (a `norn.buffer` Buffer) | 2,957 ns | `nth` on a vector: 13–52 ns |
+| `nth` on a library collection (a `skein.buffer` Buffer) | 2,957 ns | `nth` on a vector: 13–52 ns |
 | `mapv inc`, per item | 152 ns | |
 
-The author's own runs of `bench/micro.norn`, on a busy machine, gave
+The author's own runs of `bench/micro.skn`, on a busy machine, gave
 numbers 1.5 to 2 times higher across the board, with the same ratios.
 
 Two costs show up in whole programs more than in micro-benchmarks:
@@ -605,7 +605,7 @@ build in a loop of your own.
 
 ### Fuse sequence steps with transducers
 
-Norn's sequence functions are eager ([Chapter 6](06-sequences-and-transducers.md)).
+Skein's sequence functions are eager ([Chapter 6](06-sequences-and-transducers.md)).
 A chain of `map`, `filter` and `reduce` builds a whole intermediate
 collection at each step. A transducer runs every step on each item in one
 pass, with no intermediate collections:
@@ -674,22 +674,22 @@ variant, compare the GC counts as well as the times.
 
 ## Summary
 
-- `norn fmt` applies Norn's one style and keeps your line breaks;
+- `skein fmt` applies Skein's one style and keeps your line breaks;
   `--check` reports files that need it. Name body macros `with-…`, or give
   them `{:indent n}`.
-- `norn lint` reports unresolved names, unused locals and requires, wrong
+- `skein lint` reports unresolved names, unused locals and requires, wrong
   arities, deprecated uses and more, without running your functions.
 - Docstrings are Markdown, and attribute maps add `:since`, `:deprecated`,
-  `:see-also` and `:examples`. `norn doc` and `doc` show them.
-- `norn expand --steps` shows macro expansion one step at a time.
-- `time` gives one rough number. `norn.bench` warms up, runs many times,
+  `:see-also` and `:examples`. `skein doc` and `doc` show them.
+- `skein expand --steps` shows macro expansion one step at a time.
+- `time` gives one rough number. `skein.bench` warms up, runs many times,
   and reports the mean, the spread, and the GC count.
-- `norn.prof/profile` samples the stacks while code runs, and reports the
+- `skein.prof/profile` samples the stacks while code runs, and reports the
   functions with the most samples and the call tree. `folded` gives the
   stacks to flame-graph tools such as speedscope.
 - Tier 1, the default, compiles hot functions with Cranelift in the
   background, which speeds up calls, loops and arithmetic by 2–10 times,
-  but not primitives or the collector. `NORN_TIER=0` interprets only.
+  but not primitives or the collector. `SKEIN_TIER=0` interprets only.
 - In hot code: build with transients, fuse steps with transducers, keep
   checked boundaries, `try` and `binding` out of inner loops, and prefer
   maps for short-lived records.

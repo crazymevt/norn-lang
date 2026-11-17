@@ -1,0 +1,32 @@
+;; skein.string's public interface, recorded by skein api-diff --record.
+{
+ "blank?" {:arglists ["[s]"], :kind :function, :signature [{:result "Boolean", :args ["nil or String"]}]}
+ "capitalize" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["Any"]}]}
+ "center" {:arglists ["[s cols]" "[s cols pad]"], :kind :function, :signature [{:result "String", :args ["Any" "Any"]} {:result "String", :args ["Any" "Any" "Any"]}]}
+ "ends-with?" {:arglists ["[s suffix]"], :kind :function, :signature [{:result "Boolean", :args ["nil or String" "nil or String"]}]}
+ "escape" {:arglists ["[s cmap]"], :kind :function, :signature [{:result "String", :args ["Any" "Any"]}]}
+ "grapheme-count" {:arglists ["[s]"], :kind :function, :signature [{:result "Integer", :args ["String"]}]}
+ "graphemes" {:arglists ["[s]"], :kind :function, :signature [{:result "Vector", :args ["String"]}]}
+ "includes?" {:arglists ["[s x]"], :kind :function, :signature [{:result "Boolean", :args ["String" "String or Character"]}]}
+ "index-of" {:arglists ["[s x]" "[s x from]"], :kind :function, :signature [{:result "nil or Integer", :args ["String" "String or Character"]} {:result "nil or Integer", :args ["String" "String or Character" "nil or Integer"]}]}
+ "join" {:arglists ["[coll]" "[separator coll]"], :kind :function, :signature [{:result "String", :args ["Any"]} {:result "String", :args ["Any" "Any"]}]}
+ "last-index-of" {:arglists ["[s x]" "[s x from]"], :kind :function, :signature [{:result "nil or Integer", :args ["String" "String or Character"]} {:result "nil or Integer", :args ["String" "String or Character" "nil or Integer"]}]}
+ "lines" {:arglists ["[s]"], :kind :function, :signature [{:result "Vector", :args ["String"]}]}
+ "lower-case" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["Any"]}]}
+ "pad-left" {:arglists ["[s cols]" "[s cols pad]"], :kind :function, :signature [{:result "String", :args ["Any" "Any"]} {:result "String", :args ["Any" "Any" "Any"]}]}
+ "pad-right" {:arglists ["[s cols]" "[s cols pad]"], :kind :function, :signature [{:result "String", :args ["Any" "Any"]} {:result "String", :args ["Any" "Any" "Any"]}]}
+ "repeat-str" {:arglists ["[n s]"], :kind :function, :signature [{:result "String", :args ["Any" "Any"]}]}
+ "replace" {:arglists ["[s pattern replacement]"], :kind :function, :signature [{:result "String", :args ["String" "Any" "Any"]}]}
+ "replace-first" {:arglists ["[s pattern replacement]"], :kind :function, :signature [{:result "String", :args ["String" "Any" "Any"]}]}
+ "reverse" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "split" {:arglists ["[s pattern]" "[s pattern limit]"], :kind :function, :signature [{:result "Vector", :args ["String" "String or Character or Regex"]} {:result "Vector", :args ["String" "String or Character or Regex" "nil or Integer"]}]}
+ "split-lines" {:arglists ["[s]"], :kind :function, :signature [{:result "Vector", :args ["String"]}]}
+ "starts-with?" {:arglists ["[s prefix]"], :kind :function, :signature [{:result "Boolean", :args ["String" "String"]}]}
+ "trim" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "trim-newline" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "triml" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "trimr" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "truncate" {:arglists ["[s cols]" "[s cols ellipsis]"], :kind :function, :signature [{:result "String", :args ["String" "Integer"]} {:result "String", :args ["String" "Integer" "String or Character"]}]}
+ "upper-case" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["Any"]}]}
+ "width" {:arglists ["[s]"], :kind :function, :signature [{:result "Integer", :args ["String or Character"]}]}
+}

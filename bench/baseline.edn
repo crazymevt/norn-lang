@@ -1,6 +1,6 @@
-;; bench/compare.norn --record: the benchmark baseline M10 is measured against.
+;; bench/compare.skn --record: the benchmark baseline M10 is measured against.
 {:machine {:arch :aarch64, :os :macos, :cores 10},
- :norn "b4a8bc2",
+ :skein "b4a8bc2",
  :results {"micro" {"0" {"collections: assoc on a small map" 73.23561586538462,
                          "collections: map inc over a 1,000 vector (per item)"
                           141.7663041044776,
@@ -156,7 +156,7 @@
                              "data: into a map, 100,000 entries" 364.120333,
                              "text: format 10,000 lines" 6.0063855,
                              "data: sort-by a key, 20,000 maps" 1.223948,
-                             "source: read core.norn's forms (158 KB)" 3.044474,
+                             "source: read core.skn's forms (158 KB)" 3.044474,
                              "text: build 100,000 pieces with str" 27.460625,
                              "edn: pr-str 1 MB" 2.59425525,
                              "text: 20,000 line lookups in a rope" 321.762416,
@@ -167,16 +167,16 @@
                              "data: group-by and frequencies, 100,000"
                               260.271792,
                              "terminal: decode 70 KB of keys" 80.404667,
-                             "source: compile and load http.norn" 42.799375,
+                             "source: compile and load http.skn" 42.799375,
                              "fibers: spawn and await 10,000" 61.237417,
                              "data: sort 100,000 integers" 38.134709,
-                             "source: lint http.norn (34 KB)" 556.079042,
+                             "source: lint http.skn (34 KB)" 556.079042,
                              "json: write 1 MB" 2.28472925,
                              "text: regex, every match in 1.2 MB" 14.900916,
                              "json: read 1 MB" 4.1192395,
                              "fibers: 10,000 messages through a channel"
                               1.46845575,
-                             "source: format http.norn (34 KB)" 13.474167,
+                             "source: format http.skn (34 KB)" 13.474167,
                              "edn: read 1 MB" 5.90866675},
                         "1" {"text: read 20,000 lines from a file" 28.043292,
                              "sqlite: insert 10,000 rows in a transaction"
@@ -185,7 +185,7 @@
                              "data: into a map, 100,000 entries" 384.010292,
                              "text: format 10,000 lines" 5.68146875,
                              "data: sort-by a key, 20,000 maps" 1.2088176875,
-                             "source: read core.norn's forms (158 KB)" 3.080677,
+                             "source: read core.skn's forms (158 KB)" 3.080677,
                              "text: build 100,000 pieces with str" 23.17925,
                              "edn: pr-str 1 MB" 2.505604125,
                              "text: 20,000 line lookups in a rope" 279.263959,
@@ -196,16 +196,16 @@
                              "data: group-by and frequencies, 100,000"
                               235.525542,
                              "terminal: decode 70 KB of keys" 67.169625,
-                             "source: compile and load http.norn" 48.812583,
+                             "source: compile and load http.skn" 48.812583,
                              "fibers: spawn and await 10,000" 60.14425,
                              "data: sort 100,000 integers" 34.20425,
-                             "source: lint http.norn (34 KB)" 528.449459,
+                             "source: lint http.skn (34 KB)" 528.449459,
                              "json: write 1 MB" 2.2066875,
                              "text: regex, every match in 1.2 MB" 14.6936665,
                              "json: read 1 MB" 4.18,
                              "fibers: 10,000 messages through a channel"
                               1.3111458125,
-                             "source: format http.norn (34 KB)" 11.3298545,
+                             "source: format http.skn (34 KB)" 11.3298545,
                              "edn: read 1 MB" 5.93366675}}},
  :sbcl 2.021,
  :recorded "2026-11-16"}

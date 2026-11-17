@@ -1,0 +1,95 @@
+;;;; skein.cover — line coverage: which lines of code ran, and how often.
+;;;;
+;;;;   skein test --coverage               ; a report after the results
+;;;;   skein test --coverage --lcov cov.info
+;;;;
+;;;; Once coverage is on (start!, or skein test --coverage, which turns it on
+;;;; before anything else loads), each line of code compiled after counts
+;;;; its runs: the first form starting on the line, inside the form around
+;;;; it. A line no code is compiled from (a comment, a blank line, a
+;;;; docstring, a parameter vector, a constant alone on a line) has no
+;;;; count, and is neither hit nor missed. Counted: files, but not test
+;;;; files (name_test.skn), and the standard library's modules when their
+;;;; source is here (lib/…, in a Skein checkout) or in the folder
+;;;; SKEIN_COVER_LIB names (a checkout's lib/, when testing a project
+;;;; elsewhere: lang-tests/run.skn does). Code loaded before coverage
+;;;; started, the language itself among it, isn't counted. Coverage stays
+;;;; on for the rest of the process, at either tier.
+
+(ns skein.cover
+  (:require [skein.io :as io]
+            [skein.string :as str]
+            [skein.sys :as sys]))
+
+(defn start!
+  "Count the lines of code compiled from now on (for good: there's no
+  stopping it). Loaded code isn't counted: start before loading what's to
+  be measured."
+  []
+  (%cover-on!)
+  nil)
+
+(defn on?
+  "Is coverage on?"
+  ^Boolean []
+  (%cover-on?))
+
+(defn- relative
+  "Path p relative to the current folder when it's under it."
+  [p]
+  (let [cwd (str (sys/cwd) "/")]
+    (if (str/starts-with? p cwd) (subs p (count cwd)) p)))
+
+(defn counts
+  "What's been counted: {file {line runs}}, files as given to the loader
+  (relative to the current folder when under it)."
+  ^Map []
+  (reduce (fn [m [f l n]] (update m (relative f) (fnil assoc (sorted-map)) l n)) (sorted-map) (%cover-counts)))
+
+(defn- ranges
+  "Sorted line numbers as text: 3-5, 9."
+  [ls]
+  (let [rs (reduce (fn [rs l]
+                     (let [[a b] (peek rs)]
+                       (if (and b (= l (inc b))) (conj (pop rs) [a l]) (conj rs [l l]))))
+                   [] ls)]
+    (str/join ", " (map (fn [[a b]] (if (= a b) (str a) (str a "-" b))) rs))))
+
+(defn summary
+  "Each file's coverage: [{:file :lines :hit :missed [line…]}…], by file."
+  ^Vector [cs]
+  (vec (for [[f ls] cs]
+         {:file f :lines (count ls) :hit (count (filter (fn [[_ n]] (pos? n)) ls))
+          :missed (vec (sort (keep (fn [[l n]] (when (zero? n) l)) ls)))})))
+
+(defn report
+  "Counts cs (as counts gives them) as text: the lines hit of the lines
+  counted, in all and per file, and the lines each file missed (:missed
+  ranges per file at most, default 12)."
+  ^String [cs & {:keys [missed] :or {missed 12}}]
+  (let [s (summary cs)
+        lines (reduce + 0 (map :lines s))
+        hit (reduce + 0 (map :hit s))
+        pct (fn [h n] (if (zero? n) "-" (format "%.1f%%" (* 100.0 (/ h n)))))
+        width (reduce max 10 (map (fn [e] (count (:file e))) s))]
+    (str "coverage: " hit " of " lines " lines (" (pct hit lines) ") in " (count s)
+         (if (= 1 (count s)) " file" " files") "\n"
+         (apply str
+                (for [e s]
+                  (let [rs (str/split (ranges (:missed e)) #", ")
+                        shown (if (> (count rs) missed) (str (str/join ", " (take missed rs)) ", …") (str/join ", " rs))]
+                    (str "  " (:file e) (apply str (repeat (- width (count (:file e))) " "))
+                         (format "  %5d/%-5d %6s" (:hit e) (:lines e) (pct (:hit e) (:lines e)))
+                         (when (seq (:missed e)) (str "  missed: " shown))
+                         "\n")))))))
+
+(defn lcov
+  "Counts cs in lcov's tracefile format (genhtml, editors' coverage
+  views, CI services read it): a record per file, paths absolute."
+  ^String [cs]
+  (apply str
+         (for [[f ls] cs]
+           (str "TN:\nSF:" (io/absolute f) "\n"
+                (apply str (map (fn [[l n]] (str "DA:" l "," n "\n")) ls))
+                "LF:" (count ls) "\nLH:" (count (filter (fn [[_ n]] (pos? n)) ls)) "\n"
+                "end_of_record\n"))))

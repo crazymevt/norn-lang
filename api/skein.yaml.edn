@@ -1,0 +1,7 @@
+;; skein.yaml's public interface, recorded by skein api-diff --record.
+{
+ "read-file" {:arglists ["[path & {:or {keys keyword}, :keys [keys]}]"], :kind :function, :signature [{:result "Any", :args ["String"], :rest "Any"}]}
+ "read-string" {:arglists ["[s & {:or {keys keyword}, :keys [keys]}]"], :kind :function, :signature [{:result "Any", :args ["String"], :rest "Any"}]}
+ "write-file" {:arglists ["[path x]"], :kind :function, :signature [{:result "Any", :args ["String" "Any"]}]}
+ "write-string" {:arglists ["[x]"], :kind :function, :signature [{:result "String", :args ["Any"]}]}
+}

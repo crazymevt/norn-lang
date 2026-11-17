@@ -1,0 +1,9 @@
+;; skein.format's public interface, recorded by skein api-diff --record.
+{
+ "bytes-size" {:arglists ["[n]"], :kind :function, :signature [{:result "String", :args ["Number"]}]}
+ "duration" {:arglists ["[ms]"], :kind :function, :signature [{:result "String", :args ["Number"]}]}
+ "number" {:arglists ["[n & {:keys [decimals]}]"], :kind :function, :signature [{:result "String", :args ["Number"], :rest "Any"}]}
+ "ordinal" {:arglists ["[n]"], :kind :function, :signature [{:result "String", :args ["Integer"]}]}
+ "percent" {:arglists ["[x & {:or {decimals 0}, :keys [decimals]}]"], :kind :function, :signature [{:result "String", :args ["Number"], :rest "Any"}]}
+ "plural" {:arglists ["[n word]" "[n word plural-word]"], :kind :function, :signature [{:result "String", :args ["Any" "Any"]} {:result "String", :args ["Any" "Any" "Any"]}]}
+}

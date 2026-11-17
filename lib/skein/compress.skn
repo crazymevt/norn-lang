@@ -1,0 +1,82 @@
+;;;; skein.compress — deflate, zlib and gzip (M9 part 9.12), on flate2.
+;;;;
+;;;;   (decompress (compress (bytes "…")))   ; gzip, by default
+;;;;   (compress data :format :zlib :level 9)
+;;;;
+;;;; Data is Bytes, or a string (its UTF-8). decompress stops at :max-size
+;;;; (256 MiB) bytes out: compressed input can claim far more than it takes,
+;;;; so a larger result is an error rather than the memory it would fill.
+;;;; Bad input is a ParseError.
+;;;;
+;;;; decompress-stream decompresses as it's read, from any skein.io stream:
+;;;; a large gzip'd file read a line at a time never sits whole in memory.
+;;;;
+;;;;   (with-open [f (io/open "app.log.gz" :read)]
+;;;;     (let [r (io/line-reader (decompress-stream f))]
+;;;;       (io/read-line r)))
+
+(ns skein.compress
+  (:require [skein.io :as io]))
+
+(def default-max-size "decompress's limit on its result, in bytes." (* 256 1024 1024))
+
+(defn compress
+  "data, compressed. Options: :format :gzip (the default), :zlib or :raw
+  (bare deflate); :level 0 (store) to 9 (smallest), 6 by default."
+  ^Bytes [^(U String Bytes) data & {:keys [format level] :or {format :gzip level 6}}]
+  (%deflate data level format))
+
+(defn decompress
+  "data, decompressed. Options: :format as for compress; :max-size."
+  ^Bytes [^(U String Bytes) data & {:keys [format max-size] :or {format :gzip max-size default-max-size}}]
+  (%inflate data format max-size))
+
+(defn gzip "data as gzip." ^Bytes [^(U String Bytes) data] (compress data :format :gzip))
+(defn gunzip "gzip data, decompressed (several members, one after another)." ^Bytes [^(U String Bytes) data & opts] (apply decompress data :format :gzip opts))
+(defn crc32 "The CRC-32 of data (as zip and gzip use), an integer." ^Integer [^(U String Bytes) data] (%crc32 data))
+
+;; ---- decompressing as it's read ----
+
+(defclass DecompressStream ()
+  ((source :required true) (id :required true) (pending :required true) (ended :required true)
+                           (closed :required true) (close-source :required true))
+  (:doc "A stream of what another stream decompresses to, as it's read (from
+  decompress-stream)."))
+
+(defn decompress-stream
+  "A stream of stream h's data decompressed, as it's read: read, read-line
+  (through io/line-reader) and the rest work on it, and closing it closes
+  h (unless :close-source false). Options: :format (:gzip, the default,
+  :zlib or :raw); :max-size, the most it may give in all (none by
+  default: what's read is all that's held). Bad data is a ParseError
+  when it's reached."
+  ^DecompressStream [h & {:keys [format max-size close-source] :or {format :gzip close-source true}}]
+  (DecompressStream :source h :id (%inflater format max-size) :pending (atom (bytes []))
+                    :ended (atom false) :closed (atom false) :close-source close-source))
+
+(defn- fill!
+  "Read from s's source until it has something decompressed waiting, or its
+  input has ended."
+  [s]
+  (loop []
+    (when (and (zero? (count @(:pending s))) (not @(:ended s)))
+      (let [chunk (io/read (:source s) 65536)]
+        (when (nil? chunk) (reset! (:ended s) true))
+        (let [out (%inflate-chunk (:id s) chunk)]
+          (when (pos? (count out)) (reset! (:pending s) out)))
+        (recur)))))
+
+(defmethod io/stream-read ((s DecompressStream) n)
+  (when @(:closed s) (error "decompress-stream: the stream has ended or been closed"))
+  (fill! s)
+  (let [p @(:pending s)]
+    (when (pos? (count p))
+      (let [k (min n (count p))]
+        (reset! (:pending s) (subbytes p k (count p)))
+        (subbytes p 0 k)))))
+
+(defmethod io/stream-close ((s DecompressStream))
+  (%inflater-free (:id s))
+  (reset! (:closed s) true)
+  (reset! (:pending s) (bytes []))
+  (when (:close-source s) (io/close (:source s))))

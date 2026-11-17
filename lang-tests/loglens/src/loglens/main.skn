@@ -1,0 +1,74 @@
+(ns loglens.main
+  "loglens's command line: make sample logs, report on logs, compare a
+  report with a saved one, time the reading."
+  (:require [loglens.logs :as logs]
+            [loglens.report :as report]
+            [skein.bench :as bench]
+            [skein.bin :as bin]
+            [skein.cbor :as cbor]
+            [skein.cli :as cli]
+            [skein.ndjson :as ndjson]
+            [skein.random :as random]
+            [skein.string :as str]
+            [skein.walk :as walk]))
+
+(defn- users-of [path]
+  (if path (set (ndjson/read-file path)) #{}))
+
+(defn- gen [{:keys [options args]}]
+  (logs/write-log! (:out args) (logs/generate (:lines options) (:seed options)))
+  (println "Wrote" (:lines options) "entries to" (:out args))
+  0)
+
+(defn- show-report [{:keys [options args]}]
+  (let [[requests skipped] (logs/read-requests (:log args))
+        s (report/summarize requests (users-of (:users options)))]
+    (println (report/text s))
+    (when (pos? skipped) (println (str "  (" skipped " entries weren't requests)")))
+    (when-let [n (:sample options)]
+      (println "  a sample:")
+      (doseq [r (random/sample (random/generator (:seed options)) requests (min n (count requests)))]
+        (println (str "    " (:ts r) " " (:method r) " " (:path r) " " (:status r) " " (:ms r) "ms"))))
+    (when-let [prev (:against options)]
+      (let [cs (report/changes (bin/read-file prev) s)]
+        (println (if cs (str "  since " prev ":\n    " (str/join "\n    " cs)) (str "  no change since " prev)))))
+    (when-let [out (:save options)]
+      ;; (Skein to Skein: skein.bin keeps everything as it is)
+      (bin/write-file out s)
+      (println "  saved to" out))
+    (when-let [out (:export options)]
+      ;; (for other programs: CBOR, string keys)
+      (cbor/write-file out (walk/stringify-keys s))
+      (println "  exported to" out))
+    0))
+
+(defn- time-it [{:keys [args]}]
+  (let [r (bench/run (fn [] (logs/read-requests (:log args))) :ms 2000)]
+    (println (bench/report (str "reading " (:log args)) r))
+    0))
+
+(def spec
+  {:name "loglens"
+   :summary "Reports on request logs (JSON Lines, gzip'd or not)."
+   :version "0.1.0"
+   :commands [{:name "gen" :summary "Make up a sample log"
+               :options [{:name :lines :type :int :default 10000} {:name :seed :type :int :default 1}]
+               :args [{:name :out :value "FILE"}]
+               :run gen}
+              {:name "report" :summary "Report on a log"
+               :options [{:name :users :value "FILE" :doc "Users, as JSON Lines {id, name, plan}"}
+                         {:name :sample :type :int :doc "Show this many requests, chosen at random"}
+                         {:name :seed :type :int :default 1 :doc "The sample's seed"}
+                         {:name :save :value "FILE" :doc "Save the report, to compare a later one with (--against)"}
+                         {:name :against :value "FILE" :doc "Compare with a saved report"}
+                         {:name :export :value "FILE" :doc "Write the report as CBOR, for other programs"}]
+               :args [{:name :log :value "FILE"}]
+               :run show-report}
+              {:name "bench" :summary "Time reading a log"
+               :args [{:name :log :value "FILE"}]
+               :run time-it}]})
+
+(defn main
+  "loglens's entry point: its command-line arguments in, its exit status out."
+  [& args]
+  (cli/run spec (vec args)))

@@ -1,0 +1,7 @@
+;; skein.csv's public interface, recorded by skein api-diff --record.
+{
+ "read-csv" {:arglists ["[text & {:or {separator \\,, quote \\\"}, :keys [separator quote]}]"], :kind :function, :signature [{:result "Vector", :args ["String"], :rest "Any"}]}
+ "read-maps" {:arglists ["[text & {:or {strict true, separator \\,, keys keyword, quote \\\"}, :keys [keys strict separator quote]}]"], :kind :function, :signature [{:result "Vector", :args ["String"], :rest "Any"}]}
+ "write-csv" {:arglists ["[rows & {:or {newline \"\\r\\n\", separator \\,, quote \\\"}, :keys [separator quote newline]}]"], :kind :function, :signature [{:result "String", :args ["Sequential"], :rest "Any"}]}
+ "write-maps" {:arglists ["[ms & {:keys [columns], :as opts}]"], :kind :function, :signature [{:result "String", :args ["Sequential"], :rest "Any"}]}
+}

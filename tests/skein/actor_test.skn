@@ -1,0 +1,254 @@
+;;;; Processes and supervisors (M9 part 9.6): fibers with mailboxes,
+;;;; selective receive, links, monitors and exit signals, and supervisors
+;;;; restarting what crashed.
+
+(ns actor-test
+  (:require [skein.test :refer [is deftest testing]] [skein.actor :as a]))
+
+(defn- eventually
+  "(f) once it's true, trying for at most 2 s (nil if it never is)."
+  [f]
+  (loop [n 0]
+    (or (f) (when (< n 200) (sleep 10) (recur (inc n))))))
+
+(defn- class-name-of [c] (when-not (keyword? c) (name (class-name (class-of c)))))
+
+(a/defprocess counter [n]
+  (a/receive
+   [:inc] (recur (inc n))
+   [:add k] :when (number? k) (recur (+ n k))
+   [:get reply] (do (deliver reply n) (recur n))
+   [:crash] (/ 1 0)
+   [:stop] :done))
+
+(deftest messages
+  (let [c (a/spawn-process counter 0)]
+    (a/send c [:inc])
+    (a/send c [:add 5])
+    (a/send c [:add :x]) ; (no clause takes it: it stays in the mailbox)
+    (is (= 6 (a/ask c [:get])))
+    (is (= [[:add :x]] @(:mailbox c)))
+    (a/send c [:stop])
+    (is (= :normal (a/await-exit c 1000)))
+    (is (not (a/alive? c)))
+    (is (= [:stop] (a/send c [:stop])) "a message to a process that has ended is dropped")))
+
+(deftest receive-is-selective
+  (is (= [1 2 [:c 3]]
+         (a/run-in-process
+          (fn []
+            (doseq [m [[:b 2] [:c 3] [:a 1]]] (a/send (a/self) m))
+            [(a/receive [:a x] x) (a/receive [:b y] y) (a/receive m m)]))))
+  (testing ":after"
+    (is (= :nothing (a/run-in-process (fn [] (a/receive [:never] 1 :after 20 :nothing)))))
+    (is (= :late (a/run-in-process (fn [] (a/send (a/self) :other) (a/receive [:never] 1 :after 20 :late))))
+        "a message that doesn't match doesn't end the wait")
+    (is (= :soon (a/run-in-process
+                  (fn [] (let [me (a/self)]
+                           (spawn-detached (do (sleep 20) (a/send me :soon)))
+                           (a/receive :soon :soon :after 2000 :late)))))))
+  (is (some? (try (a/self) nil (catch Error e e))) "self: only in a process"))
+
+(deftest names
+  (let [c (a/spawn-process counter 1)]
+    (a/register! :the-counter c)
+    (is (identical? c (a/whereis :the-counter)))
+    (a/send :the-counter [:inc])
+    (is (= 2 (a/ask :the-counter [:get])))
+    (is (some? (try (a/register! :the-counter (a/spawn-process counter 0)) nil (catch Error e e)))
+        "a name a living process has")
+    (a/exit! :the-counter)
+    (is (nil? (a/whereis :the-counter)) "a process that ends loses its name")
+    (is (= :killed (a/exit-reason c)))))
+
+(deftest a-crash-is-its-exit-reason
+  (let [c (a/spawn-process counter 0)]
+    (a/send c [:crash])
+    (let [r (a/await-exit c 1000)]
+      (is (= "ArithmeticError" (class-name-of r)) "the very condition")
+      (is (instance? Error r)))))
+
+(deftest links
+  (testing "an abnormal end ends a linked process, with the same reason"
+    (let [a (a/spawn-process counter 0)
+          b (a/spawn-process (fn [] (a/link! a) (a/receive _ :never)))]
+      (eventually (fn [] (contains? @(:links a) b)))
+      (a/send a [:crash])
+      (is (= "ArithmeticError" (class-name-of (a/await-exit b 1000))))))
+  (testing "a normal end doesn't"
+    (let [a (a/spawn-process counter 0)
+          b (a/spawn-process (fn [] (a/link! a) (a/receive :go :went)))]
+      (eventually (fn [] (contains? @(:links a) b)))
+      (a/send a [:stop])
+      (a/await-exit a 1000)
+      (is (a/alive? b))
+      (a/send b :go)
+      (is (= :normal (a/await-exit b 1000)))))
+  (testing "trapping exits: a message instead"
+    (is (= [:EXIT :boom]
+           (a/run-in-process
+            (fn []
+              (a/trap-exits!)
+              (let [p (a/spawn-link (fn [] (a/receive _ (a/exit! (a/self) :boom))))]
+                (a/send p :go)
+                (a/receive [:EXIT (:? (fn [x] (identical? x p))) r] [:EXIT r] :after 1000 :none)))))))
+  (testing "linking to a process that has ended"
+    (let [dead (a/spawn-process (fn [] :done))]
+      (a/await-exit dead)
+      (is (= [:EXIT :normal] (a/run-in-process (fn [] (a/trap-exits!) (a/link! dead)
+                                                 (a/receive [:EXIT _ r] [:EXIT r] :after 1000 :none)))))))
+  (testing "exit! to a process trapping exits is a message, unless it's :kill"
+    (let [p (a/spawn-process (fn [] (a/trap-exits!) (a/receive [:EXIT _ r] r)))]
+      (eventually (fn [] @(:trapping p)))
+      (a/exit! p :please)
+      (is (= :normal (a/await-exit p 1000)) "it took the message and returned"))
+    (let [p (a/spawn-process (fn [] (a/trap-exits!) (a/receive :never nil)))]
+      (eventually (fn [] @(:trapping p)))
+      (a/exit! p :kill)
+      (is (= :killed (a/await-exit p 1000))))))
+
+(deftest monitors
+  (is (= [:DOWN true :normal]
+         (a/run-in-process
+          (fn []
+            (let [p (a/spawn-process (fn [] (a/receive :go :ok)))
+                  ref (a/monitor p)]
+              (a/send p :go)
+              (a/receive [:DOWN r q reason] [:DOWN (and (= r ref) (identical? q p)) reason] :after 1000 :none))))))
+  (testing "a monitor doesn't end the watcher"
+    (is (= :still-here
+           (a/run-in-process
+            (fn []
+              (let [p (a/spawn-process counter 0)]
+                (a/monitor p)
+                (a/send p [:crash])
+                (a/receive [:DOWN _ _ _] :still-here :after 1000 :none))))))))
+
+(deftest a-supervisor-restarts-what-crashed
+  (let [sup (a/supervisor {} [(a/child :sup-counter counter 0)])
+        first-one (eventually (fn [] (a/whereis :sup-counter)))]
+    (a/send :sup-counter [:inc])
+    (is (= 1 (a/ask :sup-counter [:get])))
+    (a/send :sup-counter [:crash])
+    (let [second-one (eventually (fn [] (let [p (a/whereis :sup-counter)] (when (and p (not (identical? p first-one))) p))))]
+      (is (some? second-one) "a new process, under the same name")
+      (is (= 0 (a/ask :sup-counter [:get])) "starting again from its arguments")
+      (is (= "ArithmeticError" (class-name-of (a/exit-reason first-one))))
+      (is (= [[:sup-counter second-one]] (a/which-children sup))))
+    (a/stop-supervisor! sup)
+    (is (= :normal (a/exit-reason sup)))
+    (is (nil? (a/whereis :sup-counter)) "its children stopped too")))
+
+(defn- versioned [] (a/receive [:which reply] (do (deliver reply :v1) (recur)) [:crash] (/ 1 0)))
+
+(deftest a-restart-calls-the-function-the-child-was-given
+  ;; (the function value, unless it was given the var: book finding 18)
+  (let [old versioned
+        sup (a/supervisor {} [(a/child :by-value versioned) (a/child :by-var #'versioned)])]
+    (eventually (fn [] (and (a/whereis :by-value) (a/whereis :by-var))))
+    (alter-var-root #'versioned (constantly (fn [] (a/receive [:which reply] (do (deliver reply :v2) (recur))))))
+    (doseq [id [:by-value :by-var]]
+      (let [p (a/whereis id)]
+        (a/send id [:crash])
+        (eventually (fn [] (let [q (a/whereis id)] (and q (not (identical? p q))))))))
+    (is (= [:v1 :v2] [(a/ask :by-value [:which]) (a/ask :by-var [:which])]))
+    (a/stop-supervisor! sup)
+    (alter-var-root #'versioned (constantly old))))
+
+(deftest strategies
+  (let [run (fn [strategy]
+              (let [sup (a/supervisor {:strategy strategy}
+                                      [(a/child :s1 counter 0) (a/child :s2 counter 0) (a/child :s3 counter 0)])
+                    _ (eventually (fn [] (a/whereis :s3)))
+                    before (mapv second (a/which-children sup))]
+                (a/send :s2 [:crash])
+                (eventually (fn [] (not (identical? (a/whereis :s2) (second before)))))
+                (eventually (fn [] (every? a/alive? (mapv second (a/which-children sup)))))
+                (let [after (mapv second (a/which-children sup))]
+                  (a/stop-supervisor! sup)
+                  (mapv (fn [p q] (if (identical? p q) :same :new)) before after))))]
+    (is (= [:same :new :same] (run :one-for-one)))
+    (is (= [:new :new :new] (run :one-for-all)))
+    (is (= [:same :new :new] (run :rest-for-one)))))
+
+(deftest restart-kinds
+  (let [sup (a/supervisor {} [(a/child :perm counter 0)
+                              (a/child :trans {:restart :transient} counter 0)
+                              (a/child :temp {:restart :temporary} counter 0)])]
+    (eventually (fn [] (a/whereis :temp)))
+    (a/send :trans [:stop])
+    (a/send :temp [:crash])
+    (a/send :perm [:stop])
+    (is (eventually (fn [] (= [:perm] (mapv first (a/which-children sup)))))
+        ":transient ended normally and :temporary crashed: neither back; :permanent always")
+    (is (eventually (fn [] (a/whereis :perm))))
+    (a/stop-supervisor! sup)))
+
+(deftest too-many-restarts
+  (let [sup (a/supervisor {:max-restarts 2 :max-ms 10000} [(a/child :fragile counter 0)])]
+    (dotimes [_ 3]
+      (let [p (eventually (fn [] (a/whereis :fragile)))]
+        (a/send p [:crash])
+        (a/await-exit p 1000)))
+    (is (= :too-many-restarts (a/await-exit sup 1000)))
+    (is (nil? (a/whereis :fragile)))))
+
+;; (a supervisor's children can change while it runs: pulse finding)
+(deftest children-added-and-removed
+  (let [sup (a/supervisor {} [(a/child :dyn-a counter 0)])
+        b (a/start-child! sup (a/child :dyn-b counter 5))]
+    (is (identical? b (a/whereis :dyn-b)) "started and registered when start-child! returns")
+    (is (= [:dyn-a :dyn-b] (mapv first (a/which-children sup))) "after the others")
+    (is (= 5 (a/ask :dyn-b [:get])))
+    (testing "supervised like the others"
+      (a/send :dyn-b [:crash])
+      (is (eventually (fn [] (let [p (a/whereis :dyn-b)] (and p (not (identical? p b)))))))
+      (is (= 5 (a/ask :dyn-b [:get]))))
+    (testing "an id it has already"
+      (is (thrown? Error (a/start-child! sup (a/child :dyn-a counter 1))))
+      (is (= [:dyn-a :dyn-b] (mapv first (a/which-children sup))) "and the supervisor carries on"))
+    (testing "a child that can't start"
+      (let [squatter (a/spawn-process counter 0)]
+        (a/register! :dyn-taken squatter)
+        (is (thrown? Error (a/start-child! sup (a/child :dyn-taken counter 0))))
+        (a/exit! squatter)))
+    (testing "stopping one"
+      (let [b (a/whereis :dyn-b)]
+        (is (true? (a/stop-child! sup :dyn-b)))
+        (is (= :shutdown (a/await-exit b 1000)))
+        (is (= [:dyn-a] (mapv first (a/which-children sup))) "and it isn't restarted")
+        (is (false? (a/stop-child! sup :dyn-b)) "one it hasn't")))
+    (a/stop-supervisor! sup)))
+
+(deftest supervisors-in-supervisors
+  (let [top (a/supervisor {} [(a/child :inner a/supervise {} [(a/child :leaf counter 0)])])
+        leaf (eventually (fn [] (a/whereis :leaf)))]
+    (a/send leaf [:crash])
+    (is (eventually (fn [] (let [p (a/whereis :leaf)] (and p (not (identical? p leaf)))))) "the inner one restarts it")
+    (is (identical? (a/whereis :inner) (second (first (a/which-children top)))) "the top one didn't notice")
+    (a/stop-supervisor! top)
+    (is (eventually (fn [] (nil? (a/whereis :leaf)))) "stopping the top stops the leaves")))
+
+(deftest asking
+  (let [p (a/spawn-process (fn [] (sleep 1000)))
+        c (try (a/ask p [:get] 30) nil (catch TimeoutError e e))]
+    (is (= 30 (:after c)))
+    (a/exit! p)))
+
+(deftest a-crash-stays-in-the-debugger-while-it-is-restarted
+  ;; (M9a's done-check: the supervisor hears of the crash and restarts the
+  ;; child, while the crashed fiber waits in the debugger to be looked at)
+  (let [sup (binding [*debugger* :park] (a/supervisor {} [(a/child :held-counter counter 0)]))
+        first-one (eventually (fn [] (a/whereis :held-counter)))
+        id (fiber-id @(:fiber first-one))
+        held (fn [] (first (filter (fn [d] (= id (:fiber d))) (debugging))))]
+    (a/send :held-counter [:crash])
+    (let [second-one (eventually (fn [] (let [p (a/whereis :held-counter)] (when (and p (not (identical? p first-one))) p))))]
+      (is (some? second-one) "restarted")
+      (is (= 0 (a/ask :held-counter [:get])) "and answering")
+      (is (= "Divide by zero" (:condition (eventually held))) "while the crash waits in the debugger")
+      (debug-abort id)
+      (is (eventually (fn [] (nil? (held)))))
+      (is (identical? second-one (a/whereis :held-counter)) "aborting it restarts nothing"))
+    (a/stop-supervisor! sup)
+    (is (= :normal (a/exit-reason sup)))))

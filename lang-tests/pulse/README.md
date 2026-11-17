@@ -4,12 +4,12 @@ Watches web sites and keeps a record of whether they're up: a checker per
 site, a status page, a JSON API, and a command line.
 
 ```sh
-norn run add example https://example.com --every 30   # watch a site
-norn run list                                          # the sites
-norn run serve --port 8080                             # check them; page at http://127.0.0.1:8080/
-norn run report --hours 24                             # uptime (status 1 if one is down)
-norn test                                              # its tests
-norn package                                           # a command-line archive in dist/
+skein run add example https://example.com --every 30   # watch a site
+skein run list                                          # the sites
+skein run serve --port 8080                             # check them; page at http://127.0.0.1:8080/
+skein run report --hours 24                             # uptime (status 1 if one is down)
+skein test                                              # its tests
+skein package                                           # a command-line archive in dist/
 ```
 
 The database is `pulse.db` (`--db FILE`, or `PULSE_DB`). `serve -v` logs

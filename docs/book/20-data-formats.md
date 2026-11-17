@@ -3,45 +3,45 @@
 [Contents](README.md) · Previous: [19. Files and streams](19-files-and-streams.md) · Next: [21. The operating system](21-the-operating-system.md) <!-- nav -->
 
 Programs trade data with files, services, and other programs, and each
-partner has a format it prefers. Norn's standard library reads and writes
-the common ones, and in each case the result is ordinary Norn data: maps,
+partner has a format it prefers. Skein's standard library reads and writes
+the common ones, and in each case the result is ordinary Skein data: maps,
 vectors, strings, numbers. This chapter is organized by task rather than by
 library: configuration files, data interchange, binary data, compression
 and archives, money and other exact decimals, and finally identifiers and
 hashing. Each section shows one library at work on a real example. For the
-full list of a library's functions and options, use `norn doc` on its
+full list of a library's functions and options, use `skein doc` on its
 namespace and see the [library reference](../reference/libraries.md).
 
 Reading and writing files is [Chapter 19](19-files-and-streams.md)'s
 subject. Most format libraries here work on strings or `Bytes`, so you
-combine them with `norn.io`; a few also have `read-file` and `write-file`
+combine them with `skein.io`; a few also have `read-file` and `write-file`
 helpers.
 
 Load what the chapter uses:
 
 ```clojure
-(require '[norn.io :as io]
-         '[norn.string :as str]
-         '[norn.toml :as toml]
-         '[norn.yaml :as yaml]
-         '[norn.edn :as edn]
-         '[norn.json :as json]
-         '[norn.ndjson :as ndjson]
-         '[norn.csv :as csv]
-         '[norn.xml :as xml])
+(require '[skein.io :as io]
+         '[skein.string :as str]
+         '[skein.toml :as toml]
+         '[skein.yaml :as yaml]
+         '[skein.edn :as edn]
+         '[skein.json :as json]
+         '[skein.ndjson :as ndjson]
+         '[skein.csv :as csv]
+         '[skein.xml :as xml])
 ```
 
 ## Configuration files
 
 A configuration file is written by people and read by programs. It should
-be pleasant to edit, and reading it should never run code. Norn reads three
+be pleasant to edit, and reading it should never run code. Skein reads three
 formats for this: TOML, YAML, and EDN.
 
 ### TOML
 
 TOML is a good default for a new program's settings. It's simple to write,
 its types are unambiguous, and the format has one way to say most things.
-`norn.toml/read-string` gives a map, with keys as keywords by default.
+`skein.toml/read-string` gives a map, with keys as keywords by default.
 Tables (`[server]`) become nested maps, and arrays of tables (`[[users]]`)
 become vectors of maps.
 
@@ -76,18 +76,18 @@ roles = [\"till\"]
 (mapv :name (:staff shop)) ; => ["Ada" "Grace"]
 ```
 
-Strings, integers, floats, booleans, arrays, and tables map to the Norn
+Strings, integers, floats, booleans, arrays, and tables map to the Skein
 types you'd expect. Dates and times need a decision. An offset date-time
 such as `1979-05-27T07:32:00Z` names one moment, and it reads as a
-`norn.time` instant ([Chapter 21](21-the-operating-system.md)). A *local*
+`skein.time` instant ([Chapter 21](21-the-operating-system.md)). A *local*
 date like `2026-01-01` has no time zone, and by default it reads as a
-string. Pass `:local-times true` to get `norn.time` values instead:
+string. Pass `:local-times true` to get `skein.time` values instead:
 
 ```clojure
 (get-in shop [:tax :since]) ; => "2026-01-01"
 
 (let [typed (toml/read-string shop-toml :local-times true)]
-  (norn.time/format-local (get-in typed [:tax :since])))
+  (skein.time/format-local (get-in typed [:tax :since])))
 ; => "2026-01-01"
 ```
 
@@ -120,9 +120,9 @@ specification says. Reading errors are `ParseError`s that carry the line:
 ### YAML
 
 YAML is common in deployment and CI files, so you'll often read it even if
-you'd never choose it. `norn.yaml` reads one configuration document: block
+you'd never choose it. `skein.yaml` reads one configuration document: block
 and flow collections, quoted and block strings, comments, and anchors with
-aliases. Like `norn.toml`, it reads map keys as keywords. Pass
+aliases. Like `skein.toml`, it reads map keys as keywords. Pass
 `:keys identity` to keep them as strings.
 
 ```clojure
@@ -151,7 +151,7 @@ banner: |
 ```
 
 Look at `debug` and `country`. YAML 1.1 read `no` as false and turned the
-country code for Norway into a boolean, a famous source of bugs. Norn
+country code for Norway into a boolean, a famous source of bugs. Skein
 follows YAML 1.2's Core rules, where only `true` and `false` (also written
 `True`, `TRUE`, `False`, `FALSE`) are booleans:
 
@@ -176,13 +176,13 @@ one a person will edit.
 
 ### EDN
 
-EDN is Norn's own data syntax as a format: the same text you write in
+EDN is Skein's own data syntax as a format: the same text you write in
 code, with lists, vectors, maps, sets, keywords, symbols, characters,
 ratios, regexes, and `#bytes`. When a configuration file is only ever read
-by Norn programs, EDN saves you a translation step, and it's the natural
+by Skein programs, EDN saves you a translation step, and it's the natural
 format for saving and reloading program data.
 
-`norn.edn/read-string` reads the first value in a string and never
+`skein.edn/read-string` reads the first value in a string and never
 evaluates anything. A list stays a list; it isn't called.
 
 ```clojure
@@ -205,21 +205,21 @@ equal value.
 ```
 
 Decimals and times have EDN forms too, as *tagged literals*: a tag, then
-the form it reads from. `#norn/decimal "12.30"` is a decimal,
-`#norn/date "2026-11-03"`, `#norn/time`, `#norn/date-time` and `#norn/zoned`
+the form it reads from. `#skein/decimal "12.30"` is a decimal,
+`#skein/date "2026-11-03"`, `#skein/time`, `#skein/date-time` and `#skein/zoned`
 are dates and times, and `#inst "2026-11-13T07:05:00Z"` is an instant, as
 in Clojure's EDN. `#uuid "…"` reads as the UUID's text, since a UUID is a
-string in Norn. `pr-str` writes them so, and the reader reads them back,
+string in Skein. `pr-str` writes them so, and the reader reads them back,
 in code as well as in EDN:
 
 ```clojure
-(require '[norn.decimal :as d] '[norn.time :as t])
+(require '[skein.decimal :as d] '[skein.time :as t])
 
 (def order {:total (d/parse "12.30") :placed (t/local-date 2026 11 3)})
 (edn/write-string [(:total order) (:placed order)])
-; => "[#norn/decimal \"12.30\" #norn/date \"2026-11-03\"]"
+; => "[#skein/decimal \"12.30\" #skein/date \"2026-11-03\"]"
 (= order (edn/read-string (edn/write-string order))) ; => true
-(d/add #norn/decimal "0.10" #norn/decimal "0.25") ; => #norn/decimal "0.35"
+(d/add #skein/decimal "0.10" #skein/decimal "0.25") ; => #skein/decimal "0.35"
 ```
 
 `str` and `println` write them as plain text, `12.30` and `2026-11-03`,
@@ -239,7 +239,7 @@ instances of classes without a tagged literal signal a `TypeError` naming
 the value. `pr-str` still prints them, but its text doesn't read back. To
 give a class of your own a tagged literal, see
 [Chapter 9](09-classes-and-generic-functions.md); to save any instance,
-use `norn.bin`, later in this chapter.
+use `skein.bin`, later in this chapter.
 
 ```clojure
 (edn/write-string {:count (atom 0)}) ; !! TypeError
@@ -247,12 +247,12 @@ use `norn.bin`, later in this chapter.
 
 `read-file` and `write-file` do the same with a file, as the other
 formats' do. For a file people will read too, such as a config or a small
-database, `:pretty true` lays the value out over lines, as `norn.pprint`
+database, `:pretty true` lays the value out over lines, as `skein.pprint`
 does:
 
 ```clojure
-(println (edn/write-string (sorted-map :name "ada" :langs ["norn" "c"]) :pretty true :width 20))
-; prints: {:langs ["norn" "c"],
+(println (edn/write-string (sorted-map :name "ada" :langs ["skein" "c"]) :pretty true :width 20))
+; prints: {:langs ["skein" "c"],
 ; prints:  :name "ada"}
 ```
 
@@ -264,7 +264,7 @@ remains in feeds, office documents, and older services.
 
 ### JSON
 
-`norn.json/read-string` reads objects as maps with keyword keys, arrays as
+`skein.json/read-string` reads objects as maps with keyword keys, arrays as
 vectors, `null` as nil, and numbers as integers (of any size) or floats.
 
 ```clojure
@@ -319,7 +319,7 @@ helpers `read-file` and `write-file` take the same options.
 
 JSON Lines (also called NDJSON) puts one JSON value on each line. Logs,
 event streams, and data exports use it because a file can grow forever and
-still be read one record at a time. `norn.ndjson` has `read-string` and
+still be read one record at a time. `skein.ndjson` has `read-string` and
 `read-file`, which give a vector, and `write-string` and `write-file`, which
 take a sequence:
 
@@ -360,7 +360,7 @@ number in the file:
 
 ### CSV
 
-CSV is what spreadsheets export and what analysts ask for. `norn.csv`
+CSV is what spreadsheets export and what analysts ask for. `skein.csv`
 follows RFC 4180: fields may be quoted, and a quoted field can hold commas,
 doubled quotes, and line breaks. `read-csv` gives a vector of rows, each a
 vector of strings. `read-maps` uses the first row as a header and gives a
@@ -425,7 +425,7 @@ tabs, and `read-maps` takes `:keys identity` to keep header names as strings.
 
 ### XML
 
-`norn.xml` reads an XML 1.0 document into nested maps. Each element is
+`skein.xml` reads an XML 1.0 document into nested maps. Each element is
 `{:tag … :attrs … :namespaces … :content […]}`. Names are *expanded*: a pair
 of a namespace URI and a local name, with nil for no namespace. That looks
 heavy for a simple document, but it means two names compare equal exactly
@@ -487,28 +487,28 @@ byte-order mark, and `write-file` writes UTF-8.
 
 Text formats are readable and slow to parse. Binary formats are compact,
 exact for floats, and fast, and some data, such as images and network
-protocols, is binary to begin with. Norn's binary libraries all work on
+protocols, is binary to begin with. Skein's binary libraries all work on
 `Bytes`.
 
 ```clojure
-(require '[norn.bytes :as b]
-         '[norn.buffer :as buf]
-         '[norn.cbor :as cbor]
-         '[norn.bin :as bin])
+(require '[skein.bytes :as b]
+         '[skein.buffer :as buf]
+         '[skein.cbor :as cbor]
+         '[skein.bin :as bin])
 ```
 
 ### Bytes, hex, and Base64
 
 `Bytes` is in core: `(bytes [1 2 3])`, `(bytes "text")`, `count`, `nth`,
-`subbytes`, `bytes-concat`, and `bytes->string`. `norn.bytes` adds the
+`subbytes`, `bytes-concat`, and `bytes->string`. `skein.bytes` adds the
 conversions you need at the edges of a program: hex and Base64 for putting
 bytes into text, and fixed-width integers and floats for binary layouts.
 
 ```clojure
-(b/hex (bytes "Norn")) ; => "4e6f726e"
+(b/hex (bytes "Skein")) ; => "4e6f726e"
 (b/unhex "4e6f726e") ; => #bytes "4e6f726e"
-(b/base64 (bytes "Norn")) ; => "Tm9ybg=="
-(bytes->string (b/unbase64 "Tm9ybg==")) ; => "Norn"
+(b/base64 (bytes "Skein")) ; => "Tm9ybg=="
+(bytes->string (b/unbase64 "Tm9ybg==")) ; => "Skein"
 ```
 
 `(base64 b :url)` uses the URL-safe alphabet without padding, the form used
@@ -542,7 +542,7 @@ the incremental `decoder` decode it without splitting characters.
 ### Packed numbers
 
 When you have large arrays of numbers, such as samples, pixels, or
-measurements, `norn.buffer` packs them into `Bytes`, each element taking
+measurements, `skein.buffer` packs them into `Bytes`, each element taking
 exactly the width of one element type: `:u8`, `:i8`,
 `:u16`, `:i16`, `:u32`, `:i32`, `:u64`, `:i64`, `:f32`, or `:f64`.
 
@@ -596,7 +596,7 @@ want floats in their binary form, or need to embed raw bytes.
 CBOR has no keywords, so `encode` only takes the types it can represent
 faithfully. A keyword or a symbol is a `TypeError`, not a silent
 conversion; use string keys, as above. Where CBOR has a registered tag for
-a Norn value, the value travels as it: integers of any size (bignum tags),
+a Skein value, the value travels as it: integers of any size (bignum tags),
 decimals (the decimal fraction tag), ratios, sets, instants (RFC 3339
 text) and dates. Other tags come back as `Tagged` values holding the tag
 number and its contents, so nothing is lost.
@@ -607,11 +607,11 @@ number and its contents, so nothing is lost.
 ; => [1 nil 2.5 10000000000000000000000 1/3 #{"a"}]
 ```
 
-### norn.bin: Norn values as bytes
+### skein.bin: Skein values as bytes
 
-`norn.bin` is for Norn talking to Norn: caching results on disk, saving
-program state, sending values between Norn processes. It writes every kind
-of Norn data, including keywords, sets, ratios, characters, sorted
+`skein.bin` is for Skein talking to Skein: caching results on disk, saving
+program state, sending values between Skein processes. It writes every kind
+of Skein data, including keywords, sets, ratios, characters, sorted
 collections, queues, regexes, and instances of your classes, and reads it
 back as an equal value.
 
@@ -645,12 +645,12 @@ by a newer version rather than misreading it.
 ## Compression and archives
 
 ```clojure
-(require '[norn.compress :as z] '[norn.zip :as zip])
+(require '[skein.compress :as z] '[skein.zip :as zip])
 ```
 
 ### Compressing data
 
-`norn.compress` does deflate in its three wrappings: gzip (the default),
+`skein.compress` does deflate in its three wrappings: gzip (the default),
 zlib, and raw deflate. `compress` and `decompress` take `Bytes` or a string,
 and give `Bytes`. `gzip` and `gunzip` are shorthands.
 
@@ -698,7 +698,7 @@ it closes the stream it reads (unless `:close-source false`):
 
 ### ZIP archives
 
-`norn.zip/zip` builds an archive from a map of names to contents, strings
+`skein.zip/zip` builds an archive from a map of names to contents, strings
 or `Bytes`, and gives the archive as `Bytes`. A name ending in `/` is a
 directory. Write the result with `io/write-bytes`.
 
@@ -748,14 +748,14 @@ have no exact binary form:
 ```
 
 For measurements, that error is noise. For money, it's a bug: totals drift
-by a cent, and two amounts that should be equal aren't. Norn's ratios are
+by a cent, and two amounts that should be equal aren't. Skein's ratios are
 exact ([Chapter 3](03-values-and-expressions.md)), but they don't remember
-how many decimal places a value had, and money needs that. `norn.decimal`
+how many decimal places a value had, and money needs that. `skein.decimal`
 represents a decimal as an integer coefficient and a *scale*, the number of
 digits after the point. `4.95` is 495 with scale 2.
 
 ```clojure
-(require '[norn.decimal :as d])
+(require '[skein.decimal :as d])
 
 (def price (d/parse "4.95"))
 [(:coefficient price) (:scale price)] ; => [495 2]
@@ -765,7 +765,7 @@ digits after the point. `4.95` is 495 with scale 2.
 
 `parse` reads decimal text exactly, without going through a float, and
 `text` writes it back, keeping the scale. A decimal prints as its tagged
-literal, `#norn/decimal "4.95"`, which you can also write in code; `str`
+literal, `#skein/decimal "4.95"`, which you can also write in code; `str`
 gives its text. `add` and `subtract` give the
 larger of the two scales. `multiply` adds the scales, as you'd do by hand.
 `(decimal n)` makes a whole number, and `(decimal coefficient scale)` builds
@@ -801,7 +801,7 @@ Multiplying by a tax rate gives more digits than a price has:
 (d/text (d/multiply subtotal tax-rate)) ; => "4.195125"
 ```
 
-Rounding is a business decision, so `norn.decimal` never rounds on its own.
+Rounding is a business decision, so `skein.decimal` never rounds on its own.
 `quantize` changes a value to a given scale, rounding as you choose.
 `divide`, whose exact result may have no end, always takes the scale you
 want. The default rounding mode is half-even, also called banker's
@@ -848,7 +848,7 @@ reports. It works like `compare`, so you can pass it to `sort`.
 To store decimals, write them as text with `d/text`: in JSON as a string,
 in SQLite as `TEXT`, or as an integer count of cents when every amount has
 the same scale. CBOR carries them directly, as its decimal fraction tag.
-`norn.bin` does too, but a decimal is an instance of the class
+`skein.bin` does too, but a decimal is an instance of the class
 `d/Decimal`, so list it in `:classes` when you decode.
 
 ## Identifiers and hashing
@@ -856,12 +856,12 @@ the same scale. CBOR carries them directly, as its decimal fraction tag.
 ### UUIDs
 
 A UUID is a 128-bit identifier you can create anywhere without asking a
-central counter. `norn.uuid` represents UUIDs as their canonical text:
+central counter. `skein.uuid` represents UUIDs as their canonical text:
 lowercase hex in the 8-4-4-4-12 pattern. They're strings, so they work as
 map keys, in JSON, and in databases with no conversion.
 
 ```clojure
-(require '[norn.uuid :as uuid])
+(require '[skein.uuid :as uuid])
 
 (def id (uuid/v4))
 (uuid/valid? id) ; => true
@@ -898,12 +898,12 @@ form that some binary protocols use.
 A digest, or cryptographic hash, is a short fingerprint of data: the same
 input always gives the same digest, and finding two inputs with the same
 digest is infeasible. Use one to check that a download arrived intact, to
-name content by what it contains, or to detect changes. `norn.crypto`
+name content by what it contains, or to detect changes. `skein.crypto`
 returns digests as `Bytes`; write them as text with `crypto/hex` or
 `b/base64`.
 
 ```clojure
-(require '[norn.crypto :as crypto])
+(require '[skein.crypto :as crypto])
 
 (crypto/hex (crypto/sha256 "abc"))
 ; => "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -972,7 +972,7 @@ in constant time.
 `random-bytes` gives bytes from the operating system's secure generator,
 for keys and salts. `random-token` gives a URL-safe string of 32 random
 bytes, or as many as you ask for, for session IDs, password-reset links,
-and API keys. Use these rather than `rand` or `norn.random` for anything an
+and API keys. Use these rather than `rand` or `skein.random` for anything an
 attacker might want to guess.
 
 ```clojure
@@ -982,25 +982,25 @@ attacker might want to guess.
 
 ## Summary
 
-- Every format library reads into plain Norn data and writes from it.
+- Every format library reads into plain Skein data and writes from it.
   Reading errors are `ParseError`s with `:line` (and `:column` where it
   applies) in `ex-data`.
 - For configuration, TOML reads keys as keywords and local dates as strings
   unless you pass `:local-times true`; YAML follows the 1.2 Core rules and
-  reads keys as keywords too; EDN reads Norn data without evaluating it,
+  reads keys as keywords too; EDN reads Skein data without evaluating it,
   and `write-string` refuses values that wouldn't read back.
 - JSON reads keys as keywords by default (`:keys identity` keeps strings);
   JSON Lines streams records with `reduce-records`; CSV fields are always
   strings; XML elements are maps with expanded `[namespace local]` names.
-- `norn.bytes` converts between bytes and hex, Base64, and fixed-width
-  numbers; `norn.buffer` packs numeric arrays; CBOR is compact
-  interchange; `norn.bin` saves any Norn data, instances only of classes
+- `skein.bytes` converts between bytes and hex, Base64, and fixed-width
+  numbers; `skein.buffer` packs numeric arrays; CBOR is compact
+  interchange; `skein.bin` saves any Skein data, instances only of classes
   you allow.
-- `norn.compress` and `norn.zip` limit what they unpack with `:max-size`,
+- `skein.compress` and `skein.zip` limit what they unpack with `:max-size`,
   and `extract!` never writes outside its folder.
-- `norn.decimal` keeps money exact: parse and write text at the edges, round
+- `skein.decimal` keeps money exact: parse and write text at the edges, round
   only with `quantize` or `divide`, and compare amounts with `d/compare`.
-- `norn.uuid` gives UUIDs as strings (v7 for sortable keys); `norn.crypto`
+- `skein.uuid` gives UUIDs as strings (v7 for sortable keys); `skein.crypto`
   has digests, HMAC with constant-time checks, PBKDF2 for passwords, and
   secure random tokens.
 

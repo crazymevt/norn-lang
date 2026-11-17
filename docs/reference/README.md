@@ -1,4 +1,4 @@
-# Norn language reference
+# Skein language reference
 
 [Documentation home](../README.md) · [Symbol index](symbols.md) · [Standard library](libraries.md)
 
@@ -12,6 +12,6 @@
 | [Standard library](libraries.md) | Bundled namespaces, API discovery, and representative examples. |
 
 Signatures use `…` for repeated forms. In code examples, `; =>` shows the
-expected result. `norn doc NAME` reads the current runtime's documentation
+expected result. `skein doc NAME` reads the current runtime's documentation
 metadata, and `(source NAME)` at the REPL shows a definition when source is
 available.

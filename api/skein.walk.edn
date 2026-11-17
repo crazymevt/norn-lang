@@ -1,0 +1,12 @@
+;; skein.walk's public interface, recorded by skein api-diff --record.
+{
+ "keywordize-keys" {:arglists ["[m]"], :kind :function}
+ "leaves" {:arglists ["[form]"], :kind :function, :signature [{:result "Vector", :args ["Any"]}]}
+ "macroexpand-all" {:arglists ["[form]"], :kind :function}
+ "postwalk" {:arglists ["[f form]"], :kind :function}
+ "postwalk-replace" {:arglists ["[smap form]"], :kind :function, :signature [{:result "Any", :args ["Map" "Any"]}]}
+ "prewalk" {:arglists ["[f form]"], :kind :function}
+ "prewalk-replace" {:arglists ["[smap form]"], :kind :function, :signature [{:result "Any", :args ["Map" "Any"]}]}
+ "stringify-keys" {:arglists ["[m]"], :kind :function}
+ "walk" {:arglists ["[inner outer form]"], :kind :function}
+}

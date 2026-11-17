@@ -1,0 +1,49 @@
+;;;; Making instances (M10 part 6.2): a plain (Class :k v…) is made natively
+;;;; (%make-fast), anything else the general way (%make-from). These check
+;;;; the two agree where it's easy to get wrong. Run at both tiers.
+
+(ns make-test
+  (:require [skein.test :refer [is deftest testing]]))
+
+(defclass Pt () ((x :initform 0) (y :initform 0)))
+(defclass Labelled () ((label :initform "none") (tags :initform []) (seen :initform (atom 0))))
+(defclass Req () ((w :required true) (h :initarg :height :initform 1)))
+(defclass Pt3 (Pt) ((z :initform :zero)))
+(defclass Typed () ((n :type Integer :initform 0)))
+(defclass Cell () ((v :initform nil :mutable true)) (:mutable))
+
+(deftest plain-instances
+  (is (= [1 2] [(:x (Pt :x 1 :y 2)) (:y (Pt :x 1 :y 2))]))
+  (is (= [0 0] [(:x (Pt)) (:y (Pt))]) "literal defaults")
+  (is (= 5 (:x (Pt :x 1 :x 5))) "the last of an initarg given twice")
+  (is (= [1 0 :zero] ((juxt :x :y :z) (Pt3 :x 1))) "inherited slots")
+  (is (= 4 (:h (Req :w 3 :height 4))) "an :initarg not named after the slot"))
+
+(deftest defaults-that-run
+  (testing "an initform that isn't a literal runs for each instance"
+    (let [a (Labelled) b (Labelled)]
+      (is (= "none" (:label a)))
+      (is (not (identical? (:seen a) (:seen b))) "a fresh atom each time")))
+  (testing "a literal default is the same value every time"
+    (is (= [] (:tags (Labelled))))))
+
+(deftest what-isnt-plain-goes-the-general-way
+  (is (thrown-with-msg? Error #"Missing required slot :w" (Req :height 2)))
+  (is (thrown-with-msg? Error #"has no initarg :nope" (Pt :nope 1)))
+  (is (thrown-with-msg? Error #"make expects :initarg value pairs" (Pt :x)))
+  (is (thrown-with-msg? Error #"Can't make an instance of" (make Integer)))
+  (is (thrown? Error (Typed :n "not an integer")) "typed slots are checked")
+  (is (= 7 (:n (Typed :n 7))))
+  (testing "a mutable class's instance can be changed"
+    (let [c (Cell)]
+      (set-slot! c :v 9)
+      (is (= 9 (:v c))))))
+
+(defn- redefine [src] (load-string (str "(in-ns 'make-test) " src)))
+
+(deftest redefining-a-class
+  (redefine "(defclass Later () ((a :initform 1)))")
+  (is (= 1 (:a ((resolve 'make-test/Later)))))
+  (redefine "(defclass Later () ((a :initform 2) (b :initform (+ 1 2))))")
+  (let [o ((resolve 'make-test/Later))]
+    (is (= [2 3] [(:a o) (:b o)]) "the new defaults, literal and not")))

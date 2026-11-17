@@ -1,0 +1,22 @@
+(ns pulse.main-test
+  (:require [skein.io :as io]
+            [skein.sys :as sys]
+            [skein.test :refer [deftest is]]
+            [pulse.main :as main]))
+
+(defn- run [& args]
+  (let [status (atom nil)
+        out (with-out-str (reset! status (apply main/main args)))]
+    [@status out]))
+
+(deftest the-command-line
+  (let [db (io/path (sys/temp-dir) (str "pulse-test-" (sys/pid) "-" (nano-time) ".db"))]
+    (is (= 0 (first (run "--db" db "add" "home" "http://127.0.0.1:1/" "--every" "30"))))
+    (is (= 1 (first (run "--db" db "add" "home" "http://elsewhere/"))) "a name once")
+    (is (re-find #"home\s+30s\s+http://127.0.0.1:1/" (second (run "--db" db "list"))))
+    (is (= 0 (first (run "--db" db "report"))))
+    (is (re-find #"home\s+-\s+-\s+-\s+0 checks" (second (run "--db" db "report"))) "not checked yet")
+    (is (= 0 (first (run "--db" db "remove" "home"))))
+    (is (= 1 (first (run "--db" db "remove" "home"))))
+    (is (= 2 (main/main "add")) "a usage error")
+    (io/delete! db)))

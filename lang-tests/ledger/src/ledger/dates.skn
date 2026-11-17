@@ -1,0 +1,18 @@
+(ns ledger.dates
+  "Dates as banks write them in their exports."
+  (:require [skein.time :as t]))
+
+(def formats
+  "Names for the patterns exports use most; a profile's date-format may
+  also be a pattern of its own (skein.time's, as strftime's)."
+  {:iso "%Y-%m-%d" :us "%m/%d/%Y" :eu "%d/%m/%Y" :text "%d %b %Y"})
+
+(defn parse-date
+  "The date in text s, written as format says: one of formats' names
+  (:iso :us :eu :text) or a pattern (\"%d.%m.%y\"). A ParseError otherwise."
+  [s format]
+  (t/parse-local-date s (if (keyword? format)
+                          (or (get formats format) (throw (str "Unknown date format " format)))
+                          format)))
+
+(defn month-of "Date d's month as text: 2026-11." [d] (t/format-local d "%Y-%m"))

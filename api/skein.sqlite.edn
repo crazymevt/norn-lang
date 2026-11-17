@@ -1,0 +1,26 @@
+;; skein.sqlite's public interface, recorded by skein api-diff --record.
+{
+ "BusyError" {:kind :class, :slots ["code" "extended-code" "location" "message" "sql" "trace"], :supers ["skein.sqlite/DatabaseError"]}
+ "Connection" {:kind :class, :slots ["blocking" "depth" "epoch" "handle" "lock" "owner" "path" "statements"], :supers ["skein.core/StandardObject"]}
+ "ConstraintError" {:kind :class, :slots ["code" "extended-code" "location" "message" "sql" "trace"], :supers ["skein.sqlite/DatabaseError"]}
+ "DatabaseError" {:kind :class, :slots ["code" "extended-code" "location" "message" "sql" "trace"], :supers ["skein.core/Error"]}
+ "close!" {:arglists ["[c]"], :kind :function, :signature [{:result "Any", :args ["Connection"]}]}
+ "columns" {:arglists ["[c t]"], :kind :function, :signature [{:result "a vector of Map", :args ["Connection" "String"]}]}
+ "each-row" {:arglists ["[c q f]"], :kind :function, :signature [{:result "Integer", :args ["Connection" "String or Vector" "Any"]}]}
+ "exec!" {:arglists ["[c sql]"], :kind :function, :signature [{:result "Any", :args ["Connection" "String"]}]}
+ "execute!" {:arglists ["[c q]"], :kind :function, :signature [{:result "Integer", :args ["Connection" "String or Vector"]}]}
+ "in-transaction?" {:arglists ["[c]"], :kind :function, :signature [{:result "Boolean", :args ["Connection"]}]}
+ "last-insert-id" {:arglists ["[c]"], :kind :function, :signature [{:result "Integer", :args ["Connection"]}]}
+ "open" {:arglists ["[path & {:or {busy-timeout 5000, create true}, :keys [readonly create busy-timeout blocking]}]"], :kind :function, :signature [{:result "Connection", :args ["String"], :rest "Any"}]}
+ "open?" {:arglists ["[c]"], :kind :function, :signature [{:result "Boolean", :args ["Connection"]}]}
+ "query" {:arglists ["[c q]" "[c q opts]"], :kind :function, :signature [{:result "Vector", :args ["Connection" "String or Vector"]} {:result "Vector", :args ["Connection" "String or Vector" "nil or Map"]}]}
+ "query-one" {:arglists ["[c q]" "[c q opts]"], :kind :function, :signature [{:result "nil or Map or Vector", :args ["Connection" "String or Vector"]} {:result "nil or Map or Vector", :args ["Connection" "String or Vector" "nil or Map"]}]}
+ "query-table" {:arglists ["[c q & {:keys [limit]}]"], :kind :function, :signature [{:result "Map", :args ["Connection" "String or Vector"], :rest "Any"}]}
+ "quote-name" {:arglists ["[name]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "schema" {:arglists ["[c]"], :kind :function, :signature [{:result "a vector of Map", :args ["Connection"]}]}
+ "tables" {:arglists ["[c]"], :kind :function, :signature [{:result "a vector of String", :args ["Connection"]}]}
+ "transact" {:arglists ["[c f]" "[c f opts]"], :kind :function, :signature [{:result "Any", :args ["Connection" "Any"]} {:result "Any", :args ["Connection" "Any" "nil or Map"]}]}
+ "version" {:arglists ["[]"], :kind :function, :signature [{:result "String", :args []}]}
+ "with-connection" {:arglists ["[[n path & opts] & body]"], :kind :macro}
+ "with-transaction" {:arglists ["[[c & opts] & body]"], :kind :macro}
+}

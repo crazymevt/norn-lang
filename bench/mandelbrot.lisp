@@ -1,8 +1,8 @@
-;;;; bench/programs.norn's Mandelbrot in SBCL, for comparison: the same view,
+;;;; bench/programs.skn's Mandelbrot in SBCL, for comparison: the same view,
 ;;;; the same escape-time kernel with smooth colouring (mandelbrot.fractal's
 ;;;; escape), typed double-floats and (speed 3), as an SBCL program would be
 ;;;; written for speed. Prints the best of the runs in about 2 s, in ms,
-;;;; and the checksum, which must match the Norn program's.
+;;;; and the checksum, which must match the Skein program's.
 ;;;;
 ;;;;   sbcl --script bench/mandelbrot.lisp
 

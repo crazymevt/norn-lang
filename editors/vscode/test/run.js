@@ -1,9 +1,9 @@
 // Run the extension's test (suite.js) in an editor: Antigravity IDE by
 // default, or the one EDITOR names (a VS Code-like Electron executable,
 // such as VS Code's). A fresh profile and extensions folder, so the
-// user's aren't touched. NORN is the norn to test (default: norn-lang's
+// user's aren't touched. SKEIN is the skein to test (default: skein-lang's
 // release build). Each line suite.js writes is one feature's answer; this
-// checks them, as crates/norn/tests/lsp.rs checks eglot's.
+// checks them, as crates/skein/tests/lsp.rs checks eglot's.
 //
 //   node test/run.js          (npm test)
 
@@ -16,16 +16,16 @@ const path = require('path');
 
 const ext = path.resolve(__dirname, '..');
 const editor = process.env.EDITOR_BIN || '/Applications/Antigravity IDE.app/Contents/MacOS/Electron';
-const norn = process.env.NORN || path.resolve(ext, '../../target/release/norn');
+const skein = process.env.SKEIN || path.resolve(ext, '../../target/release/skein');
 
-/** A Norn project in a temporary folder: norn.edn and src/geo/shapes.norn,
+/** A Skein project in a temporary folder: skein.edn and src/geo/shapes.skn,
  * as lsp.rs writes it. */
 function project(name) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), `norn-vscode-${name}-`));
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), `skein-vscode-${name}-`));
   fs.mkdirSync(path.join(d, 'src/geo'), { recursive: true });
-  fs.writeFileSync(path.join(d, 'norn.edn'), '{:name geo :paths ["src"]}\n');
+  fs.writeFileSync(path.join(d, 'skein.edn'), '{:name geo :paths ["src"]}\n');
   fs.writeFileSync(
-    path.join(d, 'src/geo/shapes.norn'),
+    path.join(d, 'src/geo/shapes.skn'),
     `(ns geo.shapes)
 
 (defn area
@@ -45,8 +45,8 @@ function project(name) {
 
 const proj = project('a');
 const other = project('b');
-const results = path.join(os.tmpdir(), `norn-vscode-results-${process.pid}.txt`);
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'norn-vscode-profile-'));
+const results = path.join(os.tmpdir(), `skein-vscode-results-${process.pid}.txt`);
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'skein-vscode-profile-'));
 fs.writeFileSync(results, '');
 
 const r = spawnSync(
@@ -65,7 +65,7 @@ const r = spawnSync(
     '--new-window',
   ],
   {
-    env: { ...process.env, NORN_TEST_RESULTS: results, NORN_TEST_PROJECT: proj, NORN_TEST_OTHER: other, NORN_TEST_NORN: norn, ELECTRON_RUN_AS_NODE: '' },
+    env: { ...process.env, SKEIN_TEST_RESULTS: results, SKEIN_TEST_PROJECT: proj, SKEIN_TEST_OTHER: other, SKEIN_TEST_SKEIN: skein, ELECTRON_RUN_AS_NODE: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 180000,
   },
@@ -86,14 +86,14 @@ const wants = [
   'other project: (geo.shapes/area kind x)',
   'repl eval: 42',
   "repl define: #'geo.shapes/half",
-  'src/geo/shapes.norn:7: odd: 3',
+  'src/geo/shapes.skn:7: odd: 3',
   'debug frame: geo.shapes/half at line 5',
   'debug locals: x=3',
   'debug evaluate: 6',
   "debug redefine: #'geo.shapes/half",
   'debug restarted: 1',
   // (Stop aborts the fiber: the evaluation fails with its condition)
-  'src/geo/shapes.norn:5: odd: 5',
+  'src/geo/shapes.skn:5: odd: 5',
   'done',
 ];
 const missing = wants.filter((w) => !out.includes(w));

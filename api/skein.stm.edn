@@ -1,0 +1,18 @@
+;; skein.stm's public interface, recorded by skein api-diff --record.
+{
+ "*max-retries*" {:kind :var, :dynamic true}
+ "Ref" {:kind :class, :slots ["id" "lock" "max-history" "validator" "versions"], :supers ["skein.core/StandardObject"]}
+ "after-commit" {:arglists ["[f]"], :kind :function}
+ "alter" {:arglists ["[r f & args]"], :kind :function, :signature [{:result "Any", :args ["Ref" "Any"], :rest "Any"}]}
+ "commute" {:arglists ["[r f & args]"], :kind :function, :signature [{:result "Any", :args ["Ref" "Any"], :rest "Any"}]}
+ "dosync" {:arglists ["[& body]"], :kind :macro}
+ "ensure" {:arglists ["[r]"], :kind :function, :signature [{:result "Any", :args ["Ref"]}]}
+ "in-transaction?" {:arglists ["[]"], :kind :function, :signature [{:result "Boolean", :args []}]}
+ "io!" {:arglists ["[& body]"], :kind :macro}
+ "ref" {:arglists ["[x & {:keys [validator max-history]}]"], :kind :function, :signature [{:result "Ref", :args ["Any"], :rest "Any"}]}
+ "ref-history-count" {:arglists ["[r]"], :kind :function, :signature [{:result "Integer", :args ["Ref"]}]}
+ "ref-set" {:arglists ["[r v]"], :kind :function, :signature [{:result "Any", :args ["Ref" "Any"]}]}
+ "ref?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "run-transaction" {:arglists ["[f]"], :kind :function}
+ "stm-stats" {:arglists ["[]"], :kind :function, :signature [{:result "Map", :args []}]}
+}

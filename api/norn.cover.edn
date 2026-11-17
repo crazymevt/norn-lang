@@ -1,9 +1,0 @@
-;; norn.cover's public interface, recorded by norn api-diff --record.
-{
- "counts" {:arglists ["[]"], :kind :function, :signature [{:result "Map", :args []}]}
- "lcov" {:arglists ["[cs]"], :kind :function, :signature [{:result "String", :args ["Any"]}]}
- "on?" {:arglists ["[]"], :kind :function, :signature [{:result "Boolean", :args []}]}
- "report" {:arglists ["[cs & {:or {missed 12}, :keys [missed]}]"], :kind :function, :signature [{:result "String", :args ["Any"], :rest "Any"}]}
- "start!" {:arglists ["[]"], :kind :function}
- "summary" {:arglists ["[cs]"], :kind :function, :signature [{:result "Vector", :args ["Any"]}]}
-}

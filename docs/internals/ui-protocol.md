@@ -1,32 +1,32 @@
-# The Norn UI protocol, version 1
+# The Skein UI protocol, version 1
 
-The contract between `norn.ui` (Norn: state, views, diffing, widgets,
-commands) and the `norn-ui` engine (Rust: the retained node tree, layout,
+The contract between `skein.ui` (Skein: state, views, diffing, widgets,
+commands) and the `skein-ui` engine (Rust: the retained node tree, layout,
 styling, text, painting, input). Design: design §9.1; plan:
-`docs/plans/plan-m7.5.md`. This document is versioned with `norn-ui`.
+`docs/plans/plan-m7.5.md`. This document is versioned with `skein-ui`.
 
 ## 1. Principles
 
 - **Thick protocol.** The engine owns everything per-frame: layout,
   painting, hit-testing, scrolling, caret blink, hover and pressed states,
-  animations. Norn is never on a frame's critical path.
-- **Norn sends patches, the engine sends meanings.** Norn describes the
+  animations. Skein is never on a frame's critical path.
+- **Skein sends patches, the engine sends meanings.** Skein describes the
   tree with *patch batches*; the engine reports *semantic events* (a click
   on node 12, text field 7 changed). Raw pointer motion never crosses.
-- **Data, not bytes.** Both directions carry Norn data in one process;
+- **Data, not bytes.** Both directions carry Skein data in one process;
   nothing is serialized.
-- **Only what's asked for.** A node lists the events Norn wants from it
+- **Only what's asked for.** A node lists the events Skein wants from it
   (`:on`); everything else stays in the engine.
 - **Idle is idle.** With nothing happening, neither side sends anything,
   and the engine draws nothing (design §9.1's idle rules).
 
 ## 2. Transport
 
-- **Norn → engine:** `(norn.ui.native/apply! engine batch)`, a primitive
+- **Skein → engine:** `(skein.ui.native/apply! engine batch)`, a primitive
   that queues the batch and wakes the event loop; it never blocks. A batch
   is a vector of ops, applied **atomically between frames**, in order.
-- **Engine → Norn:** a channel given at connection
-  (`(norn.ui.native/connect events-chan)` returns the engine handle). The
+- **Engine → Skein:** a channel given at connection
+  (`(skein.ui.native/connect events-chan)` returns the engine handle). The
   engine posts through a `Port` (runtime.md §5.7). It coalesces events
   of the same kind and node (`:scroll`, `:input`, `:resize`) while the
   channel is full, and never drops the others.
@@ -38,7 +38,7 @@ styling, text, painting, input). Design: design §9.1; plan:
 
 ## 3. Nodes
 
-A node has an **id** (a positive integer chosen by Norn, unique per
+A node has an **id** (a positive integer chosen by Skein, unique per
 engine), a **kind**, **props**, a **style** and ordered **children**. A node
 exists from `:create` and is shown once inserted under a window's root.
 
@@ -97,7 +97,7 @@ native views and outside the parent window.
 
 A scroll container's `:scroll-x`/`:scroll-y` props set its position, after
 layout and clamped. The engine ignores a value it reported itself in a
-recent `:scroll` event: that is Norn echoing it back. `:transition ms` (or
+recent `:scroll` event: that is Skein echoing it back. `:transition ms` (or
 `[:prop ms …]`) in a style animates background, colour, border colour and
 opacity changes.
 
@@ -134,7 +134,7 @@ Editor, list, grid, terminal, canvas and native-view ops are in §6–§9.
 
 ## 6. The editor surface
 
-The text lives in Norn (a rope). The engine shows a viewport onto it and
+The text lives in Skein (a rope). The engine shows a viewport onto it and
 asks for what it shows; a keystroke moves only the changed lines.
 
 **Ops:**
@@ -153,9 +153,9 @@ asks for what it shows; a keystroke moves only the changed lines.
 
 **Events:**
 - `{:event :need-lines :node id :from a :to b}`: lines entering the
-  viewport. Norn answers with `:lines`; the engine may draw a line's old
+  viewport. Skein answers with `:lines`; the engine may draw a line's old
   version or a blank until then.
-- `{:event :key :node id …}` (§11): keys go to Norn, which owns the
+- `{:event :key :node id …}` (§11): keys go to Skein, which owns the
   keybindings and commands. It edits the rope and answers with the
   changed `:lines` and new `:carets`.
 - `{:event :text :node id :text "é"}`: committed text input, after IME
@@ -172,10 +172,10 @@ composition is drawn by the engine until committed.
 A list shows `:count` rows but holds nodes only for those near the
 viewport.
 
-- `{:event :need-rows :node id :from a :to b}`: Norn creates a subtree per
+- `{:event :need-rows :node id :from a :to b}`: Skein creates a subtree per
   row and answers `[:rows id from [node-id …]]`.
 - `{:event :rows-released :node id :from a :to b}`: the rows scrolled far
-  away; Norn may `:remove` them.
+  away; Skein may `:remove` them.
 - **A grid** works the same way by cells, with a fast path for text cells:
   `[:cells id [[row col text style-key] …]]`, which needs no nodes.
 
@@ -195,7 +195,7 @@ The engine redraws a canvas only when its commands change (`[:set id
 
 Paints are `{:fill color}` and strokes `{:stroke color :width n}`.
 
-A widget class in Norn (a subclass of `ui/Widget` with `ui/measure` and
+A widget class in Skein (a subclass of `ui/Widget` with `ui/measure` and
 `ui/paint` methods, and `ui/widget-events` and `ui/on-event` for input)
 produces a canvas node.
 
@@ -204,9 +204,9 @@ produces a canvas node.
 A `:native-view` reserves its layout box; the backend places a real OS view
 there and keeps it in step with layout, scrolling and clipping.
 
-**Webviews** (`:view :webview`, from the optional `norn-ui-webview`
+**Webviews** (`:view :webview`, from the optional `skein-ui-webview`
 package):
-- props: `:url` or `:html`, and `:schemes` (custom URL schemes Norn
+- props: `:url` or `:html`, and `:schemes` (custom URL schemes Skein
   serves);
 - ops: `[:webview-eval id js]` and `[:webview-post id data]`;
 - events: `{:event :webview-message :node id :data …}` and
@@ -252,7 +252,7 @@ and `:time` (milliseconds).
 | `:resize` | a window's new `:size` and `:scale` (coalesced) |
 | `:moved` | a top-level window's new `:position` on screen (coalesced) |
 | `:link` | a click on a link span of rich text: `:href` |
-| `:close-requested` | the user asked to close a window (Norn decides) |
+| `:close-requested` | the user asked to close a window (Skein decides) |
 | `:window-focus` | `:focused` true or false |
 | `:need-lines`, `:viewport`, `:drag-select` | §6 |
 | `:need-rows`, `:rows-released` | §7 |
@@ -265,7 +265,7 @@ Shortcuts bound in a menu become `:command`s instead.
 ## 12. Lifecycle and images
 
 - Windows and the engine are image resources (M5). After a restore,
-  `norn.ui`'s `on-image-restore` connects a new engine and replays its
+  `skein.ui`'s `on-image-restore` connects a new engine and replays its
   current tree, so windows reopen with the same content.
 - The engine is per process. Closing the last window doesn't end the
-  process: Norn decides (`exit`).
+  process: Skein decides (`exit`).

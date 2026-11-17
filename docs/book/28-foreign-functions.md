@@ -1,16 +1,16 @@
 # 28. Foreign functions
 
-[Contents](README.md) · Previous: [27. Images and deployment](27-images-and-deployment.md) · Next: [29. Norn for Lispers](29-norn-for-lispers.md) <!-- nav -->
+[Contents](README.md) · Previous: [27. Images and deployment](27-images-and-deployment.md) · Next: [29. Skein for Lispers](29-skein-for-lispers.md) <!-- nav -->
 
 Sooner or later a program needs something only a C library offers: a
 system call the standard library doesn't wrap, a graphics API, a codec, a
-vendor's SDK. `norn.ffi` calls C functions directly, with no glue code to
+vendor's SDK. `skein.ffi` calls C functions directly, with no glue code to
 compile. This chapter shows how to declare and call C functions, pass
-strings, buffers and structs, manage C memory, let C call back into Norn,
+strings, buffers and structs, manage C memory, let C call back into Skein,
 and choose which thread a call runs on. The examples call the C library
 that comes with the operating system, so they run as they are.
 
-Calling C gives up the guarantees the rest of Norn makes. A wrong signature
+Calling C gives up the guarantees the rest of Skein makes. A wrong signature
 or a bad address can crash the whole process, not only signal a condition.
 The FFI is built so that you know where that risk lives.
 
@@ -20,29 +20,29 @@ A module that calls C says so in its `ns` form with `(:unsafe)`:
 
 ```clojure
 (ns clock.c
-  (:require [norn.ffi :as ffi])
+  (:require [skein.ffi :as ffi])
   (:unsafe))
 ```
 
-The parts of `norn.ffi` that touch C or its memory, such as `library`,
+The parts of `skein.ffi` that touch C or its memory, such as `library`,
 `defcfun`, `alloc` and `callback`, are marked unsafe, and the expander
 refuses them in any module that doesn't declare `(:unsafe)`. A module that
-only requires `norn.ffi` can't call them by accident:
+only requires `skein.ffi` can't call them by accident:
 
 ```clojure
 (ns clock.ui
-  (:require [norn.ffi :as ffi]))
+  (:require [skein.ffi :as ffi]))
 
-(eval '(defn grab [] (ffi/alloc 8))) ; !! norn.expander/ExpandError
+(eval '(defn grab [] (ffi/alloc 8))) ; !! skein.expander/ExpandError
 ```
 
-The message says what went wrong: "norn.ffi/alloc is unsafe (it can crash
+The message says what went wrong: "skein.ffi/alloc is unsafe (it can crash
 the process): only a module that says (:unsafe) in its ns may use it." The
-primitives underneath `norn.ffi` are refused the same way. At the REPL, the
+primitives underneath `skein.ffi` are refused the same way. At the REPL, the
 `user` namespace may use them, so you can experiment.
 
 The point is to keep the unsafe code small. Put the C declarations in one
-module that says `(:unsafe)`, give it ordinary Norn functions as its
+module that says `(:unsafe)`, give it ordinary Skein functions as its
 interface, and let the rest of the program use those. A module that uses an
 unsafe module doesn't need to be unsafe itself. Struct layouts touch no
 memory, so any module may define them.
@@ -52,7 +52,7 @@ memory, so any module may define them.
 `ffi/library` loads a dynamic library. `:c` names the C library and `:m`
 the math library, wherever the operating system keeps them. Any other
 library takes a path or a name the system's loader understands.
-`defcfun` then defines a Norn function that calls a C function:
+`defcfun` then defines a Skein function that calls a C function:
 
 ```clojure
 (in-ns 'clock.c)
@@ -65,7 +65,7 @@ library takes a path or a name the system's loader understands.
 (strlen "héllo") ; => 6
 ```
 
-The parts are the Norn name, the library, the C name, the parameters as
+The parts are the Skein name, the library, the C name, the parameters as
 name and type pairs, and the return type. `strlen` counts bytes, and `é`
 takes two in UTF-8, so the second call returns 6. A `:string` parameter
 passes a NUL-terminated UTF-8 copy of the string, made for the call and
@@ -90,7 +90,7 @@ The C types are keywords:
 (c-pow 2.0 10.0) ; => 1024.0
 ```
 
-A `:string` return copies the C string into a Norn string, or gives `nil`
+A `:string` return copies the C string into a Skein string, or gives `nil`
 for NULL:
 
 ```clojure
@@ -354,7 +354,7 @@ Linux) and on x86-64 Linux in this release. Elsewhere they signal an error.
 Some C functions take a function pointer and call it. `qsort` is the
 classic: it sorts an array and calls a comparison function for each pair
 it compares. A `[:callback [param-types] return-type]` parameter accepts a
-Norn function:
+Skein function:
 
 ```clojure
 (ffi/defcfun qsort libc "qsort"
@@ -398,7 +398,7 @@ address, for a function pointer that C hands you.
 
 A condition can't unwind through C's stack frames. When a callback signals
 an error, C gets 0 from it and carries on, and the error is signalled in
-Norn when the C call returns:
+Skein when the C call returns:
 
 ```clojure
 (let [p (ints->c [2 1])]
@@ -410,12 +410,12 @@ Norn when the C call returns:
 When C calls back from a thread of its own, or from the blocking pool
 described next, the call goes to a fiber that serves that callback, while
 the C thread waits for the answer. An error there is reported on standard
-error, since there's no Norn call to signal it in. Callbacks can take and
+error, since there's no Skein call to signal it in. Callbacks can take and
 return structs by value too, as maps.
 
 ## Which thread runs the call
 
-Norn runs fibers on a few carrier threads (see
+Skein runs fibers on a few carrier threads (see
 [Chapter 15](15-fibers-and-scopes.md)). By default a foreign call runs
 right on the carrier of the fiber that makes it. That is the fastest way,
 and right for functions that return quickly, like everything so far. A
@@ -439,8 +439,8 @@ on meanwhile.
 
 Some APIs, such as window systems and graphics on macOS, must be called
 from the process's first thread. `:main-thread true` sends a function's
-calls there. The `norn` command keeps its first thread free for these
-calls, and runs them one at a time. A program that embeds Norn serves them
+calls there. The `skein` command keeps its first thread free for these
+calls, and runs them one at a time. A program that embeds Skein serves them
 only if it says so, and `ffi/main-thread-available?` tells you:
 
 ```clojure
@@ -467,15 +467,15 @@ session. A program that declares its C functions at the top level works the
 same from an image:
 
 ```clojure
-(require '[norn.process :as proc] '[norn.sys :as sys])
+(require '[skein.process :as proc] '[skein.sys :as sys])
 
 (defn main [& words]
   (println (mapv strlen words))
   0)
 
-(save-image "lengths.nimg" :entry #'main)
+(save-image "lengths.skimg" :entry #'main)
 
-(:out (proc/sh (:executable (sys/info)) "--image" "lengths.nimg" "a" "héllo"))
+(:out (proc/sh (:executable (sys/info)) "--image" "lengths.skimg" "a" "héllo"))
 ; => "[1 6]\n"
 ```
 
@@ -487,9 +487,9 @@ the restore, with `on-image-restore` or when they're next needed.
 ## Summary
 
 - A module that calls C declares `(:unsafe)`. Other modules may use it, but
-  can't call `norn.ffi`'s unsafe functions themselves.
+  can't call `skein.ffi`'s unsafe functions themselves.
 - `ffi/library` loads a library, with `:c` and `:m` for the system's own.
-  `defcfun` defines a Norn function from a C name, typed parameters, and a
+  `defcfun` defines a Skein function from a C name, typed parameters, and a
   return type.
 - `defcfun` functions have checked signatures, so a wrong argument from
   another module is a `ContractError`, not a crash.
@@ -500,11 +500,11 @@ the restore, with `on-image-restore` or when they're next needed.
 - `defcstruct` and `defcunion` lay out structs and unions as C does. Structs
   read and write as maps, by pointer with `[:* layout]` and `[:out layout]`,
   or by value.
-- C calls Norn back through `[:callback …]` parameters or `ffi/callback`.
+- C calls Skein back through `[:callback …]` parameters or `ffi/callback`.
   An error in a callback is signalled when the C call returns.
 - Calls run on the carrier by default, `:blocking true` moves them to the
   blocking pool, and `:main-thread true` to the process's first thread.
 
 ---
 
-[Contents](README.md) · Previous: [27. Images and deployment](27-images-and-deployment.md) · Next: [29. Norn for Lispers](29-norn-for-lispers.md) <!-- nav -->
+[Contents](README.md) · Previous: [27. Images and deployment](27-images-and-deployment.md) · Next: [29. Skein for Lispers](29-skein-for-lispers.md) <!-- nav -->

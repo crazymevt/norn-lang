@@ -1,0 +1,398 @@
+;;;; skein.markdown — Markdown (CommonMark, with GitHub's tables, strike-
+;;;; through and task lists) parsed to Skein data, and that data as HTML.
+;;;;
+;;;;   (md/parse "# Hi\n\nSome *text*.")
+;;;;   ;=> [:doc [:heading {:level 1} "Hi"] [:paragraph "Some " [:em "text"] "."]]
+;;;;
+;;;; Blocks: [:heading {:level n} inline…], [:paragraph inline…],
+;;;; [:code-block {:lang s} text], [:block-quote block…], [:list {:ordered
+;;;; bool :start n :tight bool} [:item {:checked bool?} block…]…],
+;;;; [:table {:align […]} [:row {:head bool} [:cell inline…]…]…],
+;;;; [:thematic-break], and [:plain inline…]: a tight list item's text,
+;;;; which isn't a paragraph (html writes it bare, with no <p>).
+;;;;
+;;;; Inlines: strings, [:em …], [:strong …], [:strike …], [:code text],
+;;;; [:link {:href url :title t} …], [:image {:src url :alt text :title t}]
+;;;; and [:break] (a hard line break). It follows CommonMark closely enough
+;;;; for READMEs, docs and chat messages, not every corner of the spec.
+
+(ns skein.markdown
+  (:require [skein.string :as str]))
+
+;; ---- inlines ---------------------------------------------------------------------------------
+
+(declare inlines)
+
+(def ^:private entities {"&amp;" "&" "&lt;" "<" "&gt;" ">" "&quot;" "\"" "&#39;" "'" "&nbsp;" " "})
+
+(defn- slice "Elements from (inclusive) to (exclusive) of vector v." [v from to]
+  (vec (take (- to from) (drop from v))))
+
+(defn- with-title "attrs with :title when t is given." [attrs t]
+  (if t (assoc attrs :title t) attrs))
+
+(defn- punct? [c] (and c (str/includes? "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~" (str c))))
+(defn- space? [c] (or (nil? c) (= c \space) (= c \tab) (= c \newline)))
+
+(defn- closing
+  "The index of the run of delimiter d (a string) that closes one opened at
+  i (searching from from), or nil. A closer follows a non-space character;
+  for _ it must also not be inside a word. cs is s as a vector of
+  characters (indexing a string by character is slow when it isn't ASCII)."
+  [s cs d from]
+  (let [n (count cs) k (count d)]
+    (loop [j from]
+      (let [j (str/index-of s d j)]
+        (cond (nil? j) nil
+              (and (> j 0) (not (space? (nth cs (dec j))))
+                   (or (not= (first d) \_) (let [after (when (< (+ j k) n) (nth cs (+ j k)))] (or (space? after) (punct? after)))))
+              ;; in a longer run (***), close with its end, so an inner
+              ;; delimiter closes first
+              (loop [r (+ j k)] (if (and (< r n) (= (nth cs r) (first d))) (recur (inc r)) (- r k)))
+              :else (recur (inc j)))))))
+
+(defn- link-end
+  "For [text](url \"title\") starting at i (the [): [text url title end] or nil."
+  [s cs i]
+  (let [n (count cs)
+        close (loop [j (inc i) depth 0]
+                (cond (>= j n) nil
+                      (= (nth cs j) \\) (recur (+ j 2) depth)
+                      (= (nth cs j) \[) (recur (inc j) (inc depth))
+                      (= (nth cs j) \]) (if (zero? depth) j (recur (inc j) (dec depth)))
+                      :else (recur (inc j) depth)))]
+    (when (and close (< (inc close) n) (= (nth cs (inc close)) \())
+      (let [end (loop [j (+ close 2) depth 0]
+                  (cond (>= j n) nil
+                        (= (nth cs j) \\) (recur (+ j 2) depth)
+                        (= (nth cs j) \() (recur (inc j) (inc depth))
+                        (= (nth cs j) \)) (if (zero? depth) j (recur (inc j) (dec depth)))
+                        :else (recur (inc j) depth)))]
+        (when end
+          (let [inside (str/trim (subs s (+ close 2) end))
+                m (re-matches #"(?s)<?([^\s>]*)>?(?:\s+[\"'(](.*)[\"')])?" inside)]
+            [(subs s (inc i) close) (if m (nth m 1) inside) (when m (nth m 2)) (inc end)]))))))
+
+(defn- special? "Can character c start inline syntax?" [c]
+  (contains? #{\\ \newline \` \! \[ \< \& \* \_ \~} c))
+
+(defn- push-text [out sb]
+  (if (pos? (count sb)) (conj out sb) out))
+
+(defn inlines
+  "The inline elements of text s."
+  ^Vector [^String s]
+  (let [cs (vec s)
+        n (count cs)]
+    (loop [i 0 text "" out []]
+      (if (>= i n)
+        (push-text out text)
+        (let [c (nth cs i)
+              nxt (when (< (inc i) n) (nth cs (inc i)))]
+          (cond
+            ;; a backslash escape, or a hard break at the end of a line
+            (and (= c \\) (= nxt \newline)) (recur (+ i 2) "" (conj (push-text out text) [:break]))
+            (and (= c \\) (punct? nxt)) (recur (+ i 2) (str text nxt) out)
+            ;; two spaces before a newline: a hard break
+            (and (= c \newline) (str/ends-with? text "  "))
+            (recur (inc i) "" (conj (push-text out (str/trimr text)) [:break]))
+            (= c \newline) (recur (inc i) (str (str/trimr text) " ") out)
+            ;; code spans: a run of backticks to the same run
+            (= c \`)
+            (let [run (loop [j i] (if (and (< j n) (= (nth cs j) \`)) (recur (inc j)) j))
+                  ticks (subs s i run)
+                  end (str/index-of s ticks run)]
+              (if end
+                (let [code (subs s run end)
+                      code (if (and (> (count code) 1) (str/starts-with? code " ") (str/ends-with? code " ")) (subs code 1 (dec (count code))) code)]
+                  (recur (+ end (count ticks)) "" (conj (push-text out text) [:code code])))
+                (recur run (str text ticks) out)))
+            ;; images and links
+            (and (= c \!) (= nxt \[))
+            (if-let [[alt url title end] (link-end s cs (inc i))]
+              (recur end "" (conj (push-text out text) [:image (with-title {:src url :alt alt} title)]))
+              (recur (inc i) (str text c) out))
+            (= c \[)
+            (if-let [[label url title end] (link-end s cs i)]
+              (recur end "" (conj (push-text out text) (into [:link (with-title {:href url} title)] (inlines label))))
+              (recur (inc i) (str text c) out))
+            ;; autolinks
+            (and (= c \<) (re-find #"^<(https?://[^\s>]+|mailto:[^\s>]+)>" (subs s i)))
+            (let [[whole url] (re-find #"^<(https?://[^\s>]+|mailto:[^\s>]+)>" (subs s i))]
+              (recur (+ i (count whole)) "" (conj (push-text out text) [:link {:href url} url])))
+            ;; entities
+            (and (= c \&) (some (fn [[k _]] (str/starts-with? (subs s i (min n (+ i 6))) k)) entities))
+            (let [[k v] (some (fn [[k v]] (when (str/starts-with? (subs s i (min n (+ i 6))) k) [k v])) entities)]
+              (recur (+ i (count k)) (str text v) out))
+            ;; emphasis: ** __ ~~ then * _
+            (and (or (= c \*) (= c \_) (= c \~)) (= nxt c) (< (+ i 2) n) (not (space? (nth cs (+ i 2)))))
+            (let [d (str c c)
+                  end (closing s cs d (+ i 3))]
+              (if (and end (or (not= c \_) (= i 0) (space? (nth cs (dec i))) (punct? (nth cs (dec i)))))
+                (recur (+ end 2) "" (conj (push-text out text) (into [(if (= c \~) :strike :strong)] (inlines (subs s (+ i 2) end)))))
+                (recur (+ i 2) (str text d) out)))
+            (and (or (= c \*) (= c \_)) nxt (not (space? nxt)))
+            (let [end (closing s cs (str c) (+ i 2))]
+              (if (and end (or (not= c \_) (= i 0) (space? (nth cs (dec i))) (punct? (nth cs (dec i)))))
+                (recur (inc end) "" (conj (push-text out text) (into [:em] (inlines (subs s (inc i) end)))))
+                (recur (inc i) (str text c) out)))
+            ;; plain text: take the whole run up to the next special character
+            :else (let [j (loop [j (inc i)] (if (or (>= j n) (special? (nth cs j))) j (recur (inc j))))]
+                    (recur j (str text (subs s i j)) out))))))))
+
+;; ---- blocks ----------------------------------------------------------------------------------
+
+(declare blocks)
+
+(defn- blank? [l] (str/blank? l))
+(defn- indent [l] (count (re-find #"^ *" l)))
+
+(defn- fence [l] (re-find #"^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)" l))
+(defn- atx [l] (re-find #"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$" l))
+(defn- hr? [l] (some? (re-matches #" {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})" l)))
+(defn- quote? [l] (some? (re-find #"^ {0,3}>" l)))
+(defn- list-marker
+  "[marker-width ordered? start bullet-char] when l starts a list item."
+  [l]
+  (when-let [[_ pre marker sp] (re-find #"^( {0,3})([-+*]|\d{1,9}[.)])( +|$)" l)]
+    (let [ordered (not (contains? #{"-" "+" "*"} marker))
+          sp (if (> (count sp) 4) 1 (max 1 (count sp)))]
+      [(+ (count pre) (count marker) sp) ordered (when ordered (parse-long (subs marker 0 (dec (count marker))))) (last marker)])))
+(defn- table-delim? [l] (some? (re-matches #"\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*" l)))
+
+(defn- starts-block?
+  "Does line l interrupt a paragraph?"
+  [l]
+  (or (blank? l) (fence l) (atx l) (hr? l) (quote? l)
+      (when-let [[_ ordered start] (list-marker l)] (or (not ordered) (= start 1)))))
+
+(defn- cells [l]
+  (let [t (str/trim l)
+        t (if (str/starts-with? t "|") (subs t 1) t)
+        t (if (and (str/ends-with? t "|") (not (str/ends-with? t "\\|"))) (subs t 0 (dec (count t))) t)]
+    ;; split at | but not at an escaped \|
+    (loop [i 0 cell "" out []]
+      (cond (>= i (count t)) (mapv str/trim (conj out cell))
+            (and (= (nth t i) \\) (< (inc i) (count t)) (= (nth t (inc i)) \|)) (recur (+ i 2) (str cell "\\|") out)
+            (= (nth t i) \|) (recur (inc i) "" (conj out cell))
+            :else (recur (inc i) (str cell (nth t i)) out)))))
+
+(defn- strip "l without up to n leading spaces." [l n]
+  (subs l (min n (indent l))))
+
+(defn- list-item
+  "The lines of the item starting at line i (marker width w): [lines next-i]."
+  [lines i w]
+  (let [n (count lines)
+        first-line (let [l (nth lines i)] (if (blank? (subs l (min w (count l)))) "" (subs l (min w (count l)))))]
+    (loop [j (inc i) acc [first-line] prev-blank (blank? first-line)]
+      (if (>= j n)
+        [acc j]
+        (let [l (nth lines j)]
+          (cond (blank? l) (recur (inc j) (conj acc "") true)
+                (>= (indent l) w) (recur (inc j) (conj acc (subs l w)) false)
+                ;; lazy continuation of a paragraph
+                (and (not prev-blank) (not (starts-block? l)) (not (list-marker l))) (recur (inc j) (conj acc l) false)
+                :else [acc j]))))))
+
+(defn- trim-trailing-blanks [ls]
+  (vec (reverse (drop-while blank? (reverse ls)))))
+
+(defn- parse-list
+  "The list starting at line i: [block next-i]."
+  [lines i]
+  (let [[_ ordered start ch] (list-marker (nth lines i))
+        n (count lines)]
+    (loop [j i items [] loose false]
+      (let [m (when (< j n) (list-marker (nth lines j)))]
+        (if (and m (= (second m) ordered) (= (nth m 3) ch))
+          (let [[item-lines nxt] (list-item lines j (first m))
+                body (trim-trailing-blanks item-lines)
+                ;; a task list item: [ ] or [x]
+                task (re-find #"^\[([ xX])\] " (or (first body) ""))
+                body (if task (assoc body 0 (subs (first body) 4)) body)
+                inner-blank (some blank? body)
+                ;; a blank line between items makes the list loose
+                gap (and (< (dec nxt) n) (> nxt j) (blank? (nth lines (dec nxt))) (< nxt n) (list-marker (nth lines nxt)))
+                item (into [:item (if task {:checked (not= (second task) " ")} {})] (blocks body))]
+            (recur (if gap (loop [k nxt] (if (and (< k n) (blank? (nth lines k))) (recur (inc k)) k)) nxt)
+                   (conj items item) (or loose inner-blank gap)))
+          (let [tight (not loose)
+                ;; a tight list's items show their paragraphs as plain text
+                items (if tight
+                        (mapv (fn [it] (into [(first it) (second it)]
+                                             (map (fn [b] (if (= :paragraph (first b)) (into [:plain] (rest b)) b)) (drop 2 it))))
+                              items)
+                        items)]
+            [(into [:list (if ordered {:ordered true :tight tight :start start} {:ordered false :tight tight})] items)
+             ;; back up over blank lines that ended the list
+             (loop [k j] (if (and (> k i) (blank? (nth lines (dec k)))) (recur (dec k)) k))]))))))
+
+(def ^:dynamic *starts*
+  "Bound to an atom by parse-lines: the top-level blocks' first lines."
+  nil)
+
+(defn blocks
+  "The blocks of a vector of lines."
+  ^Vector [^Vector lines]
+  (let [n (count lines)]
+    (loop [i 0 starts [] out []]
+      (if (>= i n)
+        (do (when *starts* (reset! *starts* starts)) out)
+        (let [l (nth lines i)]
+          (cond
+            (blank? l) (recur (inc i) starts out)
+
+            (fence l)
+            (let [[_ marks lang] (fence l)
+                  ind (indent l)
+                  close (re-pattern (str "^ {0,3}" marks (subs marks 0 1) "*\\s*$"))
+                  end (loop [j (inc i)] (cond (>= j n) j (re-find close (nth lines j)) j :else (recur (inc j))))
+                  body (mapv (fn [x] (strip x ind)) (slice lines (inc i) end))]
+              (recur (inc end) (conj starts i) (conj out [:code-block (if (str/blank? lang) {} {:lang lang}) (str/join "\n" body)])))
+
+            (atx l)
+            (let [[_ hashes text] (atx l)]
+              (recur (inc i) (conj starts i) (conj out (into [:heading {:level (count hashes)}] (inlines (or text ""))))))
+
+            (hr? l) (recur (inc i) (conj starts i) (conj out [:thematic-break]))
+
+            (quote? l)
+            (let [[body nxt] (loop [j i acc []]
+                               (cond (>= j n) [acc j]
+                                     (quote? (nth lines j)) (recur (inc j) (conj acc (str/replace-first (nth lines j) #"^ {0,3}> ?" "")))
+                                     ;; lazy continuation
+                                     (and (seq acc) (not (blank? (peek acc))) (not (starts-block? (nth lines j)))) (recur (inc j) (conj acc (nth lines j)))
+                                     :else [acc j]))]
+              (recur nxt (conj starts i) (conj out (into [:block-quote] (blocks body)))))
+
+            (list-marker l)
+            (let [[b nxt] (parse-list lines i)] (recur nxt (conj starts i) (conj out b)))
+
+            ;; indented code
+            (>= (indent l) 4)
+            (let [end (loop [j i] (if (and (< j n) (or (blank? (nth lines j)) (>= (indent (nth lines j)) 4))) (recur (inc j)) j))
+                  body (trim-trailing-blanks (mapv (fn [x] (strip x 4)) (slice lines i end)))]
+              (recur end (conj starts i) (conj out [:code-block {} (str/join "\n" body)])))
+
+            ;; a table: a header row, then a delimiter row
+            (and (str/includes? l "|") (< (inc i) n) (table-delim? (nth lines (inc i))))
+            (let [aligns (mapv (fn [c] (cond (and (str/starts-with? c ":") (str/ends-with? c ":")) :center
+                                             (str/ends-with? c ":") :right
+                                             (str/starts-with? c ":") :left
+                                             :else nil))
+                               (cells (nth lines (inc i))))
+                  width (count aligns)
+                  row (fn [line head]
+                        (let [cs (cells line)
+                              cs (vec (take width (concat cs (repeat ""))))]
+                          (into [:row {:head head}] (map (fn [c] (into [:cell] (inlines (str/replace c "\\|" "|")))) cs))))
+                  end (loop [j (+ i 2)] (if (and (< j n) (not (blank? (nth lines j))) (str/includes? (nth lines j) "|")) (recur (inc j)) j))]
+              (recur end (conj starts i) (conj out (into [:table {:align aligns} (row l true)] (map (fn [x] (row x false)) (slice lines (+ i 2) end))))))
+
+            ;; a paragraph (or a setext heading)
+            :else
+            (let [[para nxt setext]
+                  (loop [j i acc []]
+                    (if (>= j n)
+                      [acc j nil]
+                      (let [x (nth lines j)]
+                        (cond (and (seq acc) (re-matches #" {0,3}=+\s*" x)) [acc (inc j) 1]
+                              (and (seq acc) (re-matches #" {0,3}-+\s*" x)) [acc (inc j) 2]
+                              (and (seq acc) (starts-block? x)) [acc j nil]
+                              :else (recur (inc j) (conj acc (str/triml x)))))))
+                  text (str/trimr (str/join "\n" para))]
+              (recur nxt (conj starts i) (conj out (if setext
+                                                     (into [:heading {:level setext}] (inlines text))
+                                                     (into [:paragraph] (inlines text))))))))))))
+
+(defn parse
+  "Markdown text as Skein data: [:doc block…] (see the namespace docs)."
+  ^Vector [text]
+  (into [:doc] (blocks (vec (str/split-lines (str/replace (str text) "\t" "    "))))))
+
+(defn parse-lines
+  "[doc lines]: what parse gives, and the line (0-based) each top-level
+  block starts on, in order (an editor's preview follows its caret by
+  them)."
+  ^Vector [text]
+  (binding [*starts* (atom [])]
+    (let [doc (parse text)] [doc @*starts*])))
+
+;; ---- output ----------------------------------------------------------------------------------
+
+(defn- esc [s] (-> (str s) (str/replace "&" "&amp;") (str/replace "<" "&lt;") (str/replace ">" "&gt;") (str/replace "\"" "&quot;")))
+
+(declare html*)
+
+(defn- html-all [xs] (apply str (map html* xs)))
+
+(defn- row-html
+  "A table row's HTML, its cells aligned as aligns (:left, :center, :right
+  or nil, by column) says, with align= as GitHub's renderer writes it."
+  [[_ a & more] aligns]
+  (let [cells (if (map? a) more (if (nil? a) more (cons a more)))
+        t (if (:head (when (map? a) a)) "th" "td")]
+    (str "<tr>"
+         (apply str (map-indexed (fn [i c]
+                                   (let [a (get aligns i)]
+                                     (str "<" t (when a (str " align=\"" (name a) "\"")) ">" (html-all (rest c)) "</" t ">")))
+                                 cells))
+         "</tr>\n")))
+
+(defn- html* [x]
+  (if (string? x)
+    (esc x)
+    (let [[tag a & kids] x
+          attrs (if (map? a) a {})
+          kids (if (map? a) kids (if (nil? a) kids (cons a kids)))
+          tagged (fn [t] (str "<" t ">" (html-all kids) "</" t ">"))]
+      (cond
+        (= tag :doc) (html-all kids)
+        (= tag :heading) (str "<h" (:level attrs) ">" (html-all kids) "</h" (:level attrs) ">\n")
+        (= tag :paragraph) (str "<p>" (html-all kids) "</p>\n")
+        (= tag :plain) (html-all kids)
+        (= tag :code-block) (str "<pre><code" (when (:lang attrs) (str " class=\"language-" (esc (:lang attrs)) "\"")) ">"
+                                 (esc (first kids)) (when (seq (first kids)) "\n") "</code></pre>\n")
+        (= tag :block-quote) (str "<blockquote>\n" (html-all kids) "</blockquote>\n")
+        (= tag :list) (let [t (if (:ordered attrs) "ol" "ul")
+                            start (when (and (:ordered attrs) (not= 1 (:start attrs))) (str " start=\"" (:start attrs) "\""))]
+                        (str "<" t start ">\n" (html-all kids) "</" t ">\n"))
+        (= tag :item) (str "<li>" (when (contains? attrs :checked) (if (:checked attrs) "<input type=\"checkbox\" checked disabled> " "<input type=\"checkbox\" disabled> "))
+                           (html-all kids) "</li>\n")
+        (= tag :thematic-break) "<hr />\n"
+        (= tag :table) (let [[head & body] kids aligns (vec (:align attrs))]
+                         (str "<table>\n<thead>\n" (row-html head aligns) "</thead>\n"
+                              (when (seq body) (str "<tbody>\n" (apply str (map (fn [r] (row-html r aligns)) body)) "</tbody>\n"))
+                              "</table>\n"))
+        (= tag :row) (row-html x [])
+        (= tag :em) (tagged "em")
+        (= tag :strong) (tagged "strong")
+        (= tag :strike) (tagged "del")
+        (= tag :code) (str "<code>" (esc (first kids)) "</code>")
+        (= tag :break) "<br />\n"
+        (= tag :link) (str "<a href=\"" (esc (:href attrs)) "\"" (when (:title attrs) (str " title=\"" (esc (:title attrs)) "\"")) ">" (html-all kids) "</a>")
+        (= tag :image) (str "<img src=\"" (esc (:src attrs)) "\" alt=\"" (esc (:alt attrs)) "\""
+                            (when (:title attrs) (str " title=\"" (esc (:title attrs)) "\"")) " />")
+        :else (html-all kids)))))
+
+(defn html
+  "Markdown (text, or what parse returns) as HTML."
+  ^String [^(U String Vector) md]
+  (html* (if (string? md) (parse md) md)))
+
+(defn text
+  "The plain text of Markdown (text or parsed), without its markup."
+  ^String [^(U String Vector) md]
+  (let [walk (fn walk [x]
+               (cond (string? x) x
+                     (vector? x) (let [[tag a & kids] x
+                                       kids (if (map? a) kids (if (nil? a) kids (cons a kids)))
+                                       inner (apply str (map walk kids))]
+                                   (cond (= tag :code-block) (str (first kids) "\n")
+                                         (= tag :code) (first kids)
+                                         (= tag :break) "\n"
+                                         (contains? #{:heading :paragraph :item :row :thematic-break} tag) (str inner "\n")
+                                         :else inner))
+                     :else ""))]
+    (walk (if (string? md) (parse md) md))))

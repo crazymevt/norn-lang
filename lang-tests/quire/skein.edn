@@ -1,0 +1,6 @@
+{:name quire
+ :version "0.1.0"
+ :paths ["src"]
+ :main quire.main/main
+ :deps {skein-html {:git "https://github.com/crazymevt/skein-html" :tag "v0.3.0"}}
+ :package {:targets [:cli]}}

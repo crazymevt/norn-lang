@@ -5,36 +5,36 @@
 A program lives inside an operating system. It has arguments and an
 environment, it starts other programs and waits for them, it hears signals,
 it reads the clock, and it reports what it's doing. This chapter covers the
-libraries for that work: `norn.sys` for the process itself, `norn.process`
-for child programs and pseudo-terminals, `norn.signal` for signals,
-`norn.time` for instants, dates, and zones, `norn.schedule` for cron-like
-schedules, and `norn.log` for leveled, structured logs. The chapter ends
+libraries for that work: `skein.sys` for the process itself, `skein.process`
+for child programs and pseudo-terminals, `skein.signal` for signals,
+`skein.time` for instants, dates, and zones, `skein.schedule` for cron-like
+schedules, and `skein.log` for leveled, structured logs. The chapter ends
 with a small job runner that uses most of them together.
 
 Files and streams have their own chapter, [Chapter 19](19-files-and-streams.md),
-and this one leans on it: a child process's pipes are ordinary `norn.io`
+and this one leans on it: a child process's pipes are ordinary `skein.io`
 streams. Parsing a command line belongs to
 [Chapter 24](24-command-line-programs.md).
 
 ## The process you are in
 
-`norn.sys` answers questions about the running program and the machine.
+`skein.sys` answers questions about the running program and the machine.
 Every function reads its value when you call it, not when the library
 loads. That matters for images ([Chapter 27](27-images-and-deployment.md)):
 an image saved on one machine and restored on another sees the second
 machine.
 
 ```clojure
-(require '[norn.sys :as sys])
+(require '[skein.sys :as sys])
 
 (sys/program-args) ; => []
 ```
 
 `program-args` gives the program's own arguments. For
-`norn report.norn --since 2026-01-01`, it is `["--since" "2026-01-01"]`. For
-a built image, it is the arguments after the image. For `norn -e` and the
+`skein report.skn --since 2026-01-01`, it is `["--since" "2026-01-01"]`. For
+a built image, it is the arguments after the image. For `skein -e` and the
 REPL, it is empty, which is what you see above. `args` gives the whole
-command line, starting with the path of the `norn` binary, and you rarely
+command line, starting with the path of the `skein` binary, and you rarely
 need it.
 
 Environment variables come from `getenv`, which takes a name as a string,
@@ -43,18 +43,18 @@ all of them as a map of strings.
 
 ```clojure
 (string? (sys/getenv "HOME")) ; => true
-(sys/getenv "NORN_BOOK_SURELY_UNSET") ; => nil
+(sys/getenv "SKEIN_BOOK_SURELY_UNSET") ; => nil
 (= (sys/getenv "HOME") (sys/getenv :HOME)) ; => true
 (map? (sys/env)) ; => true
 (get (sys/env) "HOME") ; the same string as getenv
 ```
 
-The environment is read-only from inside Norn. To give a child process
+The environment is read-only from inside Skein. To give a child process
 different variables, pass them when you start it, as the next section shows.
 
 `info` returns a map of facts about the machine and the process: `:os`,
 `:family`, `:arch`, `:endian`, `:cores`, `:page-size`, `:memory`, `:pid`,
-`:temp-dir`, `:home-dir`, `:user`, `:hostname`, `:cwd`, `:norn-version`,
+`:temp-dir`, `:home-dir`, `:user`, `:hostname`, `:cwd`, `:skein-version`,
 `:build`, and `:executable`. Each key also has a function of the same name.
 
 ```clojure
@@ -66,8 +66,8 @@ different variables, pass them when you start it, as the next section shows.
 ```
 
 `:executable` is the path of the program that is running, which for a
-script is the `norn` binary. You'll use it below to run Norn as a child
-process. `runtime` reports on Norn's own machinery: how many carrier threads
+script is the `skein` binary. You'll use it below to run Skein as a child
+process. `runtime` reports on Skein's own machinery: how many carrier threads
 run fibers, how many threads serve blocking calls, how many handles are
 open, the heap size, and the image the process started from, if any.
 
@@ -85,19 +85,19 @@ prints the error and exits with 1.
 You can't show `exit` in this chapter's examples without ending the
 example, so here is a script that exits with the number of arguments it
 got. The example writes it to a file and then runs it as a child process,
-which also previews `norn.process`.
+which also previews `skein.process`.
 
 ```clojure
-(require '[norn.io :as io] '[norn.process :as proc])
+(require '[skein.io :as io] '[skein.process :as proc])
 
-(def norn (:executable (sys/info)))
+(def skein (:executable (sys/info)))
 
-(io/write-text "count-args.norn"
-  "(ns count-args (:require [norn.sys :as sys]))
+(io/write-text "count-args.skn"
+  "(ns count-args (:require [skein.sys :as sys]))
 (println \"got\" (sys/program-args))
 (sys/exit (count (sys/program-args)))")
 
-(proc/sh norn "count-args.norn" "a" "b" "c")
+(proc/sh skein "count-args.skn" "a" "b" "c")
 ; => {:exit 3 :signal nil :out "got [a b c]\n" :err ""}
 ```
 
@@ -105,11 +105,11 @@ The result map has the exit status, the output the script printed, and its
 error output. An unhandled error looks like this from the outside:
 
 ```clojure
-(io/write-text "fail.norn" "(error \"boom\")")
+(io/write-text "fail.skn" "(error \"boom\")")
 
-(let [r (proc/sh norn "fail.norn")]
-  [(:exit r) (first (norn.string/split-lines (:err r)))])
-; => [1 "Error: fail.norn:1: boom"]
+(let [r (proc/sh skein "fail.skn")]
+  [(:exit r) (first (skein.string/split-lines (:err r)))])
+; => [1 "Error: fail.skn:1: boom"]
 ```
 
 [Chapter 24](24-command-line-programs.md) builds on this for programs that
@@ -117,7 +117,7 @@ other people run: status 0 for success, 2 for a bad command line, and so on.
 
 ## Running other programs
 
-`norn.process` starts child programs. The simplest entry point is `sh`. It
+`skein.process` starts child programs. The simplest entry point is `sh`. It
 runs a program with arguments, waits for it to end, and returns its exit
 status and everything it wrote.
 
@@ -144,7 +144,7 @@ command line with `-c`:
 ; => {:exit 3 :signal nil :out "out\n" :err "err\n"}
 ```
 
-A nonzero exit status is not an error in Norn. The program ran and told you
+A nonzero exit status is not an error in Skein. The program ran and told you
 something, and the result map carries it. Check `:exit` yourself. If the
 program can't start at all, `sh` signals an `IOError`, a `FileNotFound` when
 the program isn't there:
@@ -180,7 +180,7 @@ a long time, produces a lot of output, or needs to talk back and forth, use
 (set (keys ticker)) ; => #{:process :pid :in :out :err}
 ```
 
-`:in`, `:out`, and `:err` are streams, the same kind `norn.io` reads and
+`:in`, `:out`, and `:err` are streams, the same kind `skein.io` reads and
 writes everywhere else. `:out` and `:err` are what the program writes, and
 `:in` is what it reads. You can wrap `:out` in a line reader and read it as
 it arrives:
@@ -203,7 +203,7 @@ instead.
 
 `kill` takes other signals by name, such as `:int`, `:hup`, or `:kill`, or
 by number. `wait` parks only the fiber that calls it. The waiting happens on
-Norn's blocking pool, so other fibers keep running while a child process
+Skein's blocking pool, so other fibers keep running while a child process
 does its work.
 
 `start` gives you up to four handles: the three streams and the process
@@ -259,7 +259,7 @@ does. `:clear-env true` starts the child with no environment except what
 ### Connecting two programs
 
 A shell pipeline such as `printf ... | sort` connects one program's output
-to another's input. In Norn you do the connecting. Start both programs,
+to another's input. In Skein you do the connecting. Start both programs,
 then copy from one to the other in a fiber of its own. `copy-stream!`
 copies until the source ends.
 
@@ -368,13 +368,13 @@ a terminal sends `SIGINT`, `kill` sends `SIGTERM` by default, and a
 terminal that changes size sends `SIGWINCH`. Most of these end a program
 unless it arranges to handle them.
 
-`norn.signal/listen` turns signals into channel messages. It takes signal
+`skein.signal/listen` turns signals into channel messages. It takes signal
 names and returns a map whose `:signals` channel receives each signal's
 keyword as it arrives. While you listen for a signal, it no longer has its
 default effect.
 
 ```clojure
-(require '[norn.signal :as sig])
+(require '[skein.signal :as sig])
 
 (def hup (sig/listen :hup :usr1))
 
@@ -430,14 +430,14 @@ arrives, the worker leaves the loop and returns a result instead of being
 killed. A real program would flush its files or close its connections at
 that point, then exit.
 
-Ctrl-C works the same way in a program the `norn` command runs. Ordinarily
+Ctrl-C works the same way in a program the `skein` command runs. Ordinarily
 it interrupts the evaluation, as at the REPL. While the program listens for
-`:int`, Ctrl-C is the program's to handle, and the `norn` command leaves the
+`:int`, Ctrl-C is the program's to handle, and the `skein` command leaves the
 evaluation alone.
 
 ## Time
 
-`norn.time` has two families of values. Instants and durations are
+`skein.time` has two families of values. Instants and durations are
 points and spans on the time line, the same everywhere in the world.
 Calendar values, such as dates, clock times, and zoned date-times, are how
 people write those points down in a particular place. Most time bugs come
@@ -450,7 +450,7 @@ An `Instant` is a point in time, counted in nanoseconds from
 which reads RFC 3339 text. `format` writes it back.
 
 ```clojure
-(require '[norn.time :as t])
+(require '[skein.time :as t])
 
 (t/instant? (t/now)) ; => true
 
@@ -570,8 +570,8 @@ that doesn't make a date or time is a `ParseError`:
 (t/parse-local-date "2026-02-30") ; !! ParseError
 ```
 
-They print as tagged literals, `#norn/date "2026-01-31"`, `#norn/time` and
-`#norn/date-time`, which read back as the same values. `today` is today's
+They print as tagged literals, `#skein/date "2026-01-31"`, `#skein/time` and
+`#skein/date-time`, which read back as the same values. `today` is today's
 date where the machine is, and `local-now` the date and time on its
 clock; both take a zone for somewhere else:
 
@@ -731,7 +731,7 @@ local or zoned values, and choose the zone on purpose.
 
 ## Schedules
 
-`norn.schedule` runs code at times described by cron expressions. A cron
+`skein.schedule` runs code at times described by cron expressions. A cron
 expression has five fields: minute, hour, day of the month, month, and day
 of the week. Each field is `*`, a number, a range such as `9-17`, a list
 such as `1,15`, and any of these with a step such as `*/15`. Months and
@@ -742,7 +742,7 @@ Before running anything, you can ask when an expression is due. `next-run`
 gives the first time after an instant, and `next-runs` gives several:
 
 ```clojure
-(require '[norn.schedule :as sch])
+(require '[skein.schedule :as sch])
 
 (t/format (sch/next-run "0 3 * * *" launch)) ; => "2026-11-14T03:00:00Z"
 
@@ -792,7 +792,7 @@ A run that signals an error is reported on standard error, and the
 schedule goes on. Runs never overlap: if a run is still going when the next
 one is due, the next one waits for it.
 
-Clock changes matter here too, and `norn.schedule` handles them as Vixie
+Clock changes matter here too, and `skein.schedule` handles them as Vixie
 cron does. A job set for 1:30 in New York runs once on the day 1:30
 repeats, the first time. A job set for 2:30 runs at 3:00 on the day 2:30
 is skipped, the moment the clock jumps:
@@ -819,11 +819,11 @@ repeats, and an hour that's skipped has no run:
 
 ## Logging
 
-`norn.log` writes leveled, structured log messages. Each message has a
+`skein.log` writes leveled, structured log messages. Each message has a
 level, a text, and key-value pairs:
 
 ```clojure
-(require '[norn.log :as log])
+(require '[skein.log :as log])
 
 (log/info "listening" :port 8080 :host "localhost")
 ```
@@ -866,7 +866,7 @@ keeps events in an atom:
 The debug message was below the level, so its `:peer` argument never ran.
 An event has `:level`, `:ns`, `:msg`, `:data` (the pairs, in order), and
 `:time`, an instant. To write JSON lines instead, make the sink build a map
-and print it with `norn.json/write-string` (see
+and print it with `skein.json/write-string` (see
 [Chapter 20](20-data-formats.md)). `(log/set-sink! nil)` restores the
 default.
 
@@ -921,11 +921,11 @@ act on.
         r (proc/sh "sh" "-c" cmd)
         ms (quot (- (t/monotonic-nanos) start) 1000000)
         outcome {:job name :exit (:exit r) :ms ms
-                 :output (norn.string/trim (:out r))}]
+                 :output (skein.string/trim (:out r))}]
     (if (= 0 (:exit r))
       (log/info "job finished" :job name :ms ms)
       (log/error "job failed" :job name :exit (:exit r)
-                 :error (norn.string/trim (:err r))))
+                 :error (skein.string/trim (:err r))))
     outcome))
 
 (reset! events [])
@@ -958,14 +958,14 @@ To run it every night at 3:00 in a named zone, hand it to a schedule:
 ```
 
 A real program would keep the schedule running, listen for `:term` with
-`norn.signal`, and stop the schedule and exit cleanly when it arrives.
+`skein.signal`, and stop the schedule and exit cleanly when it arrives.
 
 ## Summary
 
-- `norn.sys` reads arguments (`program-args`), the environment (`getenv`,
+- `skein.sys` reads arguments (`program-args`), the environment (`getenv`,
   `env`), and facts about the machine (`info`) when you ask. `exit` ends the
   process with a status code.
-- `norn.process/sh` runs a program and returns `{:exit :signal :out :err}`.
+- `skein.process/sh` runs a program and returns `{:exit :signal :out :err}`.
   A nonzero exit is data, not an error. No shell is involved unless you run
   one.
 - `start` gives you streams to a running program. Close `:in` to end its
@@ -973,14 +973,14 @@ A real program would keep the schedule running, listen for `:term` with
   Connect programs with `copy-stream!` in a fiber.
 - `start-pty` runs a program on a pseudo-terminal, for programs that want a
   terminal.
-- `norn.signal/listen` delivers signals on a channel, which makes clean
+- `skein.signal/listen` delivers signals on a channel, which makes clean
   shutdown an ordinary `alts!`.
-- `norn.time` keeps instants and durations apart from calendar values.
+- `skein.time` keeps instants and durations apart from calendar values.
   Measure elapsed time with `monotonic-nanos`, name zones explicitly, and
   pick a `:resolve` policy for times that clock changes skip or repeat.
-- `norn.schedule` checks cron expressions up front, can tell you when they
+- `skein.schedule` checks cron expressions up front, can tell you when they
   are due, and runs functions on them in fibers that never overlap.
-- `norn.log` macros skip their arguments below the level. Levels can be set
+- `skein.log` macros skip their arguments below the level. Levels can be set
   per namespace, and a sink function decides where events go.
 
 ---

@@ -1,0 +1,132 @@
+;;;; Arithmetic and comparison in native code (M10 part 5): tier 1 runs
+;;;; + - * / inc dec zero? < > <= >= == = itself on fixnums and floats, and
+;;;; quot rem mod even? odd? on fixnums (part 7.2).
+;;;; Each operator here is called from a function tier 1 has compiled (run
+;;;; 300 times first: at its default, a function compiles once entered 100
+;;;; times), on edge inputs, and must give what the primitive gives through
+;;;; apply (the interpreter's call, never a native path): the same value
+;;;; and class, or the same error. Run at both tiers.
+
+(ns arith-test
+  (:require [skein.test :refer [is deftest testing]]
+            [skein.io :as io]
+            [skein.process :as proc]
+            [skein.string :as str]
+            [skein.sys :as sys]))
+
+(def inputs
+  [0 1 -1 7 -7 2 1000000007
+   ;; (fixnums at the edges: overflow; 2^53 and past it, where a float
+   ;; can't hold every integer)
+   2305843009213693951 -2305843009213693952 1152921504606846976
+   9007199254740992 9007199254740993 -9007199254740993
+   0.0 -0.0 1.0 -1.5 0.1 3.25 1e300 -1e300 9007199254740992.0
+   ##Inf ##-Inf ##NaN
+   ;; (what native code leaves to the primitive)
+   100000000000000000000000 1/3 nil "s"])
+
+(defn- outcome
+  "What calling f on args gives: [:value its printed form and class] or
+  [:error its message]."
+  [f args]
+  (try (let [v (apply f args)] [:value (pr-str v) (class-of v)])
+       (catch Error e [:error (condition-message e)])))
+
+(defmacro ^:private two-arg-fns [& ops]
+  `[~@(map (fn [op] `[~(str op) (fn [a# b#] (~op a# b#)) ~op]) ops)])
+
+(defmacro ^:private one-arg-fns [& ops]
+  `[~@(map (fn [op] `[~(str op) (fn [a#] (~op a#)) ~op]) ops)])
+
+(def binary (two-arg-fns + - * / < > <= >= == = quot rem mod))
+(def unary (one-arg-fns inc dec zero? even? odd?))
+
+(defn- warm [f args] (dotimes [_ 300] (try (apply f args) (catch Error _ nil))))
+
+(deftest native-arithmetic-agrees-with-the-primitives
+  (doseq [[name f prim] binary]
+    ;; (compiled on numbers first, as hot code would be)
+    (warm f [3 4])
+    (warm f [1.5 2.5])
+    (let [bad (vec (for [a inputs b inputs
+                         :let [want (outcome prim [a b]) got (outcome f [a b])]
+                         :when (not= want got)]
+                     [a b want got]))]
+      (is (= [] bad) (str name " on every pair of inputs"))))
+  (doseq [[name f prim] unary]
+    (warm f [3])
+    (warm f [1.5])
+    (let [bad (vec (for [a inputs
+                         :let [want (outcome prim [a]) got (outcome f [a])]
+                         :when (not= want got)]
+                     [a want got]))]
+      (is (= [] bad) (str name " on every input")))))
+
+(defmacro ^:private three-arg-fns [& ops]
+  `[~@(map (fn [op] `[~(str op) (fn [a# b# c#] (~op a# b# c#)) ~op]) ops)])
+
+(def ternary (three-arg-fns + - *))
+
+(deftest three-arguments-agree-with-the-primitives
+  ;; ((x op y) op z: native when x or y is known to be a float, which the
+  ;; loop below makes so)
+  (let [few [0 3 -2 2305843009213693951 9007199254740993 0.5 -0.0 ##NaN ##Inf 1/3 nil]]
+    (doseq [[name _ prim] ternary]
+      (let [f (eval (list 'fn '[a b c] (list 'loop '[x 1.5 k 0]
+                                             (list 'if '(= k 2) (list (symbol "skein.core" name) 'a 'x 'c)
+                                                   '(recur (* x 1.0) (inc k))))))
+            g (eval (list 'fn '[a b c] (list (symbol "skein.core" name) 'a 'b 'c)))]
+        (warm f [1 2 3])
+        (warm g [1.5 2.5 3.5])
+        (let [bad (vec (for [a few c few
+                             :let [want (outcome prim [a 1.5 c]) got (outcome f [a nil c])]
+                             :when (not= want got)]
+                         [a c want got]))]
+          (is (= [] bad) (str name ", three arguments, the second a float")))
+        (let [bad (vec (for [a few b few c few
+                             :let [want (outcome prim [a b c]) got (outcome g [a b c])]
+                             :when (not= want got)]
+                         [a b c want got]))]
+          (is (= [] bad) (str name ", three arguments of any kind")))))))
+
+(deftest float-results-in-a-loop
+  (testing "a float loop's sum, with a fixnum counter (tail calls and loops)"
+    (is (= 4950.0 (loop [i 0 s 0.0] (if (= i 100) s (recur (inc i) (+ s i)))))))
+  (testing "mixed: a fixnum and a float compare exactly, past 2^53 too"
+    (let [lt (fn [a b] (< a b))]
+      (warm lt [1 2.0])
+      (is (= false (lt 9007199254740993 9007199254740992.0)))
+      (is (= true (lt 9007199254740992.0 9007199254740993))))))
+
+;;; Tier 1 keeps a float a register surely holds unboxed (M10 part 5.2),
+;;; boxing it once when something needs the value itself.
+
+(deftest an-unboxed-float-keeps-its-identity
+  (let [f (fn [a b] (let [y (* a b) v [y]] (identical? (first v) y)))
+        g (fn [n] (loop [i 0 s 1.0 seen []]
+                    (if (= i n) (every? (fn [[a b]] (identical? a b)) seen)
+                        (let [t (* s 1.5)] (recur (inc i) t (conj seen [t (peek [t])]))))))]
+    (warm f [1.5 2.0])
+    (warm g [3])
+    (is (= true (f 1.5 2.0)) "the float in the vector is the float in the register")
+    (is (= true (g 50)))))
+
+(def ^:private redefinition-script
+  "(defn f [n] (loop [i 0 s 1.0] (if (< i n) (recur (inc i) (* s 2.0)) s)))
+   (dotimes [_ 300] (f 10))
+   (def before (f 10))
+   (let [orig *]
+     (%set-root! (var skein.core/*) (fn ([] 1) ([a] a) ([a b] (if (= b 2.0) :x (orig a b))) ([a b & m] (apply orig a b m))))
+     (def during [(f 3) (f 0)])
+     (%set-root! (var skein.core/*) orig))
+   (dotimes [_ 300] (f 10))
+   (prn [before during (f 10)])")
+
+(deftest redefining-arithmetic-under-a-compiled-float-loop
+  ;; (in a process of its own: redefining skein.core/* would reach the other
+  ;; suites running beside this one)
+  (when (= "skein" (io/file-name (:executable (sys/info))))
+    (let [r (proc/sh (:executable (sys/info)) "-e" redefinition-script :env {"SKEIN_TIER" "1"})]
+      (is (= 0 (:exit r)) (:err r))
+      (is (= "[1024.0 [:x 1.0] 1024.0]" (first (str/split-lines (:out r))))
+          "the loop assumed * gave a float: it gives what the new * gives, and the old again after"))))

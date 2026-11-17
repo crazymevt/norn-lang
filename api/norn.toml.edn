@@ -1,7 +1,0 @@
-;; norn.toml's public interface, recorded by norn api-diff --record.
-{
- "read-file" {:arglists ["[path & opts]"], :kind :function, :signature [{:result "Map", :args ["Any"], :rest "Any"}]}
- "read-string" {:arglists ["[s & {:or {keys keyword}, :keys [keys local-times]}]"], :kind :function, :signature [{:result "Map", :args ["String"], :rest "Any"}]}
- "write-file" {:arglists ["[path m]"], :kind :function, :signature [{:result "Any", :args ["Any" "Map"]}]}
- "write-string" {:arglists ["[m]"], :kind :function, :signature [{:result "String", :args ["Map"]}]}
-}

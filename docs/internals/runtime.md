@@ -1,4 +1,4 @@
-# Norn Runtime Architecture (draft 0.1)
+# Skein Runtime Architecture (draft 0.1)
 
 Companion to [design.md](design.md). This document covers *how* the Rust
 runtime delivers the language's promises: fibers that can be parked and
@@ -14,14 +14,14 @@ design doc.
 
 Most of this document follows from these three choices:
 
-1. **Norn frames live in heap-allocated, segmented stacks — not on the
+1. **Skein frames live in heap-allocated, segmented stacks — not on the
    native stack** (§3). A fiber's stack is ordinary heap data. That makes
    fiber switches cheap, makes stacks visible to the GC precisely, and lets
    the debugger inspect them and images save them.
-2. **Rust never calls Norn** (§2.3). Runtime primitives are leaves. Anything
+2. **Rust never calls Skein** (§2.3). Runtime primitives are leaves. Anything
    that needs to call user code (sorting with a comparator, `print-object`,
-   reader macros) is written in Norn. This is what makes rule 1 possible:
-   there are never Rust frames sandwiched between Norn frames.
+   reader macros) is written in Skein. This is what makes rule 1 possible:
+   there are never Rust frames sandwiched between Skein frames.
 3. **One frame format for interpreted and compiled code** (§3.3). The
    bytecode interpreter and Cranelift-compiled code push the same frames, so
    stacks can mix both, the debugger handles them identically, and
@@ -34,12 +34,12 @@ Most of this document follows from these three choices:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Norn code: stdlib, CLOS/MOP, conditions, compiler, REPL server      │  lib/*.norn
+│ Skein code: stdlib, CLOS/MOP, conditions, compiler, REPL server      │  lib/*.skn
 ├─────────────────────────────────────────────────────────────────────┤
-│ Execution:  bytecode interpreter (tier 0) │ Cranelift JIT/AOT (tier 1)│  norn-vm, norn-jit
+│ Execution:  bytecode interpreter (tier 0) │ Cranelift JIT/AOT (tier 1)│  skein-vm, skein-jit
 ├─────────────────────────────────────────────────────────────────────┤
 │ Runtime core: values · object model · persistent collections        │
-│   fibers & stacks · scheduler · reactor · sync primitives           │  norn-rt
+│   fibers & stacks · scheduler · reactor · sync primitives           │  skein-rt
 │   image save/load · FFI                                             │
 ├─────────────────────────────────────────────────────────────────────┤
 │ MMTk (GC)   Cranelift (codegen)   crossbeam-deque   mio             │  dependencies
@@ -55,7 +55,7 @@ Tier-1 targets: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`,
 
 ### 2.1 Value representation **[decided]**
 
-A Norn value is one 64-bit word, `#[repr(transparent)] struct Value(u64)`,
+A Skein value is one 64-bit word, `#[repr(transparent)] struct Value(u64)`,
 with low-bit tagging (as in SBCL), not NaN-boxing: fast fixnums matter more
 for a Lisp than unboxed floats do, and the JIT can unbox floats locally.
 
@@ -92,10 +92,10 @@ Conses are the exception: they have no header, just two words (`car`,
 - **Mutable instances** (`(:mutable)` classes) carry an extra hidden slot,
   `owner`, holding a fiber id. Immutable instances pay nothing for it.
 
-### 2.3 "Rust never calls Norn" **[decided]**
+### 2.3 "Rust never calls Skein" **[decided]**
 
 Rust primitives (`vector-conj`, `string-concat`, `atom-cas`, …) are leaf
-functions: they may allocate but never invoke Norn code. Consequences:
+functions: they may allocate but never invoke Skein code. Consequences:
 
 - **Equality and hashing are structural and runtime-defined**, so the HAMT in
   Rust can implement `assoc`/`get` without calling back into user code. That
@@ -105,7 +105,7 @@ functions: they may allocate but never invoke Norn code. Consequences:
   out with `:compare false`, which the Rust side reads from the class (design
   §3.4).
 - **Sorted collections, `sort` with a comparator, `print-object`, reader
-  macros and anything else higher-order are written in Norn.**
+  macros and anything else higher-order are written in Skein.**
 - **FFI callbacks** are the single exception: they are *continuation
   barriers*. While native code is on the stack, the fiber is pinned to its
   carrier and can't be captured, saved or migrated. Racket's CS backend has
@@ -113,13 +113,13 @@ functions: they may allocate but never invoke Norn code. Consequences:
 
 ### 2.4 Collections **[built in M7]**
 
-| In Rust (no user callbacks needed) | In Norn |
+| In Rust (no user callbacks needed) | In Skein |
 |---|---|
 | Persistent vector (RRB), hash map/set (CHAMP), string, byte-vector, cons | Lazy streams, transducers, `sort` |
-| Sorted map/set (persistent AVL, natural `compare` order), persistent queue, transients (with owner-fiber check) | Ropes (`norn.rope`), everything built on the above |
+| Sorted map/set (persistent AVL, natural `compare` order), persistent queue, transients (with owner-fiber check) | Ropes (`skein.rope`), everything built on the above |
 
 Rust gives them speed while everything runs on the bytecode interpreter.
-Once the native compiler is good, moving more into Norn is an option.
+Once the native compiler is good, moving more into Skein is an option.
 
 **Status (M7 part 4).**
 - `Sorted` (`[count][root][set?]`) and `SNode` (`[key][val][left][right][height]`)
@@ -138,14 +138,14 @@ Once the native compiler is good, moving more into Norn is an option.
   `count` read one, as Clojure lets them. Transient vectors fill an array in
   place; transient maps and sets have the full API but still copy per
   change (in place is later work).
-- Ropes are a Norn library: a height-balanced tree of string chunks
+- Ropes are a Skein library: a height-balanced tree of string chunks
   (at most 512 characters), each branch caching its length and newline
   count, so edits and line lookups are O(log n).
 
 
 ### 2.5 The numeric tower **[built in M7]**
 
-`norn-rt/src/numbers.rs` (representation) and `norn-vm/src/numeric.rs`
+`skein-rt/src/numbers.rs` (representation) and `skein-vm/src/numeric.rs`
 (arithmetic, using `num-bigint` and `num-rational`).
 
 - **Fixnums:** 63-bit, unboxed. Arithmetic that overflows them promotes to
@@ -170,15 +170,15 @@ Once the native compiler is good, moving more into Norn is an option.
 ### 2.6 Text **[built in M7]**
 
 - **Strings index by code point.** `count`, `nth`, `subs` and every index
-  in `norn.string` and `norn.regex` count characters (Unicode scalar
+  in `skein.string` and `skein.regex` count characters (Unicode scalar
   values), never bytes; the Rust side converts at the boundary (text.rs),
   with a fast path for ASCII. For other strings, each thread caches the
   character count and the last position found for its last few strings
-  (`norn-rt` string.rs), and counts from the nearest known position, so a
+  (`skein-rt` string.rs), and counts from the nearest known position, so a
   pass through a string costs what its text does. An entry lasts until the
   next collection, since only a collection frees memory for reuse and
   objects never move. What a person sees as one character can be
-  several code points, so `norn.string` adds `graphemes`, `grapheme-count`
+  several code points, so `skein.string` adds `graphemes`, `grapheme-count`
   and `width` (terminal and editor columns; `unicode-segmentation` and
   `unicode-width`). `reverse`, `truncate` and the padding functions work in
   graphemes and columns.
@@ -225,16 +225,16 @@ segments**, which are ordinary heap objects (class `StackSegment`).
   GC scans exactly the live words, never stale frames above the top.
 - **Fiber switch** means saving the segment and frame offset into the old
   fiber and loading the next fiber's. There are no registers to save between
-  Norn calls (§3.2) and no assembly context switching.
+  Skein calls (§3.2) and no assembly context switching.
 - **Memory (measured, M1):** a parked fiber costs about 1.7 KB in total
   (fiber object, first segment, closure, waiter). 1M parked fibers use
   1.73 GB of heap. A fiber gets its first segment when it starts running.
 
 ### 3.2 Calls compile to "push frame + tail call" **[decided]**
 
-The native stack never holds Norn values across a Norn call.
+The native stack never holds Skein values across a Skein call.
 
-- **Non-tail call:** spill live values into the current Norn frame, record the
+- **Non-tail call:** spill live values into the current Skein frame, record the
   *resume point*, then jump to the callee (Cranelift's `tail` calling
   convention with `return_call`).
 - **Return:** the callee jumps to the caller's frame's resume point.
@@ -280,14 +280,14 @@ The kernel provides **one-shot** delimited control: `%prompt` and
 `%capture`. With segmented stacks, capturing splits the segment at the
 prompt (O(1)), and resuming relinks it. Fibers, generators, `await`, effect
 handlers and the condition system's non-local exits are all built on this
-in Norn.
+in Skein.
 
 Multi-shot continuations (copy on reinstatement) are **[open]**; nothing in
 the design needs them yet.
 
 ### 3.5 Kernel language **[proposed]**
 
-All of Norn macro-expands to roughly 14 forms, which both tiers implement:
+All of Skein macro-expands to roughly 14 forms, which both tiers implement:
 
 ```
 quote  if  do  let*  letrec*  fn*  def  var
@@ -308,20 +308,20 @@ values rather than boxes.
 ### 4.1 GC: MMTk **[decided]**
 
 - **M1: MMTk 0.33, `Immix` plan built with `immix_non_moving`**
-  (`norn-rt/src/heap.rs`): parallel (one GC worker per core), stop-the-world,
+  (`skein-rt/src/heap.rs`): parallel (one GC worker per core), stop-the-world,
   and objects never move, so the interpreter's cached code and frame pointers
   stay valid across a GC. The heap is 64 MB to 8 GB by default
-  (`NORN_HEAP_MIN`, `NORN_HEAP_MAX`); after each collection it may grow to
-  what's live times 1 + `NORN_HEAP_GROWTH` percent (100 by default: a
+  (`SKEIN_HEAP_MIN`, `SKEIN_HEAP_MAX`); after each collection it may grow to
+  what's live times 1 + `SKEIN_HEAP_GROWTH` percent (100 by default: a
   collection when the heap has doubled, as Go's `GOGC=100`), a trigger of
   our own (`ProportionalTrigger`, MMTk's delegated trigger). MMTk's dynamic
-  size (MemBalancer, still there as `NORN_HEAP_GROWTH=balancer`) sized
+  size (MemBalancer, still there as `SKEIN_HEAP_GROWTH=balancer`) sized
   the room above live data by how fast collections trace against how fast
-  the program allocates: Norn traces fast and allocates a lot, so it left
+  the program allocates: Skein traces fast and allocates a lot, so it left
   a few MB, and a program with 65 MB live collected every few MB it
-  allocated (linting `http.norn` beside the workloads' data: about 100
+  allocated (linting `http.skn` beside the workloads' data: about 100
   collections and 560 ms a run; now 4 and 124 ms, peak RSS 137 → 233 MB).
-  Small programs stay within the minimum (`norn -e nil`: 79 MB either
+  Small programs stay within the minimum (`skein -e nil`: 79 MB either
   way).
 - **Next: generational `StickyImmix`** with `sticky_immix_non_moving_nursery`.
   It needs write barriers on stores into possibly-old objects (var roots,
@@ -337,7 +337,7 @@ values rather than boxes.
 
 ### 4.2 Roots and safepoints **[decided]**
 
-Norn values live only in the heap (stack frames included), so the roots that
+Skein values live only in the heap (stack frames included), so the roots that
 live *outside* the heap are few (implemented in M1):
 
 - Runtime tables: interned symbols and keywords, namespaces → vars, the
@@ -360,12 +360,12 @@ saw. Anything that needs a busy carrier's attention bumps that counter:
 |---|---|
 | reduction budget (2000) used up | yield, if other fibers are waiting and the slice has run 0.5 ms |
 | stop-the-world requested | save stack top, block until the GC finishes |
-| `(gc)` or `NORN_GC_STRESS` | save stack top, request a collection, block |
+| `(gc)` or `SKEIN_GC_STRESS` | save stack top, request a collection, block |
 | fiber cancelled / interrupted | raise `Cancelled` / `Interrupted` |
 | work submitted from outside (REPL, cancel) | handle it |
 
-The **safepoint protocol** (`norn-rt/src/safepoint.rs`) counts *running*
-participants: carriers executing Norn code, and the timer thread while it
+The **safepoint protocol** (`skein-rt/src/safepoint.rs`) counts *running*
+participants: carriers executing Skein code, and the timer thread while it
 fires timers. Stopping the world waits until none is running. Idle carriers
 count as safe.
 
@@ -373,12 +373,12 @@ count as safe.
 
 **Allocation never triggers a collection.** If allocation runs out of room it
 takes more memory and sets the poll word, and the collection then happens at
-the next safepoint, where every live Norn value is in a heap stack frame.
+the next safepoint, where every live Skein value is in a heap stack frame.
 
 This removes almost all rooting from Rust. Primitives are leaves (§2.3), so
 they contain no safepoints and can hold raw `Value`s across allocation
 freely. Handles (`Handle<'scope>`, as in V8's HandleScope) are only needed by
-the little Rust code that runs Norn code *and* keeps values across it. In M0
+the little Rust code that runs Skein code *and* keeps values across it. In M0
 that is only the seed compiler holding forms while it calls a macro.
 
 - **Risk:** a primitive that allocates enormously between safepoints
@@ -389,11 +389,11 @@ that is only the seed compiler holding forms while it calls a macro.
   heap makes it *request* a collection, and the collection then starts
   through our `stop_all_mutators`, which waits for every carrier to reach a
   safepoint.
-- **Nested runs are GC-inhibited.** Rust code that re-enters Norn (the seed
+- **Nested runs are GC-inhibited.** Rust code that re-enters Skein (the seed
   compiler expanding macros, boot) holds values the GC can't see. While such a
   run is active, the carrier's polls don't stop for a GC, which simply waits
   for the run to end. The seed compiler is replaced in M4.
-- **GC stress mode:** `NORN_GC_STRESS=N` forces a collection at every N-th
+- **GC stress mode:** `SKEIN_GC_STRESS=N` forces a collection at every N-th
   slow-path poll of every carrier. With N=1, the core suite completed
   2,032,983 collections with 0 failures.
 
@@ -411,7 +411,7 @@ that is only the seed compiler holding forms while it calls a macro.
 
 ### 4.5 Weak references and cleanups **[built in M6]**
 
-`crates/norn-rt/src/weak.rs`.
+`crates/skein-rt/src/weak.rs`.
 
 - **`(weak-ref x)`** makes a `Weak` object whose referent the GC doesn't
   trace. `(weak-get w)` returns the referent, or nil once it's been
@@ -456,8 +456,8 @@ that is only the seed compiler holding forms while it calls a macro.
           ▲  global injector queue          └─────────────┘        └───────────────┘
 ```
 
-- **As built in M1** (`norn-vm/src/sched.rs`):
-  - one carrier thread per core (`NORN_THREADS` overrides), plus a timer thread;
+- **As built in M1** (`skein-vm/src/sched.rs`):
+  - one carrier thread per core (`SKEIN_THREADS` overrides), plus a timer thread;
   - each carrier has a mutex-guarded run queue, and there is one global queue;
   - a carrier takes from its own queue first, then the global one, then
     steals from other carriers;
@@ -498,12 +498,12 @@ that is only the seed compiler holding forms while it calls a macro.
     `spawn`.
   - `GETVAR` consults it only for vars flagged `VAR_DYNBOUND` (set the first
     time a var is bound), which costs one relaxed load for every other var.
-  - `binding` is the Norn function `%with-bindings*`, whose frame records the
+  - `binding` is the Skein function `%with-bindings*`, whose frame records the
     environment to restore.
 
 ### 5.4 Errors, unwinding and the debugger **[implemented in M3]**
 
-**Frames that mark dynamic extent.** Four small Norn functions in core.norn,
+**Frames that mark dynamic extent.** Four small Skein functions in core.skn,
 recognised by the runtime by closure identity:
 
 | Frame (its parameters are its registers) | Meaning |
@@ -553,7 +553,7 @@ How a `Runtime` conversion works:
 operation and parking used to sleep forever. See the handshake in `cancel`
 (sched.rs).
 
-**The debugger.** It is Norn code on top of all this:
+**The debugger.** It is Skein code on top of all this:
 - `%debug-park` registers the fiber, posts a `{:event :debug …}` line on the
   event bus (`sched::subscribe`), and parks on a channel.
 - `backtrace` reads a parked fiber's frames, with local names recorded by the
@@ -576,7 +576,7 @@ thunk until realized, then the seq it produced. Rust never runs the thunk.
   - Every other primitive asks for all of it.
   - `=`, `hash` and printing don't fail on unrealized streams, so they ask
     up front.
-- `handle_error` calls `norn.core/%force-stream` in place of the failed
+- `handle_error` calls `skein.core/%force-stream` in place of the failed
   instruction, just as `%runtime-error` is called. When it returns the
   retry marker, the instruction runs again.
 - `nth` steps along a chain cell by cell. Bulk iteration (`SeqIter`) first
@@ -584,9 +584,9 @@ thunk until realized, then the seq it produced. Rust never runs the thunk.
 
 ### 5.5 I/O: the reactor, the blocking pool, native regions **[built in M6]**
 
-**The reactor** (`norn-vm/src/reactor.rs`):
+**The reactor** (`skein-vm/src/reactor.rs`):
 - One thread runs `mio` (kqueue or epoll).
-- Each open pipe or socket is an entry in a handle table. The Norn `Handle`
+- Each open pipe or socket is an entry in a handle table. The Skein `Handle`
   object (a heap kind) holds its number and the process epoch, so a handle
   restored from an image reports "resource lost" instead of reaching
   whatever now has that number.
@@ -605,7 +605,7 @@ thunk until realized, then the seq it produced. Rust never runs the thunk.
 **The blocking pool** (`blocking.rs`): threads for calls that block in the
 OS (files, DNS, blocking FFI), so carriers never do.
 - A job's blocking half runs without touching the heap. Its `Finish` turns
-  the result into a Norn value on the pool thread. The thread allocates with
+  the result into a Skein value on the pool thread. The thread allocates with
   its own mutator, as a running participant, and hands the value to the
   parked fiber.
 - The pool grows on demand to 64 threads; idle threads above 2 exit after
@@ -651,7 +651,7 @@ heap under GC stress in M6; the fix and this rule came together.
 
 ### 5.6 The basic FFI **[built in M6]**
 
-`crates/norn-vm/src/ffi.rs`, with `lib/norn/ffi.norn` (`library`,
+`crates/skein-vm/src/ffi.rs`, with `lib/skein/ffi.skn` (`library`,
 `function`, `call`, `defcfun`).
 
 - **Libraries** load with `libloading`. Each foreign function holds the
@@ -681,11 +681,11 @@ heap under GC stress in M6; the fix and this rule came together.
   blocking pool. Either way, the `Bytes` it points into are rooted until it
   returns.
 - **The main-thread lane.** A `:main-thread` function runs on the thread
-  serving the lane (`main_lane.rs`). The `norn` command runs its command
+  serving the lane (`main_lane.rs`). The `skein` command runs its command
   line on a second thread and serves the lane on the process's first, which
   macOS requires for windows and events and which keeps a graphics context
-  on one thread. A program embedding Norn serves it by calling
-  `norn_vm::main_lane::serve` on a thread; otherwise a `:main-thread` call
+  on one thread. A program embedding Skein serves it by calling
+  `skein_vm::main_lane::serve` on a thread; otherwise a `:main-thread` call
   is an error. As on the blocking pool, the caller's fiber parks while the
   lane runs the job, which doesn't touch the heap, and a caller that can't
   park waits in a native region. Jobs run one at a time in order. A
@@ -694,14 +694,14 @@ heap under GC stress in M6; the fix and this rule came together.
   serving fiber, and the lane keeps running jobs until it answers, so the
   callback can make main-thread calls itself.
 - **Images.** Library and function handles are dead after a restore. The
-  Norn objects hold their handle in an atom and reload and re-resolve by
+  Skein objects hold their handle in an atom and reload and re-resolve by
   themselves, with no `ResourceLost`, because a loaded library holds no
   session state.
 - **M9 part 9.8 added:**
   - **Memory:** addresses are integers. `%mem-alloc` and `%mem-free`
     (calloc and free), `%mem-get` and `%mem-set!` (a C type at an address
     and offset, unaligned), and C strings and byte copies.
-  - **Struct layouts** are Norn (`defcstruct` in `norn.ffi`), on those
+  - **Struct layouts** are Skein (`defcstruct` in `skein.ffi`), on those
     primitives: C's rules, nested structs and arrays. A struct is passed
     by pointer (`[:* layout]`, a map copied to temporary memory) or
     filled by C (`[:out layout]`, read back as a map).
@@ -722,13 +722,13 @@ heap under GC stress in M6; the fix and this rule came together.
     - A trampoline's code isn't reclaimed: executable memory isn't
       reused.
   - **Function pointers:** `%ffi-fn` with a nil library takes an address.
-  - **Unsafe modules:** the var flag `VAR_UNSAFE` (32) marks `norn.ffi`'s
+  - **Unsafe modules:** the var flag `VAR_UNSAFE` (32) marks `skein.ffi`'s
     raw functions and the `%ffi-`/`%mem-` primitives. The expander refuses
     a reference to one, at phase 0, from a namespace that isn't in
     `%unsafe-namespaces`: those whose `ns` says `(:unsafe)`, and `user`.
 - **M9 part 9.8b added:**
   - **Structs by value,** for arm64 (AAPCS64, and Apple's, which agree
-    here). `norn.ffi` passes a struct as `[:struct size leaves]`: its
+    here). `skein.ffi` passes a struct as `[:struct size leaves]`: its
     scalar pieces with their offsets. The runtime classifies it (`Agg`):
     - a homogeneous floating-point aggregate (one to four floats or
       doubles of one type) goes in float registers;
@@ -754,10 +754,10 @@ heap under GC stress in M6; the fix and this rule came together.
     arguments.
   - **Unions** (`defcunion`) and **bit fields** (`[:bits type width]`,
     in units of their type, from the lowest bit, as both ABIs lay them
-    out) are Norn.
+    out) are Skein.
   - A freed callback's trampoline is reused by the next callback of its
     signature.
-  - `tests/norn/ffi_fixture.c`, built by `ffi_test.norn` with `cc`,
+  - `tests/skein/ffi_fixture.c`, built by `ffi_test.skn` with `cc`,
     checks every case against C.
   - **x86-64 System V** (M12): each eightbyte of a struct up to 16 bytes
     goes in a float register if it holds only floats, else an integer
@@ -770,18 +770,18 @@ heap under GC stress in M6; the fix and this rule came together.
 
 ### 5.7 Native extensions and the main thread **[built in M7.5]**
 
-For native code larger than the FFI suits, the first being `norn-ui`'s
+For native code larger than the FFI suits, the first being `skein-ui`'s
 engine (design §9.1). Nothing here is UI-specific.
 
-- **Extensions** (`norn_vm::ext`): a Rust crate registers an `Extension`
+- **Extensions** (`skein_vm::ext`): a Rust crate registers an `Extension`
   (a name, a namespace it owns, primitives) before the runtime starts.
   - Extension primitives are numbered after the built-in ones and follow
-    the same rules (§2.3: Rust leaf functions that never call Norn).
+    the same rules (§2.3: Rust leaf functions that never call Skein).
   - Their names are part of the build fingerprint, so an image only loads
     in a binary with the same extensions.
-- **Embedded libraries:** an extension can carry Norn libraries (name and
-  source), which `require` finds like the built-in ones; `norn-ui` brings
-  `norn.ui` this way.
+- **Embedded libraries:** an extension can carry Skein libraries (name and
+  source), which `require` finds like the built-in ones; `skein-ui` brings
+  `skein.ui` this way.
 - **Native objects** are `Handle`s owning a `Box<dyn Any + Send>`
   (`ext::handle`, `ext::with_native`). Closing a handle drops the object.
   A handle saved in an image comes back lost, as M6's sockets do.
@@ -791,12 +791,12 @@ engine (design §9.1). Nothing here is UI-specific.
     by the API rather than by care.
   - `post` puts only if there is room now; the extension decides whether to
     coalesce, retry or drop.
-- **The main thread:** `norn::run_with_main_thread(f)` runs the whole
+- **The main thread:** `skein::run_with_main_thread(f)` runs the whole
   command line (REPL, scripts, `-e`, `test`…) on a thread of its own. Once
   the runtime has started, it gives the process's first thread to `f`
   (macOS requires its UI event loop there). The process ends when either
   finishes.
-- **Tested** by `norn-ext-demo` (`crates/norn/tests/ext.rs`):
+- **Tested** by `skein-ext-demo` (`crates/skein/tests/ext.rs`):
   - 20,000 events posted from the main thread arrive in order, under GC
     stress and at tier 1;
   - native handles work, and close;
@@ -806,12 +806,12 @@ engine (design §9.1). Nothing here is UI-specific.
 ### 5.3 Sync primitives **[M1: atoms, channels, scopes built]**
 
 All shared mutable state is in the heap, guarded by one-word spinlocks inside
-the objects (`norn-rt/src/conc.rs`). There are no Rust-side allocations,
+the objects (`skein-rt/src/conc.rs`). There are no Rust-side allocations,
 finalisers or extra root tables.
 
 | Primitive | Implementation |
 |---|---|
-| `atom` | `AtomicU64` CAS on a tagged value; `swap!` is a CAS loop written in Norn |
+| `atom` | `AtomicU64` CAS on a tagged value; `swap!` is a CAS loop written in Skein |
 | `var` | root slot (release store / acquire load) + flags |
 | `chan` | spinlock + optional ring buffer + FIFO queues of waiters (two lists each) for takers and putters; unbuffered channels hand values over directly. `alts!` locks its channels in address order and parks on all of them with one shared claim. `timeout` is a channel the timer thread closes. |
 | scope | children list, pending count, first failure, owner waiter. A failing child cancels its siblings; cancelling the owner cancels the tree. |
@@ -823,8 +823,8 @@ finalisers or extra root tables.
 
 ## 6. Generic function dispatch
 
-**[implemented in M2]** — `norn-rt/src/clos.rs` holds the shapes and the hot
-path; `lib/core/core.norn` holds the policy.
+**[implemented in M2]** — `skein-rt/src/clos.rs` holds the shapes and the hot
+path; `lib/core/core.skn` holds the policy.
 
 **Objects.**
 
@@ -837,7 +837,7 @@ state:    Array [mask, eqls, cache, class-epoch]        immutable, swapped atomi
 cache:    Array [nkeys, cap, count, (k0 … kn-1, em) × cap]
 ```
 
-**Hot path** (in the interpreter; Rust never calls Norn):
+**Hot path** (in the interpreter; Rust never calls Skein):
 
 1. Load the generic function's `state` (one acquire load).
 2. If its class epoch isn't the current global class epoch, it's a miss.
@@ -846,7 +846,7 @@ cache:    Array [nkeys, cap, count, (k0 … kn-1, em) × cap]
 4. Probe the open-addressed cache (no allocation, no locks).
 5. On a hit, the interpreter *continues its call loop* with the cached
    effective method, so the generic function adds no frame of its own.
-6. On a miss, it calls `%gf-miss` (Norn) in the same fiber, which computes the
+6. On a miss, it calls `%gf-miss` (Skein) in the same fiber, which computes the
    applicable methods, sorts them by specificity, and builds the effective
    method. The effective method is a fixed-arity function compiled with
    `eval`, with the method functions embedded as constants. `%gf-miss` caches
@@ -866,7 +866,7 @@ cache:    Array [nkeys, cap, count, (k0 … kn-1, em) × cap]
 
 **Methods** take the next-method function as a hidden first argument;
 `call-next-method` and `next-method?` are bound only if the body uses them.
-Custom-dispatch generic functions compute the dispatch value in Norn and key
+Custom-dispatch generic functions compute the dispatch value in Skein and key
 the cache on it.
 
 **Measured** (release, tier 0, Apple M-series): a generic call costs about
@@ -946,8 +946,8 @@ Consequences **[decided]**:
 
 ### 7.5 As built in M5 **[built]**
 
-`crates/norn-rt/src/image.rs` (format, writer, loader) and
-`crates/norn-vm/src/image.rs` (roots, the save, the restore).
+`crates/skein-rt/src/image.rs` (format, writer, loader) and
+`crates/skein-vm/src/image.rs` (roots, the save, the restore).
 
 **Format.** Little-endian 64-bit words: a header, the base image's path (for
 a delta), the object area, a relocation bitmap over the area (one bit per
@@ -983,7 +983,7 @@ number. Nothing in the file is an address.
    saved as taken, so no channel hands them a value.
 6. The file is written to a temporary name and renamed.
 
-**Load.** `norn --image FILE` loads before any carrier starts:
+**Load.** `skein --image FILE` loads before any carrier starts:
 1. Allocate every object in the MMTk heap.
 2. Copy each object in, relocating its references through the object table.
 3. Rebuild the runtime tables (`runtime::init_from_image`), and turn each
@@ -995,7 +995,7 @@ Carrier 0 then finishes the restore in place of boot:
 - it ends the dead fibers through the normal `finish` path, so their joiners
   and scopes see "Fiber was not saved in the image".
 
-Last, `(norn.core/%image-restored)` runs `on-image-restore`.
+Last, `(skein.core/%image-restored)` runs `on-image-restore`.
 
 **Layers.** `(save-image f :layered true)` writes a delta against the image
 the process started from:
@@ -1033,7 +1033,7 @@ reused, and a later delta can recognise them by address.
 | From an image (`-e '(+ 1 2)'`) | 35 ms |
 | Booting from source | 40 ms |
 
-- The image load itself takes about 2 ms; booting core.norn and the compiler
+- The image load itself takes about 2 ms; booting core.skn and the compiler
   from source takes about 7 ms.
 - Most of the remainder is `mmtk_init` at about 14 ms. It touches about 40 MB
   before the first allocation.
@@ -1064,7 +1064,7 @@ reused, and a later delta can recognise them by address.
 
 ### 8.2 Tier 1 — Cranelift **[decided; first version built in M4]**
 
-**As built in M4** (`crates/norn-vm/src/jit.rs`):
+**As built in M4** (`crates/skein-vm/src/jit.rs`):
 
 *Shape.*
 - A **native accelerator over the same frames**: each proto's bytecode
@@ -1088,13 +1088,13 @@ reused, and a later delta can recognise them by address.
   values.
 
 *Compilation.*
-- At tier 1 (the default since M10; `NORN_TIER=0` turns it off), once a
+- At tier 1 (the default since M10; `SKEIN_TIER=0` turns it off), once a
   proto has been entered 100 times (calls and
-  loop turns, counted in its native word; `NORN_JIT_THRESHOLD` sets it, 1
+  loop turns, counted in its native word; `SKEIN_JIT_THRESHOLD` sets it, 1
   to 4000). Until M10 it was on first execution, which compiled all the
-  code that runs once: `norn -e` started in 1.07 s at tier 1 against 0.11
+  code that runs once: `skein -e` started in 1.07 s at tier 1 against 0.11
   s at tier 0, and 0.54 s at 100. At M10's end compiling is slower than that, the code
-  doing more: `norn -e nil` compiles 258 protos (2.9 MB), which took 1.0
+  doing more: `skein -e nil` compiles 258 protos (2.9 MB), which took 1.0
   s on the carriers that reached the threshold, waiting for each.
 - **On a thread of its own** (background compilation, M10): reaching the
   threshold puts the proto on a queue (its native word QUEUED, below
@@ -1110,9 +1110,9 @@ reused, and a later delta can recognise them by address.
   carrier compiled. The thread reads the heap, so while it compiles it's
   a running safepoint participant (a collection waits out the compile in
   hand, a few ms, and can't free what it reads); waiting for work it's
-  safe, and the queue is a GC root. `norn -e nil` starts in 0.10 s at
-  tier 1, as at tier 0. `NORN_JIT_SYNC=1` compiles on the carrier, as
-  before: with `NORN_JIT_THRESHOLD=1`, every function runs compiled from
+  safe, and the queue is a GC root. `skein -e nil` starts in 0.10 s at
+  tier 1, as at tier 0. `SKEIN_JIT_SYNC=1` compiles on the carrier, as
+  before: with `SKEIN_JIT_THRESHOLD=1`, every function runs compiled from
   its first call, which is how the suites check everything compiled
   (without it about 2,000 protos queue at start-up, compiled over the
   next 1.5 s). `jit-stats`' `:pending` counts what's queued or being
@@ -1142,7 +1142,7 @@ The core test session compiled 627 protos (516 KB of code), none rejected.
   function is called there and native code goes on with its value.
 - **A return** is a helper that pops the frame and `return_call`s into the
   caller's code at its resume point. Tail calls replace the frame in place.
-  The native stack doesn't grow, however deep the Norn stack.
+  The native stack doesn't grow, however deep the Skein stack.
 - **`CLOSURE`** is a helper too: helpers may allocate, since allocation
   never collects (§4.3).
 - **What goes back to the interpreter:** the bottom of a run, a callee not
@@ -1153,10 +1153,10 @@ The core test session compiled 627 protos (516 KB of code), none rejected.
   a stack overflow. The interpreter's state (`St`) stays the source of
   truth: the helpers update it as they push and pop, so native code can
   stop anywhere.
-- **Measured** against M10's baseline (`bench/compare.norn`, tier 1): a call
+- **Measured** against M10's baseline (`bench/compare.skn`, tier 1): a call
   to a closure 24 → 17 ns, to another module's function 38 → 30 ns; the
   programs 4–17% faster (Mandelbrot 293 → 249 ms, the ledger 206 → 176
-  ms); compiling and loading `http.norn` 49 → 36 ms with the threshold.
+  ms); compiling and loading `http.skn` 49 → 36 ms with the threshold.
   A plain call costs about what it did through the interpreter (18 ns):
   the two helper calls are most of it. Pushing frames inline, for callees
   known at compile time, belongs with direct linking (M10 part 3).
@@ -1201,7 +1201,7 @@ decision, 2026-11-16, plan-m10.md).
   206 → 172 ms); the rope workloads 1.38×. The code is 15% larger than
   part 2's (4.8 MB for everything at threshold 1).
 
-**Inlining, as built in M10 part 4.** In the compiler (`norn.compiler`),
+**Inlining, as built in M10 part 4.** In the compiler (`skein.compiler`),
 so both tiers gain.
 
 - **What's inlined:** a call of a var whose value is a small function
@@ -1211,7 +1211,7 @@ so both tiers gain.
   no call of itself. The compiler keeps such functions' IR, by var, with
   the template they compiled to; a call compiled later inlines the arity
   if the var still holds a closure of that template. Calls nest three
-  deep at most. The libraries Norn compiles at boot (norn.core, with the
+  deep at most. The libraries Skein compiles at boot (skein.core, with the
   seed compiler) keep no IR, so their functions aren't inlined yet.
 - **The guard:** the callee and its arguments go to registers as for a
   call, then `GUARD a bx` (a new instruction: if register a holds
@@ -1228,12 +1228,12 @@ so both tiers gain.
   there. Restarting an inlined frame (`debug-restart-frame`) unwinds to
   the frame it's in and runs that frame's ordinary call of the function
   (its newest definition, with the argument registers), the frame going
-  on after it. `norn.xref` reports what the source calls: constants used
+  on after it. `skein.xref` reports what the source calls: constants used
   only by inlined code, and guards' closures, aren't counted.
 - **Contracts at the call site:** a call of another module's function
   with a contract goes through a checking wrapper in the caller's
   module, as before; it's now plain code (`%wrapper-source`) when the
-  contract's tests are norn.core predicates or classes (`instance?` of
+  contract's tests are skein.core predicates or classes (`instance?` of
   the class's var while it holds that class; also nilable or either-of),
   so it's inlined like any small function: the checks are at the call
   site. An arity taking more arguments (keyword arguments, a rest
@@ -1257,14 +1257,14 @@ so both tiers gain.
 value a node can give as it generates (a set of simple kinds: nil, true,
 false, integer, float, ratio, string, character, keyword, symbol; or
 unknown): from literals, locals bound to them, an inlined function's
-arguments (its parameters), norn.core's type predicates and primitives
+arguments (its parameters), skein.core's type predicates and primitives
 with fixed result types (`str`, `count`, `%str-trim`, comparisons…), an
 inlined function's body, and the tests an `if` has passed in its
 branches. An `if` whose test is pure (constants, locals, predicates of
 those) and surely true or false generates only its branch: a contract's
 checks at a call site go where the types prove them (a literal argument,
 a result the inlined callee's body shows), at both tiers. A loop's locals
-aren't typed (they change from turn to turn). norn.core's predicates
+aren't typed (they change from turn to turn). skein.core's predicates
 and primitives are taken as they are when compiling, while each var
 holds what it did when the compiler was loaded (decision 11):
 redefining one affects code compiled after it.
@@ -1301,7 +1301,7 @@ seq directly (`%kw-get`), making no map.
   `not`, and the type predicates the checks use (`string?`, `keyword?`,
   `symbol?`, `float?`, `vector?`, `regex?`, `bytes?`, `char?`,
   `boolean?`, and `integer?` for a fixnum). A call that names one
-  through its norn.core var tries only that one. Later in M10, the
+  through its skein.core var tries only that one. Later in M10, the
   primitives code calls once an item: `reduced?` and `unreduced`
   (`reduce`'s loop); `count` and `nth` of an all-ASCII string (its length
   word's top bit, then a byte); `seq` and `next` of a list (nil, the cell
@@ -1313,7 +1313,7 @@ seq directly (`%kw-get`), making no map.
   ns: the call is gone), a checked call across modules 26.7× (417 →
   15.6 ns; tier 0 3.8×), `count` and `nth` of a vector 2.6×; the static
   site 1.40×, the other programs 1.12–1.19×; the rope workloads 2.3–2.6×.
-  **The cost was compile time:** compiling and loading `http.norn` took
+  **The cost was compile time:** compiling and loading `http.skn` took
   67 ms at tier 0 against 45 before inlining. Making the compiler's state
   mutable (transient vectors as records and buffers, constants found by
   an identity index) brought it to 35 ms (24–28 at tier 1).
@@ -1326,7 +1326,7 @@ any other pc it stops at once and the interpreter runs on to an entry.
 Between entries each register is a Cranelift variable: reads don't go back
 to the frame. Writes go through to it (a store is cheap; reloading what
 was just stored was the cost), so the frame stays exact wherever native
-code stops. `NORN_JIT_SSA=0` enters anywhere, keeps no floats unboxed, as
+code stops. `SKEIN_JIT_SSA=0` enters anywhere, keeps no floats unboxed, as
 before part 5.
 
 **Floats, as built in M10 part 5.2.** `+ - * / inc dec zero? < > <= >= ==
@@ -1344,9 +1344,9 @@ box (a must-alias analysis), so `identical?` holds as at tier 0. Where an
 assumption fails (a call assumed to give a float doesn't: `*` redefined),
 native code stops after the call; an entry that finds a register it
 assumed a float isn't refuses, and the function is compiled again without
-assumptions after four failures. `NORN_JIT_DUMP=name` prints the machine code
+assumptions after four failures. `SKEIN_JIT_DUMP=name` prints the machine code
 of compiled functions whose names have `name` in them;
-`NORN_JIT_TRACE_FLO` prints each one's analysis.
+`SKEIN_JIT_TRACE_FLO` prints each one's analysis.
 
 Smaller things the code does (M10's done-check, for the empty loop:
 2.58 → 1.85 ns a turn): a comparison whose value a `JMPF` tests next
@@ -1361,7 +1361,7 @@ read through it, an address dependency); and a test of two conditions is
 two branches, not their `and`. A call whose callee isn't known to be a
 primitive's var tries only `+ - < = inc` natively before the general
 call (all 35 made such call sites large and compiling slow;
-`NORN_JIT_CASCADE` tries them all).
+`SKEIN_JIT_CASCADE` tries them all).
 
 *Next.* The full design below (inline caches) keeps the same frame layout,
 so it can replace this piece by piece.
@@ -1383,29 +1383,29 @@ so it can replace this piece by piece.
 ## 9. Bootstrap
 
 ```
-1. norn-rt + norn-vm (Rust) compile.
-2. norn-vm contains a small Rust "seed compiler": reader → kernel forms
+1. skein-rt + skein-vm (Rust) compile.
+2. skein-vm contains a small Rust "seed compiler": reader → kernel forms
    (+ non-hygienic defmacro) → bytecode.                 [throwaway, ~2k LOC]
-3. Seed compiler loads lib/core/*.norn (stdlib basics, CLOS, conditions).
-4. Seed compiler loads lib/compiler/*.norn — the real compiler, in Norn.
-5. Real compiler recompiles itself and the stdlib → save base.nimg.
-6. From here on: `norn` = norn-rt + base.nimg. The seed compiler is used only
+3. Seed compiler loads lib/core/*.skn (stdlib basics, CLOS, conditions).
+4. Seed compiler loads lib/compiler/*.skn — the real compiler, in Skein.
+5. Real compiler recompiles itself and the stdlib → save base.skimg.
+6. From here on: `skein` = skein-rt + base.skimg. The seed compiler is used only
    to rebuild from scratch (and in CI, to prove we still can).
 ```
 
 **As built in M4:** steps 1–4.
-- The Norn compiler (`lib/compiler/compiler.norn`) is a faithful port of the
-  seed. Boot installs it as `eval`; `NORN_COMPILER=seed` keeps the seed.
+- The Skein compiler (`lib/compiler/compiler.skn`) is a faithful port of the
+  seed. Boot installs it as `eval`; `SKEIN_COMPILER=seed` keeps the seed.
 - **Byte-identical output.** On every form of the core library (235 forms,
   11,549 instructions), the compiler and the test suites,
   `compare-compilers` finds no difference from the seed.
 - **Self-hosting fixpoint.** The compiler compiled by the seed, by itself
   and by that result produce identical code for every function
-  (`tests/norn/compiler_test.norn`).
-- Step 5 is available since M5: `norn build base.nimg` saves the booted
-  runtime, and `norn --image base.nimg` starts from it. The default start
+  (`tests/skein/compiler_test.skn`).
+- Step 5 is available since M5: `skein build base.skimg` saves the booted
+  runtime, and `skein --image base.skimg` starts from it. The default start
   still boots from source, which takes 7 ms of a 40 ms start (§7.5).
-- **Macros run in the compiling fiber.** Since the compiler is Norn code,
+- **Macros run in the compiling fiber.** Since the compiler is Skein code,
   macros are ordinary calls: they can block, and compilation no longer
   inhibits the GC. The nested-run machinery remains only for boot and the
   Rust `macroexpand` primitives.
@@ -1418,11 +1418,11 @@ so it can replace this piece by piece.
 ./
   Cargo.toml                 workspace
   crates/
-    norn-rt/                 values, objects, collections, heap (MMTk binding),
+    skein-rt/                 values, objects, collections, heap (MMTk binding),
                              fibers, scheduler, reactor, sync, images, FFI
-    norn-vm/                 bytecode, interpreter, seed compiler, reader (bootstrap)
-    norn-jit/                Cranelift backend (M4)
-    norn/                    `norn` binary: REPL, run image, build
+    skein-vm/                 bytecode, interpreter, seed compiler, reader (bootstrap)
+    skein-jit/                Cranelift backend (M4)
+    skein/                    `skein` binary: REPL, run image, build
   lib/
     core/                    kernel macros, seqs, printing, numbers
     clos/                    classes, generic functions, MOP, method combination
@@ -1430,11 +1430,11 @@ so it can replace this piece by piece.
     async/                   scopes, channels, processes, supervisors, parallel
     compiler/                expander, ANF, optimiser, codegen drivers
     repl/                    network REPL server
-  bench/                     benchmarks (bench/pingpong.norn: the M1 done-check)
+  bench/                     benchmarks (bench/pingpong.skn: the M1 done-check)
   spikes/
     jit-spike/               platform checks for tier 1 and images (§7.4)
   docs/
-  tests/norn/                .norn test suites (run by crates/norn-vm/tests/)
+  tests/skein/                .skn test suites (run by crates/skein-vm/tests/)
 ```
 
 ---
@@ -1448,12 +1448,12 @@ so it can replace this piece by piece.
   and/or `shuttle`.
 - **GC:** stress mode (collect on every allocation, poison freed memory) runs
   in CI on the whole test suite.
-- **Differential:** every `.norn` test runs on tier 0 and tier 1, and the
+- **Differential:** every `.skn` test runs on tier 0 and tier 1, and the
   results must agree. Images are tested by round-tripping (save → load → run
   the suite).
 - **Fuzzing:** the reader, the bytecode verifier and image load (a malformed
   image must not crash the runtime).
-- **Miri** on the `unsafe` core of `norn-rt`, wherever the code is
+- **Miri** on the `unsafe` core of `skein-rt`, wherever the code is
   Miri-compatible.
 
 ---
@@ -1469,33 +1469,33 @@ each part needs from the runtime:
 - **M6, I/O, comes first.** I/O needs a runtime piece that isn't built yet:
   the reactor, so that sockets park fibers instead of carriers. Its handles
   are exactly what M5's resource protocol is for.
-- **M7 comes before sealing.** It adds the libraries that are mostly Norn,
+- **M7 comes before sealing.** It adds the libraries that are mostly Skein,
   and the runtime types they build on. Sealing freezes interfaces, so
   anything other modules depend on has to exist first.
 - **The numeric tower is decided:** fixnums promote to bignums automatically
   (as in Clojure and Common Lisp), and division of integers can give ratios.
-  This changes what `+` means, so it lands before `norn.core` is sealed.
+  This changes what `+` means, so it lands before `skein.core` is sealed.
   Tier 1 keeps its fixnum fast path; overflow takes the slow path instead of
   raising an error.
 - **Transducers, `format` and `edn` are in M7** because they shape
-  `norn.core` itself: transducers add arities to `map`, `filter` and the
+  `skein.core` itself: transducers add arities to `map`, `filter` and the
   rest, which a sealed module couldn't take later.
 - **A basic FFI is in M6.** It reuses M6's blocking pool and byte buffers,
   and M5's resource protocol. It lets libraries bring native code without
   changing the runtime build, so they don't invalidate saved images, as a
   new Rust primitive would.
   - Buffers passed to C need no pinning, because the GC never moves objects.
-  - Callbacks (C calling Norn, with frames in heap segments), struct layouts
+  - Callbacks (C calling Skein, with frames in heap segments), struct layouts
     and the safety model stay in M9; the safety model needs M8's modules.
-- **`norn fmt` and `norn lint` are in M7**, so the stdlib is sealed already
+- **`skein fmt` and `skein lint` are in M7**, so the stdlib is sealed already
   formatted and lint-clean, and the core macros ship with indentation hints.
   The linter is the compiler in analysis mode, so the same warnings appear
   when compiling at the REPL. Rules that need modules come in M8.
 - **Tools whose conventions end up in sealed source come before sealing:**
-  the docstring convention and `norn doc`, deprecation, the test runner and
-  `norn check` (M7). Tools that need a baseline taken at sealing, or that
+  the docstring convention and `skein doc`, deprecation, the test runner and
+  `skein check` (M7). Tools that need a baseline taken at sealing, or that
   follow hygiene, come with it: `api-diff` and the macro stepper (M8).
-- **Decisions due by M7** (they change `norn.core`, so they must be made
+- **Decisions due by M7** (they change `skein.core`, so they must be made
   before sealing). All three are now decided:
   - ~~**Laziness**~~ — decided (2026-11-13): an eager, type-preserving core
     with explicit lazy streams (design §3.3).
@@ -1508,26 +1508,26 @@ each part needs from the runtime:
 - **Linux is the second platform** (decided 2026-11-13), then Windows.
   Linux CI can start any time: M12 is where the platform work is finished,
   not where it begins.
-- **M7.5 is the runtime side of `norn.ui`, and M7.6 the Norn editor**
+- **M7.5 is the runtime side of `skein.ui`, and M7.6 the Skein editor**
   (decided 2026-11-13; design §9.1).
-  - `norn.ui` itself is a versioned package in its own repository,
-    `norn-ui` (semver from 0.1): a shared Rust UI engine (retained tree,
-    layout, styling, text, GPU painting), platform backends, and the Norn
+  - `skein.ui` itself is a versioned package in its own repository,
+    `skein-ui` (semver from 0.1): a shared Rust UI engine (retained tree,
+    layout, styling, text, GPU painting), platform backends, and the Skein
     widget library. It isn't part of the stdlib and isn't sealed at M8.
   - This repository gains only two general hooks: main-thread handoff and
     a native extension API (Rust crates registering primitives and posting
-    to channels). Until loadable extensions have a stable ABI, `norn-ui`
-    builds its own statically linked `norn` binary.
-  - The protocol is thick: Norn sends tree patches; Rust sends semantic
-    events over channels. Norn isn't on each frame's critical path, so the
+    to channels). Until loadable extensions have a stable ABI, `skein-ui`
+    builds its own statically linked `skein` binary.
+  - The protocol is thick: Skein sends tree patches; Rust sends semantic
+    events over channels. Skein isn't on each frame's critical path, so the
     UI doesn't wait for M10's optimiser.
   - The editor runs as its own process with the UI engine linked in; the
-    code being edited runs in a separate `norn` process over the editor
+    code being edited runs in a separate `skein` process over the editor
     protocol.
   - The editor needs, from earlier milestones:
     - persistent ropes and Unicode graphemes and display widths (M7);
     - the comment-keeping reader, `fmt` and `lint` (M7);
-    - file watching and `norn.process` (M6);
+    - file watching and `skein.process` (M6);
     - the editor protocol (M3).
   - Both target macOS first. Linux and Windows follow with M12, and the
     crates chosen work on all three.
@@ -1537,7 +1537,7 @@ each part needs from the runtime:
   minor release of deprecation.
 - **M9 splits around sealing** (decided 2026-11-14; plan-m9.md). Writing
   real libraries is how the stdlib's gaps show, so M9a comes before
-  sealing: what changes `norn.core` or the runtime's contracts (types,
+  sealing: what changes `skein.core` or the runtime's contracts (types,
   contracts, the MOP, pattern matching, processes, STM, the full FFI), and
   the libraries most likely to find gaps (HTTP, SQLite, pseudo-terminals,
   a binary value format). M9b, after sealing, is what needs a sealed module
@@ -1548,39 +1548,39 @@ each part needs from the runtime:
 |---|---|---|
 | M0 ✅ | Workspace, `Value`/object model, cons/vector/map/string, reader, printer, seed compiler, tier-0 VM on heap stacks, REPL; NoGC heap | `(reduce + (range 1000000))` at the REPL; macOS JIT spike works |
 | M1 ✅ | Fibers, scheduler, safepoints, MMTk GC (non-moving Immix), atoms, channels, scopes | 1M fibers ping-pong across all cores under GC stress |
-| M2 ✅ | CLOS in Norn: `defclass`, layouts, generic functions, method combination, dispatch caches | Live `defmethod` while 8 cores call the generic function |
+| M2 ✅ | CLOS in Skein: `defclass`, layouts, generic functions, method combination, dispatch caches | Live `defmethod` while 8 cores call the generic function |
 | M3 ✅ | Conditions, restarts, parked-fiber debugger, REPL protocol | Fix a crashed fiber from the editor and resume it |
-| M4 ✅ | Real compiler in Norn, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
+| M4 ✅ | Real compiler in Skein, Cranelift tier 1, deopt, self-host | Compiler compiles itself; tier 0 and tier 1 agree on all tests |
 | M5 ✅ | Images: save/load, layers, parked fibers, `on-image-restore` | Under 50 ms startup; a saved fiber resumes after load |
-| M6 ✅ | I/O: the reactor (`mio`) plus a blocking pool for files; byte arrays and buffers; `norn.io` (files, streams, paths), `norn.net` (TCP, UDP, TLS via `rustls`), `norn.process`, `norn.time`, `norn.sys` (environment variables (read-only), command-line arguments, exit, OS type and architecture, core count, memory, pid, directories, hostname, the Norn version and build; all read live, so a restored image sees the machine it runs on), `norn.fs` (walking directories, glob patterns, file watching), `norn.signal` (OS signals as channel messages); byte encodings (UTF-8, base64, hex); a basic FFI (load a dynamic library; call C functions with integer, float, pointer and byte-buffer arguments, either fast on the carrier or blocking on the pool; Cranelift-generated call stubs). Handles, including FFI handles, are image resources; weak references and finalizers in the GC binding (for resource registries, caches and freeing FFI handles); the monitor thread (replaces a carrier stuck in a long native call); fiber dumps (every fiber's stack, on a signal) | A TCP echo server holds 10,000 connections on fibers without blocking a carrier; a socket saved in an image comes back as `ResourceLost` and its `reconnect` restart works |
-| M7 ✅ | Numbers, collections and the pure stdlib: bignums and ratios with automatic promotion; sorted maps and sets, a persistent queue, transients; `norn.string`, `norn.math`, `norn.set`, `norn.walk`, `norn.regex`, `norn.json`, `norn.pprint`, `norn.random`, `norn.test`; type-preserving sequence functions and explicit `lazy` streams (design §3.3); transducers (one vocabulary for sequences, channels and `preduce`); `norn.format` (`printf` directives; `cl-format` is deferred, below); `norn.edn` (a safe reader for untrusted data); `norn.async` extras (`mult`, `pub`/`sub`, `pipeline`, `merge`, dropping and sliding buffers), `norn.sync` (semaphores, latches, a rate limiter), `norn.cache` (`memoize` with LRU and TTL variants); REPL tools (`doc`, `apropos`, `source`, an inspector, `trace`/`untrace`), `norn.bench` and `norn.log`; tooling: a reader mode that keeps comments and whitespace, `norn fmt` (one canonical style, no options; macros declare indentation, e.g. `{:indent 1}`), `norn lint` (the compiler in analysis mode, signalling `Warning`s: unresolved symbols, unused locals, wrong arity to known functions, shadowed core names, `def` inside a function, `defmethod` lambda lists that don't match), and `:format`/`:lint` editor ops; `norn doc` with a docstring convention (Markdown; `:since`, `:deprecated`, `:see-also`, runnable `:examples`) and deprecation warnings; `norn test` (discovers tests, runs them in parallel on fibers, filters, TAP and JUnit output); `norn check` (fmt, lint, test and docs in one command); a terminal REPL line editor (history, multi-line editing, completion); `norn image info` and image diff; code coverage from bytecode counters if it's cheap. equality per design §3.4 (`:equality :identity`, `:compare false`, reflexive NaN, numeric-tower rules); mutable objects per design §4.2 (`(:mutable)` classes, `set-slot!`/`update-slot!`, fiber ownership with `release!`, `share` and `locking`) | Every suite runs on `norn.test`; arithmetic promotes past 62 bits identically at tier 0 and tier 1; `norn fmt --check` and `norn lint` are clean on `lib/` and `tests/`, and formatting is idempotent and reads back to the same forms |
-| M7.5 ✅ | The runtime side of `norn.ui` (design §9.1). Here: main-thread handoff to an extension, a native extension API (register primitives, post to channels, per §5.5), and a spec of the UI protocol (tree patches one way, semantic events the other). In the `norn-ui` repository (a versioned package, 0.1): the shared Rust engine (retained node tree, flex and grid layout, styling, text shaping, GPU painting, hit-testing, scrolling, animation), the macOS and headless backends, `native-view` nodes, and the Norn widget library with declarative views over atom state; `norn-ui-webview` as an optional package | A widget gallery runs smoothly on macOS; redefining a view at the REPL updates the open window; a restored image reopens its windows; headless tests show no frames drawn in 5 s idle and at most one line repainted per keystroke; on macOS the idle editor averages under 0.5% CPU over a minute |
-| M7.6 ✅ | The Norn editor, the first real program: a VS Code-style editor made for Norn, written in Norn on `norn.ui` (pinning a `norn-ui` version), to test the stdlib before it is sealed. It is essentially Xeon Studio rebuilt in Norn (design §9.1): explorer with Git status, project, outline and source-control views; draggable dock tabs; REPL, Problems, Debugger and Inspector; Markdown preview; terminal; API/HTTP workbench and Databases view; AI chat (Claude Code and Codex CLIs) and team chat. Language support starts with Norn only (Common Lisp, Clojure and Racket later, if wanted). Four panels are phased (design §9.1): the API/HTTP workbench follows M9's HTTP client, the Databases view M9's database drivers (SQLite first), the terminal panel pseudo-terminal support in `norn.process`, and team chat comes after M7.6 (it needs no new library); everything else, including Git through the `git` command and AI chat through the `claude`/`codex` CLIs and `norn.json`, is in M7.6. It runs as its own process with the UI engine linked in. It lives in its own repository; until M8's packages exist it loads Norn sources from a local checkout of this one. Text buffers are persistent ropes; highlighting and structure come from M7's comment-keeping reader; the REPL, debugger and evaluation go through the editor protocol (M3) to a separate `norn` process; `norn fmt` and `norn lint` run in it | The stdlib tested by real programs before sealing, and what they needed fixed: Studio itself (with its API workbench, terminal and Databases view) and five test programs (`lang-tests/`: pulse, ledger, quire, chat, loglens), then an interface sweep. **Amended 2026-11-16** (the user): it was "Norn's own development happens in the editor"; the test programs did that check's job for the stdlib, and working in Studio day to day goes on, its findings to the todo |
-| M8 ✅ | Hygiene, modules/phases, sealing (after M7.6's done-check; `#lang` was dropped on 2026-11-14); then packages: a project file, dependency resolution, and `norn build` across dependencies, starting with Git and path dependencies only, with a registry later (perhaps its own milestone); module-aware lint rules (unused or missing requires, private access, phase errors, redefining sealed vars); `norn api-diff` (a snapshot of each module's public interface, taken when it is first sealed, and breaking-change detection between versions); a macro stepper that shows hygiene's renaming; a bytecode verifier for compiled code from packages (and crafted images) | Stdlib built as sealed modules |
-| M9a ✅ | Before sealing (plan-m9.md): `norn.uri` and `norn.http` (HTTP/1.1 client and server), condition classes for the runtime's errors (raised from Rust with their data), `delay`, `future`, promises and `ex-info`, `match` (pattern matching on data, in core), checked type signatures and `declare`, contracts with blame at module boundaries, the full MOP (`print-object`, `initialize-instance`, `define-method-combination`, protocol sugar, slot readers as generic functions), processes/supervisors, the `norn.stm` library, the full FFI (callbacks from C, struct layouts, typed signatures, unsafe modules), SQLite on it, pseudo-terminals in `norn.process`, a binary format for Norn values, and as needed `norn.uuid`, `norn.csv`, TOML, compression, `norn.zip`, `norn.crypto`, `norn.schedule`, `norn.data` (structural diff); Studio's API workbench, terminal and Databases panels as their libraries land | Studio's API workbench, terminal and Databases view run on them; the new libraries' public functions have checked signatures; a contract violation across modules blames the right side; a supervisor restarts a crashed process while the debugger holds the crash; tier 0 and tier 1 agree on every suite |
-| M9b ✅ | After sealing: tree shaking for images (`:shake`, using sealing to prove code unused), and tooling that doesn't shape core: a sampling profiler, source-drift tracking (design §5.1), `norn lsp` (a Language Server Protocol adapter over the editor protocol), `norn new` (project scaffolding), and code coverage if M7 didn't get it | — |
+| M6 ✅ | I/O: the reactor (`mio`) plus a blocking pool for files; byte arrays and buffers; `skein.io` (files, streams, paths), `skein.net` (TCP, UDP, TLS via `rustls`), `skein.process`, `skein.time`, `skein.sys` (environment variables (read-only), command-line arguments, exit, OS type and architecture, core count, memory, pid, directories, hostname, the Skein version and build; all read live, so a restored image sees the machine it runs on), `skein.fs` (walking directories, glob patterns, file watching), `skein.signal` (OS signals as channel messages); byte encodings (UTF-8, base64, hex); a basic FFI (load a dynamic library; call C functions with integer, float, pointer and byte-buffer arguments, either fast on the carrier or blocking on the pool; Cranelift-generated call stubs). Handles, including FFI handles, are image resources; weak references and finalizers in the GC binding (for resource registries, caches and freeing FFI handles); the monitor thread (replaces a carrier stuck in a long native call); fiber dumps (every fiber's stack, on a signal) | A TCP echo server holds 10,000 connections on fibers without blocking a carrier; a socket saved in an image comes back as `ResourceLost` and its `reconnect` restart works |
+| M7 ✅ | Numbers, collections and the pure stdlib: bignums and ratios with automatic promotion; sorted maps and sets, a persistent queue, transients; `skein.string`, `skein.math`, `skein.set`, `skein.walk`, `skein.regex`, `skein.json`, `skein.pprint`, `skein.random`, `skein.test`; type-preserving sequence functions and explicit `lazy` streams (design §3.3); transducers (one vocabulary for sequences, channels and `preduce`); `skein.format` (`printf` directives; `cl-format` is deferred, below); `skein.edn` (a safe reader for untrusted data); `skein.async` extras (`mult`, `pub`/`sub`, `pipeline`, `merge`, dropping and sliding buffers), `skein.sync` (semaphores, latches, a rate limiter), `skein.cache` (`memoize` with LRU and TTL variants); REPL tools (`doc`, `apropos`, `source`, an inspector, `trace`/`untrace`), `skein.bench` and `skein.log`; tooling: a reader mode that keeps comments and whitespace, `skein fmt` (one canonical style, no options; macros declare indentation, e.g. `{:indent 1}`), `skein lint` (the compiler in analysis mode, signalling `Warning`s: unresolved symbols, unused locals, wrong arity to known functions, shadowed core names, `def` inside a function, `defmethod` lambda lists that don't match), and `:format`/`:lint` editor ops; `skein doc` with a docstring convention (Markdown; `:since`, `:deprecated`, `:see-also`, runnable `:examples`) and deprecation warnings; `skein test` (discovers tests, runs them in parallel on fibers, filters, TAP and JUnit output); `skein check` (fmt, lint, test and docs in one command); a terminal REPL line editor (history, multi-line editing, completion); `skein image info` and image diff; code coverage from bytecode counters if it's cheap. equality per design §3.4 (`:equality :identity`, `:compare false`, reflexive NaN, numeric-tower rules); mutable objects per design §4.2 (`(:mutable)` classes, `set-slot!`/`update-slot!`, fiber ownership with `release!`, `share` and `locking`) | Every suite runs on `skein.test`; arithmetic promotes past 62 bits identically at tier 0 and tier 1; `skein fmt --check` and `skein lint` are clean on `lib/` and `tests/`, and formatting is idempotent and reads back to the same forms |
+| M7.5 ✅ | The runtime side of `skein.ui` (design §9.1). Here: main-thread handoff to an extension, a native extension API (register primitives, post to channels, per §5.5), and a spec of the UI protocol (tree patches one way, semantic events the other). In the `skein-ui` repository (a versioned package, 0.1): the shared Rust engine (retained node tree, flex and grid layout, styling, text shaping, GPU painting, hit-testing, scrolling, animation), the macOS and headless backends, `native-view` nodes, and the Skein widget library with declarative views over atom state; `skein-ui-webview` as an optional package | A widget gallery runs smoothly on macOS; redefining a view at the REPL updates the open window; a restored image reopens its windows; headless tests show no frames drawn in 5 s idle and at most one line repainted per keystroke; on macOS the idle editor averages under 0.5% CPU over a minute |
+| M7.6 ✅ | The Skein editor, the first real program: a VS Code-style editor made for Skein, written in Skein on `skein.ui` (pinning a `skein-ui` version), to test the stdlib before it is sealed. It is essentially Xeon Studio rebuilt in Skein (design §9.1): explorer with Git status, project, outline and source-control views; draggable dock tabs; REPL, Problems, Debugger and Inspector; Markdown preview; terminal; API/HTTP workbench and Databases view; AI chat (Claude Code and Codex CLIs) and team chat. Language support starts with Skein only (Common Lisp, Clojure and Racket later, if wanted). Four panels are phased (design §9.1): the API/HTTP workbench follows M9's HTTP client, the Databases view M9's database drivers (SQLite first), the terminal panel pseudo-terminal support in `skein.process`, and team chat comes after M7.6 (it needs no new library); everything else, including Git through the `git` command and AI chat through the `claude`/`codex` CLIs and `skein.json`, is in M7.6. It runs as its own process with the UI engine linked in. It lives in its own repository; until M8's packages exist it loads Skein sources from a local checkout of this one. Text buffers are persistent ropes; highlighting and structure come from M7's comment-keeping reader; the REPL, debugger and evaluation go through the editor protocol (M3) to a separate `skein` process; `skein fmt` and `skein lint` run in it | The stdlib tested by real programs before sealing, and what they needed fixed: Studio itself (with its API workbench, terminal and Databases view) and five test programs (`lang-tests/`: pulse, ledger, quire, chat, loglens), then an interface sweep. **Amended 2026-11-16** (the user): it was "Skein's own development happens in the editor"; the test programs did that check's job for the stdlib, and working in Studio day to day goes on, its findings to the todo |
+| M8 ✅ | Hygiene, modules/phases, sealing (after M7.6's done-check; `#lang` was dropped on 2026-11-14); then packages: a project file, dependency resolution, and `skein build` across dependencies, starting with Git and path dependencies only, with a registry later (perhaps its own milestone); module-aware lint rules (unused or missing requires, private access, phase errors, redefining sealed vars); `skein api-diff` (a snapshot of each module's public interface, taken when it is first sealed, and breaking-change detection between versions); a macro stepper that shows hygiene's renaming; a bytecode verifier for compiled code from packages (and crafted images) | Stdlib built as sealed modules |
+| M9a ✅ | Before sealing (plan-m9.md): `skein.uri` and `skein.http` (HTTP/1.1 client and server), condition classes for the runtime's errors (raised from Rust with their data), `delay`, `future`, promises and `ex-info`, `match` (pattern matching on data, in core), checked type signatures and `declare`, contracts with blame at module boundaries, the full MOP (`print-object`, `initialize-instance`, `define-method-combination`, protocol sugar, slot readers as generic functions), processes/supervisors, the `skein.stm` library, the full FFI (callbacks from C, struct layouts, typed signatures, unsafe modules), SQLite on it, pseudo-terminals in `skein.process`, a binary format for Skein values, and as needed `skein.uuid`, `skein.csv`, TOML, compression, `skein.zip`, `skein.crypto`, `skein.schedule`, `skein.data` (structural diff); Studio's API workbench, terminal and Databases panels as their libraries land | Studio's API workbench, terminal and Databases view run on them; the new libraries' public functions have checked signatures; a contract violation across modules blames the right side; a supervisor restarts a crashed process while the debugger holds the crash; tier 0 and tier 1 agree on every suite |
+| M9b ✅ | After sealing: tree shaking for images (`:shake`, using sealing to prove code unused), and tooling that doesn't shape core: a sampling profiler, source-drift tracking (design §5.1), `skein lsp` (a Language Server Protocol adapter over the editor protocol), `skein new` (project scaffolding), and code coverage if M7 didn't get it | — |
 | M10 ✅ | The optimising compiler: the IR (design §8.3), inlining, direct linking of calls through vars, guarded, with recompilation when one is redefined (moved from M8, 2026-11-16; every var, not only sealed modules', since part 3), type inference from M9's signatures, unboxing, escape analysis; tier 1's full calling convention (push-frame and `return_call`), inline caches, and native compilation of every `defn` | Measured wins on `bench/` with tier 0 and tier 1 still agreeing on every suite |
 | M11 | GC maturity: generational collection (write barriers), opportunistic defragmentation (the M1 fragmentation finding), concurrent collection; deadlock detection for fibers nothing can wake (open question 4: a deadlock event, and the fiber kept in the debugger with a `Deadlock` condition); complex numbers as a library type | Bounded pause times and heap overhead under the M1 stress workloads |
-| M12 | Platforms and distribution: Linux first, then Windows (JIT memory, signals), CI on all three, release builds and installers, `norn` shipped with a base image (bootstrap step 6); WASM as a second target (design §9, open) | Every suite passes on macOS, Linux and Windows; `norn` starts from its bundled image |
+| M12 | Platforms and distribution: Linux first, then Windows (JIT memory, signals), CI on all three, release builds and installers, `skein` shipped with a base image (bootstrap step 6); WASM as a second target (design §9, open) | Every suite passes on macOS, Linux and Windows; `skein` starts from its bundled image |
 
 ### 12.1 M0 status (2026-11-13)
 
 **Built:**
-- **`norn-rt`:**
+- **`skein-rt`:**
   - tagged values and the object model;
   - the NoGC heap;
   - persistent vector (32-way trie with tail) and HAMT map/set;
   - interned symbols and keywords;
   - structural `=`/`hash`;
   - seq abstraction, printer, namespaces and vars.
-- **`norn-vm`:**
+- **`skein-vm`:**
   - the reader (`#()`, syntax-quote with qualification and `x#` gensyms, `#lang`, `#_`, `#|…|#`);
   - the seed compiler (kernel forms plus macro expansion; flat closures; `letrec*` fix-ups; `recur` as a backward jump);
-  - the register-based bytecode interpreter on heap segmented stacks (proper tail calls, a spare-segment cache, stack-overflow detection, Ctrl-C interrupt at the safepoint poll, Norn backtraces);
+  - the register-based bytecode interpreter on heap segmented stacks (proper tail calls, a spare-segment cache, stack-overflow detection, Ctrl-C interrupt at the safepoint poll, Skein backtraces);
   - 103 primitives.
-- **`lib/core/core.norn`:** 88 macros and functions, from `defn` and `cond` to `sort-by` and `update-in`.
-- **`norn`:** a REPL with multi-line input, plus `norn FILE` and `norn -e EXPR`.
-- **Tests:** 6 runtime unit tests, plus 89 Norn checks and REPL-level error/printing tests in `cargo test`.
+- **`lib/core/core.skn`:** 88 macros and functions, from `defn` and `cond` to `sort-by` and `update-in`.
+- **`skein`:** a REPL with multi-line input, plus `skein FILE` and `skein -e EXPR`.
+- **Tests:** 6 runtime unit tests, plus 89 Skein checks and REPL-level error/printing tests in `cargo test`.
 
 **Measured** (release build, Apple Silicon, tier 0):
 - `(reduce + (range 1000000))`: about 46 ms
@@ -1613,14 +1613,14 @@ each part needs from the runtime:
   - `pmap`, `preduce`.
 - **All evaluation runs in fibers.** `eval` is an interpreter intrinsic, so evaluated code can park, and the REPL thread never touches the heap.
 
-**Measured** (release build, Apple M-series, 10 cores; `bench/pingpong.norn`):
+**Measured** (release build, Apple M-series, 10 cores; `bench/pingpong.skn`):
 
 | Run | Result |
 |---|---|
-| 1M fibers alive at once, then 10M messages | ✅ 1.73 GB heap; 4.6 s with `NORN_HEAP_MIN=3g` (1 GC); 21 s from the default 64 MB heap (161 GCs, mostly while spawning); with growth proportional to live data (M10), 5.9 s and 7 GCs from the default heap, peak RSS 2.2 → 3.3 GB |
-| 1M fibers, `NORN_GC_STRESS=20` | ✅ 441 GCs, 68 s |
-| 40k fibers, `NORN_GC_STRESS=1` | ✅ 65,694 GCs, 2M messages, checksums correct |
-| core suite, `NORN_GC_STRESS=1` | ✅ 2,032,983 GCs, 0 failures |
+| 1M fibers alive at once, then 10M messages | ✅ 1.73 GB heap; 4.6 s with `SKEIN_HEAP_MIN=3g` (1 GC); 21 s from the default 64 MB heap (161 GCs, mostly while spawning); with growth proportional to live data (M10), 5.9 s and 7 GCs from the default heap, peak RSS 2.2 → 3.3 GB |
+| 1M fibers, `SKEIN_GC_STRESS=20` | ✅ 441 GCs, 68 s |
+| 40k fibers, `SKEIN_GC_STRESS=1` | ✅ 65,694 GCs, 2M messages, checksums correct |
+| core suite, `SKEIN_GC_STRESS=1` | ✅ 2,032,983 GCs, 0 failures |
 | suites ×10 at 1, 2, 3 and 10 carriers | ✅ 0 failures |
 
 **Found along the way:**
@@ -1633,7 +1633,7 @@ each part needs from the runtime:
 |---|---|
 | Dynamic bindings and conveyance | M3, with conditions |
 | `try` (tests use `settle` meanwhile) | M3 |
-| Error locations (`file:line`) for code loaded through `load-file`, which now runs in Norn | M3 |
+| Error locations (`file:line`) for code loaded through `load-file`, which now runs in Skein | M3 |
 | I/O reactor, FFI monitor thread | M7 |
 | Generational GC (needs write barriers) | — |
 
@@ -1654,8 +1654,8 @@ each part needs from the runtime:
 - **Bit operations:** `bit-and`, `bit-or`, and the rest.
 
 **Verified:**
-- `tests/norn/clos_test.norn` (91 checks), also under `NORN_GC_STRESS=1` (1,379 GCs) and at 1, 2, 3 and 10 carriers.
-- `bench/dispatch.norn` (the done-check): 8 fibers, a live `defmethod` seen by all within 167 µs; under `NORN_GC_STRESS=1`, 1,895 GCs and still correct.
+- `tests/skein/clos_test.skn` (91 checks), also under `SKEIN_GC_STRESS=1` (1,379 GCs) and at 1, 2, 3 and 10 carriers.
+- `bench/dispatch.skn` (the done-check): 8 fibers, a live `defmethod` seen by all within 167 µs; under `SKEIN_GC_STRESS=1`, 1,895 GCs and still correct.
 
 **Found along the way:** a lost wake-up from M1. A fiber cancelled between
 starting a blocking operation and parking slept forever with its cancel
@@ -1680,12 +1680,12 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
 - the parked-fiber debugger (backtrace with locals, `eval-in-frame`, restart,
   restart frame, abort);
 - debugger mode in the terminal REPL;
-- the editor protocol server (`norn --server PORT`);
+- the editor protocol server (`skein --server PORT`);
 - `file:line` locations for errors in loaded code.
 
 **Verified:**
-- `tests/norn/cond_test.norn` (50 checks);
-- `crates/norn-vm/tests/editor.rs`, the done-check: over TCP, crash a worker,
+- `tests/skein/cond_test.skn` (50 checks);
+- `crates/skein-vm/tests/editor.rs`, the done-check: over TCP, crash a worker,
   inspect it, fix it with `:eval`, resume it with `:restart-frame`; it
   finishes its whole job;
 - the full suite 10/10 times;
@@ -1700,16 +1700,16 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
   debugger.
 - Local names come from the compiler and include out-of-scope locals in the
   same function.
-- `NORN_GC_STRESS=1` together with a very deep stack is quadratic: every
+- `SKEIN_GC_STRESS=1` together with a very deep stack is quadratic: every
   forced collection rescans the whole stack. The stack-overflow check in
-  `cond_test.norn` (about 16M frames) doesn't finish in reasonable time at
+  `cond_test.skn` (about 16M frames) doesn't finish in reasonable time at
   level 1. The rest of the suite passes at level 1 in under a second, and the
   whole suite passes at level 3 (839 forced collections).
 
 ### 12.5 M4 status (2026-11-13)
 
 **Built:**
-- the Norn compiler, which is self-hosting and byte-identical to the seed
+- the Skein compiler, which is self-hosting and byte-identical to the seed
   (§9);
 - destructuring in `let`, `loop`, `fn`, `defn`, `defmacro` and `doseq`;
 - compile errors as `CompileError` conditions with `retry` and `use-value`;
@@ -1717,10 +1717,10 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
 - tier 1 as a Cranelift accelerator (§8.2), with `jit-stats`.
 
 **Verified:**
-- `tests/norn/compiler_test.norn` (the fixpoint and seed agreement);
-- `crates/norn/tests/tiers.rs` (the done-check): every suite passes at tier 0
+- `tests/skein/compiler_test.skn` (the fixpoint and seed agreement);
+- `crates/skein/tests/tiers.rs` (the done-check): every suite passes at tier 0
   and tier 1 with identical results;
-- tier 1 on one carrier and under `NORN_GC_STRESS` 1 and 3.
+- tier 1 on one carrier and under `SKEIN_GC_STRESS` 1 and 3.
 
 **Deviations from the plan:**
 - **Tier 1 isn't the full calling convention yet.** Calls and returns go
@@ -1735,16 +1735,16 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
 ### 12.6 M5 status (2026-11-13)
 
 **Built:**
-- images (§7.5): `save-image` and `norn --image`, with `:entry`, `:fibers
+- images (§7.5): `save-image` and `skein --image`, with `:entry`, `:fibers
   :parked|:none` and `:layered`;
 - `image-info`;
-- `norn build OUT.nimg [FILE…] [--entry NS/NAME]`, which produces
+- `skein build OUT.skimg [FILE…] [--entry NS/NAME]`, which produces
   reproducible images;
 - the restore protocol (design §7.2):
   - `register-resource!`, `on-image-restore` and `ensure-live`;
   - `ResourceLost`, with `reconnect` and `abort` restarts.
 
-**Verified** (`crates/norn/tests/images.rs`, the done-check):
+**Verified** (`crates/skein/tests/images.rs`, the done-check):
 - These fibers carry on after a save and load:
   - a fiber parked on a channel;
   - a sleeping fiber (its timer keeps its remaining time);
@@ -1755,16 +1755,16 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
 - The saving fiber, and unsaved fibers, end with an error that their joiners
   see.
 - Every suite passes in a runtime started from an image: at tier 1, on one
-  carrier, and under `NORN_GC_STRESS=2` on all carriers and on two. The
+  carrier, and under `SKEIN_GC_STRESS=2` on all carriers and on two. The
   conc and clos suites also pass at level 1.
-- **`NORN_GC_STRESS=1` feeds on itself.** Each collection bumps attention,
+- **`SKEIN_GC_STRESS=1` feeds on itself.** Each collection bumps attention,
   so every carrier's next poll takes the slow path and requests another
   collection. A 300,000-iteration loop collects 301,237 times at level 1 and
   16 times at level 10. Level 2 already breaks the cycle (1,119 collections
   for the core suite) and is the practical setting for full-suite runs.
 - Layered images are about 5% of the base's size, and they refuse a changed
   base.
-- `norn build` is byte-for-byte reproducible.
+- `skein build` is byte-for-byte reproducible.
 - Damaged images are refused.
 - Start-up is 35 ms in release.
 
@@ -1779,37 +1779,37 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
 - **Copy-in loading, no code segment, no dirty-page tracking** (§7.5).
 - **No tree shaking yet** (`:shake`, design §7.1). An image holds everything
   reachable from the namespaces.
-- **Resources are a Norn protocol only.** There are no file, socket or FFI
+- **Resources are a Skein protocol only.** There are no file, socket or FFI
   handles yet, so nothing in the runtime registers itself.
 - **Start-up:** the 50 ms target is met. The floor is now MMTk's
-  initialisation, not Norn's.
+  initialisation, not Skein's.
 
 ### 12.7 M6 status (2026-11-13)
 
 **Built** (plan: `docs/plans/plan-m6-m7.md`):
 - **Library loading** before modules: `require` with `:as` and `:refer`,
-  `ns` `(:require …)`, embedded libraries, and `NORN_PATH`.
+  `ns` `(:require …)`, embedded libraries, and `SKEIN_PATH`.
 - **Weak references and cleanups** (§4.5).
-- **`Bytes`** and `norn.bytes`.
+- **`Bytes`** and `skein.bytes`.
 - **The reactor, the blocking pool, native regions and spare carriers**
   (§5.5).
 - **The libraries:**
-  - `norn.io` (files, streams, paths), `norn.fs` (walk, glob, watch),
-    `norn.sys`;
-  - `norn.process`, `norn.time`, `norn.signal`;
-  - `norn.net` (TCP, UDP, TLS with rustls);
-  - `norn.ffi`, the basic FFI (§5.6).
+  - `skein.io` (files, streams, paths), `skein.fs` (walk, glob, watch),
+    `skein.sys`;
+  - `skein.process`, `skein.time`, `skein.signal`;
+  - `skein.net` (TCP, UDP, TLS with rustls);
+  - `skein.ffi`, the basic FFI (§5.6).
 - **Fiber dumps:** `(fiber-dump)`, and SIGQUIT prints one.
 
 **Verified:**
-- **The done-check** (`crates/norn/tests/io.rs`):
+- **The done-check** (`crates/skein/tests/io.rs`):
   - an echo server holds 10,000 TCP connections open at once on two
     carriers (2.6 s in a debug build);
   - a socket saved in an image comes back as `ResourceLost`, and the
     `reconnect` restart opens a working connection to the same server.
-- `tests/norn/lib_test.norn` (122 checks) passes:
+- `tests/skein/lib_test.skn` (122 checks) passes:
   - in process, at tier 0 and tier 1, from an image;
-  - under `NORN_GC_STRESS=2` and on one carrier.
+  - under `SKEIN_GC_STRESS=2` and on one carrier.
 - Image tests cover weak references, file handles and foreign functions;
   `libs.rs` covers library loading.
 
@@ -1838,29 +1838,29 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
 - **Sequences** (design §3.3): type-preserving functions, explicit lazy
   streams, transducers.
 - **Collections** (§2.4): sorted maps and sets, a persistent queue,
-  transients, and `norn.rope`.
-- **Text** (§2.6): `norn.string` (graphemes, display widths), regexes
-  (`#"…"`), `norn.json`, `norn.edn`, `format`, `norn.format`,
-  `norn.pprint`.
-- **The rest of the pure stdlib:** `norn.math`, `norn.set`, `norn.walk`,
-  `norn.random`, `norn.async` (with dropping and sliding channels),
-  `norn.sync`, `norn.cache`, `norn.log`.
-- **Tools:** `norn.test` and `norn test`; the comment-keeping reader,
-  `norn fmt` and `norn lint` (and the editor's `:format` and `:lint`);
+  transients, and `skein.rope`.
+- **Text** (§2.6): `skein.string` (graphemes, display widths), regexes
+  (`#"…"`), `skein.json`, `skein.edn`, `format`, `skein.format`,
+  `skein.pprint`.
+- **The rest of the pure stdlib:** `skein.math`, `skein.set`, `skein.walk`,
+  `skein.random`, `skein.async` (with dropping and sliding channels),
+  `skein.sync`, `skein.cache`, `skein.log`.
+- **Tools:** `skein.test` and `skein test`; the comment-keeping reader,
+  `skein fmt` and `skein lint` (and the editor's `:format` and `:lint`);
   `doc`, `source`, `apropos`, `find-doc`, `inspect`, `trace`,
-  `with-out-str` and `norn.bench`; `norn doc`, `norn check` and
-  `norn image info`/`diff`; a rustyline terminal REPL.
+  `with-out-str` and `skein.bench`; `skein doc`, `skein check` and
+  `skein image info`/`diff`; a rustyline terminal REPL.
 
 **Verified** (the done-check):
-- Every suite runs on `norn.test`: seven files, 965 checks, at tier 0 and
-  tier 1, on one carrier, from an image, and under `NORN_GC_STRESS=2` on
+- Every suite runs on `skein.test`: seven files, 965 checks, at tier 0 and
+  tier 1, on one carrier, from an image, and under `SKEIN_GC_STRESS=2` on
   all carriers and on two (the release build runs that whole matrix in
   about 2½ minutes).
 - Arithmetic promoting past 62 bits gives identical results at both tiers
   (`tiers.rs`).
-- `lib/`, `tests/` and `bench/` pass `norn fmt --check` (so formatting them
+- `lib/`, `tests/` and `bench/` pass `skein fmt --check` (so formatting them
   is idempotent; every rewrite is checked to keep the same tokens) and
-  `norn lint`.
+  `skein lint`.
 
 **Found and fixed along the way:** NaN compared equal with `==`; `comp` of
 three or more functions skipped the first; `cons` forced a stream tail;
@@ -1870,7 +1870,7 @@ tests (they now wait for what they check, or watch their own handles).
 
 **Deviations from the plan:**
 - **Sorted collections use natural order only**; `sorted-map-by` waits until
-  Norn classes can implement the collection operations.
+  Skein classes can implement the collection operations.
 - **Transient maps and sets copy per change** (the API is final).
 - **`cl-format`** is deferred; `format` covers printf directives.
 - **Coverage** is deferred to M9's profiler.
@@ -1881,24 +1881,24 @@ tests (they now wait for what they check, or watch their own handles).
 **Built** (plan and decisions: `docs/plans/plan-m7.5.md`):
 - **Here:** native extensions and the main-thread handoff (§5.7), and the
   UI protocol, version 1 (`docs/internals/ui-protocol.md`). There were also core
-  additions `norn.ui` needed: watches on atoms, after-eval hooks, `for`,
+  additions `skein.ui` needed: watches on atoms, after-eval hooks, `for`,
   and `require` of extension namespaces.
-- **In `norn-ui` 0.1** (`~/projects/norn/norn-ui`):
+- **In `skein-ui` 0.1** (`~/projects/skein/skein-ui`):
   - **The engine:** the node tree, themes, taffy layout, damage tracking,
     text fields, scrolling, drag, and the code-editor surface.
   - **Painting:** wgpu, damage-only, with headless PNGs.
   - **Backends:** the desktop backend on winit, with menus, file dialogs,
     the clipboard and file drops; and a headless backend.
-  - **`norn.ui`:** declarative views and keyed diffing; the widget kit
+  - **`skein.ui`:** declarative views and keyed diffing; the widget kit
     (toggle, checkbox, tabs, split, tree, a virtualized list); the editor
-    model; `examples/gallery.norn`.
+    model; `examples/gallery.skn`.
 
 **Verified** (the done-check):
 - **The widget gallery runs smoothly on macOS**, judged by eye by the
   user. Menus, file dialogs, the clipboard and file drops are tested
-  against the headless backend's stand-ins (`tests/platform_test.norn`).
+  against the headless backend's stand-ins (`tests/platform_test.skn`).
 - **Redefining a view at the REPL updates the open window.** Forms on the
-  `norn-ui` REPL's stdin redefine a view, and the window shows the new
+  `skein-ui` REPL's stdin redefine a view, and the window shows the new
   tree (`tests/repl.rs`).
 - **A restored image reopens its windows** (`tests/images.rs`).
 - **Headless idle:** no frames in 5 s idle.
@@ -1927,9 +1927,9 @@ tests (they now wait for what they check, or watch their own handles).
   - virtualized grids and tab docks;
   - canvases, and self-drawing widgets through CLOS (`ui/Widget`).
 
-  Norn gained destructuring `if-let`/`when-let` and `ext::to_f64` on the
+  Skein gained destructuring `if-let`/`when-let` and `ext::to_f64` on the
   way.
-- **`native-view` and `norn-ui-webview` slip to `norn-ui` 0.2.** Nothing
+- **`native-view` and `skein-ui-webview` slip to `skein-ui` 0.2.** Nothing
   needs them before M9's HTTP and database panels.
 - **The desktop backend is tested on macOS only.**
 - **Not yet drawn:** colour emoji, and `[:image …]` on canvases.

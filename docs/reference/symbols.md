@@ -1,11 +1,11 @@
-# Norn symbol index
+# Skein symbol index
 
 [Reference contents](README.md) · [Standard library](libraries.md)
 
-This index lists the public names in `norn.core` and common special or
+This index lists the public names in `skein.core` and common special or
 contextual forms such as `if`, `catch`, and `call-next-method`. Entries
 with links lead to the relevant reference sections. For other core
-names, try `norn doc NAME` or `(source NAME)` at the REPL. Names
+names, try `skein doc NAME` or `(source NAME)` at the REPL. Names
 beginning with `%` are runtime internals.
 
 [Punctuation](#punctuation) · [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#g) · [H](#h) · [I](#i) · [J](#j) · [K](#k) · [L](#l) · [M](#m) · [N](#n) · [O](#o) · [P](#p) · [Q](#q) · [R](#r) · [S](#s) · [T](#t) · [U](#u) · [V](#v) · [W](#w) · [Y](#y) · [Z](#z)

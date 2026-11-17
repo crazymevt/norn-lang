@@ -2,32 +2,32 @@
 
 [Contents](README.md) · Previous: [1. Introduction](01-introduction.md) · Next: [3. Values and expressions](03-values-and-expressions.md) <!-- nav -->
 
-This chapter gets Norn running and shows the three ways you'll use it: the
+This chapter gets Skein running and shows the three ways you'll use it: the
 interactive REPL, one-off expressions from the shell, and source files. It
 ends with a small program that reads a file, and with the commands that find
 documentation for any function.
 
-## Building Norn
+## Building Skein
 
-Norn builds with a stable Rust toolchain. From the root of the repository:
+Skein builds with a stable Rust toolchain. From the root of the repository:
 
 ```sh
-cargo build --release -p norn --bin norn
+cargo build --release -p skein --bin skein
 ```
 
-This produces `target/release/norn`, a single executable. The standard
+This produces `target/release/skein`, a single executable. The standard
 libraries are compiled into it, so you can copy it anywhere. The rest of the
-book writes `norn` as if it were on your `PATH`. Either use the full path,
+book writes `skein` as if it were on your `PATH`. Either use the full path,
 or link it into a folder that is on your `PATH`:
 
 ```sh
-ln -s "$PWD/target/release/norn" ~/.local/bin/norn
+ln -s "$PWD/target/release/skein" ~/.local/bin/skein
 ```
 
 Check that it works:
 
 ```sh
-norn -e '(+ 1 2)'
+skein -e '(+ 1 2)'
 ```
 
 ```text
@@ -36,10 +36,10 @@ norn -e '(+ 1 2)'
 
 ## The REPL
 
-Run `norn` with no arguments to start the REPL (read-eval-print loop):
+Run `skein` with no arguments to start the REPL (read-eval-print loop):
 
 ```text
-Norn 0.0.1 (fibers on 10 carriers)
+Skein 0.0.1 (fibers on 10 carriers)
 Ctrl-C interrupts a running evaluation; Ctrl-D exits.
 user=>
 ```
@@ -56,11 +56,11 @@ user=> (+ 2 3)
 5
 user=> (* (+ 2 3) 4)
 20
-user=> (str "Norn" " " "REPL")
-"Norn REPL"
+user=> (str "Skein" " " "REPL")
+"Skein REPL"
 ```
 
-Every expression in Norn is either an atom, such as `42` or `"text"`, or a
+Every expression in Skein is either an atom, such as `42` or `"text"`, or a
 list in parentheses. In a list, the first element says what to do and the
 rest are its arguments, so `(+ 2 3)` calls `+` with `2` and `3`. Nesting
 works the way you expect: the inner `(+ 2 3)` is evaluated first, and its
@@ -69,7 +69,7 @@ value becomes an argument of `*`.
 ```clojure
 (+ 2 3) ; => 5
 (* (+ 2 3) 4) ; => 20
-(str "Norn" " " "REPL") ; => "Norn REPL"
+(str "Skein" " " "REPL") ; => "Skein REPL"
 ```
 
 Use `def` to give a value a name and `defn` to define a function:
@@ -93,7 +93,7 @@ next call on:
 (area width 4) ; => 12.0
 ```
 
-This is the heart of working in Norn: you build a program up a definition
+This is the heart of working in Skein: you build a program up a definition
 at a time, trying each piece as you go, without restarting anything.
 [Chapter 12](12-live-programming.md) covers that way of working in depth,
 including what happens when an evaluation fails. For now, know that an
@@ -105,11 +105,11 @@ to leave the REPL.
 
 ## Evaluating from the shell
 
-`norn -e` evaluates the forms you give it and prints the value of the last
+`skein -e` evaluates the forms you give it and prints the value of the last
 one. It's handy for quick checks and in shell scripts:
 
 ```sh
-norn -e '(reduce + (range 1000000))'
+skein -e '(reduce + (range 1000000))'
 ```
 
 ```text
@@ -119,7 +119,7 @@ norn -e '(reduce + (range 1000000))'
 Forms that print do so as they run, before the final value:
 
 ```sh
-norn -e '(println "computing") (* 6 7)'
+skein -e '(println "computing") (* 6 7)'
 ```
 
 ```text
@@ -129,10 +129,10 @@ computing
 
 ## Running a file
 
-Save this as `hello.norn`:
+Save this as `hello.skn`:
 
 ```clojure
-(require '[norn.sys :as sys])
+(require '[skein.sys :as sys])
 
 (defn greet [name]
   (str "Hello, " name "!"))
@@ -144,7 +144,7 @@ Save this as `hello.norn`:
 and run it with the arguments it should greet:
 
 ```sh
-norn hello.norn Ada Grace
+skein hello.skn Ada Grace
 ```
 
 ```text
@@ -153,19 +153,19 @@ Hello, Grace!
 ```
 
 A few things are new here. `require` loads a library, in this case
-`norn.sys`, and `:as sys` lets you refer to its functions with the short
+`skein.sys`, and `:as sys` lets you refer to its functions with the short
 prefix `sys/`. `sys/program-args` returns the command-line arguments that
 come after the file name, as a vector of strings. `doseq` runs its body
 once for each item, binding `name` to each in turn.
 
 The functions you use most, such as `str`, `println`, `map` and `reduce`,
-live in `norn.core`, which every file can use without a `require`.
+live in `skein.core`, which every file can use without a `require`.
 
-When something goes wrong, Norn prints the error with the file and line it
+When something goes wrong, Skein prints the error with the file and line it
 happened on, and exits with status 1:
 
 ```sh
-norn -e '(/ 1 0)'
+skein -e '(/ 1 0)'
 ```
 
 ```text
@@ -177,24 +177,24 @@ Error: <string>:1: Divide by zero
 A file that doesn't parse reports where the reader gave up:
 
 ```text
-Error: bad.norn:2: EOF while reading, expected )
+Error: bad.skn:2: EOF while reading, expected )
 ```
 
 ## A first module
 
-`hello.norn` is a script: its forms run from top to bottom. A file that
+`hello.skn` is a script: its forms run from top to bottom. A file that
 begins with an `ns` form is a *module* instead. A module names its
 namespace, declares what it requires in one place, and can refer to
 functions defined further down the file. Most programs are modules.
 
 Here is a module that prints the five most common words in a text file.
-Save it as `wc.norn`:
+Save it as `wc.skn`:
 
 ```clojure
 (ns wc
-  (:require [norn.io :as io]
-            [norn.string :as str]
-            [norn.sys :as sys]))
+  (:require [skein.io :as io]
+            [skein.string :as str]
+            [skein.sys :as sys]))
 
 (defn word-counts [text]
   (->> (str/split (str/lower-case text) #"[^\p{L}']+")
@@ -251,20 +251,20 @@ command-line argument:
 (report (first (sys/program-args)))
 ```
 
-Run it with `norn wc.norn story.txt`. A module can also be loaded by name
-from other code: `(require '[wc :as wc])` looks for `wc.norn` in the
+Run it with `skein wc.skn story.txt`. A module can also be loaded by name
+from other code: `(require '[wc :as wc])` looks for `wc.skn` in the
 library search path. [Chapter 8](08-modules-and-projects.md) explains
 search paths and projects.
 
 ## Finding your way around
 
-Norn's documentation is built into the runtime. At the REPL, `doc` shows a
+Skein's documentation is built into the runtime. At the REPL, `doc` shows a
 function's argument lists and docstring:
 
 ```text
 user=> (doc map)
 -------------------------
-norn.core/map
+skein.core/map
 ([f] [f coll] [f c1 c2] [f c1 c2 c3])
   Apply f to each item (or, with several collections, to items side by
   side). Type-preserving for vectors, lists and sets; a map gives a vector
@@ -275,7 +275,7 @@ norn.core/map
 loaded. It leaves out the runtime's own names, the ones starting with `%`:
 
 ```clojure
-(apropos "range") ; => [norn.core/range]
+(apropos "range") ; => [skein.core/range]
 ```
 
 `source` shows the definition of a library function:
@@ -286,39 +286,39 @@ user=> (source frequencies)
   (reduce (fn [m x] (assoc m x (inc (get m x 0)))) {} coll))
 ```
 
-From the shell, `norn doc` does the same without starting a REPL. Give it a
+From the shell, `skein doc` does the same without starting a REPL. Give it a
 namespace to list what the namespace offers, or a qualified name for one
 function:
 
 ```sh
-norn doc norn.string
-norn doc norn.string/upper-case
+skein doc skein.string
+skein doc skein.string/upper-case
 ```
 
 ```text
 -------------------------
-norn.string/upper-case
+skein.string/upper-case
 ([s])
   s in upper case.
 ```
 
 The [standard library reference](../reference/libraries.md) lists every
 bundled namespace with a line about what it's for, and the
-[symbol index](../reference/symbols.md) covers `norn.core`.
+[symbol index](../reference/symbols.md) covers `skein.core`.
 
 ## Summary
 
-- `cargo build --release -p norn --bin norn` builds a single `norn`
+- `cargo build --release -p skein --bin skein` builds a single `skein`
   executable with the standard libraries inside.
-- `norn` starts the REPL; `norn -e '…'` evaluates and prints the last value;
-  `norn FILE.norn ARGS…` runs a file.
+- `skein` starts the REPL; `skein -e '…'` evaluates and prints the last value;
+  `skein FILE.skn ARGS…` runs a file.
 - A list is a call: the first element is the operation, the rest are its
   arguments.
 - `def` and `defn` create vars. Redefining one takes effect on the next
   call everywhere.
 - A file that starts with `ns` is a module; it declares its requirements and
   can refer to later definitions.
-- `doc`, `apropos` and `source` at the REPL, and `norn doc` in the shell,
+- `doc`, `apropos` and `source` at the REPL, and `skein doc` in the shell,
   show the documentation built into the runtime.
 
 ---

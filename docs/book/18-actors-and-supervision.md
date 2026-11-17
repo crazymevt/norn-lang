@@ -7,18 +7,18 @@ a program are not like that. A connection pool, a session store, or a job
 queue runs for as long as the program does, keeps state of its own, and
 serves requests from many other fibers. When such a part fails, you want it
 to start again in a known good state, without taking the rest of the program
-down. `norn.actor` provides this, in the style of Erlang: processes that own
+down. `skein.actor` provides this, in the style of Erlang: processes that own
 their state and communicate only by messages, links and monitors that let
 processes react to each other's failures, and supervisors that restart what
 crashed. This chapter builds a small key-value store with it, step by step,
 and ends by putting the store under supervision.
 
-A process here is a Norn process, a fiber with a mailbox. It has nothing to
-do with the operating system's processes, which `norn.process` runs
+A process here is a Skein process, a fiber with a mailbox. It has nothing to
+do with the operating system's processes, which `skein.process` runs
 ([Chapter 21](21-the-operating-system.md)).
 
 ```clojure
-(require '[norn.actor :as a])
+(require '[skein.actor :as a])
 ```
 
 ## A first process
@@ -185,7 +185,7 @@ object:
 ```clojure
 (def fragile (a/spawn-process (fn [] (a/receive [:divide n] (quot 100 n)))))
 (a/send fragile [:divide 0])
-(class-name (class-of (a/await-exit fragile))) ; => norn.core/ArithmeticError
+(class-name (class-of (a/await-exit fragile))) ; => skein.core/ArithmeticError
 ```
 
 The runtime also prints the failure on standard error, as for any fiber that
@@ -248,7 +248,7 @@ A `send` to a name nobody has is dropped, like a send to an ended process.
 
 ## Links and monitors
 
-Processes fail. The question is who finds out. Norn gives you two ways to
+Processes fail. The question is who finds out. Skein gives you two ways to
 find out, with different meanings.
 
 ### Links
@@ -276,7 +276,7 @@ message, `[:EXIT p reason]`:
       (a/receive
         [:EXIT who reason] [(identical? who helper)
                             (class-name (class-of reason))]))))
-; => [true norn.core/ArithmeticError]
+; => [true skein.core/ArithmeticError]
 ```
 
 The helper failed. Without `trap-exits!`, the process running this function
@@ -376,7 +376,7 @@ process crashes. The `ask` gets no answer and times out:
 (def before (a/whereis :kv))
 
 (a/ask :kv [:average :visits 0] 100) ; !! TimeoutError
-(class-name (class-of (a/await-exit before))) ; => norn.core/ArithmeticError
+(class-name (class-of (a/await-exit before))) ; => skein.core/ArithmeticError
 ```
 
 The supervisor heard about the crash and started the child again, from its
@@ -605,7 +605,7 @@ Stopping the top supervisor stops the whole tree:
 
 A crashed process tells its links and monitors that it has ended, and then
 its condition goes on to the debugger, as any fiber's unhandled condition
-does. In a program run with `norn file.norn`, that means the error is printed
+does. In a program run with `skein file.skn`, that means the error is printed
 and the fiber ends, which is what you've seen in this chapter.
 
 At the REPL, or from an editor, unhandled conditions park the fiber in the
@@ -669,7 +669,7 @@ with, until it ends.
 
 ## Processes, scopes, or channels?
 
-Norn gives you three ways to organize concurrent work, and they fit
+Skein gives you three ways to organize concurrent work, and they fit
 together:
 
 - Use **scopes** ([Chapter 15](15-fibers-and-scopes.md)) for work that
@@ -682,7 +682,7 @@ together:
   repaired as well as reported.
 
 A process can use scopes and channels inside its handlers, and a scope's
-fibers can `send` to and `ask` processes. `norn doc norn.actor` lists
+fibers can `send` to and `ask` processes. `skein doc skein.actor` lists
 everything in the library.
 
 ## Summary

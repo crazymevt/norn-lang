@@ -1,0 +1,14 @@
+;; skein.cache's public interface, recorded by skein api-diff --record.
+{
+ "Cache" {:kind :class, :slots ["kind" "limit" "state"], :supers ["skein.core/StandardObject"]}
+ "clear!" {:arglists ["[c]"], :kind :function, :signature [{:result "Any", :args ["Cache"]}]}
+ "evict!" {:arglists ["[c k]"], :kind :function, :signature [{:result "Any", :args ["Cache" "Any"]}]}
+ "lookup" {:arglists ["[c k]" "[c k not-found]"], :kind :function, :signature [{:result "Any", :args ["Cache" "Any"]} {:result "Any", :args ["Cache" "Any" "Any"]}]}
+ "lru" {:arglists ["[n]"], :kind :function, :signature [{:result "Cache", :args ["Integer"]}]}
+ "memo-lru" {:arglists ["[f n]"], :kind :function, :signature [{:result "Function", :args ["Any" "Integer"]}]}
+ "memo-ttl" {:arglists ["[f ms]"], :kind :function, :signature [{:result "Function", :args ["Any" "Number"]}]}
+ "size" {:arglists ["[c]"], :kind :function, :signature [{:result "Integer", :args ["Cache"]}]}
+ "store!" {:arglists ["[c k v]"], :kind :function, :signature [{:result "Any", :args ["Cache" "Any" "Any"]}]}
+ "through" {:arglists ["[c k f]"], :kind :function, :signature [{:result "Any", :args ["Cache" "Any" "Any"]}]}
+ "ttl" {:arglists ["[ms]"], :kind :function, :signature [{:result "Cache", :args ["Number"]}]}
+}

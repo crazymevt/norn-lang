@@ -1,0 +1,618 @@
+;;;; skein.lint — finding likely mistakes without running the code.
+;;;;
+;;;; `skein lint [paths…]` reads each file form by form, expands macros, and
+;;;; walks the result (the compiler's special forms: quote if do def var fn*
+;;;; let* letrec* loop* recur). It reports:
+;;;;
+;;;; - :unresolved — a symbol that names no local, no definition earlier in
+;;;;   the file and no var;
+;;;; - :unused — a let or loop binding that is never used (names starting
+;;;;   with _ are exempt, as are bindings that macros introduce);
+;;;; - :arity — a call to a known function with a number of arguments none
+;;;;   of its arities takes;
+;;;; - :shadow — a definition named like a special form, or a local named
+;;;;   like a skein.core macro or special form that the same form also calls;
+;;;;   in a module, a definition named like a skein.core var that its ns
+;;;;   doesn't take for its own with (:refer-core :exclude […]): every use of
+;;;;   the name in the module means the definition, even above it
+;;;;   (shadowing core functions such as `name` or `count` is common and
+;;;;   fine, so it isn't reported);
+;;;; - :def-in-fn — `def` inside a function body;
+;;;; - :sealed — a definition in a sealed module other than the file's own
+;;;;   (after `in-ns` into it): run, it unseals that module;
+;;;; - :method-shape — a defmethod whose parameter list doesn't fit its
+;;;;   generic function;
+;;;; - :macro — a macro call that fails to expand;
+;;;; - :deprecated — a use of a definition marked {:deprecated "…"};
+;;;; - :private — naming another module's private var (only `(var …)`
+;;;;   reaches one on purpose);
+;;;; - :macro-order — in a module, a call to a macro the module defines
+;;;;   further down (loading the module stops there: a macro must be
+;;;;   defined before its first use);
+;;;;
+;;;; and in a module (a file starting with `ns`, M8 part 8.8):
+;;;;
+;;;; - :unused-require — a required library whose alias and refers are
+;;;;   never used, or a referred name that isn't (a require with neither,
+;;;;   which may be for its effect, isn't reported);
+;;;; - :missing-require — a full name from a namespace the module doesn't
+;;;;   require (it resolves only because something else loaded it);
+;;;; - :phase — compile-time code (a macro's, or in begin-for-syntax) using
+;;;;   a run-time name: a function of this module's, or one from a library
+;;;;   required only for run time.
+;;;;
+;;;; Only `ns`, `in-ns`, `require`, `defmacro`, `defsyntax`,
+;;;; `define-syntax-class` and `begin-for-syntax` forms are evaluated, so
+;;;; that later forms read and expand as they would when loaded. A hygienic
+;;;; macro's call is expanded by the expander, and a call it refuses (a
+;;;; syntax-parse pattern that doesn't match) is a :macro warning. Warnings
+;;;; carry the line of the top-level form they're in.
+
+(ns skein.lint
+  (:refer-core :exclude [warn boolean])
+  (:require [skein.string :as str] [skein.fmt :as fmt] [skein.io :as io] [skein.syntax :as syn]))
+
+(def ^:private specials #{'quote 'quote-syntax 'if 'do 'def 'var 'fn* 'let* 'letrec* 'loop* 'recur '&})
+
+(def first-party
+  "The skein.* names Skein's first-party packages have, each with the modules
+  under it: the standard library never takes them, so it never hides one
+  (api_diff_test checks), and any other module named skein.* is lint's
+  reserved warning. skein.* is the Skein project's: its standard library and
+  these packages."
+  #{"skein.ui" "skein.sdl3" "skein.raylib" "skein.html"})
+
+(defn first-party?
+  "Is module name m (a string) one of the first-party packages' (in
+  first-party, or under one)?"
+  ^Boolean [^String m]
+  (boolean (some (fn [r] (or (= m r) (str/starts-with? m (str r ".")))) first-party)))
+
+(defn- in-skein-checkout?
+  "Is file path one of a Skein checkout's own libraries (lib/… beside
+  lib/core/core.skn)?"
+  [path]
+  (loop [d (some-> path str io/absolute io/parent)]
+    (cond (nil? d) false
+          (and (= "lib" (io/file-name d)) (io/file? (io/path d "core" "core.skn"))) true
+          :else (let [p (io/parent d)] (if (and p (not= p d)) (recur p) false)))))
+
+(def ^:dynamic ^:private *warnings* nil)
+(def ^:dynamic ^:private *where* nil) ; {:file :line}
+(def ^:dynamic ^:private *source-syms* #{}) ; symbols written in the current top-level form
+(def ^:dynamic ^:private *source-heads* #{}) ; symbols written in call position in it
+(def ^:dynamic ^:private *exempt* #{}) ; catch bindings: unused is fine
+(def ^:dynamic ^:private *file-defs* nil) ; atom: name → arities ([nfixed variadic?] …) or :unknown
+(def ^:dynamic ^:private *module* nil)
+(def ^:dynamic ^:private *home-ns* nil) ; atom: the file's own namespace (its first ns or in-ns), as a string ; in a module: {:ns :requires :compile-time-defs :namespaces}
+(def ^:dynamic ^:private *file-qualified* nil) ; atom: ns/name of every def in the file, in whichever namespace
+(def ^:dynamic ^:private *file-generics* nil) ; atom: generic name → [nreq rest?]
+(def ^:dynamic ^:private *later-macros* nil) ; atom: in a module, macros defined further down
+
+(defn- warn [kind & msg]
+  (swap! *warnings* conj (assoc *where* :kind kind :message (apply str msg)))
+  nil)
+
+;; ---- what names mean ------------------------------------------------------------------------
+
+(defn- core-macro? [sym]
+  (or (contains? specials sym)
+      (when-let [v (get (or (ns-publics 'skein.core) {}) sym)] (macro? v))))
+
+(defn- fn-shapes
+  "The arities of function f as [[nfixed variadic?] …], or nil if unknown."
+  [f]
+  (cond (generic? f) [[(%gf-get f :nreq) (%gf-get f :rest)]]
+        (and (fn? f) (not= :primitive (type f)))
+        (try (mapv (fn [p] (let [pp (%proto-parts p)] [(:nfixed pp) (:variadic pp)]))
+                   (:arities (%template-parts (%closure-template f))))
+             (catch Error _ nil))
+        :else nil))
+
+(defn- var-shapes [v]
+  (when (and v (not (macro? v)))
+    (fn-shapes (try (var-get v) (catch Error _ nil)))))
+
+(defn- fn*-shapes
+  "The arities of a (fn* …) form."
+  [form]
+  (let [xs (rest form)
+        xs (if (symbol? (first xs)) (rest xs) xs)
+        sigs (if (vector? (first xs)) [(first xs)] (map first xs))]
+    (mapv (fn [ps] (let [n (count (take-while (fn [p] (not= p '&)) ps))] [n (some (fn [p] (= p '&)) ps)])) sigs)))
+
+(defn- accepts? [shapes n]
+  (some (fn [[nfixed variadic]] (or (= n nfixed) (and variadic (>= n nfixed)))) shapes))
+
+(defn- describe-shapes [shapes]
+  (str/join " or " (map (fn [[n v]] (if v (str n " or more") (str n))) (sort-by first shapes))))
+
+;; ---- the walk -------------------------------------------------------------------------------
+
+(declare analyze case-head)
+
+(defn- boolean [x] (if x true false))
+
+(defn- bind
+  "env with sym bound as a local; checks the name."
+  [env sym]
+  (when (and (symbol? sym) (core-macro? sym) (contains? *source-heads* sym)
+             (not= "skein.core" (str (current-ns))))
+    (warn :shadow "local " sym " shadows skein.core's " sym))
+  (assoc-in env [:locals sym] (atom false)))
+
+(defn- check-unused [env syms]
+  (doseq [s syms]
+    (let [used (get-in env [:locals s])]
+      (when (and used (not (deref used)) (contains? *source-syms* s) (not (contains? *exempt* s))
+                 (not (str/starts-with? (name s) "_")))
+        (warn :unused "unused local " s)))))
+
+(defn- analyze-all [env xs] (doseq [x xs] (analyze env x)))
+
+(defn- var-ns
+  "The module var v belongs to (without a phase shift), as a string."
+  [v]
+  (let [n (%var-name v)] (str (%base-ns (symbol (subs n 0 (str/index-of n "/")))))))
+
+(defn- home-ns [] (str (%base-ns (symbol (str (current-ns))))))
+
+(defn- check-reference
+  "Rules for sym, written in the source and naming var v: another module's
+  private var, and a full name from a namespace the module doesn't require."
+  [env sym v]
+  (when (contains? *source-syms* sym)
+    (let [vn (var-ns v)]
+      ;; (a full name: unqualified, only the language's own reach the module)
+      (when (and (namespace sym) (private? v) (not= vn (home-ns)) (not (:var-ref env)))
+        (warn :private sym " is private to " vn))
+      (when (and *module* (= (namespace sym) vn) (not (:phase env)))
+        ;; (a full name, not an alias: an alias is a require)
+        (when-not (or (= vn (home-ns)) (contains? %shared-nss vn) (contains? (:namespaces *module*) vn)
+                      (some (fn [r] (= vn (str (:lib r)))) (:requires *module*)))
+          (warn :missing-require sym ": " vn " isn't required"))))))
+
+(defn- phase-resolve
+  "What sym means in compile-time code: :ok, :run-time (a run-time name
+  only), or nil (nothing)."
+  [sym]
+  (let [inst (symbol (str (home-ns) "$1"))
+        ct (or (%resolve-in inst sym)
+               (when (namespace sym) (%resolve-in inst (symbol (str (namespace sym) "$1") (name sym)))))
+        rt (resolve sym)]
+    (cond ct :ok
+          (and (nil? (namespace sym)) (contains? (:compile-time-defs *module*) sym)) :ok
+          (and rt (contains? %shared-nss (var-ns rt))) :ok
+          (or rt (and (nil? (namespace sym)) (contains? (deref *file-defs*) sym))) :run-time
+          :else nil)))
+
+(defn- analyze-symbol [env sym]
+  (cond
+    (get-in env [:locals sym]) (reset! (get-in env [:locals sym]) true)
+
+    (and (:phase env) *module* (not (contains? specials sym)))
+    (case (phase-resolve sym)
+      :ok nil
+      :run-time (when (contains? *source-syms* sym)
+                  (warn :phase sym " is run-time code here, and macros run while compiling: "
+                        "define it inside begin-for-syntax, or require its module with :require-for-syntax"))
+      (warn :unresolved "unresolved symbol " sym))
+
+    :else (analyze-global env sym)))
+
+(defn- analyze-global [env sym]
+  (when-let [v (resolve sym)] (when (var? v) (check-reference env sym v)))
+  (when-not (or (contains? specials sym)
+                (and (nil? (namespace sym)) (contains? (deref *file-defs*) sym))
+                (contains? (deref *file-qualified*) sym)
+                (resolve sym)
+                (str/ends-with? (name sym) ".")) ; constructor-style names
+    (warn :unresolved "unresolved symbol " sym (or (%interop-hint sym) "")))
+  (when-let [d (when (resolve sym) (definition sym))]
+    (when (:deprecated d) (warn :deprecated sym " is deprecated: " (:deprecated d)))))
+
+(defn- analyze-fn [env form]
+  (let [xs (rest form)
+        [env xs] (if (symbol? (first xs)) [(bind env (first xs)) (rest xs)] [env xs])
+        arities (if (vector? (first xs)) [xs] xs)
+        env (assoc env :in-fn true)]
+    (doseq [[params & body] arities]
+      (analyze-all (reduce (fn [e p] (if (= p '&) e (bind e p))) env params) body))))
+
+(defn- analyze-let [env form]
+  (let [[_ bindings & body] form
+        pairs (partition 2 bindings)
+        env' (reduce (fn [e [s init]] (analyze e init) (bind e s)) env pairs)]
+    (analyze-all env' body)
+    (check-unused env' (map first pairs))))
+
+(defn- analyze-letrec [env form]
+  (let [[_ bindings & body] form
+        pairs (partition 2 bindings)
+        env' (reduce (fn [e [s _]] (bind e s)) env pairs)]
+    (doseq [[_ init] pairs] (analyze env' init))
+    (analyze-all env' body)
+    (check-unused env' (map first pairs))))
+
+(defn- sealed-ns?
+  "Is namespace n sealed, or a library that comes with Skein (sealed once
+  it loads)?"
+  [n]
+  (or (sealed? n)
+      (let [f (%find-lib (str n))] (and f (= "<" (subs (nth f 1) 0 1))))))
+
+(defn- analyze-def [env form]
+  (let [[_ name & more] form
+        init (last more)
+        expanded (if (seq? init) (try (macroexpand init) (catch Error _ init)) init)]
+    (when (:in-fn env) (warn :def-in-fn "def of " name " inside a function"))
+    (when (and (symbol? name) (sealed-ns? (current-ns)) (not= (str (current-ns)) @*home-ns*))
+      (warn :sealed "definition of " (current-ns) "/" name " redefines a var of a sealed module, which unseals it"))
+    (when (and (contains? specials name) (not= "skein.core" (str (current-ns))))
+      (warn :shadow "definition of " name " shadows skein.core's " name))
+    (when (and *module* (symbol? name) (not (contains? specials name))
+               (not (contains? (:core-own *module*) name))
+               (contains? (or (ns-publics 'skein.core) {}) name))
+      (warn :shadow "definition of " name " shadows skein.core/" name ": every " name " in this module means it"
+            " (say so with (:refer-core :exclude [" name "]), or rename it)"))
+    (swap! *file-defs* assoc name (if (and (seq? expanded) (= 'fn* (first expanded))) (fn*-shapes expanded) :unknown))
+    (swap! *file-qualified* conj (symbol (str (current-ns)) (str name)))
+    (when (seq more) (analyze env init))))
+
+(defn- check-call [env head n]
+  (when (and (symbol? head) (not (get-in env [:locals head])))
+    (let [own (when (nil? (namespace head)) (get (deref *file-defs*) head))
+          shapes (cond (vector? own) own
+                       (some? own) nil
+                       :else (var-shapes (resolve head)))]
+      (when (and (seq shapes) (not (accepts? shapes n)))
+        (warn :arity head " called with " n " argument" (if (= n 1) "" "s")
+              "; it takes " (describe-shapes shapes))))))
+
+(defn- check-method [form]
+  (let [[_ gname & more] form
+        params (first (filter (fn [x] (or (vector? x) (list? x))) more))
+        params (if (and (vector? params) (vector? (second (drop-while (fn [x] (not= x params)) more))))
+                 (second (drop-while (fn [x] (not= x params)) more))
+                 params)
+        own (get (deref *file-generics*) gname)
+        g (when-let [v (resolve gname)] (try (var-get v) (catch Error _ nil)))
+        [gn gr] (cond own own
+                      (generic? g) [(%gf-get g :nreq) (%gf-get g :rest)]
+                      :else nil)]
+    (when (and params gn)
+      (let [nreq (count (take-while (fn [p] (not= p '&)) params))
+            rest? (boolean (some (fn [p] (= p '&)) params))]
+        (when-not (and (= nreq gn) (= rest? (boolean gr)))
+          (warn :method-shape "method for " gname " takes " nreq (when rest? " or more")
+                " arguments; the generic takes " gn (when gr " or more")))))))
+
+(defn- note-generic [form]
+  (let [params (first (filter (fn [x] (or (vector? x) (list? x))) (drop 2 form)))]
+    (when params
+      (swap! *file-generics* assoc (second form)
+             [(count (take-while (fn [p] (not= p '&)) params)) (boolean (some (fn [p] (= p '&)) params))]))))
+
+(defn- special-head
+  "head as a special form's name: ns/quote-syntax, from syntax-quote in
+  another namespace and naming no var, is quote-syntax."
+  [head]
+  (if (and (symbol? head) (namespace head) (contains? specials (symbol (name head))) (nil? (resolve head)))
+    (symbol (name head))
+    head))
+
+(defn- hygienic-macro? [v] (instance? syn/Transformer (try (var-get v) (catch Error _ nil))))
+
+(defn- analyze-seq [env form]
+  (let [head (special-head (first form))]
+    (cond
+      (and (symbol? head) (not (get-in env [:locals head])) (contains? specials head))
+      (case-head head form env)
+
+      ;; (a macro's transformer, from defmacro or defsyntax: compile-time code)
+      (and (symbol? head) (not (get-in env [:locals head])) (= (resolve head) (resolve 'skein.core/for-syntax)))
+      (analyze-all (assoc env :phase 1) (rest form))
+
+      ;; a hygienic macro: the expander expands it (the result's locals
+      ;; are its own symbols, its globals full names)
+      (and (symbol? head) (not (get-in env [:locals head]))
+           (when-let [v (resolve head)] (hygienic-macro? v)))
+      (let [[ok expansion] (try [true (skein.expander/expand-all (syn/datum->syntax nil form))]
+                                (catch Error e [false (condition-message e)]))]
+        ;; (a local the call passes is used, whatever the macro does with it)
+        (doseq [x (symbols-in (rest form))]
+          (when-let [used (get-in env [:locals x])] (reset! used true)))
+        (if ok
+          (analyze env expansion)
+          (warn :macro "expanding " head ": " expansion)))
+
+      (and (symbol? head) (not (get-in env [:locals head]))
+           (when-let [v (resolve head)] (macro? v)))
+      (do (check-reference env head (resolve head))
+          (when (= (resolve head) (resolve 'skein.core/defmethod)) (check-method form))
+          (when (= (resolve head) (resolve 'skein.core/defgeneric)) (note-generic form))
+          (let [[ok expansion] (try [true (apply (var-get (resolve head)) (rest form))]
+                                    (catch Error e [false (condition-message e)]))]
+            (if ok
+              (analyze env expansion)
+              (warn :macro "expanding " head ": " expansion))))
+
+      :else
+      (do (when (and *later-macros* (symbol? head) (nil? (namespace head)) (not (get-in env [:locals head]))
+                     (contains? (deref *later-macros*) head))
+            (warn :macro-order head " is a macro defined further down this module: a macro must be defined"
+                  " before its first use (loading the module stops here)"))
+          (analyze env head)
+          (analyze-all env (rest form))
+          (check-call env head (count (rest form)))))))
+
+(defn- case-head [head form env]
+  (cond (or (= head 'quote) (= head 'quote-syntax)) nil
+        (= head 'var) (when (symbol? (second form)) (analyze-symbol {:var-ref true} (second form)))
+        (= head 'fn*) (analyze-fn env form)
+        (or (= head 'let*) (= head 'loop*)) (analyze-let env form)
+        (= head 'letrec*) (analyze-letrec env form)
+        (= head 'def) (analyze-def env form)
+        :else (analyze-all env (rest form))))
+
+(defn- analyze [env form]
+  (cond (symbol? form) (analyze-symbol env form)
+        (and (seq? form) (seq form)) (analyze-seq env form)
+        (map? form) (doseq [[k v] form] (analyze env k) (analyze env v))
+        (or (vector? form) (set? form)) (analyze-all env form)
+        :else nil))
+
+;; ---- files ----------------------------------------------------------------------------------
+
+(defn- top-level-lines
+  "The starting line of each top-level form in source text s, in order
+  (skipping #_ forms, as the reader does)."
+  [s]
+  (loop [nodes (seq (fmt/parse s)) line 1 out []]
+    (if-let [n (first nodes)]
+      (let [t (fmt/node-text n)
+            next-line (+ line (count (filter (fn [c] (= c \newline)) t)))
+            form? (and (contains? #{:token :coll :prefix} (first n))
+                       (not (and (= :prefix (first n)) (= "#_" (nth n 1)))))]
+        (recur (next nodes) next-line (if form? (conj out line) out)))
+      out)))
+
+(defn- symbols-in [form]
+  (cond (symbol? form) #{form}
+        (coll? form) (reduce (fn [acc x] (into acc (symbols-in x))) #{} (if (map? form) (mapcat identity form) form))
+        :else #{}))
+
+(defn- heads-in [form]
+  (cond (and (seq? form) (seq form))
+        (reduce (fn [acc x] (into acc (heads-in x))) (if (symbol? (first form)) #{(first form)} #{}) form)
+        (coll? form) (reduce (fn [acc x] (into acc (heads-in x))) #{} (if (map? form) (mapcat identity form) form))
+        :else #{}))
+
+(defn- catch-bindings
+  "Symbols bound by catch clauses, (catch Class e …), and by handler-case
+  clauses, (Class [e] …)."
+  [form]
+  (cond (and (seq? form) (= 'catch (first form)) (symbol? (nth form 2 nil))) #{(nth form 2)}
+        (and (seq? form) (= 'handler-case (first form)))
+        (into (catch-bindings (second form))
+              (mapcat (fn [c] (if (and (seq? c) (vector? (second c))) (concat (second c) (catch-bindings c)) (catch-bindings c)))
+                      (drop 2 form)))
+        (and (seq? form) (seq form)) (reduce (fn [acc x] (into acc (catch-bindings x))) #{} form)
+        (coll? form) (reduce (fn [acc x] (into acc (catch-bindings x))) #{} (if (map? form) (mapcat identity form) form))
+        :else #{}))
+
+(defn- evaluated-form? [form]
+  (and (seq? form) (contains? #{'ns 'in-ns 'require 'defmacro 'defsyntax 'define-syntax-class} (first form))))
+
+(def ^:private definer-heads
+  "Defining forms by head name, for the forward-reference prescan."
+  #{"def" "defn" "defn-" "defmacro" "defclass" "defgeneric" "defsyntax" "deftest" "defcfun"})
+
+(defn- macros-defined
+  "The macros a module's top-level forms define with defmacro or defsyntax
+  (up to any second ns or in-ns)."
+  [s path]
+  (let [r (%reader s path)
+        first-form (try (%read r) (catch Error _ nil))]
+    (if-not (and (seq? first-form) (= 'ns (first first-form)))
+      #{}
+      (loop [acc #{}]
+        (let [d (try (%read r) (catch Error _ ::stop))]
+          (cond (or (= d ::stop) (%eof? d) (and (seq? d) (contains? #{'ns 'in-ns} (first d)))) acc
+                (and (seq? d) (contains? #{'defmacro 'defsyntax} (first d)) (symbol? (second d)))
+                (recur (conj acc (second d)))
+                :else (recur acc)))))))
+
+(defn- names-defined
+  "The names a module's top-level forms define (up to any second ns or
+  in-ns): a module may use them before their definitions (M8 part 8.4)."
+  [s path]
+  (let [r (%reader s path)
+        first-form (try (%read r) (catch Error _ nil))]
+    (if-not (and (seq? first-form) (= 'ns (first first-form)))
+      []
+      (loop [acc []]
+        (let [d (try (%read r) (catch Error _ ::stop))]
+          (cond (or (= d ::stop) (%eof? d) (and (seq? d) (contains? #{'ns 'in-ns} (first d)))) acc
+                (and (seq? d) (symbol? (first d)) (= "declare" (name (first d))))
+                (recur (into acc (filter symbol? (rest d))))
+                ;; (definitions for compile time count too)
+                (and (seq? d) (symbol? (first d)) (= "begin-for-syntax" (name (first d))))
+                (recur (into acc (keep (fn [f] (when (and (seq? f) (symbol? (first f)) (contains? definer-heads (name (first f)))
+                                                          (symbol? (second f)))
+                                                 (second f)))
+                                       (rest d))))
+                (and (seq? d) (symbol? (first d)) (contains? definer-heads (name (first d))) (symbol? (second d)))
+                (recur (conj acc (second d)))
+                :else (recur acc)))))))
+
+;; ---- modules (M8 part 8.8) ----
+
+(defn- spec-of [phase spec]
+  (let [spec (if (and (seq? spec) (= 'quote (first spec))) (second spec) spec)]
+    (cond (symbol? spec) {:lib spec :phase phase}
+          (vector? spec) (let [opts (apply hash-map (rest spec))]
+                           {:lib (first spec) :phase phase :as (:as opts)
+                            :refer (when (sequential? (:refer opts)) (vec (:refer opts)))})
+          :else nil)))
+
+(defn- module-of
+  "What the rules need to know of a module: its ns form's requires, the
+  names it defines for compile time, and the namespaces the file itself
+  makes (a second ns form)."
+  [s path]
+  (let [forms (try (let [r (%reader s path)]
+                     (loop [acc []] (let [d (%read r)] (if (%eof? d) acc (recur (conj acc d))))))
+                   (catch Error _ []))
+        nsf (first forms)]
+    (when (and (seq? nsf) (= 'ns (first nsf)) (symbol? (second nsf)))
+      {:ns (second nsf)
+       :requires (vec (for [c (drop 2 nsf)
+                            :when (and (seq? c) (contains? #{:require :require-for-syntax} (first c)))
+                            spec (rest c)
+                            :let [r (spec-of (if (= :require (first c)) 0 1) spec)]
+                            :when r]
+                        r))
+       :more-requires (vec (for [f forms
+                                 :when (and (seq? f) (= 'require (first f)))
+                                 spec (rest f)
+                                 :let [r (spec-of 0 spec)]
+                                 :when r]
+                             r))
+       :core-own (set (let [opts (apply hash-map (mapcat (fn [c] (when (and (seq? c) (= :refer-core (first c))) (rest c))) (drop 2 nsf)))]
+                        (concat (:exclude opts) (keys (:rename opts)))))
+       :compile-time-defs (set (for [f forms
+                                     :when (and (seq? f) (= 'begin-for-syntax (first f)))
+                                     d (rest f)
+                                     :when (and (seq? d) (symbol? (first d)) (contains? definer-heads (name (first d)))
+                                                (symbol? (second d)))]
+                                 (second d)))
+       :namespaces (set (for [f forms
+                              :when (and (seq? f) (contains? #{'ns 'in-ns} (first f)))
+                              :let [n (second f) n (if (and (seq? n) (= 'quote (first n))) (second n) n)]
+                              :when (symbol? n)]
+                          (str n)))
+       :used (set (mapcat symbols-in (rest forms)))})))
+
+(defn- check-requires
+  "The :unused-require warnings for module m."
+  [m]
+  (let [used (:used m)
+        qualified (set (keep namespace used))]
+    (doseq [{:keys [lib as refer]} (:requires m)
+            :when (or as refer)]
+      (let [alias-used (or (and as (contains? qualified (str as))) (contains? qualified (str lib)))
+            refers-used (filter (fn [r] (contains? used r)) refer)]
+        (if (and (not alias-used) (empty? refers-used))
+          (warn :unused-require lib " is required but never used (for its effect alone, require it without :as)")
+          (doseq [r refer :when (not (contains? used r))]
+            (warn :unused-require lib "/" r " is referred but never used")))))))
+
+(defn lint-string
+  "Warnings for source text s (from file path, for the reports): a vector of
+  maps with :file :line :kind and :message."
+  ([s] (lint-string s "<string>"))
+  ([s path]
+   (let [here (current-ns)]
+     ;; (a module's ns form first, so the whole file reads as it will when
+     ;; loaded: ::alias/k needs the alias)
+     (try (let [d (%read (%reader s path))]
+            (when (and (seq? d) (= 'ns (first d))) (eval d)))
+          (catch Error _ nil))
+     (try (lint-text s path) (finally (in-ns (symbol (str here))))))))
+
+(defn- lint-text [s path]
+  (let [lines (try (top-level-lines s) (catch Error _ []))
+        here (current-ns)
+        r (%reader s path)]
+    (binding [*warnings* (atom []) *file-defs* (atom (zipmap (names-defined s path) (repeat :unknown)))
+              *file-qualified* (atom #{}) *file-generics* (atom {}) *later-macros* (atom (macros-defined s path))
+              *module* (let [m (module-of s path)] (when m (update m :requires into (:more-requires m))))
+              *home-ns* (atom nil)]
+      (try
+        (loop [i 0]
+          (let [form (%read r)]
+            (when-not (%eof? form)
+              (binding [*where* {:file path :line (get lines i)} *source-syms* (symbols-in form)
+                        *source-heads* (heads-in form) *exempt* (catch-bindings form)]
+                (cond
+                  ;; compile-time definitions: analyzed as the code they are
+                  (and (seq? form) (= 'begin-for-syntax (first form)))
+                  (do (doseq [f (rest form)] (analyze {:phase 1} f))
+                      ;; (and evaluated: macros later in the file may call them)
+                      (try (eval form) (catch Error e (warn :macro "evaluating begin-for-syntax: " (condition-message e)))))
+                  (evaluated-form? form)
+                  (let [macro-def? (and *module* (contains? #{'defmacro 'defsyntax} (first form)))]
+                    (when (and (contains? #{'ns 'in-ns} (first form)) (nil? @*home-ns*))
+                      (let [n (second form) n (if (and (seq? n) (= 'quote (first n))) (second n) n)]
+                        (reset! *home-ns* (str n))
+                        ;; (a module named as one that comes with Skein is never
+                        ;; what require loads: Skein's own is found first)
+                        (when (= 'ns (first form))
+                          (let [found (%find-lib (str n))
+                                embedded (and found (str/starts-with? (second found) "<"))]
+                            (cond
+                              (and embedded (not= (first found) s) (not (in-skein-checkout? path)))
+                              (warn :shadowed n " is also a library that comes with Skein, which require finds first:"
+                                    " this file is never loaded. Name the module otherwise.")
+                              ;; (skein.* is the Skein project's; a Skein checkout's own
+                              ;; lib/ aside, as a library being written there isn't
+                              ;; embedded yet)
+                              (and (str/starts-with? (str n) "skein.") (not embedded) (not (first-party? (str n)))
+                                   (not (in-skein-checkout? path)))
+                              (warn :reserved n ": names under skein. are Skein's, its standard library's and its"
+                                    " first-party packages'. Name the module after your project."))))))
+                    (when macro-def? (swap! *later-macros* disj (second form)))
+                    (when-not (and (= 'defmacro (first form))
+                                   (when-let [v (resolve (second form))] (macro? v)))
+                      ;; (a definition in a sealed module unseals it, warning:
+                      ;; here that's lint's own business, said as :sealed)
+                      (try (handler-bind [Warning (fn [_] (muffle-warning))] (eval form))
+                           (catch Error e
+                             ;; (in a module the analysis below says why, with the name)
+                             (when-not macro-def?
+                               (warn :macro "evaluating " (first form) ": " (condition-message e))))))
+                    ;; (a macro's code is analyzed too: compile-time code)
+                    (when macro-def? (analyze {} form)))
+                  :else (analyze {} form)))
+              (recur (inc i)))))
+        (when *module*
+          (binding [*where* {:file path :line (first lines)}] (check-requires *module*)))
+        (catch Error e (swap! *warnings* conj {:file path :line nil :kind :read :message (condition-message e)}))
+        (finally (in-ns (symbol (str here)))))
+      (vec (distinct (deref *warnings*))))))
+
+(defn lint-file "Warnings for file path." [path] (lint-string (slurp path) path))
+
+(defn format-warning
+  "A warning as skein lint prints it: file:line: kind: message."
+  [{:keys [file line kind message]}]
+  (str file (when line (str ":" line)) ": " (name kind) ": " message))
+
+(defn- in-a-project-below?
+  "Is file f, found under folder dir, in a project of its own: a folder
+  below dir, around f, with a skein.edn? (Linted in its own folder, where
+  its source paths are known, not as part of dir.)"
+  [dir f]
+  (let [base (if (str/ends-with? dir "/") dir (str dir "/"))
+        parts (butlast (str/split (subs f (count base)) #"/"))]
+    (loop [d base ps (seq parts)]
+      (cond (empty? ps) false
+            (%fs-info (str d (first ps) "/skein.edn")) true
+            :else (recur (str d (first ps) "/") (next ps))))))
+
+(defn main
+  "`skein lint [paths…]`: lint .skn files (default: the current directory,
+  recursively, leaving out a folder below that's a project of its own,
+  with a skein.edn: lint it in its folder). Prints one line per warning;
+  exits 1 if there are any."
+  [& args]
+  (let [files (vec (mapcat (fn [p] (if (str/ends-with? p ".skn")
+                                     [p]
+                                     (vec (sort (filter (fn [f] (and (str/ends-with? f ".skn") (not (str/includes? f "/target/"))
+                                                                     (not (in-a-project-below? p f))))
+                                                        (%fs-walk p))))))
+                           (if (seq args) args ["."])))
+        ws (vec (mapcat lint-file files))]
+    (doseq [w ws] (println (format-warning w)))
+    (if (seq ws) 1 0)))

@@ -13,6 +13,6 @@ The sky cleared at **dusk**, & the moon rose <early>.
 - [x] Saturn's rings
 - [ ] Neptune
 
-```norn
+```skein
 (println "hello")
 ```

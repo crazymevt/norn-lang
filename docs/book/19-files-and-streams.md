@@ -3,8 +3,8 @@
 [Contents](README.md) · Previous: [18. Actors and supervision](18-actors-and-supervision.md) · Next: [20. Data formats](20-data-formats.md) <!-- nav -->
 
 Most programs read something from disk, write something back, or both. This
-chapter covers `norn.io`, the library for files, paths, and streams, and
-`norn.fs`, which walks directory trees, matches glob patterns, and watches
+chapter covers `skein.io`, the library for files, paths, and streams, and
+`skein.fs`, which walks directory trees, matches glob patterns, and watches
 for changes. It starts with whole files, the case you meet most often, then
 moves to paths and the file system, errors, handles and streams, temporary
 files, and atomic replacement. It ends with a small program that summarizes
@@ -18,7 +18,7 @@ Try them in a scratch folder.
 Load the library first. The examples in this chapter call it `io`.
 
 ```clojure
-(require '[norn.io :as io] '[norn.fs :as fs])
+(require '[skein.io :as io] '[skein.fs :as fs])
 ```
 
 When a file fits comfortably in memory, read and write it in one call.
@@ -31,7 +31,7 @@ it doesn't exist. `read-text` gives the contents back.
 ```
 
 Text is always UTF-8, on every operating system, and line endings stay as
-they are in the file: Norn never translates `\r\n` to `\n` behind your back.
+they are in the file: Skein never translates `\r\n` to `\n` behind your back.
 When you want the lines themselves, `lines` splits at either ending and
 leaves out the terminators.
 
@@ -54,13 +54,13 @@ Binary files work the same way with `read-bytes` and `write-bytes`. A
 ```
 
 `(bytes "text")` gives a string's UTF-8 bytes, and `bytes->string` decodes
-them again. [Chapter 20](20-data-formats.md) covers `norn.bytes`, which has
+them again. [Chapter 20](20-data-formats.md) covers `skein.bytes`, which has
 hex, Base64, and the integer and float encodings that binary formats need.
 
 Core also has `slurp` and `spit`, familiar from Clojure. `slurp` reads a
 file as text. `spit` writes `Bytes` as they are and anything else as its
 `str`, so it suits quick experiments. For appending, and for code you mean
-to keep, use the `norn.io` functions: their names say what they do.
+to keep, use the `skein.io` functions: their names say what they do.
 
 ### A file that isn't text
 
@@ -82,7 +82,7 @@ for that.
 
 ## Paths
 
-A path in Norn is a string. There's no path class to convert to and from:
+A path in Skein is a string. There's no path class to convert to and from:
 every function that takes a path takes a string, and the path functions
 give strings back. `path` joins parts with the platform's separator.
 
@@ -111,7 +111,7 @@ symbolic links against the real file system, so it gives nil for a path
 that doesn't exist.
 
 ```clojure
-(= (io/absolute "notes.txt") (io/path (norn.sys/cwd) "notes.txt")) ; => true
+(= (io/absolute "notes.txt") (io/path (skein.sys/cwd) "notes.txt")) ; => true
 (io/canonical "no/such/file") ; => nil
 ```
 
@@ -174,7 +174,7 @@ is never the default.
 
 A file operation can fail for reasons your program doesn't control: the
 file isn't there, the disk is full, someone else holds the permissions.
-Norn reports these as conditions, the subject of
+Skein reports these as conditions, the subject of
 [Chapter 11](11-conditions-and-restarts.md). They all descend from
 `IOError`:
 
@@ -307,7 +307,7 @@ fails, the ones already open are closed.
 `copy-stream!` copies everything from one stream to another and returns the
 number of bytes. With `:limit n`, it stops after `n` bytes.
 
-If you forget to close a handle, Norn closes it eventually, once the handle
+If you forget to close a handle, Skein closes it eventually, once the handle
 becomes unreachable and the garbage collector notices. Don't lean on that.
 It happens at an unpredictable time, and a process that opens files in a
 loop can run out of descriptors long before then.
@@ -315,7 +315,7 @@ loop can run out of descriptors long before then.
 Files are read and written on a pool of threads set aside for blocking
 work, so a fiber waiting on the disk never holds up the other fibers
 ([Chapter 15](15-fibers-and-scopes.md)). You don't have to do anything to get
-this: every `norn.io` call works this way.
+this: every `skein.io` call works this way.
 
 ## Reading streams
 
@@ -420,7 +420,7 @@ are all streams, and `read`, `read-line`, `copy-stream!`, and the rest work
 on them the same way. [Chapter 21](21-the-operating-system.md) uses this
 with process pipes, and [Chapter 22](22-networking-and-http.md) with sockets.
 
-You can make your own class a stream too. `norn.io` defines three generic
+You can make your own class a stream too. `skein.io` defines three generic
 functions, `stream-read`, `stream-write`, and `stream-close`. Give your class
 methods for them ([Chapter 9](09-classes-and-generic-functions.md)), and
 every stream function takes its instances. Here is a stream that produces
@@ -542,7 +542,7 @@ power cut before you carry on.
 
 ## Walking, globbing, and watching
 
-`norn.fs` works with directory trees. `walk` gives every path under a
+`skein.fs` works with directory trees. `walk` gives every path under a
 directory, files and directories both, depth first and sorted. It doesn't
 follow symbolic links, so a link loop can't send it in circles.
 
@@ -668,7 +668,7 @@ get. The level is the second word of a line; anything that doesn't look
 like a log line is skipped.
 
 ```clojure
-(require '[norn.string :as str])
+(require '[skein.string :as str])
 
 (defn line-level [line]
   (let [words (str/split line #" ")]
@@ -746,7 +746,7 @@ moment before writing a new report.
 - `with-temp-file` and `with-temp-directory` clean up after themselves.
   `write-atomic!` and `with-atomic-file` replace a file so readers never
   see half of it.
-- `norn.fs` walks trees with `walk`, matches `glob` patterns with `*`, `?`,
+- `skein.fs` walks trees with `walk`, matches `glob` patterns with `*`, `?`,
   and `**`, and reports changes on a channel with `watch`.
 
 ---

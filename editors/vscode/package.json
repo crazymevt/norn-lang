@@ -1,9 +1,9 @@
 {
-  "name": "norn",
-  "displayName": "Norn",
-  "description": "Norn for VS Code: highlighting; norn lsp's diagnostics, hover, completion, definitions, references, outline and formatting; a REPL, values beside the forms evaluated, and Norn's debugger in VS Code's.",
+  "name": "skein",
+  "displayName": "Skein",
+  "description": "Skein for VS Code: highlighting; skein lsp's diagnostics, hover, completion, definitions, references, outline and formatting; a REPL, values beside the forms evaluated, and Skein's debugger in VS Code's.",
   "version": "0.0.1",
-  "publisher": "norn",
+  "publisher": "skein",
   "license": "MIT",
   "engines": {
     "vscode": "^1.91.0"
@@ -18,33 +18,33 @@
   "contributes": {
     "languages": [
       {
-        "id": "norn",
+        "id": "skein",
         "aliases": [
-          "Norn",
-          "norn"
+          "Skein",
+          "skein"
         ],
         "extensions": [
-          ".norn"
+          ".skn"
         ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
-        "language": "norn",
-        "scopeName": "source.norn",
-        "path": "./syntaxes/norn.tmLanguage.json"
+        "language": "skein",
+        "scopeName": "source.skn",
+        "path": "./syntaxes/skein.tmLanguage.json"
       }
     ],
     "configuration": {
-      "title": "Norn",
+      "title": "Skein",
       "properties": {
-        "norn.path": {
+        "skein.path": {
           "type": "string",
-          "default": "norn",
-          "description": "The norn command: a name on the PATH, or the binary's full path."
+          "default": "skein",
+          "description": "The skein command: a name on the PATH, or the binary's full path."
         },
-        "norn.trace.server": {
+        "skein.trace.server": {
           "type": "string",
           "enum": [
             "off",
@@ -52,60 +52,60 @@
             "verbose"
           ],
           "default": "off",
-          "description": "Log the messages between VS Code and norn lsp in the Norn output."
+          "description": "Log the messages between VS Code and skein lsp in the Skein output."
         }
       }
     },
     "commands": [
       {
-        "command": "norn.evalTopLevel",
+        "command": "skein.evalTopLevel",
         "title": "Evaluate Top-Level Form or Selection",
-        "category": "Norn"
+        "category": "Skein"
       },
       {
-        "command": "norn.startRepl",
+        "command": "skein.startRepl",
         "title": "Start REPL",
-        "category": "Norn"
+        "category": "Skein"
       },
       {
-        "command": "norn.restartServer",
+        "command": "skein.restartServer",
         "title": "Restart Language Server",
-        "category": "Norn"
+        "category": "Skein"
       },
       {
-        "command": "norn.showOutput",
+        "command": "skein.showOutput",
         "title": "Show Output",
-        "category": "Norn"
+        "category": "Skein"
       }
     ],
     "menus": {
       "commandPalette": [
         {
-          "command": "norn.evalTopLevel",
-          "when": "editorLangId == norn"
+          "command": "skein.evalTopLevel",
+          "when": "editorLangId == skein"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "norn.evalTopLevel",
+        "command": "skein.evalTopLevel",
         "key": "ctrl+enter",
         "mac": "cmd+enter",
-        "when": "editorTextFocus && editorLangId == norn"
+        "when": "editorTextFocus && editorLangId == skein"
       }
     ],
     "debuggers": [
       {
-        "type": "norn",
-        "label": "Norn",
+        "type": "skein",
+        "label": "Skein",
         "languages": [
-          "norn"
+          "skein"
         ]
       }
     ]
   },
   "scripts": {
-    "package": "vsce package --allow-missing-repository --out norn.vsix",
+    "package": "vsce package --allow-missing-repository --out skein.vsix",
     "test": "node test/run.js"
   },
   "dependencies": {

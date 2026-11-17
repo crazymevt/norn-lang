@@ -1,6 +1,6 @@
 # Every push to main and every pull request: build, the Rust tests (with
-# 37 Norn suites at both tiers), every Norn suite, the lang-tests at three
-# tiers against their recorded outputs, and norn check. On macOS arm64 and
+# 37 Skein suites at both tiers), every Skein suite, the lang-tests at three
+# tiers against their recorded outputs, and skein check. On macOS arm64 and
 # Linux arm64 and x86-64.
 name: CI
 
@@ -19,8 +19,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # (no window opens for norn.ui's tests)
-  NORN_UI_HEADLESS: "1"
+  # (no window opens for skein.ui's tests)
+  SKEIN_UI_HEADLESS: "1"
 
 jobs:
   test:
@@ -43,12 +43,12 @@ jobs:
       - name: macOS file limits
         if: runner.os == 'macOS'
         # (as a developer's Mac allows: io.rs holds 10,000 connections, both
-        # ends, in one process; norn raises its own limit to this cap)
+        # ends, in one process; skein raises its own limit to this cap)
         run: sudo sysctl -w kern.maxfiles=122880 kern.maxfilesperproc=61440
 
       - name: Linux packages
         if: runner.os == 'Linux'
-        # SQLite for norn.sqlite (loaded at run time), zsh for terminal_test
+        # SQLite for skein.sqlite (loaded at run time), zsh for terminal_test
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-0 zsh
 
       - uses: dtolnay/rust-toolchain@stable
@@ -63,17 +63,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --locked --release --workspace --no-fail-fast
 
-      - name: Every Norn suite
+      - name: Every Skein suite
         # (after a failure too: every failure in one run)
         if: ${{ !cancelled() }}
-        run: target/release/norn test tests/norn
+        run: target/release/skein test tests/skein
 
       - name: lang-tests
         # (after a failure too: every failure in one run)
         if: ${{ !cancelled() }}
-        run: target/release/norn lang-tests/run.norn
+        run: target/release/skein lang-tests/run.skn
 
-      - name: norn check
+      - name: skein check
         # (after a failure too: every failure in one run)
         if: ${{ !cancelled() }}
-        run: target/release/norn check
+        run: target/release/skein check

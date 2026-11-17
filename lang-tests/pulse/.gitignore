@@ -1,5 +1,5 @@
-/.norn/
+/.skein/
 /dist/
-*.nimg
+*.skimg
 .DS_Store
 *.db

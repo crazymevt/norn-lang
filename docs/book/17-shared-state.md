@@ -2,15 +2,15 @@
 
 [Contents](README.md) · Previous: [16. Channels](16-channels.md) · Next: [18. Actors and supervision](18-actors-and-supervision.md) <!-- nav -->
 
-Norn's values don't change, so fibers can share them freely: a vector one
+Skein's values don't change, so fibers can share them freely: a vector one
 fiber reads can't be modified under it by another. Programs still need
 things that change over time, such as a counter, a table of sessions, or the
-balance of an account. Norn keeps change in a few kinds of reference: an
+balance of an account. Skein keeps change in a few kinds of reference: an
 identity that holds one value at a time and moves from value to value in
 controlled ways. This chapter covers atoms, the everyday reference; dynamic
 vars, which carry context rather than shared state; refs and transactions in
-`norn.stm`, for changes that must touch several references at once; the
-coordination tools in `norn.sync`; and caches from `norn.cache`.
+`skein.stm`, for changes that must touch several references at once; the
+coordination tools in `skein.sync`; and caches from `skein.cache`.
 
 ## Atoms
 
@@ -140,7 +140,7 @@ the first example does.
 ### Watches
 
 `(add-watch a key f)` asks to be told about changes. After every change
-through `swap!`, `reset!`, `swap-vals!` or `reset-vals!`, Norn calls `(f key
+through `swap!`, `reset!`, `swap-vals!` or `reset-vals!`, Skein calls `(f key
 a old new)`. `remove-watch` takes the watch away again:
 
 ```clojure
@@ -160,13 +160,13 @@ a old new)`. `remove-watch` takes the watch away again:
 ```
 
 The watch runs in the fiber that made the change, after the change. A raw
-`compare-and-set!` doesn't call watches. Atoms in Norn don't have
+`compare-and-set!` doesn't call watches. Atoms in Skein don't have
 validators; if you need one, refs, below, do.
 
 ### Volatiles
 
 `volatile!`, `vswap!` and `vreset!` exist for code that comes from Clojure,
-where a volatile is a faster, unsynchronized box. In Norn a volatile is an
+where a volatile is a faster, unsynchronized box. In Skein a volatile is an
 atom, so these behave exactly like `atom`, `swap!` and `reset!` and are no
 faster:
 
@@ -199,12 +199,12 @@ the fibers it spawns), so another fiber running `line` at the same moment
 still sees `""`. That makes dynamic vars good for context, such as an output
 stream, a request id, a depth limit or a setting, that code deep in a call
 chain needs without every function in between passing it along. Several of
-Norn's own settings work this way: `with-out-str` rebinds `*out*`, and
-`norn.stm` reads `*max-retries*`. [Chapter
+Skein's own settings work this way: `with-out-str` rebinds `*out*`, and
+`skein.stm` reads `*max-retries*`. [Chapter
 15](15-fibers-and-scopes.md#what-a-child-inherits) shows how bindings are
 conveyed to child fibers.
 
-In Norn, `binding` works on any var. The `^:dynamic` metadata and the
+In Skein, `binding` works on any var. The `^:dynamic` metadata and the
 `*earmuffs*` naming convention don't change behavior; they tell readers which
 vars are meant to be rebound, so use them. There is no `set!` on a bound
 var. To change a var's root value for everyone, use `alter-var-root`, which
@@ -217,7 +217,7 @@ works like `swap!` on the var. Reach for it rarely; redefining a var with
 *limit* ; => 20
 ```
 
-## Coordinated change: norn.stm
+## Coordinated change: skein.stm
 
 One atom holding a map handles many-key updates within that map. Sometimes
 state is split across several references, though. The accounts may belong
@@ -226,12 +226,12 @@ fibers working on unrelated accounts not to contend with each other. Changing
 two atoms one after the other leaves a moment when one has changed and the
 other hasn't, and another fiber can see it.
 
-`norn.stm` provides software transactional memory for this case. A ref is
+`skein.stm` provides software transactional memory for this case. A ref is
 a reference like an atom, and a transaction changes any number of refs all
 at once, or not at all:
 
 ```clojure
-(require '[norn.stm :as stm])
+(require '[skein.stm :as stm])
 
 (def checking (stm/ref 100))
 (def savings (stm/ref 500))
@@ -380,7 +380,7 @@ Two more operations tune how transactions conflict.
 
 `commute` is like `alter` for functions whose order doesn't matter, such as
 `+` or `conj` onto a set. Two transactions that commute the same ref don't
-conflict: at commit, Norn applies the function again to the ref's newest
+conflict: at commit, Skein applies the function again to the ref's newest
 value. A shared counter is the typical use:
 
 ```clojure
@@ -434,7 +434,7 @@ again, sees that the other doctor has gone, and stays:
 
 Which doctor stays depends on which transaction commits first.
 
-`norn doc norn.stm` lists the rest: `in-transaction?`, `ref?`, `stm-stats`
+`skein doc skein.stm` lists the rest: `in-transaction?`, `ref?`, `stm-stats`
 for counting commits and retries, the `*max-retries*` limit, and the
 `:max-history` option of `ref`.
 
@@ -448,15 +448,15 @@ big map contend so much that their `swap!`s keep retrying. Transactions cost
 more than atom updates, and their retries make side effects tricky, so use
 them where the coordination pays for itself.
 
-## Coordinating fibers: norn.sync
+## Coordinating fibers: skein.sync
 
 Atoms and refs protect data. Sometimes what you need to coordinate is the
 fibers themselves: how many may do something at once, or when they may go
-on. `norn.sync` provides the classic tools, built on channels and atoms, so
+on. `skein.sync` provides the classic tools, built on channels and atoms, so
 waiting in them parks a fiber and never blocks a carrier.
 
 ```clojure
-(require '[norn.sync :as sync])
+(require '[skein.sync :as sync])
 ```
 
 ### Semaphores
@@ -583,9 +583,9 @@ deref it while it's being computed wait for it:
 `loads` went from 1 to 2: the body ran once, at the first `deref`. Like
 `once`, a delay whose body fails raises the same condition on every `deref`.
 
-## Caches: norn.cache
+## Caches: skein.cache
 
-`memoize`, in `norn.core`, wraps a function so it remembers its results by
+`memoize`, in `skein.core`, wraps a function so it remembers its results by
 argument list. It remembers every result forever, which is right for a small
 set of arguments and wrong for, say, user ids:
 
@@ -596,7 +596,7 @@ set of arguments and wrong for, say, user ids:
 [(slow-square 12) (slow-square 12) @squarings] ; => [144 144 1]
 ```
 
-`norn.cache` adds caches with limits. `(cache/lru n)` holds at most `n`
+`skein.cache` adds caches with limits. `(cache/lru n)` holds at most `n`
 entries and evicts the least recently used one when it needs room.
 `(cache/ttl ms)` forgets each entry `ms` milliseconds after it was stored.
 Both are used with the same functions: `store!` adds an entry, `lookup`
@@ -604,7 +604,7 @@ finds one (a hit counts as a use, for an LRU cache), and `through` looks a
 key up and, on a miss, computes the value with a function and stores it:
 
 ```clojure
-(require '[norn.cache :as cache])
+(require '[skein.cache :as cache])
 
 (def recent (cache/lru 2))
 (cache/store! recent :a 1)
@@ -651,9 +651,9 @@ wins. For an expensive computation that must run only once per key, store a
 
 ## Mutable objects
 
-Everything in this chapter shares values through references. Norn also has
+Everything in this chapter shares values through references. Skein also has
 mutable objects, instances of classes declared `(:mutable)` and buffers from
-`norn.buffer`, which change in place. They belong to one fiber at a time:
+`skein.buffer`, which change in place. They belong to one fiber at a time:
 other fibers get an `OwnershipError` until the object is handed over, with
 `release!` or by sending it on a channel, or made shared with `share`, after
 which `locking` guards changes to it. [Chapter
@@ -669,15 +669,15 @@ data such as pixel buffers.
   than once; keep side effects out of it. One atom holding a map is often all
   the shared state a program needs.
 - `compare-and-set!` compares by identity. Watches observe changes made
-  through `swap!` and `reset!`. Volatiles are atoms in Norn.
+  through `swap!` and `reset!`. Volatiles are atoms in Skein.
 - `binding` gives a var a value for a dynamic extent in one fiber and its
   children; use dynamic vars for context, not for sharing.
-- `norn.stm` refs change together in `dosync` transactions, which retry on
+- `skein.stm` refs change together in `dosync` transactions, which retry on
   conflict. Keep side effects out, or put them in `after-commit`. Use
   `commute` for order-independent updates and `ensure` against write skew.
-- `norn.sync` coordinates fibers: semaphores, latches, barriers, rate
+- `skein.sync` coordinates fibers: semaphores, latches, barriers, rate
   limiters, and `once`. `delay` computes a value once, on first use.
-- `memoize` remembers everything; `norn.cache` gives LRU and TTL caches and
+- `memoize` remembers everything; `skein.cache` gives LRU and TTL caches and
   bounded memoization. Concurrent misses can compute a value twice.
 
 ---

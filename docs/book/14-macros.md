@@ -6,14 +6,14 @@ A macro is a function that runs while your code is being compiled. It
 receives forms, the unevaluated code of its arguments, and returns new
 code that the compiler compiles in its place. Macros are how Lisp grows
 new syntax: `when`, `cond`, `->`, `defn`, and `with-open` are all macros
-written in Norn. This chapter covers `defmacro`, syntax quote, hygiene
+written in Skein. This chapter covers `defmacro`, syntax quote, hygiene
 and auto-gensyms, how to look at what a macro produces, compile-time
-phases, the pattern-based hygienic macros of `norn.syntax`, and when a
+phases, the pattern-based hygienic macros of `skein.syntax`, and when a
 macro is the right tool.
 
 ## Code is data
 
-Norn code is made of Norn data: a call is a list, a binding vector is a
+Skein code is made of Skein data: a call is a list, a binding vector is a
 vector, a name is a symbol. [Chapter 3](03-values-and-expressions.md)
 showed that quoting a form gives you that data instead of evaluating it:
 
@@ -68,21 +68,21 @@ Here is the difference between `~` and `~@` on ordinary values:
 
 ```clojure
 (let [x 6 xs [1 2]]
-  `(+ ~x ~xs ~@xs)) ; => (norn.core/+ 6 [1 2] 1 2)
+  `(+ ~x ~xs ~@xs)) ; => (skein.core/+ 6 [1 2] 1 2)
 ```
 
-The `+` came back as `norn.core/+`. Syntax quote *qualifies* each symbol
+The `+` came back as `skein.core/+`. Syntax quote *qualifies* each symbol
 in the template with the namespace it resolves to, or the current
 namespace if it doesn't resolve to anything. Special forms such as `if`
 and `do` stay as they are.
 
 ```clojure
-`map ; => norn.core/map
+`map ; => skein.core/map
 `if ; => if
 `not-defined-anywhere ; => user/not-defined-anywhere
 ```
 
-Qualification is the first half of how Norn's macros avoid surprising
+Qualification is the first half of how Skein's macros avoid surprising
 their users, covered in the next section but one. First, a way to see
 what macros do.
 
@@ -107,7 +107,7 @@ Three tools show what a macro call becomes:
 
 ```clojure
 (macro-steps '(when-not done (work)))
-; prints: 1. norn.core/when-not (defmacro)
+; prints: 1. skein.core/when-not (defmacro)
 ; prints:    (when-not done (work))
 ; prints: => (if done nil (do (work)))
 ; prints:    introduced: if do
@@ -115,12 +115,12 @@ Three tools show what a macro call becomes:
 ; prints:    (if done nil (do (work)))
 ```
 
-From the shell, `norn expand` does the same for an expression or a whole
+From the shell, `skein expand` does the same for an expression or a whole
 file. It prints each top-level form fully expanded, and with `--steps` it
 shows each step as `macro-steps` does:
 
 ```text
-$ norn expand -e '(when-let [x (f)] (g x))'
+$ skein expand -e '(when-let [x (f)] (g x))'
 ;; <expr>:1:1
 (let* [temp__14__auto__ (f)] (if temp__14__auto__ (do (let* [x temp__14__auto__] (g x)))))
 ```
@@ -132,7 +132,7 @@ brings us to hygiene.
 ## Hygiene
 
 A macro inserts code into someone else's program, and two kinds of name
-collision can happen there. Norn guards against both.
+collision can happen there. Skein guards against both.
 
 ### A macro's local capturing the user's name
 
@@ -202,7 +202,7 @@ var, so a local `helper` doesn't get in the way.
   [(helper) (call-helper)]) ; => [:a-local :the-real-helper]
 ```
 
-Norn goes further than qualification. Its expander tracks where every
+Skein goes further than qualification. Its expander tracks where every
 identifier in a template came from (Racket's *sets of scopes*), so a name
 in a macro's template means what it meant where the macro was defined.
 One consequence is that a macro exported by a module can expand into a
@@ -229,7 +229,7 @@ know where `it` comes from.
 
 ## Code that runs at expansion time
 
-A macro's body is ordinary Norn code, run by the compiler. It can inspect
+A macro's body is ordinary Skein code, run by the compiler. It can inspect
 its arguments, compute, and decide what to produce. This macro accepts
 only a symbol and turns a mistake into a clear error when the call is
 compiled:
@@ -273,12 +273,12 @@ a little more care.
 A module compiles as a unit before it runs (see
 [Chapter 8](08-modules-and-projects.md)). So when a macro in a module
 expands, the module's ordinary definitions haven't run yet: `flag-bits`
-would have no value. Norn makes this explicit with *phases*. Code that
+would have no value. Skein makes this explicit with *phases*. Code that
 runs when the module runs is at phase 0. Code that macros run while the
 module compiles is at phase 1, and it has its own instance of everything
 it uses.
 
-`norn.core` is available at every phase. For anything else a macro's body
+`skein.core` is available at every phase. For anything else a macro's body
 calls, you have two choices:
 
 - Put helper definitions inside `(begin-for-syntax …)`. They're defined at
@@ -286,21 +286,21 @@ calls, you have two choices:
 - Require a library for compile time with `(:require-for-syntax …)` in the
   `ns` form. It takes the same specs as `:require`.
 
-Here is a module that does both. Its macros call `norn.string` and a
+Here is a module that does both. Its macros call `skein.string` and a
 compile-time helper, and `log` expands into a call to a private function.
 (As in the earlier chapters, the example writes the module to a file and
 loads it. Module files are covered in
 [Chapter 8](08-modules-and-projects.md).)
 
 ```clojure
-(require '[norn.io :as io])
+(require '[skein.io :as io])
 
 (io/mkdirs! "lib")
 (add-lib-path! "lib")
 
-(io/write-text "lib/flags.norn" "
+(io/write-text "lib/flags.skn" "
 (ns flags
-  (:require-for-syntax [norn.string :as str]))
+  (:require-for-syntax [skein.string :as str]))
 
 (begin-for-syntax
   (def flag-bits {:read 1 :write 2 :exec 4}))
@@ -334,9 +334,9 @@ Without the `:require-for-syntax`, the macro body's call to
 what to do:
 
 ```clojure
-(io/write-text "lib/flags2.norn" "
+(io/write-text "lib/flags2.skn" "
 (ns flags2
-  (:require [norn.string :as str]))
+  (:require [skein.string :as str]))
 
 (defmacro const-name [sym]
   (keyword (str/upper-case (name sym))))
@@ -344,7 +344,7 @@ what to do:
 
 (handler-case (require 'flags2)
   (Error [e] (condition-message e)))
-; => "lib/flags2.norn:6:13: str/upper-case isn't available at compile time here: define it inside begin-for-syntax, or require its module with :require-for-syntax"
+; => "lib/flags2.skn:6:13: str/upper-case isn't available at compile time here: define it inside begin-for-syntax, or require its module with :require-for-syntax"
 ```
 
 A module required for syntax is a separate instance from the same module
@@ -358,13 +358,13 @@ macro that uses it one after the other, as the previous section did.
 One more rule applies in modules: define a macro before the code that uses
 it. The compiler expands each use as it reaches it, so a macro has to be
 known by then. A call written above the macro's definition is an error
-when the module loads, naming the macro, and `norn lint` reports it as
+when the module loads, naming the macro, and `skein lint` reports it as
 `macro-order`.
 
-## Hygienic macros with norn.syntax
+## Hygienic macros with skein.syntax
 
 `defmacro` works on plain data and leans on syntax quote's qualification
-and auto-gensyms. `norn.syntax` offers a second style, from Racket and
+and auto-gensyms. `skein.syntax` offers a second style, from Racket and
 Scheme: macros written as patterns and templates over *syntax objects*,
 which carry each piece of code's scopes and source location. They're
 hygienic without any `#` suffixes, and they can report malformed calls at
@@ -377,7 +377,7 @@ transformer is `syntax-rules`: a list of literal identifiers (often
 empty) followed by clauses, each a pattern and a template.
 
 ```clojure
-(require '[norn.syntax :as syn
+(require '[skein.syntax :as syn
            :refer [defsyntax syntax-rules syntax-parser syntax define-syntax-class]])
 
 (defsyntax swap-pair
@@ -479,7 +479,7 @@ Because the macro is hygienic, the template's `end` is not the user's
 A malformed call is a `SyntaxError` that says what was expected:
 
 ```clojure
-(eval '(range-loop [1 0 3] (print 1))) ; !! norn.syntax/SyntaxError
+(eval '(range-loop [1 0 3] (print 1))) ; !! skein.syntax/SyntaxError
 
 (handler-case (eval '(range-loop [i 0] (print i)))
   (Error [e] (condition-message e)))
@@ -490,7 +490,7 @@ When the call comes from a source file, the message starts with the
 file, line, and column of the part that's wrong:
 
 ```text
-Error: report.norn:28:13: range-loop: expected a binding [name from to]
+Error: report.skn:28:13: range-loop: expected a binding [name from to]
 ```
 
 When no clause matches, the error describes the part that got furthest
@@ -540,7 +540,7 @@ pair, by calling itself on the rest:
 
 `syntax-parse` runs the same kind of clauses on a syntax object inside
 your own transformer function, and `syntax-case` and `syntax` offer the
-plainer Scheme-style matching. `norn doc norn.syntax` lists them, along
+plainer Scheme-style matching. `skein doc skein.syntax` lists them, along
 with the functions for working with syntax objects directly:
 `syntax-e`, `syntax->datum`, `datum->syntax`, `syntax-where`, and the
 rest.
@@ -558,7 +558,7 @@ right place for almost no extra code.
 
 The core macros people most often get wrong are checked the same way:
 `let`, `loop`, `fn`, `defn`, `cond`, `case`, and `ns`. The checks live in
-`norn.validate`, and the expander runs them before the macro itself, so a
+`skein.validate`, and the expander runs them before the macro itself, so a
 malformed call gets an error that says what was expected:
 
 ```clojure
@@ -576,7 +576,7 @@ error from `syntax-parser`.
 
 ## Formatting hints
 
-`norn fmt` lays out a macro call like a function call unless it knows the
+`skein fmt` lays out a macro call like a function call unless it knows the
 macro has a body. Say so with `:indent` in the macro's attribute map: the
 number of arguments that come before the body.
 
@@ -597,8 +597,8 @@ number of arguments that come before the body.
 With `{:indent 1}`, the formatter indents the body by two spaces under
 `(retrying 3`, as it does for `when` or `let`. The hint is recorded when
 the `defmacro` runs, so it applies wherever the macro is loaded, as when
-an editor formats code through `norn --server`
-([Chapter 12](12-live-programming.md)). `norn fmt` run from the shell
+an editor formats code through `skein --server`
+([Chapter 12](12-live-programming.md)). `skein fmt` run from the shell
 doesn't load the files it formats, but it reads the hints from the
 `defmacro` forms in them, so a macro defined in any of the files it's
 given gets its hint in all of them. Macros whose names start with `def` or
@@ -631,7 +631,7 @@ Some habits keep macros pleasant to use:
 - Check the shape of the call with `syntax-parser`, or at least throw a
   clear error from a `defmacro`.
 - Look at the expansion with `macroexpand-1`, `macro-steps`, or
-  `norn expand --steps` whenever a macro surprises you.
+  `skein expand --steps` whenever a macro surprises you.
 
 Remember that a macro isn't a value. You can't pass `unless` to `map` or
 store it in a map, and calling one as if it were a function is an error.
@@ -647,15 +647,15 @@ store it in a map, and calling one as if it were a function is an error.
 - Syntax quote builds templates: `~` inserts a value and `~@` splices a
   sequence. Symbols are qualified with their namespace, and `name#` makes
   a fresh local.
-- Norn's macros are hygienic: a macro's locals don't capture the user's
+- Skein's macros are hygienic: a macro's locals don't capture the user's
   names, and the user's locals don't capture the macro's. `~'name`
   captures deliberately.
-- `macroexpand-1`, `macroexpand`, `macro-steps`, and `norn expand
+- `macroexpand-1`, `macroexpand`, `macro-steps`, and `skein expand
   --steps` show what a macro produces.
 - In a module, a macro body runs at phase 1. Its helpers go in
   `begin-for-syntax` and its libraries in `(:require-for-syntax …)`. The
   REPL top level is more relaxed.
-- `norn.syntax` gives hygienic pattern macros: `defsyntax` with
+- `skein.syntax` gives hygienic pattern macros: `defsyntax` with
   `syntax-rules` or `syntax-parser`, syntax classes, and errors that point
   at the malformed part.
 - Write a macro only when a function can't do the job, and keep it thin.

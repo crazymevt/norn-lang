@@ -1,0 +1,24 @@
+;; skein.sync's public interface, recorded by skein api-diff --record.
+{
+ "Barrier" {:kind :class, :slots ["parties" "state"], :supers ["skein.core/StandardObject"]}
+ "Latch" {:kind :class, :slots ["count" "done"], :supers ["skein.core/StandardObject"]}
+ "Once" {:kind :class, :slots ["f" "state"], :supers ["skein.core/StandardObject"]}
+ "RateLimiter" {:kind :class, :slots ["burst" "rate" "state"], :supers ["skein.core/StandardObject"]}
+ "Semaphore" {:kind :class, :slots ["permits" "tokens"], :supers ["skein.core/StandardObject"]}
+ "acquire!" {:arglists ["[s]"], :kind :function, :signature [{:result "Any", :args ["Semaphore"]}]}
+ "arrive!" {:arglists ["[b]"], :kind :function, :signature [{:result "Integer", :args ["Barrier"]}]}
+ "available" {:arglists ["[s]"], :kind :function, :signature [{:result "Integer", :args ["Semaphore"]}]}
+ "await-latch" {:arglists ["[l]" "[l timeout-ms]"], :kind :function, :signature [{:result "Boolean", :args ["Latch"]} {:result "Boolean", :args ["Latch" "Integer"]}]}
+ "barrier" {:arglists ["[n]"], :kind :function, :signature [{:result "Barrier", :args ["Integer"]}]}
+ "count-down!" {:arglists ["[l]"], :kind :function, :signature [{:result "Any", :args ["Latch"]}]}
+ "latch" {:arglists ["[n]"], :kind :function, :signature [{:result "Latch", :args ["Integer"]}]}
+ "latch-count" {:arglists ["[l]"], :kind :function, :signature [{:result "Integer", :args ["Latch"]}]}
+ "once" {:arglists ["[f]"], :kind :function, :signature [{:result "Function", :args ["Any"]}]}
+ "rate-limiter" {:arglists ["[rate]" "[rate burst]"], :kind :function, :signature [{:result "RateLimiter", :args ["Number"]} {:result "RateLimiter", :args ["Number" "Number"]}]}
+ "release!" {:arglists ["[s]"], :kind :function, :signature [{:result "Any", :args ["Semaphore"]}]}
+ "semaphore" {:arglists ["[n]"], :kind :function, :signature [{:result "Semaphore", :args ["Integer"]}]}
+ "take-token!" {:arglists ["[rl]" "[rl n]"], :kind :function, :signature [{:result "Any", :args ["RateLimiter"]} {:result "Any", :args ["RateLimiter" "Number"]}]}
+ "try-acquire!" {:arglists ["[s]"], :kind :function, :signature [{:result "Boolean", :args ["Semaphore"]}]}
+ "try-take!" {:arglists ["[rl]" "[rl n]"], :kind :function, :signature [{:result "Boolean", :args ["RateLimiter"]} {:result "Boolean", :args ["RateLimiter" "Number"]}]}
+ "with-permit" {:arglists ["[s & body]"], :kind :macro}
+}

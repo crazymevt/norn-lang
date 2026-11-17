@@ -1,5 +1,0 @@
-;; norn.doc's public interface, recorded by norn api-diff --record.
-{
- "main" {:arglists ["[& args]"], :kind :function}
- "ns-summary" {:arglists ["[ns-name]"], :kind :function}
-}

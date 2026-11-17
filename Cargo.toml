@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/norn-rt", "crates/norn-vm", "crates/norn", "spikes/jit-spike"]
-default-members = ["crates/norn-rt", "crates/norn-vm", "crates/norn"]
+members = ["crates/skein-rt", "crates/skein-vm", "crates/skein", "spikes/jit-spike"]
+default-members = ["crates/skein-rt", "crates/skein-vm", "crates/skein"]
 
 [workspace.package]
 version = "0.0.1"

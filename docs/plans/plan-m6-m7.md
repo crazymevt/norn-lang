@@ -9,12 +9,12 @@ in design.md or runtime.md and listed at the end of this file.
 
 Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
 
-- The libraries live in `lib/norn/` (`io.norn`, `net.norn`, …), one
-  namespace each (`norn.io`, …).
-- They are embedded in the binary with `include_str!`, so `norn` stays a
+- The libraries live in `lib/skein/` (`io.skn`, `net.skn`, …), one
+  namespace each (`skein.io`, …).
+- They are embedded in the binary with `include_str!`, so `skein` stays a
   single file.
-- `(require 'norn.io)` loads one the first time, from the embedded copy
-  (or from `NORN_PATH` for user code), and caches it.
+- `(require 'skein.io)` loads one the first time, from the embedded copy
+  (or from `SKEIN_PATH` for user code), and caches it.
 - An image includes whatever was loaded before the save.
 
 ## M6: I/O, the system, and a basic FFI — done (2026-11-13)
@@ -24,10 +24,10 @@ Modules arrive in M8, but M6 already adds a dozen libraries. Until then:
 | 6.1 | **Weak references and finalizers** in the MMTk binding (`ReferenceGlue`, finalizable objects). The resource registry becomes weak. | Weak values disappear after a GC; finalizers run once; GC stress |
 | 6.2 | **Byte arrays and buffers** (a new heap kind); UTF-8, base64 and hex encodings | Round trips; printing and equality |
 | 6.3 | **The reactor**: a `mio` thread (kqueue/epoll) that wakes parked fibers through waiters and claims, as timers do; a **blocking pool** for files and blocking calls; the **monitor thread**, which starts a replacement carrier when one is stuck in a long native call | Thousands of fibers waiting on sockets without blocking a carrier; a carrier stuck in a blocking call doesn't stall the others |
-| 6.4 | **`norn.io`** (files, streams, paths), **`norn.fs`** (walking directories, glob patterns, watching with `notify`), **`norn.sys`**, **`norn.process`** (child processes with pipes), **`norn.time`**, **`norn.signal`** (signals as channel messages, via `signal-hook`), **fiber dumps** | Library suites; signals; a fiber dump of a busy runtime |
-| 6.5 | **`norn.net`**: TCP and UDP on the reactor; TLS with `rustls` | Echo client and server; TLS against a local certificate |
+| 6.4 | **`skein.io`** (files, streams, paths), **`skein.fs`** (walking directories, glob patterns, watching with `notify`), **`skein.sys`**, **`skein.process`** (child processes with pipes), **`skein.time`**, **`skein.signal`** (signals as channel messages, via `signal-hook`), **fiber dumps** | Library suites; signals; a fiber dump of a busy runtime |
+| 6.5 | **`skein.net`**: TCP and UDP on the reactor; TLS with `rustls` | Echo client and server; TLS against a local certificate |
 | 6.6 | **The basic FFI**: load a library (`libloading`); call functions with integer, float, pointer and byte-buffer arguments; Cranelift-generated call stubs; fast or blocking calls; handles as resources with finalizers | Calls into libc and a test library; a blocking call doesn't stall its carrier |
-| 6.7 | **Done-check and docs**: a 10,000-connection TCP echo server; a socket saved in an image comes back as `ResourceLost` and `reconnect` works; runtime.md status §12.7 | `crates/norn/tests/io.rs` |
+| 6.7 | **Done-check and docs**: a 10,000-connection TCP echo server; a socket saved in an image comes back as `ResourceLost` and `reconnect` works; runtime.md status §12.7 | `crates/skein/tests/io.rs` |
 
 ## M7: numbers, collections, the pure stdlib and tooling — done (2026-11-13)
 
@@ -35,24 +35,24 @@ Decisions for M7 are at the end, after M6's.
 
 | Part | Work |
 |---|---|
-| 7.1 | **The numeric tower**: bignums (a heap kind holding limbs in the Norn heap) and ratios; automatic promotion in the primitives; tier 1's overflow takes the slow path; the equality rules of design §3.4 (reflexive NaN, normalisation, categories) |
+| 7.1 | **The numeric tower**: bignums (a heap kind holding limbs in the Skein heap) and ratios; automatic promotion in the primitives; tier 1's overflow takes the slow path; the equality rules of design §3.4 (reflexive NaN, normalisation, categories) |
 | 7.2 | **Equality declarations and mutable objects**: `(:equality :identity)`, `:compare false`; `(:mutable)` classes with fiber ownership, `release!`, `share` and `locking` (design §4.2) |
 | 7.3 | **Sequences**: type-preserving `map`, `filter` and the rest (design §3.3); `lazy` streams and the generators; transducers (with `preduce` and channels) |
 | 7.4 | **Collections**: sorted maps and sets, a persistent queue, transients, and persistent ropes (for the editor) |
-| 7.5 | **Text and data**: `norn.string` (with Unicode graphemes and display widths), `norn.format`, `norn.regex` (the `regex` crate), `norn.json`, `norn.edn`, `norn.pprint` |
-| 7.6 | **Everything else in the pure stdlib**: `norn.math`, `norn.set`, `norn.walk`, `norn.random`, `norn.async` extras, `norn.sync`, `norn.cache`, `norn.log` |
-| 7.7 | **Testing**: `norn.test` and the `norn test` runner; the existing suites ported to it |
-| 7.8 | **Formatting and linting**: the reader mode that keeps comments and whitespace; `norn fmt`; indentation hints on macros; `norn lint` (compiler warnings); `:format`/`:lint` in the editor protocol; `lib/` and `tests/` formatted and lint-clean |
-| 7.9 | **Docs and the REPL**: the docstring convention, `norn doc`, deprecation; `doc`, `apropos`, `source`, an inspector, `trace`/`untrace`; `norn.bench`; a terminal line editor (`rustyline`); `norn image info` and image diff; `norn check`; coverage if cheap |
-| 7.10 | **Done-check and docs**: every suite on `norn.test`; promotion past 62 bits identical at both tiers; `fmt --check` and `lint` clean; runtime.md status §12.8 |
+| 7.5 | **Text and data**: `skein.string` (with Unicode graphemes and display widths), `skein.format`, `skein.regex` (the `regex` crate), `skein.json`, `skein.edn`, `skein.pprint` |
+| 7.6 | **Everything else in the pure stdlib**: `skein.math`, `skein.set`, `skein.walk`, `skein.random`, `skein.async` extras, `skein.sync`, `skein.cache`, `skein.log` |
+| 7.7 | **Testing**: `skein.test` and the `skein test` runner; the existing suites ported to it |
+| 7.8 | **Formatting and linting**: the reader mode that keeps comments and whitespace; `skein fmt`; indentation hints on macros; `skein lint` (compiler warnings); `:format`/`:lint` in the editor protocol; `lib/` and `tests/` formatted and lint-clean |
+| 7.9 | **Docs and the REPL**: the docstring convention, `skein doc`, deprecation; `doc`, `apropos`, `source`, an inspector, `trace`/`untrace`; `skein.bench`; a terminal line editor (`rustyline`); `skein image info` and image diff; `skein check`; coverage if cheap |
+| 7.10 | **Done-check and docs**: every suite on `skein.test`; promotion past 62 bits identical at both tiers; `fmt --check` and `lint` clean; runtime.md status §12.8 |
 
 ## Decisions made along the way
 
-- **2026-11-13: Emacs and VS Code plugins dropped from M7.** The Norn
-  editor (M7.6) is the target; other editors can use `norn lsp` (M9).
+- **2026-11-13: Emacs and VS Code plugins dropped from M7.** The Skein
+  editor (M7.6) is the target; other editors can use `skein lsp` (M9).
 - **Library loading (before modules).**
   - `(require 'a.b)` looks for an embedded library first, then
-    `a/b.norn` under `NORN_PATH` and the current directory. Dashes stay
+    `a/b.skn` under `SKEIN_PATH` and the current directory. Dashes stay
     dashes in file names.
   - `ns` gained `(:require [lib :as x :refer [...]])`. Aliases also work
     inside syntax-quote, where they expand to the full namespace name.
@@ -70,9 +70,9 @@ Decisions for M7 are at the end, after M6's.
   objects. The literal is `#bytes "68656c6c6f"` (hex), so bytes print
   readably. `=` and `hash` compare contents, and bytes never equal a vector
   or a string. Bytes have their own builtin class, `Bytes`.
-- **Hex and base64 are hand-written** (`norn-vm/src/codec.rs`, about 80
+- **Hex and base64 are hand-written** (`skein-vm/src/codec.rs`, about 80
   lines, tested against RFC 4648's examples) rather than a crate.
-- **Standard-library tests** live in one suite, `tests/norn/lib_test.norn`,
+- **Standard-library tests** live in one suite, `tests/skein/lib_test.skn`,
   which runs in process, at both tiers, and from an image.
 - **I/O waits use event counts, not readiness flags** (runtime.md §5.5).
   The wrapper reads the count before trying the operation and waits only if
@@ -97,12 +97,12 @@ Decisions for M7 are at the end, after M6's.
   returns a new handle; a file opened `:write` reopens as `:append`, so what
   was written before the restore stays.
 - **`try` recognises `catch` and `finally` in any namespace.** A macro's
-  syntax-quote qualifies them (`norn.io/finally`), which used to turn them
+  syntax-quote qualifies them (`skein.io/finally`), which used to turn them
   into ordinary calls.
 - **File watching uses `notify` 8.** Events go to a channel buffering 1,024
   of them, and are dropped while it's full.
-- **`norn.sys` reads environment variables but doesn't set them**; children
-  get their environment through `norn.process`.
+- **`skein.sys` reads environment variables but doesn't set them**; children
+  get their environment through `skein.process`.
 - **Child processes:**
   - A child's pipes are ordinary reactor streams.
   - Waiting runs on the blocking pool; `kill` signals by pid, so it never
@@ -122,7 +122,7 @@ Decisions for M7 are at the end, after M6's.
 - **Fiber dumps** (`(fiber-dump)`, or SIGQUIT / Ctrl-\ printing to stderr,
   as the JVM does):
   - Every fiber is paused while the dump walks the heap from the GC roots
-    (`norn-rt/src/walk.rs`). It lists each unfinished fiber's state, what
+    (`skein-rt/src/walk.rs`). It lists each unfinished fiber's state, what
     it waits for, its namespace and its frames.
   - The walk holds off the reactor and the pool but not the timer thread.
     Listing the roots takes the timer lock, and a timer firing can only move
@@ -139,7 +139,7 @@ Decisions for M7 are at the end, after M6's.
     to write). TLS can need either direction for either operation.
 - **The open-file limit is raised at startup** to the most the OS allows
   (macOS caps it at `kern.maxfilesperproc`), as Go does.
-- **Test certificates** live in `tests/norn/certs` (a CA and a
+- **Test certificates** live in `tests/skein/certs` (a CA and a
   `localhost`/`127.0.0.1` server certificate valid for 100 years; the CA's
   key was deleted).
 - **Found and fixed: heap corruption under GC stress.** Two causes:
@@ -187,33 +187,33 @@ Decisions for M7 are at the end, after M6's.
   The lock is a one-token channel plus a holder atom, so it parks; it's
   reentrant.
 - **Streams are realized by the interpreter** (runtime.md §5.4.1), not by
-  Norn wrappers around `first` and friends, so streams are real seqs and
+  Skein wrappers around `first` and friends, so streams are real seqs and
   the primitives keep their speed. `cons` keeps a stream tail unrealized.
 - **On a map:** the selecting functions keep a map; the ones that compute
   new items give a vector (design §3.3).
 - **Transducers** are the sequence functions with one argument fewer;
   `reduced`, `reduced?` and `unreduced` are primitives (a small `Reduced`
   heap kind), so `reduce` checks for early exit cheaply.
-- **`norn -e`** realizes a stream result before printing it, as a REPL
+- **`skein -e`** realizes a stream result before printing it, as a REPL
   prints a lazy seq in full.
 - **Sorted collections use natural order only** (`compare`). A
-  `sorted-map-by` with a user comparator would need Rust to call Norn,
-  which it never does (runtime.md §2.3); it waits until Norn classes can
+  `sorted-map-by` with a user comparator would need Rust to call Skein,
+  which it never does (runtime.md §2.3); it waits until Skein classes can
   implement the collection operations themselves.
-- **Sorted, queue and transient are Rust heap kinds**, not Norn code as
+- **Sorted, queue and transient are Rust heap kinds**, not Skein code as
   §2.4 first proposed: they need no user callbacks, and every collection
   primitive then handles them at full speed.
 - **Transient vectors are fast; transient maps and sets are API-complete
   but copy per change.** In-place CHAMP editing is later work; the API
   won't change.
-- **Ropes are Norn code** (`norn.rope`): chunks of at most 512 characters,
+- **Ropes are Skein code** (`skein.rope`): chunks of at most 512 characters,
   AVL-balanced, each branch caching length and newline count. Three small
   string primitives (`%str-stats`, `%nth-newline-end`, `%count-newlines`)
   do the per-chunk counting. Indexes are characters (code points);
-  graphemes come with `norn.string` in 7.5.
+  graphemes come with `skein.string` in 7.5.
 - **`conj!` takes one item**, as in Clojure.
 - **Text indexes are code points**; graphemes and display widths are
-  functions (`norn.string`), not the unit of indexing (runtime.md §2.6).
+  functions (`skein.string`), not the unit of indexing (runtime.md §2.6).
 - **Regexes compare by pattern** (Clojure compares them by identity), as
   design §3.4's structural equality suggests; they're a heap kind so they
   print, hash and save in images. Syntax is the `regex` crate's.
@@ -222,38 +222,38 @@ Decisions for M7 are at the end, after M6's.
   rest. `re-seq` returns a vector (eager core, design §3.3).
 - **JSON keys become keywords by default**, since configuration files and
   editor protocol messages are the common case; `:keywords false` keeps
-  strings. JSON is hand-written Rust rather than serde, to build Norn
+  strings. JSON is hand-written Rust rather than serde, to build Skein
   values directly.
-- **`norn.edn` is the reader without evaluation.** Tagged literals
+- **`skein.edn` is the reader without evaluation.** Tagged literals
   (`#inst`, `#uuid`, user tags) wait for reader extensions.
 - **`cl-format` is deferred**: `format` covers printf directives, and
-  `norn.format` adds helpers for people (numbers with separators,
+  `skein.format` adds helpers for people (numbers with separators,
   percentages, byte sizes, durations, ordinals, plurals).
 - **`pprint` fills lines** with small items (as Clojure's does for
   vectors), puts one map entry per line when a map doesn't fit, and keeps
   a code form's head symbol and first argument together.
-- **`norn.ui` is a separate package** (decided by the user, 2026-11-13;
-  design §9.1). It lives in its own `norn-ui` repository, semver from 0.1,
+- **`skein.ui` is a separate package** (decided by the user, 2026-11-13;
+  design §9.1). It lives in its own `skein-ui` repository, semver from 0.1,
   with a shared Rust engine drawing a retained, themed control tree on the
   GPU (JavaFX-style), a thick protocol (tree patches in, semantic events
   out), platform backends (macOS, then headless, Linux and Windows), and
-  embeddable OS views such as webviews (`norn-ui-webview`, optional).
+  embeddable OS views such as webviews (`skein-ui-webview`, optional).
   Idle must be idle: no render loop, damage-only repaints, frame counters
   for tests. This repository's M7.5 shrinks to two general hooks
   (main-thread handoff and a native extension API) plus a protocol spec.
-- **The Norn editor is essentially Xeon Studio rebuilt in Norn** (decided
+- **The Skein editor is essentially Xeon Studio rebuilt in Skein** (decided
   by the user, 2026-11-13; design §9.1), with its full feature set (AI
   chat and team chat, the API workbench and Databases view, the terminal,
-  and the rest). Language support starts with Norn only; Common Lisp,
+  and the rest). Language support starts with Skein only; Common Lisp,
   Clojure and Racket can come later.
 - **The editor's panels are phased** (decided by the user, 2026-11-13). The
   API/HTTP workbench, the Databases view and the terminal panel arrive
-  when M9's HTTP client, database drivers (SQLite first) and `norn.process`
+  when M9's HTTP client, database drivers (SQLite first) and `skein.process`
   pseudo-terminals land; pseudo-terminals join M9's list and can come
   earlier. Everything else is in M7.6, and its done-check is unchanged.
-  `norn.ui` 0.1 still plans the cell-grid and virtualized-grid widgets,
+  `skein.ui` 0.1 still plans the cell-grid and virtualized-grid widgets,
   which may slip to a later 0.x.
-- **Rounding is exact** (7.6): `norn.math`'s `floor`, `ceil`, `round` and
+- **Rounding is exact** (7.6): `skein.math`'s `floor`, `ceil`, `round` and
   `trunc` return integers of any size, and never pass ratios through
   floating point; `expt` is exact for an exact base and integer exponent.
   `round` rounds halves away from zero, with `:even` for banker's rounding.
@@ -265,21 +265,21 @@ Decisions for M7 are at the end, after M6's.
   `shuffle` are in core.
 - **Dropping and sliding channels are in Rust**: `(chan n :dropping)` and
   `(chan n :sliding)` set a policy bit in the capacity word, so puts on a
-  full channel succeed without parking. `norn.async`'s connectors (pipe,
-  map, filter, merge, split, pipeline, mult, pub/sub) are Norn fibers over
+  full channel succeed without parking. `skein.async`'s connectors (pipe,
+  map, filter, merge, split, pipeline, mult, pub/sub) are Skein fibers over
   ordinary channels.
-- **`norn.sync` parks fibers, never carriers**: semaphores are channels of
+- **`skein.sync` parks fibers, never carriers**: semaphores are channels of
   tokens, latches close a channel at zero, barriers swap a gate channel,
   the rate limiter is a token bucket in an atom, and `once` runs its
   function once while late callers wait.
-- **`norn.cache`'s LRU uses a sorted map** of use tick → key, so eviction is
+- **`skein.cache`'s LRU uses a sorted map** of use tick → key, so eviction is
   O(log n). Caches live in an atom; `memoize` (unbounded) is in core.
-- **`norn.log`'s macros check the level before evaluating arguments**.
+- **`skein.log`'s macros check the level before evaluating arguments**.
   Levels are global, per namespace prefix, or bound per fiber; the sink is
   replaceable (for JSON lines or tests).
 - **Added to core:** `swap-vals!`, `reset-vals!`, `memoize`, `fnil`,
   `repeatedly`.
-- **`norn.test` is Clojure-style** (7.7): `deftest`, `is` (with `=`,
+- **`skein.test` is Clojure-style** (7.7): `deftest`, `is` (with `=`,
   `thrown?` and `thrown-with-msg?` forms), `testing`, `are` and fixtures.
   The suites were ported mechanically: `(is expected actual)` became
   `(is (= expected actual))`. They stay scripts of top-level checks, which
@@ -292,15 +292,15 @@ Decisions for M7 are at the end, after M6's.
   shows through `await`.
 - **Parallelism** (decided by the user, 2026-11-13): files run in parallel,
   one fiber each. A namespace's tests run in order unless it calls
-  `(parallel-tests!)`; `norn test --serial` turns everything off.
-- **`norn test [--only RE] [--serial] [--tap] [--junit FILE] [paths…]`**
-  finds `*_test.norn` under `tests/` by default and exits 1 on any failure
-  or error. The cargo harness runs each suite through `norn.test`.
+  `(parallel-tests!)`; `skein test --serial` turns everything off.
+- **`skein test [--only RE] [--serial] [--tap] [--junit FILE] [paths…]`**
+  finds `*_test.skn` under `tests/` by default and exits 1 on any failure
+  or error. The cargo harness runs each suite through `skein.test`.
 - **The comment-keeping reader is a separate Rust scanner** (7.8,
-  `cst.rs`): it returns a syntax tree as Norn data (tokens, spaces,
+  `cst.rs`): it returns a syntax tree as Skein data (tokens, spaces,
   newlines, comments, collections, prefixes) whose text concatenates back
   to the source exactly. The reader proper is unchanged.
-- **`norn fmt` keeps line breaks** (cljfmt-style), rather than reflowing
+- **`skein fmt` keeps line breaks** (cljfmt-style), rather than reflowing
   code (gofmt/zprint-style): it fixes spacing, blank lines, closing
   brackets and indentation, and nothing else. Indentation: collections
   align inside the bracket; calls align with their first argument, or
@@ -309,7 +309,7 @@ Decisions for M7 are at the end, after M6's.
   it starts on a new line. Macros declare `{:indent n}` (an attribute map
   `defmacro` now accepts). Every rewrite is checked with `same-code?` and a
   file is left alone if the tokens would change.
-- **`norn lint` is a static walk, not the compiler in analysis mode**: it
+- **`skein lint` is a static walk, not the compiler in analysis mode**: it
   reads each top-level form, evaluates only `ns`, `in-ns`, `require` and
   `defmacro`, expands macros (calling them in the linting fiber, so macros
   that block work) and walks the special forms. Arity comes from the
@@ -319,9 +319,9 @@ Decisions for M7 are at the end, after M6's.
   catch bindings and macro-introduced bindings aren't reported; shadowing
   core *functions* isn't; shadowing a core macro is only when the same
   form also calls it.
-- **Found by the linter:** unused bindings in `norn.sync`, `norn.test` and
+- **Found by the linter:** unused bindings in `skein.sync`, `skein.test` and
   a test; a `defclass` inside a function in a test; a missing `juxt`
-  (added to core); `norn.regex/quote` renamed `literal` (a function named
+  (added to core); `skein.regex/quote` renamed `literal` (a function named
   like a special form can't be called unqualified in its own namespace).
 - **Definitions are indexed as they're read** (7.9), not by changing
   `defn`: `%eval-reader` notes every top-level `def…` form (docstring,
@@ -334,19 +334,19 @@ Decisions for M7 are at the end, after M6's.
 - **Docstring convention:** Markdown; then an optional attribute map
   (`defn` and `defmacro` accept one) with `:since`, `:deprecated`,
   `:see-also` and `:examples [[expr expected] …]`. Deprecation is reported
-  by `norn lint` (`:deprecated`), not at compile time; `norn check` runs
+  by `skein lint` (`:deprecated`), not at compile time; `skein check` runs
   the examples.
-- **Privacy isn't tracked yet**: the reader drops `^:private`, so `norn doc`
+- **Privacy isn't tracked yet**: the reader drops `^:private`, so `skein doc`
   hides `defn-` definitions only. Proper var metadata is later work.
 - **`trace` sees calls through the var**: a self-recursive `defn` calls
   itself through its local name, so only the outer call shows.
 - **Printing can be captured**: binding `*out*` to an atom of a vector
   collects printed text; `with-out-str` uses it.
-- **Image tools run each image in its own process** (`norn image info`,
-  `norn image diff`); the diff compares functions by code and constants
+- **Image tools run each image in its own process** (`skein image info`,
+  `skein image diff`); the diff compares functions by code and constants
   and other values by printed form, which is stable across processes.
 - **The terminal REPL uses rustyline** when stdin is a terminal: history in
-  `~/.norn_history`, multi-line input, Tab completion of names.
+  `~/.skein_history`, multi-line input, Tab completion of names.
 - **Coverage is deferred**: counting bytecode executions needs interpreter
   and tier-1 support, which isn't cheap; it waits for the profiler (M9).
 - **Follow-up noted:** a runaway recursion grows to the 256 MB stack limit

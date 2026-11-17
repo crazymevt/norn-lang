@@ -1,6 +1,0 @@
-;; norn.signal's public interface, recorded by norn api-diff --record.
-{
- "listen" {:arglists ["[& sigs]"], :kind :function, :signature [{:result "Map", :args [], :rest "Keyword"}]}
- "raise" {:arglists ["[sig]"], :kind :function, :signature [{:result "Any", :args ["Keyword"]}]}
- "stop!" {:arglists ["[l]"], :kind :function, :signature [{:result "Any", :args ["Map"]}]}
-}

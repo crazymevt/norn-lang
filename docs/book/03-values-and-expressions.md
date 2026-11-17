@@ -2,7 +2,7 @@
 
 [Contents](README.md) · Previous: [2. First steps](02-first-steps.md) · Next: [4. Functions and control flow](04-functions-and-control-flow.md) <!-- nav -->
 
-Every Norn program is made of the same few kinds of values: numbers,
+Every Skein program is made of the same few kinds of values: numbers,
 strings, characters, keywords, symbols, `nil`, booleans, and collections.
 Code is written in those same values. This chapter covers how the reader
 turns text into values, how the evaluator gives those values meaning, how
@@ -12,11 +12,11 @@ symbols. Collections get their own chapter, [Chapter 5](05-collections.md).
 
 The examples are written the way the REPL shows them. A comment such as
 `; => 5` is the value the form returns. Type the form at the `user=>`
-prompt, or put it in a file and run it with `norn file.norn`.
+prompt, or put it in a file and run it with `skein file.skn`.
 
 ## Text becomes data
 
-Norn runs your program in two steps. First the *reader* turns source text
+Skein runs your program in two steps. First the *reader* turns source text
 into data: lists, vectors, symbols, numbers, and so on. Then the
 *evaluator* takes that data and computes a result. Most languages hide the
 first step. In a Lisp it is visible, because the data the reader produces
@@ -27,7 +27,7 @@ the text describes, without evaluating it.
 
 ```clojure
 (read-string "(+ 1 2)") ; => (+ 1 2)
-(read-string "{:name \"Ada\" :langs [:norn :ml]}") ; => {:name "Ada" :langs [:norn :ml]}
+(read-string "{:name \"Ada\" :langs [:skein :ml]}") ; => {:name "Ada" :langs [:skein :ml]}
 (count (read-string "(+ 1 2)")) ; => 3
 ```
 
@@ -107,7 +107,7 @@ anywhere in the namespace. [Chapter 8](08-modules-and-projects.md) covers
 namespaces.
 
 The fourth rule is where most of the work happens. In an ordinary call,
-Norn evaluates every item of the list, left to right, and then calls the
+Skein evaluates every item of the list, left to right, and then calls the
 first value with the rest as arguments.
 
 ```clojure
@@ -121,10 +121,10 @@ function, `(+ 2 3)` to `5`, and `4` to itself, then calls the function with
 `5` and `4`. There is no operator precedence to remember, because every
 operation is written with its own parentheses.
 
-Norn is a *Lisp-1*: functions and other values share one namespace. The
+Skein is a *Lisp-1*: functions and other values share one namespace. The
 symbol `+` names a function the same way `width` names a number, and you
 can pass `+` to another function like any other value. (Common Lisp keeps
-functions in a separate namespace. Norn does not.)
+functions in a separate namespace. Skein does not.)
 
 ```clojure
 (reduce + [1 2 3 4]) ; => 10
@@ -135,7 +135,7 @@ functions in a separate namespace. Norn does not.)
 An ordinary call evaluates all its arguments first, which is wrong for
 some operations. `(if test then else)` must evaluate only one branch.
 `(def name value)` must not evaluate `name`. Forms like these are *special
-forms*, built into the compiler. Norn has only a handful: `quote`, `if`,
+forms*, built into the compiler. Skein has only a handful: `quote`, `if`,
 `do`, `def`, `var`, `recur`, and the primitive binding forms that `fn`,
 `let`, and `loop` are built from.
 
@@ -197,7 +197,7 @@ are the same value.
 
 ## Truth and falsehood
 
-Norn has two booleans, `true` and `false`. Conditionals such as `if`,
+Skein has two booleans, `true` and `false`. Conditionals such as `if`,
 `when`, `and`, and `or` accept any value as a test, though, and the rule
 for what counts as true is short: **only `nil` and `false` are false.**
 Everything else is true, including `0`, the empty string, and empty
@@ -212,7 +212,7 @@ collections.
 (if () :yes :no) ; => :yes
 ```
 
-The last line is the one Common Lisp programmers should notice. In Norn
+The last line is the one Common Lisp programmers should notice. In Skein
 the empty list `()` is a real, empty collection, and it is not `nil`.
 Clojure programmers will find this familiar. To ask whether a collection
 has items, use `empty?` or `seq`, which returns `nil` for an empty
@@ -276,22 +276,22 @@ it, `rest` returns the empty list and `next` returns `nil`.
 
 ## Numbers
 
-Norn has a *numeric tower*: integers of any size, exact ratios, and
+Skein has a *numeric tower*: integers of any size, exact ratios, and
 floating-point numbers. Arithmetic picks the right kind for you and never
 silently overflows.
 
 ### Integers
 
 Integers are exact and unbounded. Small ones are stored compactly; when a
-result outgrows a machine word, Norn moves to a big integer without you
+result outgrows a machine word, Skein moves to a big integer without you
 asking. Both kinds are the same class, `Integer`, and compare equal
 whenever their values are.
 
 ```clojure
 (+ 4611686018427387903 1) ; => 4611686018427387904
 (* 99999999999999999999 99999999999999999999) ; => 9999999999999999999800000000000000000001
-(class-name (class-of 42)) ; => norn.core/Integer
-(class-name (class-of (* 99999999999999999999 2))) ; => norn.core/Integer
+(class-name (class-of 42)) ; => skein.core/Integer
+(class-name (class-of (* 99999999999999999999 2))) ; => skein.core/Integer
 ```
 
 Integer literals can be written in hexadecimal with `0x`. Leading zeros
@@ -386,11 +386,11 @@ The usual predicates are there: `number?`, `integer?`, `ratio?`,
 `even?`, and `odd?`. So are `inc`, `dec`, `abs`, `min`, and `max`.
 
 Powers, roots, rounding, trigonometry, and statistics live in the
-`norn.math` library. `expt` stays exact when it can; `sqrt` returns a
+`skein.math` library. `expt` stays exact when it can; `sqrt` returns a
 float.
 
 ```clojure
-(require '[norn.math :as math])
+(require '[skein.math :as math])
 (math/expt 2 100) ; => 1267650600228229401496703205376
 (math/expt 2/3 2) ; => 4/9
 (math/sqrt 16) ; => 4.0
@@ -399,11 +399,11 @@ float.
 (math/percentile [12 20 31 40 55] 95) ; => 52
 ```
 
-Run `norn doc norn.math` for the full list.
+Run `skein doc skein.math` for the full list.
 
 ### Equality: `=` and `==`
 
-Norn has two ways to compare numbers, and the difference matters.
+Skein has two ways to compare numbers, and the difference matters.
 
 `=` is *value equality*. It works on every value, and for numbers it keeps
 the three categories apart: an integer is never `=` to a float, and a ratio
@@ -495,7 +495,7 @@ code points, `subs` takes a slice by position, and `get` or `nth` returns
 a single character.
 
 ```clojure
-(= "norn" (str "no" "rn")) ; => true
+(= "skein" (str "no" "rn")) ; => true
 (count "naïve") ; => 5
 (subs "hello" 1 3) ; => "el"
 (get "hello" 1) ; => \e
@@ -523,7 +523,7 @@ reads back as the same value.
 (pr-str [1 "x"]) ; => "[1 \"x\"]"
 ```
 
-Everything else about text, including the `norn.string` library, regular
+Everything else about text, including the `skein.string` library, regular
 expressions, graphemes, and formatting, is in [Chapter 7](07-text.md).
 
 ## Characters
@@ -536,7 +536,7 @@ A character is a single Unicode code point, written with a backslash:
 (first "abc") ; => \a
 (int \a) ; => 97
 (char 97) ; => \a
-(str \n \o \r \n) ; => "norn"
+(str \n \o \r \n) ; => "skein"
 (= \space (first " x")) ; => true
 ```
 
@@ -576,12 +576,12 @@ keywords keep names from different parts of a program apart: `:billing/id`
 and `:shipping/id` are different keys. A double colon qualifies a keyword
 with the current namespace, so at the REPL `::id` means `:user/id`. Before
 an alias it qualifies it with the namespace the alias stands for: after
-`(require '[norn.string :as str])`, `::str/id` means `:norn.string/id`.
+`(require '[skein.string :as str])`, `::str/id` means `:skein.string/id`.
 
 ```clojure
 ::id ; => :user/id
-(require '[norn.string :as str])
-::str/id ; => :norn.string/id
+(require '[skein.string :as str])
+::str/id ; => :skein.string/id
 (namespace :billing/id) ; => "billing"
 (name :billing/id) ; => "id"
 (keyword "status") ; => :status
@@ -590,7 +590,7 @@ an alias it qualifies it with the namespace the alias stands for: after
 
 ## Symbols
 
-A symbol is a name used in code: `width`, `map`, `norn.string/join`. When
+A symbol is a name used in code: `width`, `map`, `skein.string/join`. When
 the evaluator meets a symbol it looks up what the symbol names. Quoted, a
 symbol is a value of its own, which is how code that manipulates code
 refers to names.
@@ -599,8 +599,8 @@ refers to names.
 'width ; => width
 (symbol? 'width) ; => true
 (= 'width 'width) ; => true
-(name 'norn.string/join) ; => "join"
-(namespace 'norn.string/join) ; => "norn.string"
+(name 'skein.string/join) ; => "join"
+(namespace 'skein.string/join) ; => "skein.string"
 (symbol "width") ; => width
 ```
 
@@ -633,17 +633,17 @@ width ; => 12
 
 ## Every value has a class
 
-Every value in Norn, including numbers, strings, and `nil`, is an
+Every value in Skein, including numbers, strings, and `nil`, is an
 instance of a class, and `class-of` tells you which. Classes are how
 generic functions dispatch, so you can define a method on `Integer` or
 `String` in the same way as on a class you wrote ([Chapter
 9](09-classes-and-generic-functions.md)).
 
 ```clojure
-(class-name (class-of "hi")) ; => norn.core/String
-(class-name (class-of 3/4)) ; => norn.core/Ratio
-(class-name (class-of nil)) ; => norn.core/Null
-(class-name (class-of :k)) ; => norn.core/Keyword
+(class-name (class-of "hi")) ; => skein.core/String
+(class-name (class-of 3/4)) ; => skein.core/Ratio
+(class-name (class-of nil)) ; => skein.core/Null
+(class-name (class-of :k)) ; => skein.core/Keyword
 (instance? Number 3/4) ; => true
 ```
 

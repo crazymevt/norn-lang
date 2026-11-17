@@ -1,0 +1,41 @@
+(ns quire.pages-test
+  (:require [skein.html :as html]
+            [skein.io :as io]
+            [skein.markdown :as md]
+            [skein.string :as str]
+            [skein.test :refer [deftest is testing]]
+            [quire.images :as images]
+            [quire.markdown :as qmd]
+            [quire.template :refer [deftemplate]]))
+
+(def here (let [loc (%location)] (io/parent (subs loc 0 (str/last-index-of loc ":")))))
+
+(deftest image-sizes
+  (is (= {:width 40 :height 30} (images/size-of (io/path here "site" "static" "img" "moon.png"))))
+  (is (= {:width 64 :height 48} (images/size-of (io/path here "site" "static" "img" "sun.jpg"))))
+  (is (= {:width 7 :height 5} (images/size-of (io/path here "site" "static" "img" "dot.gif"))))
+  (is (nil? (images/size-of (io/path here "site" "site.edn"))) "not an image")
+  (is (nil? (images/size-of "/no/such/file.png"))))
+
+(defn- render [text] (html/render (qmd/->hiccup (md/parse text) (fn [_] {:width 1 :height 2}))))
+
+(deftest markdown-as-html
+  (is (= "<h2 id=\"what-i-saw-today\">What I saw, today</h2>" (render "## What I saw, today")))
+  (is (= "<ul><li>a</li><li><input checked disabled type=\"checkbox\"> b</li></ul>" (render "- a\n- [x] b")))
+  (is (= "<p><img alt=\"m\" height=\"2\" src=\"/m.png\" width=\"1\"></p>" (render "![m](/m.png)")))
+  (is (= "<pre><code class=\"language-skein\">(+ 1 2)</code></pre>" (render "```skein\n(+ 1 2)\n```")))
+  (is (= "<p>a &lt;b&gt; &amp; c</p>" (render "a <b> & c")) "text is text"))
+
+(deftemplate card [site page] [:div (:title page)])
+(deftemplate shell [site page content] [:body content])
+(deftemplate framed "In a shell." [site page] :layout shell [:p (:title page)] [:p "two"])
+
+(deftest templates
+  (is (= "<div>x</div>" (html/render (card {} {:title "x"}))))
+  (is (= "<body><p>x</p><p>two</p></body>" (html/render (framed {} {:title "x"}))))
+  (is (= "In a shell." (:doc (meta #'framed))))
+  (testing "a malformed one says what it expected"
+    (is (thrown-with-msg? Error #"deftemplate: expected .*a parameter vector \[site page …\]"
+                          (eval '(quire.template/deftemplate oops [site] [:p]))))
+    (is (thrown-with-msg? Error #"deftemplate: expected :layout or a form"
+                          (eval '(quire.template/deftemplate oops [site page]))))))

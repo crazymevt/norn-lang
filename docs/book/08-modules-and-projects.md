@@ -2,11 +2,11 @@
 
 [Contents](README.md) · Previous: [7. Text](07-text.md) · Next: [9. Classes and generic functions](09-classes-and-generic-functions.md) <!-- nav -->
 
-A program of any size is split across files. This chapter covers how Norn
+A program of any size is split across files. This chapter covers how Skein
 organizes code: namespaces, the modules that define them, `require` and
 its options, private definitions, reloading a module while the program
-runs, where Norn looks for modules, and projects, which describe a
-program's source folders and the packages it depends on in a `norn.edn`
+runs, where Skein looks for modules, and projects, which describe a
+program's source folders and the packages it depends on in a `skein.edn`
 file.
 
 ## Namespaces
@@ -19,26 +19,26 @@ in the namespace `user`, and `current-ns` tells you where you are.
 (current-ns) ; => user
 ```
 
-A symbol with a slash, such as `norn.string/upper-case`, is
+A symbol with a slash, such as `skein.string/upper-case`, is
 *qualified*: the part before the slash names a namespace and the part
 after it names a var there. An unqualified symbol is looked up in the
-current namespace, then in `norn.core`, whose names every namespace can
+current namespace, then in `skein.core`, whose names every namespace can
 use without asking.
 
 ```clojure
-(norn.string/upper-case "hi") ; => "HI"
-(namespace 'norn.string/upper-case) ; => "norn.string"
-(name 'norn.string/upper-case) ; => "upper-case"
+(skein.string/upper-case "hi") ; => "HI"
+(namespace 'skein.string/upper-case) ; => "skein.string"
+(name 'skein.string/upper-case) ; => "upper-case"
 ```
 
-The qualified call works only because `norn.string` is already loaded.
+The qualified call works only because `skein.string` is already loaded.
 This chapter's checks run as one script whose first line loads it. In a
 fresh REPL, you load a library with `require` before using it, as the
 rest of this chapter shows.
 
 Namespace names are dotted, from the general to the specific:
-`norn.string`, `shop.money`, `my-app.text-utils`. Unlike Common Lisp's
-packages, Norn's namespaces hold vars, not symbols. A symbol is a plain
+`skein.string`, `shop.money`, `my-app.text-utils`. Unlike Common Lisp's
+packages, Skein's namespaces hold vars, not symbols. A symbol is a plain
 name, and two namespaces can each define `total` without any conflict.
 
 ## Modules
@@ -50,19 +50,19 @@ what the module needs:
 <!-- skip -->
 ```clojure
 (ns shop.money
-  (:require [norn.string :as str]
+  (:require [skein.string :as str]
             [shop.tax :refer [rate]]))
 ```
 
-Norn finds a module from its name: `shop.money` lives in `shop/money.norn`
-under one of the folders Norn searches, and `my-app.text-utils` in
-`my-app/text-utils.norn`. Dots become folder separators, and the rest of
+Skein finds a module from its name: `shop.money` lives in `shop/money.skn`
+under one of the folders Skein searches, and `my-app.text-utils` in
+`my-app/text-utils.skn`. Dots become folder separators, and the rest of
 the name, hyphens included, is the file name as written. The file's `ns`
-form must name the same module: if `shop/money.norn` says `(ns
+form must name the same module: if `shop/money.skn` says `(ns
 shop.cash)`, requiring `shop.money` is an error that says which namespace
 the file defines.
 
-A module compiles as a unit. Because Norn reads the whole file before it
+A module compiles as a unit. Because Skein reads the whole file before it
 runs the definitions, a function can call another that appears later in
 the file. A script, a file without `ns`, runs one form at a time, top to
 bottom, so in a script (or at the REPL) a function can't mention a name
@@ -71,7 +71,7 @@ when the form is compiled, so to catch it, the example hands the form to
 `eval`.
 
 ```clojure
-(eval '(defn early [] (not-defined-yet))) ; !! norn.compiler/CompileError
+(eval '(defn early [] (not-defined-yet))) ; !! skein.compiler/CompileError
 ```
 
 `declare` tells the compiler that a name will be defined later. Use it
@@ -95,22 +95,22 @@ Quoting drops comments and metadata such as `^:private`, so the examples
 avoid them.
 
 ```clojure
-(require '[norn.io :as io] '[norn.string :as str])
+(require '[skein.io :as io] '[skein.string :as str])
 
 (defn write-module! [path & forms]
   (io/mkdirs! (io/parent path))
   (io/write-text path (str (str/join "\n\n" (map pr-str forms)) "\n")))
 ```
 
-Now the first module, `shop.money`, in `lib/shop/money.norn`. It formats
+Now the first module, `shop.money`, in `lib/shop/money.skn`. It formats
 prices kept as whole cents. `total` calls `cents->text`, which the file
 defines after it.
 
 ```clojure
-(write-module! "lib/shop/money.norn"
+(write-module! "lib/shop/money.skn"
   '(ns shop.money
      "Prices, kept as whole cents."
-     (:require [norn.string :as str]))
+     (:require [skein.string :as str]))
 
   '(println "loading shop.money")
 
@@ -124,12 +124,12 @@ defines after it.
 ```
 
 The string after the module's name is its docstring, which says what the
-module is for. It's optional, as a function's is, and `norn doc
+module is for. It's optional, as a function's is, and `skein doc
 shop.money` prints it above the module's definitions.
 
-The `lib` folder isn't one Norn searches yet. `add-lib-path!` adds it.
-(You'll see the other places Norn looks in
-[Where Norn looks for modules](#where-norn-looks-for-modules).)
+The `lib` folder isn't one Skein searches yet. `add-lib-path!` adds it.
+(You'll see the other places Skein looks in
+[Where Skein looks for modules](#where-skein-looks-for-modules).)
 
 ```clojure
 (add-lib-path! "lib")
@@ -183,20 +183,20 @@ test file, and use `:refer :all` sparingly: it makes a module's names
 depend on everything another module happens to export.
 
 Referring to a name that isn't public is an error, as is requiring a
-module Norn can't find.
+module Skein can't find.
 
 ```clojure
 (require '[shop.money :refer [no-such-thing]]) ; !! Error
 (require 'shop.no-such-module) ; !! Error
 ```
 
-A plain symbol with no vector, as in `(require 'norn.sys)`, loads the
+A plain symbol with no vector, as in `(require 'skein.sys)`, loads the
 module without an alias. You can still use its fully qualified names.
 `require` takes any number of specs, so one call can load several
 modules.
 
 ```clojure
-(require 'norn.sys '[norn.format :as fmt])
+(require 'skein.sys '[skein.format :as fmt])
 
 (fmt/ordinal 3) ; => "3rd"
 ```
@@ -271,7 +271,7 @@ Now change `shop.money` so that totals come out in cents, and drop the
 private helper:
 
 ```clojure
-(write-module! "lib/shop/money.norn"
+(write-module! "lib/shop/money.skn"
   '(ns shop.money)
 
   '(defn total [prices]
@@ -296,21 +296,21 @@ but new code can't refer to it.
 ```
 
 `:reload` can also follow all the specs, `(require 'a 'b :reload)`, to
-reload each of them. In a project, `norn dev` reloads each module as you
+reload each of them. In a project, `skein dev` reloads each module as you
 save it, while the program runs. [Chapter 12](12-live-programming.md)
 shows it, and how reloading fits into the REPL workflow, along with
 redefining single functions from an editor.
 
-## Names from norn.core
+## Names from skein.core
 
-Every module can use the names in `norn.core` without requiring it. When
+Every module can use the names in `skein.core` without requiring it. When
 a module wants one of those names for itself, it says so with
 `(:refer-core …)` in its `ns` form. `:exclude` gives up core names, so the
 module can define its own. `:rename` keeps a core function under another
 name.
 
 ```clojure
-(write-module! "lib/shop/catalog.norn"
+(write-module! "lib/shop/catalog.skn"
   '(ns shop.catalog
      (:refer-core :exclude [get] :rename {get core-get}))
 
@@ -327,65 +327,65 @@ name.
 (catalog/get :plum) ; => 0
 ```
 
-Outside `shop.catalog`, `get` still means `norn.core/get`. The rename
+Outside `shop.catalog`, `get` still means `skein.core/get`. The rename
 affects only the module that asks for it.
 
 A module can also define a core name without the `:refer-core` clause.
 The definition then applies everywhere in the module, including uses
-written before it. `norn lint` warns about this, since it is usually an
+written before it. `skein lint` warns about this, since it is usually an
 accident. Say what you mean with `(:refer-core :exclude [name])`.
 
-## Where Norn looks for modules
+## Where Skein looks for modules
 
-When you require `shop.money`, Norn looks for it in this order:
+When you require `shop.money`, Skein looks for it in this order:
 
-1. The libraries built into the `norn` binary: `norn.core` and the
-   `norn.*` standard libraries. A file of yours can't take the place of
+1. The libraries built into the `skein` binary: `skein.core` and the
+   `skein.*` standard libraries. A file of yours can't take the place of
    one of them.
 2. The folders added with `add-lib-path!`, in the order they were added.
-   When you run inside a project (below), Norn adds the project's source
+   When you run inside a project (below), Skein adds the project's source
    folders and its packages' folders here before your code runs.
-3. The folders listed in the `NORN_PATH` environment variable, separated
+3. The folders listed in the `SKEIN_PATH` environment variable, separated
    by colons.
 4. The current directory.
 
 The first match wins. If there is none, `require` signals an error that
 names the module.
 
-`NORN_PATH` is a quick way to share a folder of modules between scripts
+`SKEIN_PATH` is a quick way to share a folder of modules between scripts
 without setting up a project:
 
 ```sh
-NORN_PATH=$HOME/norn-lib:/opt/shared/norn norn report.norn
+SKEIN_PATH=$HOME/skein-lib:/opt/shared/skein skein report.skn
 ```
 
-A file's location has to match the namespace its `ns` form names. Norn
-finds `shop/money.norn` because you asked for `shop.money`, and the file
+A file's location has to match the namespace its `ns` form names. Skein
+finds `shop/money.skn` because you asked for `shop.money`, and the file
 should then define `shop.money`. Keep the two in step, or a `require`
 loads the file without defining the namespace you asked for.
 
-Norn's own libraries come first, so a module of yours named as one of
-them, say `norn.csv`, is never loaded. Names under `norn.` belong to the
-Norn project: its standard library and its first-party packages, such as
-`norn.ui` and `norn.html`. Name your modules after your project, as
-`shop.money` is. `norn lint` warns about a module named under `norn.`
-(`reserved`) or named as a library that comes with Norn (`shadowed`).
+Skein's own libraries come first, so a module of yours named as one of
+them, say `skein.csv`, is never loaded. Names under `skein.` belong to the
+Skein project: its standard library and its first-party packages, such as
+`skein.ui` and `skein.html`. Name your modules after your project, as
+`shop.money` is. `skein lint` warns about a module named under `skein.`
+(`reserved`) or named as a library that comes with Skein (`shadowed`).
 
 ## Projects
 
-A project is a folder with a `norn.edn` file. The file is EDN, Norn's
+A project is a folder with a `skein.edn` file. The file is EDN, Skein's
 data syntax, holding a map. Here is a small project, `tally`, that counts
-the words in text files. `norn new tally` makes this layout, with a `main`
+the words in text files. `skein new tally` makes this layout, with a `main`
 and a test to start from, a README, a `.gitignore`, and a Git repository:
 
 ```text
 tally/
-  norn.edn
+  skein.edn
   src/
     tally/
-      main.norn
+      main.skn
   tests/
-    main_test.norn
+    main_test.skn
 ```
 
 ```edn
@@ -395,25 +395,25 @@ tally/
  :main tally.main/main}
 ```
 
-- `:name` and `:version` identify the project, and show up in `norn deps`
+- `:name` and `:version` identify the project, and show up in `skein deps`
   output and in packaged releases.
-- `:paths` lists the source folders, relative to `norn.edn`. It defaults
+- `:paths` lists the source folders, relative to `skein.edn`. It defaults
   to `["src"]`, so you can leave it out when that's your layout.
 - `:test-paths` lists the test folders, and defaults to `["tests"]`. They
   are on the library path too, after everything else, so test files can
   share helper modules ([Chapter 25](25-testing.md)). A package's test
   folders aren't.
-- `:main` names the entry function, as a fully qualified symbol. `norn
-  build` and `norn package` start the program there.
+- `:main` names the entry function, as a fully qualified symbol. `skein
+  build` and `skein package` start the program there.
 - `:deps` and `:overrides`, described below, declare the packages the
   project uses.
 
-`src/tally/main.norn` holds the `tally.main` module:
+`src/tally/main.skn` holds the `tally.main` module:
 
 ```clojure
 (ns tally.main
-  (:require [norn.io :as io]
-            [norn.string :as str]))
+  (:require [skein.io :as io]
+            [skein.string :as str]))
 
 (defn word-count [text]
   (count (remove str/blank? (str/split text #"\s+"))))
@@ -424,27 +424,27 @@ tally/
   0)
 ```
 
-Whenever `norn` starts, it looks for a project: a `norn.edn` in the folder
+Whenever `skein` starts, it looks for a project: a `skein.edn` in the folder
 of the file it runs (or, with no file, the current folder), or in the
 nearest folder above it that has one. When it finds one, it puts the project's `:paths` on the library
 search path before running anything. So from anywhere inside `tally/`,
-the REPL, `norn -e`, and any script can require `tally.main` without
-`add-lib-path!`. `norn run` calls `:main` with the arguments you give it:
+the REPL, `skein -e`, and any script can require `tally.main` without
+`add-lib-path!`. `skein run` calls `:main` with the arguments you give it:
 
 ```sh
 cd tally
-norn run notes.txt
-norn -e '(require (quote tally.main)) (tally.main/main "notes.txt")'
-norn build tally.nimg
-norn --image tally.nimg notes.txt
+skein run notes.txt
+skein -e '(require (quote tally.main)) (tally.main/main "notes.txt")'
+skein build tally.skimg
+skein --image tally.skimg notes.txt
 ```
 
 `main` returns 0, which becomes the program's exit status when it runs
-with `norn run` or from an image. [Chapter 27](27-images-and-deployment.md) covers
-`norn build`, images, and `norn package` in detail.
+with `skein run` or from an image. [Chapter 27](27-images-and-deployment.md) covers
+`skein build`, images, and `skein package` in detail.
 
-Tests go in a `tests` folder, in files whose names end in `_test.norn`.
-`norn test` with no arguments runs that folder.
+Tests go in a `tests` folder, in files whose names end in `_test.skn`.
+`skein test` with no arguments runs that folder.
 [Chapter 25](25-testing.md) covers testing.
 
 The `tally.main` block above ran as part of this chapter's checks. In a
@@ -458,10 +458,10 @@ to `user` before going on.
 ## Dependencies
 
 A project lists the packages it uses under `:deps`. A *package* is
-another project used as a dependency. `norn new textkit --lib` starts
-one: a `norn.edn` with no `:main`, the module `textkit` in
-`src/textkit.norn`, and a test of it. Its own `norn.edn` gives its source
-paths and its own dependencies. (A folder without a `norn.edn` counts as a
+another project used as a dependency. `skein new textkit --lib` starts
+one: a `skein.edn` with no `:main`, the module `textkit` in
+`src/textkit.skn`, and a test of it. Its own `skein.edn` gives its source
+paths and its own dependencies. (A folder without a `skein.edn` counts as a
 package whose source is in `src`.) Each dependency is either a folder or a
 Git repository:
 
@@ -476,58 +476,58 @@ Git repository:
 ```
 
 - `{:path "folder"}` uses a folder on disk. The path is relative to the
-  `norn.edn` that names it. This is the way to work on two projects side
+  `skein.edn` that names it. This is the way to work on two projects side
   by side.
 - `{:git "url" :tag "tag"}` uses a Git repository at a tag.
 - `{:git "url" :sha "commit"}` uses a specific commit.
 
-Give exactly one of `:tag` and `:sha` for a Git dependency. Norn checks
-`norn.edn` when it reads it and explains what's wrong with a malformed
+Give exactly one of `:tag` and `:sha` for a Git dependency. Skein checks
+`skein.edn` when it reads it and explains what's wrong with a malformed
 entry.
 
-`norn deps` resolves the dependencies, fetches any Git packages it
+`skein deps` resolves the dependencies, fetches any Git packages it
 doesn't have yet (with the `git` command), and lists what it found, with
 the chain of packages that brought each one in:
 
 ```text
-$ norn deps
+$ skein deps
 tally 0.1.0 (/home/you/code/tally)
   textkit 0.2.0: path /home/you/code/textkit
   colors 1.2.0: git https://example.com/colors.git v1.2.0 (8819e44747c0), for tally → textkit
-Wrote norn.lock.
+Wrote skein.lock.
 ```
 
 Here `colors` came in through `textkit`, which depends on it. You don't
-have to run `norn deps` before running a program: any `norn` started in a
+have to run `skein deps` before running a program: any `skein` started in a
 project resolves its dependencies first and puts every package's source
-paths on the search path after the project's own. `norn deps` is how you
+paths on the search path after the project's own. `skein deps` is how you
 see the result, and how you fetch packages ahead of time.
 
 Git packages are cached in a folder of their own, one folder per package
-and commit: `NORN_DEPS` if you set it, else a `deps` folder in Norn's
-cache folder (`~/Library/Caches/norn` on macOS, `~/.cache/norn`
+and commit: `SKEIN_DEPS` if you set it, else a `deps` folder in Skein's
+cache folder (`~/Library/Caches/skein` on macOS, `~/.cache/skein`
 elsewhere).
 
-### norn.lock
+### skein.lock
 
 A tag can move: someone can delete it and push it again on a different
-commit. So that a build doesn't change under you, `norn deps` writes the
-commit of every Git package to `norn.lock`, beside `norn.edn`:
+commit. So that a build doesn't change under you, `skein deps` writes the
+commit of every Git package to `skein.lock`, beside `skein.edn`:
 
 ```edn
-;; Written by norn: the commit of each Git package in the build (see norn deps).
+;; Written by skein: the commit of each Git package in the build (see skein deps).
 {:git {colors {:git "https://example.com/colors.git", :sha "8819e44747c0daf7377e339a6b23f0db8ed4e217", :tag "v1.2.0"}}}
 ```
 
 From then on, a locked package is used at its recorded commit, and only a
-new or changed dependency is looked up again. Commit `norn.lock` with the
+new or changed dependency is looked up again. Commit `skein.lock` with the
 project so everyone builds the same code. To move to whatever the tags
-point at now, run `norn deps --update`, which looks every Git package up
+point at now, run `skein deps --update`, which looks every Git package up
 again and rewrites the lock file.
 
 ### Two versions of one package
 
-Norn uses one copy of each package in a build. If two paths through the
+Skein uses one copy of each package in a build. If two paths through the
 dependencies ask for different versions of the same package, two folders,
 or two commits, resolution stops and shows both chains:
 
@@ -535,10 +535,10 @@ or two commits, resolution stops and shows both chains:
 Two versions of colors in the build:
   git https://example.com/colors.git v1.2.0 (8819e44747c0), by tally → colors
   path /home/you/code/colors, by tally → textkit → colors
-Add colors to :overrides in /home/you/code/tally/norn.edn to choose one.
+Add colors to :overrides in /home/you/code/tally/skein.edn to choose one.
 ```
 
-Settle it in the project's `norn.edn`. An entry in `:overrides` is used
+Settle it in the project's `skein.edn`. An entry in `:overrides` is used
 wherever the package is asked for, whatever version the asker named:
 
 ```edn
@@ -555,11 +555,11 @@ the last word.
 ## Compiled modules are cached
 
 Loading a module means reading, expanding, and compiling it. To make the
-second load fast, Norn caches each module's compiled form in its cache
-folder. The cache key covers the `norn` build, the module's source, and
+second load fast, Skein caches each module's compiled form in its cache
+folder. The cache key covers the `skein` build, the module's source, and
 the modules it requires, so a change anywhere recompiles what depends on
-it, and you never need to clear the cache by hand. Set `NORN_CACHE` to
-another folder to move it, or to `off` to turn it off. `norn build` always
+it, and you never need to clear the cache by hand. Set `SKEIN_CACHE` to
+another folder to move it, or to `off` to turn it off. `skein build` always
 compiles from source.
 
 ## Other ns clauses
@@ -576,7 +576,7 @@ Two more clauses belong to later chapters:
 
 - A namespace maps names to vars. A module is a file that starts with
   `ns`, and a docstring after its name says what it's for; one file is
-  one module is one namespace, and `a.b-c` lives in `a/b-c.norn`.
+  one module is one namespace, and `a.b-c` lives in `a/b-c.skn`.
 - A module compiles as a unit, so it can refer to definitions later in the
   file. Scripts and the REPL run one form at a time.
 - `require` loads a module once. `:as` gives it an alias, `:refer` brings
@@ -585,15 +585,15 @@ Two more clauses belong to later chapters:
 - `defn-` and `^:private` keep a definition inside its module. A var,
   `#'ns/name`, still reaches it when you need to.
 - `(:refer-core :exclude […] :rename {…})` lets a module take a
-  `norn.core` name for its own.
-- Norn searches the built-in libraries, then `add-lib-path!` folders
-  (including a project's paths and packages), then `NORN_PATH`, then the
+  `skein.core` name for its own.
+- Skein searches the built-in libraries, then `add-lib-path!` folders
+  (including a project's paths and packages), then `SKEIN_PATH`, then the
   current directory.
-- `norn new` makes a project, and `norn run` calls its `:main`.
-- A project's `norn.edn` gives its `:paths`, `:test-paths`, `:main`, and
+- `skein new` makes a project, and `skein run` calls its `:main`.
+- A project's `skein.edn` gives its `:paths`, `:test-paths`, `:main`, and
   `:deps`: folders
-  or Git repositories at a tag or commit. `norn deps` resolves them and
-  `norn.lock` pins each Git package to a commit; `:overrides` settles
+  or Git repositories at a tag or commit. `skein deps` resolves them and
+  `skein.lock` pins each Git package to a commit; `:overrides` settles
   version conflicts.
 
 ---

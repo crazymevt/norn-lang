@@ -1,0 +1,120 @@
+;;;; skein.math — mathematical functions.
+;;;;
+;;;; The floating-point functions (sqrt, exp, sin, …) take any real number
+;;;; and return a float. floor, ceil, round and trunc return exact integers
+;;;; of any size; on ratios they never go through floating point. expt is
+;;;; exact for an exact base and an integer exponent. gcd, lcm and isqrt
+;;;; work on integers of any size.
+
+(ns skein.math
+  (:refer-core :exclude [infinite?]))
+
+(declare expt round gcd lcm)
+
+(def PI "π" 3.141592653589793)
+(def E "Euler's number" 2.718281828459045)
+(def TAU "2π" 6.283185307179586)
+
+(defn sqrt "Square root (a float; NaN for a negative number)." ^Float [^Number x] (%math1 0 x))
+(defn cbrt "Cube root." ^Float [^Number x] (%math1 1 x))
+(defn exp "e to the power x." ^Float [^Number x] (%math1 2 x))
+(defn log "Natural logarithm; with a base, the logarithm in that base."
+  (^Float [^Number x] (%math1 3 x))
+  (^Float [^Number base ^Number x] (/ (%math1 3 x) (%math1 3 base))))
+(defn log10 "Base-10 logarithm." ^Float [^Number x] (%math1 4 x))
+(defn log2 "Base-2 logarithm." ^Float [^Number x] (%math1 5 x))
+(defn log1p "log(1 + x), accurate for small x." ^Float [^Number x] (%math1 15 x))
+(defn expm1 "e^x - 1, accurate for small x." ^Float [^Number x] (%math1 16 x))
+(defn sin "The sine of x, an angle in radians." ^Float [^Number x] (%math1 6 x))
+(defn cos "The cosine of x, an angle in radians." ^Float [^Number x] (%math1 7 x))
+(defn tan "The tangent of x, an angle in radians." ^Float [^Number x] (%math1 8 x))
+(defn asin "The arc sine of x, in radians (-π/2 to π/2); NaN outside -1 to 1." ^Float [^Number x] (%math1 9 x))
+(defn acos "The arc cosine of x, in radians (0 to π); NaN outside -1 to 1." ^Float [^Number x] (%math1 10 x))
+(defn atan "Arc tangent; with two arguments, the angle of the point (x, y)."
+  (^Float [^Number x] (%math1 11 x))
+  (^Float [^Number y ^Number x] (%math2 1 y x)))
+(defn sinh "The hyperbolic sine of x." ^Float [^Number x] (%math1 12 x))
+(defn cosh "The hyperbolic cosine of x." ^Float [^Number x] (%math1 13 x))
+(defn tanh "The hyperbolic tangent of x." ^Float [^Number x] (%math1 14 x))
+(defn pow "x to the power y, in floating point (see expt for exact powers)." ^Float [^Number x ^Number y] (%math2 0 x y))
+(defn hypot "sqrt(x² + y²) without overflow." ^Float [^Number x ^Number y] (%math2 2 x y))
+
+(defn floor "The largest integer at most x." ^Integer [^Number x] (%round 0 x))
+(defn ceil "The smallest integer at least x." ^Integer [^Number x] (%round 1 x))
+(defn trunc "x without its fractional part (toward zero)." ^Integer [^Number x] (%round 2 x))
+(defn round
+  "x rounded to the nearest integer, halves away from zero; with :even,
+  halves to the even neighbour (banker's rounding)."
+  (^Integer [^Number x] (%round 3 x))
+  (^Integer [^Number x mode] (%round (if (= mode :even) 4 3) x)))
+
+(defn round-to
+  "x rounded to digits places after the point, as a float."
+  ^Float [^Number x ^Number digits]
+  (let [k (expt 10 digits)] (float (/ (round (* x k)) k))))
+
+(defn expt
+  "base to the power n. Exact when base is exact and n is an integer
+  (a ratio for a negative n); otherwise a float."
+  ^Number [^Number base ^Number n]
+  (cond (and (integer? n) (rational? base))
+        (if (neg? n)
+          (/ 1 (expt base (- n)))
+          (loop [result 1 b base n n]
+            (cond (zero? n) result
+                  (odd? n) (recur (* result b) (* b b) (quot n 2))
+                  :else (recur result (* b b) (quot n 2)))))
+        :else (pow base n)))
+
+(defn gcd "Greatest common divisor (non-negative)." ([] 0) ([a] (abs a)) ([a b] (%gcd a b))
+  ([a b & more] (reduce gcd (gcd a b) more)))
+(defn lcm "Least common multiple (non-negative)." ([a b] (if (or (zero? a) (zero? b)) 0 (abs (quot (* a b) (gcd a b)))))
+  ([a b & more] (reduce lcm (lcm a b) more)))
+(defn isqrt "The largest integer whose square is at most n (n ≥ 0)." ^Integer [^Integer n] (%isqrt n))
+
+(defn signum "-1, 0 or 1 by the sign of x (a float for a float)." ^Number [^Number x]
+  (cond (pos? x) (if (float? x) 1.0 1) (neg? x) (if (float? x) -1.0 -1) :else x))
+
+(defn nan? "Is x NaN?" ^Boolean [^Number x] (= 2 (%float-class x)))
+(defn infinite? "Is x positive or negative infinity?" ^Boolean [^Number x] (= 1 (%float-class x)))
+(defn finite? "Is x neither infinite nor NaN?" ^Boolean [^Number x] (= 0 (%float-class x)))
+
+(defn clamp "x limited to [lo, hi]." ^Number [^Number x ^Number lo ^Number hi] (max lo (min hi x)))
+(defn lerp "The value t of the way from a to b (t = 0 gives a, 1 gives b)." ^Number [^Number a ^Number b ^Number t] (+ a (* t (- b a))))
+(defn approx=
+  "Are x and y within epsilon of each other (default 1e-9, relative to
+  their size when they're large)?"
+  (^Boolean [^Number x ^Number y] (approx= x y 1e-9))
+  (^Boolean [^Number x ^Number y ^Number epsilon] (<= (abs (- x y)) (* epsilon (max 1 (abs x) (abs y))))))
+
+(defn to-radians "Angle degrees in radians." ^Number [^Number degrees] (* degrees (/ PI 180)))
+(defn to-degrees "Angle radians in degrees." ^Number [^Number radians] (* radians (/ 180 PI)))
+
+(defn sum "The sum of xs." ^Number [^(? (U Collection Bytes)) xs] (reduce + 0 xs))
+(defn product "The product of xs." ^Number [^(? (U Collection Bytes)) xs] (reduce * 1 xs))
+(defn mean "The arithmetic mean of xs (exact for exact numbers)." ^(? Number) [^(? (U Collection Bytes)) xs]
+  (let [v (vec xs)] (when (seq v) (/ (sum v) (count v)))))
+(defn median "The middle value of xs (the mean of the two middle values for an even count)." ^(? Number) [^(? (U Collection Bytes)) xs]
+  (let [v (vec (sort xs)) n (count v)]
+    (when (pos? n)
+      (if (odd? n) (nth v (quot n 2)) (/ (+ (nth v (dec (quot n 2))) (nth v (quot n 2))) 2)))))
+(defn percentile
+  "The p-th percentile of xs (p from 0 to 100): the value p% of them are at
+  or below, interpolated linearly between the two nearest when it falls
+  between them (as numpy and spreadsheets do). (percentile xs 50) is the
+  median; nil for no xs, as median gives."
+  ^(? Number) [^(? (U Collection Bytes)) xs ^Number p]
+  (when-not (<= 0 p 100) (error "percentile: p is from 0 to 100, not" p))
+  (let [v (vec (sort xs)) n (count v)]
+    (when (pos? n)
+      (let [rank (* (/ p 100) (dec n))
+            lo (long (floor rank))
+            hi (min (dec n) (inc lo))
+            frac (- rank lo)]
+        (if (zero? frac)
+          (nth v lo)
+          (+ (nth v lo) (* frac (- (nth v hi) (nth v lo)))))))))
+
+(defn variance "Population variance of xs." ^(? Number) [^(? (U Collection Bytes)) xs]
+  (let [v (vec xs) m (mean v)] (when m (mean (map (fn [x] (let [d (- x m)] (* d d))) v)))))
+(defn std-dev "Population standard deviation of xs." ^(? Float) [^(? (U Collection Bytes)) xs] (when-let [var (variance xs)] (sqrt var)))

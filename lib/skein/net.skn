@@ -1,0 +1,100 @@
+;;;; skein.net — TCP, UDP and TLS.
+;;;;
+;;;; Sockets are streams: skein.io read, write, close and line-reader work on
+;;;; them. Every operation parks the fiber, never the carrier, so one
+;;;; process can serve many thousands of connections. TLS uses rustls; a
+;;;; client trusts the OS's root certificates unless given :ca-file.
+
+(ns skein.net
+  (:refer-core :exclude [resolve]) (:require [skein.io :as io]))
+
+(defn resolve
+  "The addresses of host, as \"ip:port\" strings (DNS runs on the blocking pool)."
+  (^Vector [^String host] (resolve host 0))
+  (^Vector [^String host ^Integer port] (%resolve (str host) port)))
+
+(defn- try-addresses [addrs f]
+  (loop [as (seq addrs) last nil]
+    (if as
+      (let [r (try {:ok (f (first as))} (catch Error e {:error e}))]
+        (if (contains? r :ok) (:ok r) (recur (next as) (:error r))))
+      (throw (or last (make SimpleError :message "No addresses to try"))))))
+
+(defn- start-tls [h opts]
+  ;; The client finishes the handshake here, so an untrusted server fails
+  ;; at connect. (A server handshakes on its first read or write, so one slow
+  ;; client can't hold up an accept loop.)
+  (let [ca (when (:ca-file opts) (io/read-bytes (:ca-file opts)))
+        t (io/auto-close (%tls-client h (or (:server-name opts) (:host opts)) ca opts))]
+    (try (io/retry-io t (fn [] (%tls-handshake t)))
+         (catch Error e (%io-close t) (throw e)))
+    t))
+
+(defn connect
+  "Connect to host:port: a stream. Options: :tls true (with :ca-file path to
+  trust a private CA, :server-name to check another name than host)."
+  ^Handle [^String host ^Integer port & {:keys [tls ca-file server-name]}]
+  (let [info {:host (str host) :port port :tls (if tls true false) :ca-file ca-file :server-name server-name}
+        h (try-addresses (resolve host port)
+                         (fn [addr]
+                           (let [h (%tcp-connect addr info)]
+                             (try (io/retry-io h (fn [] (%tcp-check h)))
+                                  (catch Error e (%io-close h) (throw e)))
+                             h)))]
+    (if tls (start-tls h info) (io/auto-close h))))
+
+(defn %reconnect
+  "Open a new connection with the settings of socket handle h (after an image restore)."
+  [h]
+  (let [i (handle-info h)]
+    (connect (:host i) (:port i) :tls (:tls i) :ca-file (:ca-file i) :server-name (:server-name i))))
+
+(defn listen
+  "Listen for TCP connections on host:port (port 0 picks a free one; see
+  local-address). Returns a listener for accept."
+  ^Handle [^String host ^Integer port]
+  (let [info {:host (str host) :port port}]
+    (io/auto-close (try-addresses (resolve host port) (fn [addr] (%tcp-listen addr info))))))
+
+(defn accept
+  "The next connection on a listener (parks until one arrives): a stream.
+  Options: :tls true with :cert-file and :key-file (PEM) for a TLS server.
+  A listener that's closed (before, or while waiting) is a ConnectionError
+  with :reason :closed."
+  ^Handle [^Handle listener & {:keys [tls cert-file key-file]}]
+  (let [h (io/auto-close
+           (handler-case (io/retry-io listener (fn [] (%tcp-accept listener)))
+             (RuntimeError [e]
+                           (if (and (handle? listener) (%handle-current? listener) (not (%handle-live? listener)))
+                             (error ConnectionError :message "The listener is closed" :reason :closed)
+                             (throw e)))))]
+    (if tls
+      (io/auto-close (%tls-server h (io/read-bytes cert-file) (io/read-bytes key-file) {:server true}))
+      h)))
+
+(defn local-address "The local address of a socket or listener, \"ip:port\"." ^String [^Handle h] (%socket-address h false))
+(defn peer-address "The remote address of a connected socket, \"ip:port\"." ^String [^Handle h] (%socket-address h true))
+(defn port "The port of an \"ip:port\" address." ^Integer [^String addr]
+  (let [s (str addr)]
+    (loop [i (dec (count s))]
+      (if (= (nth s i) \:) (read-string (subs s (inc i))) (recur (dec i))))))
+(defn shutdown-output "Stop sending: the peer reads the end of input; this side can still read." [^Handle h] (%shutdown-write h))
+
+;;; ---- UDP ----
+
+(defn udp
+  "A UDP socket bound to host:port (port 0 picks a free one)."
+  ^Handle [^String host ^Integer port]
+  (io/auto-close (try-addresses (resolve host port) (fn [addr] (%udp-bind addr {:host (str host) :port port})))))
+
+(defn send-to
+  "Send one datagram (a string or bytes) to host:port."
+  [^Handle s ^(U String Bytes) data ^String host ^Integer port]
+  (let [to (first (resolve host port))]
+    (io/retry-io s (fn [] (%udp-send s data to)))
+    nil))
+
+(defn receive
+  "The next datagram (up to n bytes, default 65536): {:data bytes :from \"ip:port\"}."
+  (^Map [^Handle s] (receive s 65536))
+  (^Map [^Handle s ^Integer n] (let [[d from] (io/retry-io s (fn [] (%udp-recv s n)))] {:data d :from from})))

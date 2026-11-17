@@ -2,17 +2,17 @@
 
 [Contents](README.md) · Previous: [8. Modules and projects](08-modules-and-projects.md) · Next: [10. Protocols and extension](10-protocols-and-extension.md) <!-- nav -->
 
-Maps and vectors carry most data in Norn, and for a lot of programs they are
+Maps and vectors carry most data in Skein, and for a lot of programs they are
 all you need. Sooner or later, though, you want a name for a kind of thing:
 a `point`, an `invoice`, a `parse-error`. You want to say which fields it
 has, give them defaults, and write operations that do different things for
-different kinds of values. This chapter covers Norn's object system, which
+different kinds of values. This chapter covers Skein's object system, which
 comes from the Common Lisp Object System (CLOS). You define classes with
 `defclass`, and operations with `defgeneric` and `defmethod`. Methods
 belong to operations, not to classes, and they can be chosen by the classes
 of all their arguments.
 
-Norn's big change from CLOS is that instances are immutable values, like
+Skein's big change from CLOS is that instances are immutable values, like
 maps. The chapter starts there, then moves on to generic functions, multiple
 dispatch, dispatch on values, method combination, and the two hooks you
 reach for most: `print-object` and `initialize-instance`.
@@ -157,7 +157,7 @@ whenever an instance is made or changed, by the constructor, `with`,
 ## Instances are values
 
 In CLOS, an instance is a mutable object: you change its slots in place,
-and everyone holding it sees the change. A Norn instance is closer to a map.
+and everyone holding it sees the change. A Skein instance is closer to a map.
 It never changes after it is made. To "change" one, you make a new instance
 that differs in some slots. That's what `with` does:
 
@@ -186,7 +186,7 @@ same, so they work as map keys and set members:
 An instance is never equal to a map with the same entries. Its class is part
 of its value.
 
-If you come from Clojure, a Norn class is something like a record: named
+If you come from Clojure, a Skein class is something like a record: named
 fields, value semantics, keyword access. There are differences. An instance
 is not a map: `map?` returns false, and `seq` and `count` don't work on it.
 It holds only the slots its class declares. When you want the slots as a
@@ -231,7 +231,7 @@ same of two classes:
 (class-of acct)                  ; => #<class user/savings>
 ```
 
-A class can have more than one superclass. Norn orders a class and its
+A class can have more than one superclass. Skein orders a class and its
 ancestors into one list, the class precedence list, and uses it whenever it
 needs to know which class is more specific. The order follows the C3
 algorithm, which keeps each class's own order of superclasses and puts every
@@ -244,7 +244,7 @@ class before its superclasses:
 
 (class-precedence-list document)
 ; => [#<class user/document> #<class user/named> #<class user/dated>
-;     #<class norn.core/StandardObject> #<class norn.core/Object>]
+;     #<class skein.core/StandardObject> #<class skein.core/Object>]
 ```
 
 Methods for `named` come before methods for `dated` when both apply to a
@@ -252,19 +252,19 @@ Methods for `named` come before methods for `dated` when both apply to a
 
 ## Every value has a class
 
-Classes aren't only for your own types. Every value in Norn has one, and the
-built-in classes are capitalized names in `norn.core`:
+Classes aren't only for your own types. Every value in Skein has one, and the
+built-in classes are capitalized names in `skein.core`:
 
 ```clojure
-(class-of 42)     ; => #<class norn.core/Integer>
-(class-of 1/3)    ; => #<class norn.core/Ratio>
-(class-of "text") ; => #<class norn.core/String>
-(class-of :k)     ; => #<class norn.core/Keyword>
-(class-of nil)    ; => #<class norn.core/Null>
-(class-of [1 2])  ; => #<class norn.core/Vector>
-(class-of {})     ; => #<class norn.core/Map>
-(class-of inc)    ; => #<class norn.core/Function>
-(class-of point)  ; => #<class norn.core/Class>
+(class-of 42)     ; => #<class skein.core/Integer>
+(class-of 1/3)    ; => #<class skein.core/Ratio>
+(class-of "text") ; => #<class skein.core/String>
+(class-of :k)     ; => #<class skein.core/Keyword>
+(class-of nil)    ; => #<class skein.core/Null>
+(class-of [1 2])  ; => #<class skein.core/Vector>
+(class-of {})     ; => #<class skein.core/Map>
+(class-of inc)    ; => #<class skein.core/Function>
+(class-of point)  ; => #<class skein.core/Class>
 ```
 
 The built-in classes have superclasses too, so you can talk about groups of
@@ -273,10 +273,10 @@ types. An integer is a `Number`, and a vector is a `Sequential` and a
 
 ```clojure
 (class-precedence-list Integer)
-; => [#<class norn.core/Integer> #<class norn.core/Number> #<class norn.core/Object>]
+; => [#<class skein.core/Integer> #<class skein.core/Number> #<class skein.core/Object>]
 (class-precedence-list Vector)
-; => [#<class norn.core/Vector> #<class norn.core/Sequential>
-;     #<class norn.core/Collection> #<class norn.core/Object>]
+; => [#<class skein.core/Vector> #<class skein.core/Sequential>
+;     #<class skein.core/Collection> #<class skein.core/Object>]
 ```
 
 `Object` is at the top of every list. Other built-in classes include
@@ -309,7 +309,7 @@ and add behavior for particular classes with `defmethod`:
 
 In a `defmethod`, a parameter written as `(s square)` is specialized: the
 method applies only when that argument is an instance of `square` or a
-subclass of it. When you call `area`, Norn finds the methods that apply to
+subclass of it. When you call `area`, Skein finds the methods that apply to
 the argument and runs the most specific one.
 
 Calling a generic function with an argument no method accepts is an error:
@@ -366,7 +366,7 @@ Here `bonus` overrides the `balance` reader for its instances and uses
 ## Multiple dispatch
 
 Methods in most object systems are chosen by one argument, the receiver.
-A Norn generic function looks at the classes of all its required arguments.
+A Skein generic function looks at the classes of all its required arguments.
 This is called multiple dispatch, and it fits problems where the right
 behavior depends on two things at once.
 
@@ -389,7 +389,7 @@ The classic example is a collision between two objects in a game:
 (collide (ship) (ship))         ; => :pass-by
 ```
 
-When several methods apply, Norn sorts them by specificity, comparing the
+When several methods apply, Skein sorts them by specificity, comparing the
 arguments from left to right. For each argument, it uses that argument's
 class precedence list: a method on `ship` is more specific than one on
 `Object` for a `ship`. The first argument where two methods differ decides.
@@ -423,7 +423,7 @@ comparison uses `=`, so `(eql :draft)` matches the keyword `:draft`, and
 ## Dispatching on a value you compute
 
 Clojure programmers know multimethods: you supply a dispatch function, and
-methods are chosen by its result. Norn has the same thing as an option to
+methods are chosen by its result. Skein has the same thing as an option to
 `defgeneric`. With `(:dispatch f)`, the generic function applies `f` to the
 arguments and picks the method for that result.
 
@@ -478,7 +478,7 @@ they're plain data or when the deciding fact isn't a class.
 So far one method has run per call: the most specific one. Often you want
 more than that. A subclass wants to add a step to what its parent does, or
 code wants to log, validate or time every call without each method doing it.
-Norn's standard method combination gives methods roles through qualifiers.
+Skein's standard method combination gives methods roles through qualifiers.
 
 - A primary method, with no qualifier, computes the result. Only the most
   specific runs, unless it calls the next one.
@@ -665,10 +665,10 @@ how to make an instance from the form:
   (= price-tag (read-string (pr-str price-tag)))) ; => true
 ```
 
-Norn's own decimals and times work this way: `#norn/decimal "12.30"`,
-`#norn/date "2026-11-03"`, `#inst "2026-11-13T07:05:00Z"`
+Skein's own decimals and times work this way: `#skein/decimal "12.30"`,
+`#skein/date "2026-11-03"`, `#inst "2026-11-13T07:05:00Z"`
 ([Chapter 20](20-data-formats.md)). A tag without a namespace is reserved for
-Norn, as in Clojure, so name yours, as `shop/money` is.
+Skein, as in Clojure, so name yours, as `shop/money` is.
 
 ## Initializing instances
 

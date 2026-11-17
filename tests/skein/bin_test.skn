@@ -1,0 +1,151 @@
+;;;; skein.bin (M9 part 9.11): every kind of value as bytes and back, and
+;;;; safe to read from untrusted input. Random values round-trip through it
+;;;; (and through skein.edn's text), so gaps in types, the printer and
+;;;; equality show.
+
+(ns bin-test
+  (:require [skein.test :refer [is deftest testing]] [skein.bin :as bin] [skein.edn :as edn]
+            [skein.random :as rnd] [skein.io :as io] [skein.sys :as sys] [skein.string :as str]))
+
+(defclass Pt () ((x :initarg :x) (y :initarg :y :initform 0)))
+(defclass Cell () ((v :initarg :v :mutable true)) (:mutable))
+
+(defn- round [v] (bin/decode (bin/encode v) :classes [Pt]))
+(defn- message [f] (try (f) nil (catch Error e (condition-message e))))
+(defn- class-of-error [f] (try (f) nil (catch Error e (name (class-name (class-of e))))))
+
+(deftest every-kind-of-value
+  (doseq [v [nil true false 0 -1 4611686018427387903 -4611686018427387904 123456789012345678901234567890
+             -98765432109876543210 1.5 -0.0 ##Inf ##-Inf 5e-324 1/3 -7/2 \a \é (char 9731) "" "héllo\nwörld"
+             :k :ns/k 'sym 'ns/sym () '(1 (2 3)) [] [1 [2 [3]]] {} {:a 1 [1 2] {:b #{}}} #{} #{1 :a "s"}
+             (sorted-map 3 :c 1 :a) (sorted-set "b" "a") (conj (queue) 1 2 3) (bytes []) (bytes [0 255 7])
+             (make Pt :x 1) (make Pt :x [1 2] :y {:z 3})]]
+    (is (= v (round v)) (pr-str v))
+    (is (= (pr-str v) (pr-str (round v))) "printed the same"))
+  (testing "the kinds kept"
+    (is (vector? (round [1])))
+    (is (seq? (round '(1))))
+    (is (sorted? (round (sorted-map 1 2))))
+    (is (= "#queue [1 2]" (pr-str (round (conj (queue) 1 2))))))
+  (testing "sequences are written realized, as lists"
+    (is (= '(2 3 4) (round (map inc [1 2 3]))))
+    (is (= '(0 1 2) (round (range 3)))))
+  (testing "a regex, by its pattern"
+    (is (= "a+b" (str (round #"a+b")))))
+  (testing "NaN: not equal to itself, but a NaN"
+    (is (NaN? (round ##NaN)))))
+
+(deftest small-and-shared
+  (let [records (vec (for [i (range 100)] {:id i :name (str "n" i) :tags #{:a :b}}))]
+    (is (< (count (bin/encode records)) (* 0.75 (count (pr-str records))))
+        "keywords written once, then referenced: a quarter smaller than the text at least"))
+  (is (= (str/join (map char [78 82 78 66])) (bytes->string (bytes (take 4 (seq (bin/encode 1)))))) "NRNB")
+  (is (= 1 (nth (vec (bin/encode 1)) 4)) "version 1"))
+
+(deftest what-isnt-data
+  (doseq [x [(atom 1) inc (chan) (var round)]]
+    (is (some? (message (fn [] (bin/encode x)))) (pr-str x)))
+  (is (str/includes? (message (fn [] (bin/encode (make Cell :v 1)))) "mutable") "values only"))
+
+(deftest instances-only-of-classes-given
+  (let [b (bin/encode {:p (make Pt :x 1)})]
+    (is (str/includes? (message (fn [] (bin/decode b))) "which the reader wasn't given"))
+    (is (= {:p (make Pt :x 1)} (bin/decode b :classes [Pt]))))
+  (testing "made from its slots: a slot it lacks from the class's default"
+    (let [b (bin/encode (make Pt :x 5))]
+      (is (= 0 (:y (bin/decode b :classes [Pt])))))))
+
+(deftest untrusted-input
+  (testing "what's wrong, as a ParseError"
+    (doseq [[b why] [[(bytes []) "doesn't start NRNB"]
+                     [(bytes [1 2 3 4 5]) "doesn't start NRNB"]
+                     [(bytes [78 82 78 66 9 0]) "newer than this reader"]
+                     [(bytes [78 82 78 66 1 12 255 255 255 255 15]) "more than the 0 bytes left"]
+                     [(bytes [78 82 78 66 1 8 2 255 254]) "isn't UTF-8"]
+                     [(bytes [78 82 78 66 1 0 0]) "bytes after the value"]
+                     [(bytes [78 82 78 66 1 99]) "unknown tag"]
+                     [(bytes [78 82 78 66 1 21 4]) "not yet seen"]
+                     [(conj (into [78 82 78 66 1 13 2] [3 2 0 3 2 0]) 0) "a key twice"]]]
+      (let [b (if (vector? b) (bytes b) b)]
+        (is (= "ParseError" (class-of-error (fn [] (bin/decode b)))) why)
+        (is (str/includes? (or (message (fn [] (bin/decode b))) "") why) why))))
+  (testing "nesting"
+    (let [deep (reduce (fn [v _] [v]) [] (range 600))]
+      (is (str/includes? (message (fn [] (bin/decode (bin/encode deep)))) "nests deeper than 512"))
+      (is (= deep (bin/decode (bin/encode deep) :max-depth 1000))))
+    (is (str/includes? (message (fn [] (bin/encode (reduce (fn [v _] [v]) [] (range 20000))))) "more than 10000 deep")
+        "and writing, rather than overflowing the stack"))
+  (testing "20000 mutated encodings: a value or a ParseError, never anything else"
+    (let [g (rnd/generator 7)
+          seeds [(bin/encode {:a [1 2 3] :b #{:x :y} :c "text" :d 1.5 :e (sorted-map 1 2) :f 12345678901234567890123})
+                 (bin/encode (vec (range 100))) (bin/encode {:k :k :l :k :m 'sym})]
+          outcomes (frequencies
+                    (for [_ (range 20000)]
+                      (let [base (vec (rnd/choice g seeds))
+                            b (case (rnd/int g 4)
+                                0 (assoc base (rnd/int g (count base)) (rnd/int g 256))
+                                1 (subvec base 0 (rnd/int g (count base)))
+                                2 (into base (map (fn [_] (rnd/int g 256)) (range (inc (rnd/int g 4)))))
+                                (into [78 82 78 66 1] (map (fn [_] (rnd/int g 256)) (range (rnd/int g 40)))))]
+                        (or (class-of-error (fn [] (bin/decode (bytes b)))) :value))))]
+      (is (= #{:value "ParseError"} (set (keys outcomes))) (pr-str outcomes)))))
+
+(deftest the-reader-too
+  (testing "text nested too deeply is an error, not a crash"
+    (let [n 20000 s (str (apply str (repeat n "[")) (apply str (repeat n "]")))]
+      (is (str/includes? (message (fn [] (edn/read-string s))) "Nested more than 10000 deep"))))
+  (testing "#queue, as queues print"
+    (is (= (conj (queue) 1 2) (edn/read-string "#queue [1 2]")))))
+
+(deftest files
+  (let [path (io/path (sys/temp-dir) (str "skein-bin-test-" (sys/pid) "-" (nano-time) ".bin"))]
+    (bin/write-file path {:x [1 2] :p (make Pt :x 3)})
+    (is (= {:x [1 2] :p (make Pt :x 3)} (bin/read-file path :classes [Pt])))
+    (io/delete! path)))
+
+;; ---- random values: through skein.bin and through text ----
+
+(def ^:private g (rnd/generator 42))
+
+(defn- scalar []
+  (case (rnd/int g 15)
+    0 nil
+    1 (rnd/boolean g)
+    2 (- (rnd/int g 2000) 1000)
+    3 (* (rnd/int g 1000000) 1000000000000000000000)
+    4 (- (rnd/float g) 0.5)
+    5 (/ (inc (rnd/int g 100)) (+ 2 (rnd/int g 100)))
+    6 (char (+ 32 (rnd/int g 2000)))
+    7 (apply str (map (fn [_] (char (+ 32 (rnd/int g 300)))) (range (rnd/int g 8))))
+    8 (keyword (rnd/choice g ["a" "b" "x-y" "?"]))
+    9 (keyword "ns" (rnd/choice g ["k" "l"]))
+    10 (symbol (rnd/choice g ["s" "t"]))
+    11 (rnd/bytes g (rnd/int g 5))
+    12 (rnd/choice g [##Inf ##-Inf -0.0 0.0 1e300 5e-324])
+    13 (- (rnd/int g 4611686018427387904) 2305843009213693952)
+    (symbol "ns" "q")))
+
+(defn- value [d instances?]
+  (if (or (zero? d) (< (rnd/int g 10) 4))
+    (if (and instances? (zero? (rnd/int g 12))) (make Pt :x (scalar)) (scalar))
+    (let [n (rnd/int g 5)
+          xs (fn [] (mapv (fn [_] (value (dec d) instances?)) (range n)))]
+      (case (rnd/int g 8)
+        0 (xs)
+        1 (apply list (xs))
+        2 (into #{} (xs))
+        3 (into {} (map (fn [_] [(value (dec d) instances?) (value (dec d) instances?)]) (range n)))
+        4 (into (sorted-map) (map (fn [i] [i (value (dec d) instances?)]) (range n)))
+        5 (into (sorted-set) (range n))
+        6 (into (queue) (xs))
+        (map identity (xs))))))
+
+(deftest random-values-round-trip
+  (let [vs (repeatedly 1500 (fn [] (value 4 true)))
+        bad (fn [ok?] (vec (take 3 (remove ok? vs))))]
+    (is (= [] (bad (fn [v] (= v (round v))))) "equal")
+    (is (= [] (bad (fn [v] (= (hash v) (hash (round v)))))) "the same hash")
+    (is (= [] (bad (fn [v] (= (pr-str v) (pr-str (round v)))))) "printed the same"))
+  (let [vs (repeatedly 1500 (fn [] (value 4 false)))]
+    (is (= [] (vec (take 3 (remove (fn [v] (= v (edn/read-string (pr-str v)))) vs))))
+        "and through text: what pr-str prints, skein.edn reads back equal")))

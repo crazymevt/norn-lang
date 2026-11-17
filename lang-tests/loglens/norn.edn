@@ -1,7 +1,0 @@
-{:name loglens
- :version "0.1.0"
- :paths ["src"]
- :main loglens.main/main
- ;; norn package: what it makes (a macOS app also takes :id, :display-name
- ;; and :icon, a PNG)
- :package {:targets [:cli]}}

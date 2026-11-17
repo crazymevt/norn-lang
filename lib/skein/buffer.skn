@@ -1,0 +1,166 @@
+;;;; Immutable packed numeric buffers backed by Skein Bytes.
+
+(ns skein.buffer
+  (:refer-core :exclude [count nth])
+  (:require [skein.bytes :as b]))
+
+(defclass Buffer () ((element-type :required true) (order :required true) (data :required true))
+  (:doc "A packed, immutable sequence of numbers of one element type (from pack,
+  from-bytes, freeze! or snapshot)."))
+
+(def ^:private widths {:u8 1 :i8 1 :u16 2 :i16 2 :u32 4 :i32 4 :u64 8 :i64 8 :f32 4 :f64 8})
+(def ^:private signed-types #{:i8 :i16 :i32 :i64})
+(def ^:private float-types #{:f32 :f64})
+
+(defn- width-of [type] (or (get widths type) (error "Unknown buffer element type" type)))
+
+(defmethod initialize-instance :after ((buf Buffer) _)
+  (let [data (:data buf) width (width-of (:element-type buf))]
+    (when-not (and (bytes? data) (zero? (mod (skein.core/count data) width))
+                   (contains? #{:be :le} (:order buf)))
+      (error "Buffer data must be Bytes of a whole number of elements, with byte order :be or :le"))))
+
+(defn from-bytes
+  "View a Bytes value as typed elements without copying. :order defaults to :le."
+  ^Buffer [^Keyword type ^Bytes data & {:keys [order] :or {order :le}}]
+  (Buffer :element-type type :order order :data data))
+
+(defn- encode-element [value type width order]
+  (if (contains? float-types type)
+    (b/float-bytes value width order)
+    (let [limit (bit-shift-left 1 (* 8 width))
+          signed? (contains? signed-types type)
+          end (if signed? (quot limit 2) limit)
+          start (if signed? (- end) 0)]
+      (when-not (and (integer? value) (<= start value) (< value end))
+        (error "Value outside buffer element range" type value))
+      (b/uint-bytes (mod value limit) width order))))
+
+(defn pack
+  "Pack values as :u8, :i8, :u16, :i16, :u32, :i32, :u64, :i64, :f32 or :f64.
+  :order defaults to :le. Integer values must fit the selected type."
+  ^Buffer [^Keyword type values & {:keys [order] :or {order :le}}]
+  (let [width (width-of type)]
+    (from-bytes type (apply b/concat-bytes (map #(encode-element % type width order) values)) :order order)))
+
+(defn to-bytes "The underlying packed Bytes." ^Bytes [^Buffer buf] (:data buf))
+
+;;; ---- mutable buffers ----
+;;;
+;;; A MutableBuffer is updated in place: pixels, audio samples. Like any
+;;; (:mutable) object it belongs to the fiber that made it, which alone
+;;; reads and writes it; release! or a channel send hands it to another.
+;;; freeze! hands its storage over as an immutable Buffer without copying
+;;; (the mutable buffer is then finished); snapshot copies, and writing
+;;; carries on.
+
+(defclass MutableBuffer ()
+  ((element-type :required true) (order :required true) (length :required true)
+                                 (data :required true :mutable true))
+  (:mutable)
+  (:doc "A packed sequence of numbers of one element type that set!, fill! and
+  copy! change in place (from mutable or mutable-copy). It belongs to the
+  fiber that made it, as a (:mutable) object does."))
+
+(def ^:private codes {:u8 0 :i8 1 :u16 2 :i16 3 :u32 4 :i32 5 :u64 6 :i64 7 :f32 8 :f64 9})
+
+(defn mutable-buffer? "Is x a MutableBuffer?" ^Boolean [x] (instance? MutableBuffer x))
+
+(defn- check-order [order]
+  (when-not (contains? #{:be :le} order) (error "Buffer byte order must be :be or :le" order)))
+
+(defn mutable
+  "A mutable buffer of n elements of type (as for pack), all zero, owned by
+  the fiber that makes it. :order defaults to :le."
+  ^MutableBuffer [^Keyword type ^Integer n & {:keys [order] :or {order :le}}]
+  (check-order order)
+  (when-not (and (integer? n) (<= 0 n)) (error "A mutable buffer's length is a count of elements" n))
+  (MutableBuffer :element-type type :order order :length n :data (%byte-array (* n (width-of type)))))
+
+(declare snapshot)
+
+(defn mutable-copy
+  "A mutable buffer holding a copy of buf's elements (a Buffer or a
+  MutableBuffer), owned by the fiber that makes it."
+  ^MutableBuffer [^(U Buffer MutableBuffer) buf]
+  (let [data (if (mutable-buffer? buf) (:data (snapshot buf)) (:data buf))
+        width (width-of (:element-type buf))]
+    (MutableBuffer :element-type (:element-type buf) :order (:order buf)
+                   :length (quot (skein.core/count data) width) :data (%byte-array-from data))))
+
+(defn- code-of [mb] (get codes (:element-type mb)))
+(defn- le? [mb] (= :le (:order mb)))
+
+(defn- offset-of [mb i]
+  (when-not (and (integer? i) (<= 0 i) (< i (:length mb)))
+    (error IndexError :message "Buffer index out of bounds" :index i))
+  (* i (width-of (:element-type mb))))
+
+(defn set!
+  "Set element i of mutable buffer mb to value, which must fit its element
+  type. mb."
+  ^MutableBuffer [^MutableBuffer mb ^Integer i ^Number value]
+  (%mbuf-store! mb (offset-of mb i) (code-of mb) (le? mb) value))
+
+(defn fill! "Set every element of mutable buffer mb to value. mb." ^MutableBuffer [^MutableBuffer mb ^Number value]
+  (%mbuf-fill! mb (code-of mb) (le? mb) value))
+
+(defn copy!
+  "Copy src into mutable buffer mb from element at on: a Buffer or
+  MutableBuffer of the same element type and order (as one block), or a
+  collection of values. mb."
+  ^MutableBuffer [^MutableBuffer mb ^Integer at src]
+  (cond
+    (and (or (instance? Buffer src) (mutable-buffer? src))
+         (= (:element-type src) (:element-type mb)) (= (:order src) (:order mb)))
+    (let [data (if (mutable-buffer? src) (:data (snapshot src)) (:data src))]
+      (when (pos? (skein.core/count data)) (offset-of mb at))
+      (%mbuf-blit! mb (* at (width-of (:element-type mb))) data))
+    (or (instance? Buffer src) (mutable-buffer? src))
+    (error (str "copy! needs a buffer of the same element type and byte order: copying "
+                (:element-type src) " " (:order src) " into " (:element-type mb) " " (:order mb)))
+    :else (do (reduce (fn [i value] (set! mb i value) (inc i)) at src) mb)))
+
+(defn freeze!
+  "An immutable Buffer of mutable buffer mb's elements, made from its
+  storage without copying. mb is finished: using it again is an error."
+  ^Buffer [^MutableBuffer mb]
+  (let [type (:element-type mb) order (:order mb)]
+    (Buffer :element-type type :order order :data (%mbuf-freeze! mb))))
+
+(defn snapshot
+  "An immutable Buffer of a copy of mutable buffer mb's elements as they are
+  now. mb stays writable."
+  ^Buffer [^MutableBuffer mb]
+  (Buffer :element-type (:element-type mb) :order (:order mb) :data (%mbuf-snapshot mb)))
+
+;;; ---- reading either kind ----
+
+(defn count "Number of elements in buf (a Buffer or MutableBuffer)." ^Integer [^(U Buffer MutableBuffer) buf]
+  (if (mutable-buffer? buf)
+    (:length buf)
+    (quot (skein.core/count (:data buf)) (width-of (:element-type buf)))))
+
+(defn nth "Read the element at a zero-based index (of a Buffer or MutableBuffer)." ^Number [^(U Buffer MutableBuffer) buf ^Integer i]
+  (if (mutable-buffer? buf)
+    (%mbuf-load buf (offset-of buf i) (code-of buf) (le? buf))
+    (do
+      (when-not (and (integer? i) (<= 0 i) (< i (count buf)))
+        (error IndexError :message "Buffer index out of bounds" :index i))
+      (let [element-type (:element-type buf) order (:order buf) data (:data buf) width (width-of element-type)
+            offset (* i width)]
+        (if (contains? float-types element-type)
+          (b/read-float data offset width order)
+          (let [n (b/read-uint data offset width order) sign (bit-shift-left 1 (dec (* 8 width)))]
+            (if (and (contains? signed-types element-type) (>= n sign)) (- n (* 2 sign)) n)))))))
+
+(defn values "Read all buffer elements as a vector." ^Vector [^(U Buffer MutableBuffer) buf]
+  (mapv #(nth buf %) (range (count buf))))
+
+;; Both kinds are collections to count, nth, seq and everything built on them.
+(defmethod collection-seq ((buf Buffer)) (seq (values buf)))
+(defmethod collection-count ((buf Buffer)) (count buf))
+(defmethod collection-nth ((buf Buffer) i) (nth buf i))
+(defmethod collection-seq ((buf MutableBuffer)) (seq (values buf)))
+(defmethod collection-count ((buf MutableBuffer)) (count buf))
+(defmethod collection-nth ((buf MutableBuffer) i) (nth buf i))

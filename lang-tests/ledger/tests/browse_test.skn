@@ -1,0 +1,113 @@
+(ns ledger.browse-test
+  (:require [ledger.browse :as b]
+            [ledger.money :as m]
+            [skein.io :as io]
+            [skein.process :as proc]
+            [skein.string :as str]
+            [skein.sys :as sys]
+            [skein.terminal :as term]
+            [skein.test :refer [deftest is]]
+            [skein.time :as t]))
+
+(def ledger
+  {:transactions (vec (for [[i d a] [[0 "PAYROLL" "2500.00"] [1 "WHOLE FOODS" "-84.12"] [2 "CORNER CAFE" "-4.75"]
+                                     [3 "Café Été" "-12.50"] [4 "NETFLIX" "-15.99"]]]
+                        {:id (str "t" i) :date (t/local-date 2026 11 (inc i)) :description d
+                         :amount (m/parse-amount a) :account "checking" :category (when (= i 1) "Groceries")}))})
+
+(def size {:rows 6 :cols 60})
+
+(defn- keys-of
+  "The keys typed as text s (as a terminal sends them)."
+  [s]
+  (:keys (term/decode-keys (vec (map (fn [b] (bit-and b 255)) (bytes s))) :final true)))
+
+(defn- press [st s] (reduce (fn [st k] (b/step st k size)) st (keys-of s)))
+
+(defn- screen [st] (binding [term/*color* :none] (first (b/render st size))))
+
+(deftest moving-and-scrolling
+  (let [st (b/initial-state ledger)]
+    (is (= 0 (:cursor st)))
+    (is (= 2 (:cursor (press st "\u001b[B\u001b[B"))) "down, down")
+    (is (= 4 (:cursor (press st "\u001b[F"))) "end")
+    (is (= 0 (:cursor (press st "\u001b[B\u001b[A\u001b[A"))) "up stops at the top")
+    (let [lines (screen (press st "\u001b[F"))]
+      (is (= 6 (count lines)) "a title, four rows and a status line")
+      (is (str/includes? (nth lines 4) "NETFLIX") "scrolled so the cursor shows")
+      (is (not-any? (fn [l] (str/includes? l "PAYROLL")) lines)))))
+
+(deftest filtering
+  (let [st (press (b/initial-state ledger) "/caf")]
+    (is (= :filter (:mode st)))
+    (is (= 2 (count (:rows st))) "as you type, case aside, accents and all")
+    (is (= "/caf" (last (screen st))))
+    (let [kept (press st "\r")]
+      (is (= [:browse "caf"] [(:mode kept) (:filter kept)]))
+      (is (str/includes? (last (screen kept)) "2 of 5 transactions, matching \"caf\"")))
+    (is (= 5 (count (:rows (press st "\u001b")))) "escape drops it")))
+
+(deftest categorizing
+  (let [st (press (b/initial-state ledger) "\u001b[B\u001b[Bc")]
+    (is (= :category (:mode st)))
+    (let [done (press st "Gro\t\r")]
+      (is (= "Groceries" (get-in done [:ledger :transactions 2 :category])) "Tab completes from the categories in use")
+      (is (:dirty done))
+      (is (str/includes? (last (screen done)) "Category: Groceries")))
+    (is (nil? (get-in (press st "\r") [:ledger :transactions 2 :category])) "empty clears it")
+    (is (= ["t0" "t2" "t3" "t4"] (mapv (fn [i] (get-in ledger [:transactions i :id])) (:rows (press (b/initial-state ledger) "u"))))
+        "u: only those without one")))
+
+(deftest quitting
+  (let [st (b/initial-state ledger)]
+    (is (:quit (press st "q")))
+    (let [dirty (press st "cX\r")]
+      (is (not (:quit (press dirty "q"))) "unsaved: asks first")
+      (is (:quit (press dirty "qq")))
+      (is (:save (press dirty "s"))))))
+
+;; The real program in a terminal: keys in, the screen out.
+(def skein-exe (let [e (:executable (sys/info))] (when (and e (= "skein" (io/file-name e))) e)))
+(def here (let [loc (%location)] (io/parent (subs loc 0 (str/last-index-of loc ":")))))
+
+(defn- screen-of
+  "An atom of all p has shown, kept by a fiber that reads p's output to its
+  end (as a terminal emulator does: on macOS a program isn't done until
+  its last output is read)."
+  [p]
+  (let [seen (atom "")
+        r (io/text-reader (:out p))]
+    (spawn-detached (loop [] (when-let [chunk (try (io/read-chunk r) (catch Error _ nil))]
+                               (swap! seen str chunk)
+                               (recur))))
+    seen))
+
+(defn- shows?
+  "Does screen (from screen-of) come to show text, after what it showed
+  before, within 10 s?"
+  [screen from text]
+  (loop [n 0]
+    (cond (str/includes? (term/strip (subs @screen (min from (count @screen)))) text) true
+          (> n 200) false
+          :else (do (sleep 50) (recur (inc n))))))
+
+(deftest in-a-terminal
+  (when skein-exe
+    (let [dir (io/path (sys/temp-dir) (str "ledger-pty-" (sys/pid) "-" (nano-time)))
+          project (io/parent here)]
+      (io/mkdirs! dir)
+      (io/write-text (io/path dir "ledger.toml") (io/read-text (io/path here "fixtures" "ledger.toml")))
+      (let [env {"LEDGER_CONFIG" (io/path dir "ledger.toml")}]
+        (proc/sh skein-exe "run" "import" "checking" (io/path here "fixtures" "checking.csv") :dir project :env env)
+        (let [p (proc/start-pty skein-exe :args ["run" "browse"] :dir project :env env :rows 10 :cols 70)
+              screen (screen-of p)
+              type! (fn [s] (let [at (count @screen)] (io/write (:in p) s) at))]
+          (is (shows? screen 0 "6 of 6 transactions"))
+          (let [at (type! "/cafe\r")] (is (shows? screen at "1 of 6 transactions, matching \"cafe\"")))
+          (let [at (type! "cCoffee\rs")] (is (shows? screen at "Saved")))
+          (proc/resize p 12 80)
+          (type! "q")
+          (is (= 0 (:exit (proc/wait p))))
+          (proc/close p)))
+      (is (str/includes? (io/read-text (io/path dir "ledger.edn")) ":category \"Coffee\"") "saved from the terminal")
+      (io/delete! dir :recursive true))))

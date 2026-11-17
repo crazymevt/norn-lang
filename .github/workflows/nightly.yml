@@ -1,7 +1,7 @@
-# Every night (and on demand): every Norn suite in the modes too slow for
+# Every night (and on demand): every Skein suite in the modes too slow for
 # each push, which are what catch tier-1 and collector bugs: tier 0 alone,
 # everything compiled from its first call, and a collection forced every
-# 50th slow-path poll (NORN_GC_STRESS). Scheduled runs use main.
+# 50th slow-path poll (SKEIN_GC_STRESS). Scheduled runs use main.
 name: Nightly
 
 on:
@@ -14,7 +14,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  NORN_UI_HEADLESS: "1"
+  SKEIN_UI_HEADLESS: "1"
 
 jobs:
   suites:
@@ -34,7 +34,7 @@ jobs:
 
       - name: macOS file limits
         if: runner.os == 'macOS'
-        # (as a developer's Mac allows: the suites' many sockets; norn raises
+        # (as a developer's Mac allows: the suites' many sockets; skein raises
         # its own limit to this cap)
         run: sudo sysctl -w kern.maxfiles=122880 kern.maxfilesperproc=61440
 
@@ -51,20 +51,20 @@ jobs:
 
       - name: Tier 0
         if: ${{ !cancelled() }}
-        run: target/release/norn test tests/norn
+        run: target/release/skein test tests/skein
         env:
-          NORN_TIER: "0"
+          SKEIN_TIER: "0"
 
       - name: Everything compiled from its first call
         if: ${{ !cancelled() }}
-        run: target/release/norn test tests/norn
+        run: target/release/skein test tests/skein
         env:
-          NORN_TIER: "1"
-          NORN_JIT_THRESHOLD: "1"
-          NORN_JIT_SYNC: "1"
+          SKEIN_TIER: "1"
+          SKEIN_JIT_THRESHOLD: "1"
+          SKEIN_JIT_SYNC: "1"
 
       - name: GC stress
         if: ${{ !cancelled() }}
-        run: target/release/norn test tests/norn
+        run: target/release/skein test tests/skein
         env:
-          NORN_GC_STRESS: "50"
+          SKEIN_GC_STRESS: "50"

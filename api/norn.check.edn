@@ -1,5 +1,0 @@
-;; norn.check's public interface, recorded by norn api-diff --record.
-{
- "example-failures" {:arglists ["[]"], :kind :function}
- "main" {:arglists ["[& args]"], :kind :function}
-}

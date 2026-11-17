@@ -1,6 +1,0 @@
-;; norn.pprint's public interface, recorded by norn api-diff --record.
-{
- "*width*" {:kind :var, :dynamic true}
- "pprint" {:arglists ["[x]" "[x width]"], :kind :function, :signature [{:result "Any", :args ["Any"]} {:result "Any", :args ["Any" "Integer"]}]}
- "pprint-str" {:arglists ["[x]" "[x width]"], :kind :function, :signature [{:result "String", :args ["Any"]} {:result "String", :args ["Any" "Integer"]}]}
-}

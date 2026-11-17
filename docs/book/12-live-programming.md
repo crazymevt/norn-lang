@@ -2,7 +2,7 @@
 
 [Contents](README.md) · Previous: [11. Conditions and restarts](11-conditions-and-restarts.md) · Next: [13. Contracts](13-contracts.md) <!-- nav -->
 
-Norn is built to be changed while it runs. You start one process, load your
+Skein is built to be changed while it runs. You start one process, load your
 code into it, and then keep working inside it: try an expression, redefine
 a function, and call it again, without restarting. When something fails, the
 failing fiber stops where it is and waits, with its stack and local variables
@@ -13,7 +13,7 @@ happens when you redefine code that is already running. Then it spends most
 of its time on the debugger: reading what it shows, inspecting frames,
 fixing and resuming, and handling fibers that fail in the background. It
 ends with the tools for finding things out (`doc`, `source`, `apropos`,
-`inspect`, `trace`), with `norn --server`, which lets an editor do all of
+`inspect`, `trace`), with `skein --server`, which lets an editor do all of
 this, and with saving a session as an image.
 
 [Chapter 2](02-first-steps.md) covered starting the REPL. The debugger is
@@ -22,12 +22,12 @@ explains; this chapter assumes you've read it.
 
 ## The REPL
 
-Run `norn` with no arguments to start the REPL. It prints a banner, then a
+Run `skein` with no arguments to start the REPL. It prints a banner, then a
 prompt with the current namespace:
 
 ```text
-$ norn
-Norn 0.0.1 (fibers on 10 carriers)
+$ skein
+Skein 0.0.1 (fibers on 10 carriers)
 Ctrl-C interrupts a running evaluation; Ctrl-D exits.
 user=> (defn greet [name] (str "Hello, " name))
 #'user/greet
@@ -43,7 +43,7 @@ Each input is read, evaluated in its own fiber, and its value printed with
 `prn`, so strings show their quotes. The number of carriers, the threads
 that run fibers, depends on your machine. A form can span several lines;
 the REPL waits until the brackets balance. Your history is kept in
-`~/.norn_history`.
+`~/.skein_history`.
 
 The prompt shows the current namespace. `in-ns` changes it, and definitions
 then go into that namespace:
@@ -62,7 +62,7 @@ user
 ```
 
 When you've edited a file, load it again with
-`(require 'shop.prices :reload)` or `(load-file "src/shop/prices.norn")`.
+`(require 'shop.prices :reload)` or `(load-file "src/shop/prices.skn")`.
 Its definitions replace the old ones, and everything that calls them uses
 the new versions from then on. [Chapter 8](08-modules-and-projects.md) covers
 `require` and search paths.
@@ -87,10 +87,10 @@ user=> (defn spin [] (recur))
 user=> (spin)
 Error: Interrupted
   at user/spin
-  at norn.core/%with-bindings*
-  at norn.core/%with-bindings*
-  at norn.core/%repl-eval/fn
-  at norn.core/%with-bindings*
+  at skein.core/%with-bindings*
+  at skein.core/%with-bindings*
+  at skein.core/%repl-eval/fn
+  at skein.core/%with-bindings*
 user=> (+ 1 1)
 2
 ```
@@ -100,7 +100,7 @@ fiber, as `:a` does, and then exits.
 
 ## Redefining code that is running
 
-Every top-level name in Norn is a var, and a call to a function by its name
+Every top-level name in Skein is a var, and a call to a function by its name
 looks the var up at the time of the call. So when you redefine a function,
 every later call, from anywhere, gets the new definition. That includes code
 already running in other fibers.
@@ -155,7 +155,7 @@ long-running code, put that piece in its own top-level function and call it
 by name.
 
 The standard library is *sealed*: its interfaces are fixed, and recorded so
-that a change to one shows up (see `norn api-diff` in
+that a change to one shows up (see `skein api-diff` in
 [Chapter 26](26-tools-and-performance.md)). You can still redefine one of
 its functions, by switching to its namespace with `in-ns`. That unseals the
 module, and the first time it happens, a warning says so. Your own modules
@@ -163,40 +163,40 @@ stay open while you work; a release build seals them
 ([Chapter 27](27-images-and-deployment.md)).
 
 ```clojure
-(sealed? 'norn.core) ; => true
+(sealed? 'skein.core) ; => true
 (sealed? 'user) ; => false
 ```
 
 ## Reloading as you save
 
-In a project, `norn dev` does the reloading for you. It runs the project's
-`:main`, as `norn run` does, and each time you save one of the project's
+In a project, `skein dev` does the reloading for you. It runs the project's
+`:main`, as `skein run` does, and each time you save one of the project's
 modules it loads that module again. The running program picks up the
 change the way the worker above did:
 
 ```sh
 cd tally
-norn dev notes.txt
+skein dev notes.txt
 ```
 
 A module that defines macros reloads the modules that use it too, since
 they expanded the old macros. A file saved with a mistake that stops it
 reading, such as a missing bracket, isn't loaded: the program keeps
-running the old code, and `norn dev` prints the error with its line. When
+running the old code, and `skein dev` prints the error with its line. When
 `:main` has finished, as a command-line program's does, the next save
-runs it again, which makes `norn dev` a quick way to try a program as you
+runs it again, which makes `skein dev` a quick way to try a program as you
 edit it.
 
 Reloading evaluates a module's definitions again, so state kept with
 `def` starts over. Keep it with `defonce`, shown earlier. A program that
-draws, such as a Norn UI app, can redraw after each reload:
-`(norn.dev/after-reload! ::redraw (fn [modules] (redraw!)))` registers a
-function that `norn dev` calls with the names of the modules it
-reloaded. Outside `norn dev`, nothing calls it.
+draws, such as a Skein UI app, can redraw after each reload:
+`(skein.dev/after-reload! ::redraw (fn [modules] (redraw!)))` registers a
+function that `skein dev` calls with the names of the modules it
+reloaded. Outside `skein dev`, nothing calls it.
 
-Ctrl-C stops `norn dev`. A program that listens for Ctrl-C itself, to shut
+Ctrl-C stops `skein dev`. A program that listens for Ctrl-C itself, to shut
 down cleanly ([Chapter 21](21-the-operating-system.md)), gets it too, and
-`norn dev` waits for it to finish. A program that doesn't is stopped where
+`skein dev` waits for it to finish. A program that doesn't is stopped where
 it is.
 
 ## What you haven't saved
@@ -205,11 +205,11 @@ Fixing a function at the REPL, or evaluating it from an editor, changes
 the running program, not the file. It's easy to forget to make the same
 change in the file, and then the fix is lost the next time the program
 starts. `unsaved-definitions` lists the definitions you've evaluated that
-their file doesn't hold. Here `words` from `src/tally/words.norn` was
+their file doesn't hold. Here `words` from `src/tally/words.skn` was
 changed at the REPL, and `top` is new:
 
 ```text
-user=> (load-file "src/tally/words.norn")
+user=> (load-file "src/tally/words.skn")
 #'tally.words/counts
 user=> (in-ns 'tally.words)
 tally.words
@@ -219,7 +219,7 @@ tally.words=> (defn words [text]
 tally.words=> (defn top [text n] (take n (sort-by (comp - val) (counts text))))
 #'tally.words/top
 tally.words=> (unsaved-definitions)
-[{:reason :no-file, :from :repl, :name top, :ns "tally.words"} {:reason :changed, :from :repl, :line 4, :name words, :file "src/tally/words.norn", :ns "tally.words"}]
+[{:reason :no-file, :from :repl, :name top, :ns "tally.words"} {:reason :changed, :from :repl, :line 4, :name words, :file "src/tally/words.skn", :ns "tally.words"}]
 ```
 
 Each entry says why it's listed:
@@ -238,7 +238,7 @@ Each entry says why it's listed:
 The check reads the file as it is now. A definition counts as saved when
 the file has one of the same name that reads the same, however it's laid
 out, so saving through a formatter doesn't matter. Loading the file again
-with `load-file`, `require :reload`, or `norn dev`'s reload means its
+with `load-file`, `require :reload`, or `skein dev`'s reload means its
 definitions come from the file again, and they're no longer listed.
 Editors get the same list from the `:unsaved` op, to mark the definitions
 that need saving.
@@ -276,7 +276,7 @@ The banner has four parts.
   always offer `use-value` and `retry`, as Chapter 11 described. Restarts
   established with `restart-case` in your own code appear here too.
 - **Frames** are the calls on the fiber's stack, innermost first, each with
-  its local variables. The numbers have gaps because Norn's internal frames
+  its local variables. The numbers have gaps because Skein's internal frames
   are hidden, the REPL's own among them. `user/average` was running with
   `xs` bound to `[]`, called from `user/report`. An anonymous function's
   frame is named for the function or definition it's written in: a `fn`
@@ -411,10 +411,10 @@ Fiber 13 is waiting in the debugger: Divide by zero
 debug[13]> :a
 Error: Divide by zero
   at <toplevel>
-  at norn.core/%with-bindings*
-  at norn.core/%with-bindings*
-  at norn.core/%repl-eval/fn
-  at norn.core/%with-bindings*
+  at skein.core/%with-bindings*
+  at skein.core/%with-bindings*
+  at skein.core/%repl-eval/fn
+  at skein.core/%with-bindings*
 user=>
 ```
 
@@ -426,11 +426,11 @@ you're back at the first one.
 
 The restarts your code establishes show up in the same list, with their
 `:report` text. Here is the order parser from Chapter 11, saved as
-`orders.norn` with `(ns orders …)` at the top. A bad line stops in the
+`orders.skn` with `(ns orders …)` at the top. A bad line stops in the
 debugger, and the restarts offered are the ones `parse-order` defined:
 
 ```text
-user=> (load-file "orders.norn")
+user=> (load-file "orders.skn")
 #'orders/parse-orders
 user=> (in-ns 'orders)
 orders
@@ -451,7 +451,7 @@ debug[12]> :r 1 {:item "gadget" :qty 1}
 returned in place of the bad line, and parsing went on to the third line.
 `parse-order` isn't among the frames because it ended in a tail call to
 `restart-case`. Between it and `parse-orders` is the function inside `keep`
-that called it, `norn.core/keep/fn/fn`, one of Norn's own frames: `(backtrace
+that called it, `skein.core/keep/fn/fn`, one of Skein's own frames: `(backtrace
 12)` lists them all, with `:internal? true`.
 
 This is where restart design pays off. The restarts you write for handlers
@@ -533,11 +533,11 @@ and `(debugging)` doesn't list it.
 What happens to an unhandled error depends on `*debugger*`. The REPL and
 editor evaluations bind it to `:park`, and every fiber they spawn inherits
 that. Anywhere else it's unset, and a fiber with an unhandled error unwinds
-and ends, which is why `norn script.norn` prints the error and exits.
+and ends, which is why `skein script.skn` prints the error and exits.
 `*debugger*` can also be a function, which is called with the condition
 before the fiber ends; test runners use this to record failures.
 
-The functions the debugger uses are ordinary Norn functions, so you can call
+The functions the debugger uses are ordinary Skein functions, so you can call
 them from your own code and tools: `debugging` lists waiting fibers,
 `backtrace` returns frames as data, and `eval-in-frame`, `debug-restart`,
 `debug-restart-frame` and `debug-abort` do what the commands do.
@@ -552,27 +552,27 @@ definition. `apropos` finds names in every loaded namespace by substring or
 regex, and `find-doc` searches docstrings:
 
 ```text
-user=> (require '[norn.string :as string])
+user=> (require '[skein.string :as string])
 nil
 user=> (doc string/split)
 -------------------------
-norn.string/split
+skein.string/split
 ([s pattern] [s pattern limit])
   The parts of s between matches of pattern (a string, character or regex).
   With limit, at most that many parts; the last holds the rest. An empty
   string pattern splits into characters.
 nil
 user=> (apropos #"^split")
-[norn.core/split-at norn.core/split-with norn.string/split norn.string/split-lines]
+[skein.core/split-at skein.core/split-with skein.string/split skein.string/split-lines]
 user=> (find-doc "whitespace")
-[norn.string/blank? norn.string/trim norn.string/triml norn.string/trimr]
+[skein.string/blank? skein.string/trim skein.string/triml skein.string/trimr]
 user=> (source frequencies)
 (defn frequencies [coll]
   (reduce (fn [m x] (assoc m x (inc (get m x 0)))) {} coll))
 nil
 ```
 
-`definition` returns what Norn knows about a definition as data, including
+`definition` returns what Skein knows about a definition as data, including
 the file and line it came from, which is how editors jump to a definition.
 `doc` and `source` work for code loaded from files, evaluated by an
 editor, or typed at the terminal prompt. For a definition you typed,
@@ -590,9 +590,9 @@ editor, or typed at the terminal prompt. For a definition you typed,
 and its parts. Editors use it to show values you can open and explore:
 
 ```clojure
-(inspect {:name "Ada" :langs [:norn :lisp]})
-; => {:type "norn.core/Map" :value "{:name \"Ada\", :langs [:norn :lisp]}" :count 2
-;     :items [[":name" "\"Ada\""] [":langs" "[:norn :lisp]"]]}
+(inspect {:name "Ada" :langs [:skein :lisp]})
+; => {:type "skein.core/Map" :value "{:name \"Ada\", :langs [:skein :lisp]}" :count 2
+;     :items [[":name" "\"Ada\""] [":langs" "[:skein :lisp]"]]}
 ```
 
 `trace` makes the named functions print each call and its result, and
@@ -622,17 +622,17 @@ Elapsed time: 8.193708 msecs
 ```
 
 Before you change a function, you'll want to know what calls it.
-`norn.xref` reads that from the compiled code: `callers` lists the loaded
+`skein.xref` reads that from the compiled code: `callers` lists the loaded
 definitions that refer to a var, and `callees` what a definition refers to.
 
 ```clojure
-(require '[norn.xref :as xref])
+(require '[skein.xref :as xref])
 
 (defn tax [amount] (* amount 1/5))
 (defn total [amounts] (reduce + (map (fn [a] (+ a (tax a))) amounts)))
 
 (xref/callers #'tax)   ; => [#'user/total]
-(xref/callees #'total) ; => [#'norn.core/+ #'norn.core/map #'norn.core/reduce #'user/tax]
+(xref/callees #'total) ; => [#'skein.core/+ #'skein.core/map #'skein.core/reduce #'user/tax]
 ```
 
 Nested functions count as part of the one around them. A macro call counts
@@ -642,30 +642,30 @@ redefine `total` the answer changes at once. `references` gives the whole
 table, and `reachable` everything a set of vars leads to.
 
 `macroexpand` and `macroexpand-1` show what a macro call becomes;
-[Chapter 14](14-macros.md) covers them, along with `norn expand`.
-[Chapter 26](26-tools-and-performance.md) covers `norn.bench` for
+[Chapter 14](14-macros.md) covers them, along with `skein expand`.
+[Chapter 26](26-tools-and-performance.md) covers `skein.bench` for
 measurements more careful than `time`.
 
-## Editors and norn --server
+## Editors and skein --server
 
 Typing at a terminal is one way in. An editor is better for real work: you
 evaluate the form under the cursor, see results inline, and get a debugger
-panel with clickable frames. `norn --server` starts the REPL and also
+panel with clickable frames. `skein --server` starts the REPL and also
 listens on the loopback interface for editor connections, on port 7888
 unless you give another:
 
 ```text
-$ norn --server
+$ skein --server
 Editor protocol listening on 127.0.0.1:7888
-Norn 0.0.1 (fibers on 10 carriers)
+Skein 0.0.1 (fibers on 10 carriers)
 Ctrl-C interrupts a running evaluation; Ctrl-D exits.
 user=>
 ```
 
-The editor protocol is plain Norn data over TCP, one map per line. A request
+The editor protocol is plain Skein data over TCP, one map per line. A request
 has an `:op`, an `:id` the response repeats, and the op's own keys. Results
 come back as printed text, in `:value`, so the editor never has to read
-arbitrary Norn values. Here is a session, with `→` for what the editor sent
+arbitrary Skein values. Here is a session, with `→` for what the editor sent
 and `←` for what came back:
 
 ```text
@@ -675,7 +675,7 @@ and `←` for what came back:
 ← {:ns "user", :id 2, :value "#'user/average"}
 → {:op :eval :id 3 :code "(println \"averaging\") (average [])"}
 ← {:event :out :id 3 :text "averaging\n"}
-← {:event :debug, :fiber 5, :condition "<editor>:1: Divide by zero", :restarts [{:report "Return a value from the failed operation instead", :name "use-value"} {:report "Try the failed operation again (e.g. after defining or fixing something)", :name "retry"} {:report "Abort this evaluation", :name "abort"}], :class "norn.core/ArithmeticError"}
+← {:event :debug, :fiber 5, :condition "<editor>:1: Divide by zero", :restarts [{:report "Return a value from the failed operation instead", :name "use-value"} {:report "Try the failed operation again (e.g. after defining or fixing something)", :name "retry"} {:report "Abort this evaluation", :name "abort"}], :class "skein.core/ArithmeticError"}
 → {:op :eval-in-frame :id 4 :fiber 5 :frame 6 :code "xs"}
 ← {:id 4, :value "[]"}
 → {:op :eval :id 5 :code "(defn average [xs] (if (empty? xs) 0 (/ (reduce + xs) (count xs))))"}
@@ -702,9 +702,9 @@ Some things to notice:
 The ops cover the rest of what an editor needs. Among them are `:eval` (with
 `:ns`, and `:file` and `:line` so errors and definitions point at the
 source), `:load-file`, `:interrupt`, `:complete`, `:doc`, `:definition`,
-`:who-calls` and `:calls` (`norn.xref`'s callers and callees, each with its
+`:who-calls` and `:calls` (`skein.xref`'s callers and callees, each with its
 file and line), `:macroexpand`, `:inspect`, `:ns-vars`, `:format`, `:lint`,
-`:test`, `:profile` (evaluate `:code` while `norn.prof` samples: the
+`:test`, `:profile` (evaluate `:code` while `skein.prof` samples: the
 value, the report and folded stacks), and `:unsaved`
 (`unsaved-definitions`), and
 for the debugger `:debugging`, `:backtrace`, `:eval-in-frame`, `:restart`
@@ -716,27 +716,27 @@ The editor server and the terminal REPL are two clients of the same running
 system. Definitions made through one are visible to the other.
 
 Editors that speak the Language Server Protocol, such as Neovim, Helix and
-Emacs, can use `norn lsp` instead. It gives them `norn lint`'s diagnostics
+Emacs, can use `skein lsp` instead. It gives them `skein lint`'s diagnostics
 as you type, along with hover, completion, go to definition, references,
-the outline and formatting, all from the project's own Norn.
+the outline and formatting, all from the project's own Skein.
 [Editors](../editors.md) shows how to set each one up.
 
 ## Saving a session as an image
 
 After an hour at the REPL, your process holds definitions, loaded libraries
 and data you've built up. `save-image` writes the whole heap to a file, and
-`norn --image` starts a new process from it:
+`skein --image` starts a new process from it:
 
 ```text
 user=> (defn fact [n] (if (< n 2) 1 (* n (fact (dec n)))))
 #'user/fact
 user=> (def notes (atom ["remember the milk"]))
 #'user/notes
-user=> (save-image "dev.nimg")
+user=> (save-image "dev.skimg")
 {:reused 0, :objects 22771, :patches 0, :bytes 1269728}
 ```
 
-Later, `norn --image dev.nimg` prints the banner and the image's path, then
+Later, `skein --image dev.skimg` prints the banner and the image's path, then
 gives you a REPL in which everything is as you left it:
 
 ```text
@@ -764,7 +764,7 @@ snapshot of a session you can return to.
 - Put code you expect to change in top-level functions called by name. A
   running `loop` body, and a function's calls to itself, don't pick up
   redefinitions.
-- `norn dev` runs a project's `:main` and reloads each module you save;
+- `skein dev` runs a project's `:main` and reloads each module you save;
   `defonce` keeps state across reloads.
 - At the REPL, an unhandled error parks its fiber with the stack intact. The
   banner lists the restarts and frames, and `debug[N]>` takes `:r`, `:f`,
@@ -774,14 +774,14 @@ snapshot of a session you can return to.
 - Background fibers park too. Use `debugging`, `debug-restart`,
   `debug-restart-frame` and `debug-abort` with their fiber numbers.
 - `doc`, `source`, `apropos`, `find-doc`, `definition`, `inspect`, `trace`
-  and `time` answer questions about the running system, and `norn.xref`'s
+  and `time` answer questions about the running system, and `skein.xref`'s
   `callers` and `callees` say what refers to what.
 - `unsaved-definitions` lists what you've evaluated that the files don't
   hold yet.
-- `norn --server` speaks the editor protocol, one Norn map per line, with
-  pushed debugger events and a fiber per request. `norn lsp` serves editors that
+- `skein --server` speaks the editor protocol, one Skein map per line, with
+  pushed debugger events and a fiber per request. `skein lsp` serves editors that
   speak the Language Server Protocol.
-- `save-image` saves a session's heap, and `norn --image` resumes it.
+- `save-image` saves a session's heap, and `skein --image` resumes it.
 
 ---
 

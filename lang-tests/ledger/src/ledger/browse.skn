@@ -1,0 +1,156 @@
+(ns ledger.browse
+  "Browsing the transactions in the terminal, and giving them categories.
+  The screen is a function of the state (render), and each key a change to
+  it (step), so both are tested without a terminal; run does the I/O.
+
+    up/down, page up/down, home/end   move
+    /           filter by description (Enter keeps it, Escape drops it)
+    c           set the category (Tab completes; an empty one clears it)
+    u           only the uncategorized, or all
+    s           save            q   quit (twice if there's unsaved work)"
+  (:require [ledger.money :as money]
+            [ledger.store :as store]
+            [skein.string :as str]
+            [skein.terminal :as term]
+            [skein.time :as t]))
+
+;; ---- the state ----
+
+(defn- visible
+  "Indexes of the transactions the view shows."
+  [{:keys [ledger filter only-uncategorized]}]
+  (let [needle (str/lower-case (or filter ""))]
+    (vec (keep-indexed (fn [i tx]
+                         (when (and (or (not only-uncategorized) (nil? (:category tx)))
+                                    (str/includes? (str/lower-case (:description tx)) needle))
+                           i))
+                       (:transactions ledger)))))
+
+(defn- refresh [st]
+  (let [rows (visible st)]
+    (assoc st :rows rows :cursor (max 0 (min (:cursor st) (dec (count rows)))))))
+
+(defn initial-state
+  "The state for browsing ledger."
+  [ledger]
+  (refresh {:ledger ledger :rows [] :cursor 0 :top 0 :filter "" :mode :browse :input ""
+            :dirty false :message nil :only-uncategorized false :quit false}))
+
+(defn- current [st] (get-in st [:ledger :transactions (get (:rows st) (:cursor st))]))
+
+(defn categories
+  "The categories in use, sorted."
+  [ledger]
+  (vec (sort (distinct (keep :category (:transactions ledger))))))
+
+(defn- complete
+  "The category text input completes to, if one starts with it."
+  [ledger input]
+  (or (first (filter (fn [c] (str/starts-with? (str/lower-case c) (str/lower-case input))) (categories ledger))) input))
+
+(defn- move [st n] (assoc st :cursor (max 0 (min (+ (:cursor st) n) (dec (count (:rows st)))))))
+
+(defn- char-of [k] (when (and (char? (:key k)) (not (:ctrl k)) (not (:alt k))) (:key k)))
+
+(defn step
+  "The state after key k (a skein.terminal key) on screen size {:rows :cols}."
+  [st k size]
+  (let [page (max 1 (- (:rows size) 3))
+        st (assoc st :message nil)]
+    (case (:mode st)
+      :browse
+      (case (:key k)
+        :up (move st -1)
+        :down (move st 1)
+        :page-up (move st (- page))
+        :page-down (move st page)
+        :home (assoc st :cursor 0)
+        :end (move st (count (:rows st)))
+        \/ (assoc st :mode :filter :input (:filter st))
+        \c (if (current st)
+             (assoc st :mode :category :input (or (:category (current st)) ""))
+             (assoc st :message "Nothing to categorize here"))
+        \u (refresh (update st :only-uncategorized not))
+        \s (assoc st :save true)
+        \q (if (and (:dirty st) (not= :quit-asked (:last st)))
+             (assoc st :message "Unsaved changes: s saves, q again quits without saving" :last :quit-asked)
+             (assoc st :quit true))
+        st)
+
+      (:filter :category)
+      (case (:key k)
+        :escape (refresh (cond-> (assoc st :mode :browse :input "") (= :filter (:mode st)) (assoc :filter "")))
+        :enter (if (= :filter (:mode st))
+                 (refresh (assoc st :mode :browse :filter (:input st)))
+                 (let [id (:id (current st))
+                       c (when-not (str/blank? (:input st)) (str/trim (:input st)))]
+                   (refresh (-> st
+                                (assoc :mode :browse :dirty true :message (str "Category: " (or c "none")))
+                                (update :ledger store/set-category id c)))))
+        :backspace (update st :input (fn [s] (if (empty? s) s (subs s 0 (dec (count s))))))
+        :tab (if (= :category (:mode st)) (assoc st :input (complete (:ledger st) (:input st))) st)
+        (if-let [c (char-of k)]
+          (cond-> (update st :input str c) (= :filter (:mode st)) (as-> s (refresh (assoc s :filter (:input s)))))
+          st)))))
+
+;; ---- the screen ----
+
+(defn- scrolled
+  "st with :top moved so the cursor is on a screen of n rows."
+  [st n]
+  (let [top (:top st) c (:cursor st)]
+    (assoc st :top (cond (< c top) c (>= c (+ top n)) (inc (- c n)) :else top))))
+
+(defn render
+  "The screen for st at size {:rows :cols}: [lines st], st with its
+  scrolling as drawn."
+  [st {:keys [rows cols]}]
+  (let [n (max 1 (- rows 2))
+        st (scrolled st n)
+        txs (get-in st [:ledger :transactions])
+        amount-w 12 date-w 10 cat-w (min 16 (max 8 (quot cols 5)))
+        desc-w (max 10 (- cols date-w amount-w cat-w 6))
+        line (fn [i tx]
+               (let [text (str (t/format-local (:date tx)) "  "
+                               (str/pad-right (str/truncate (:description tx) desc-w "…") desc-w) "  "
+                               (str/pad-left (money/format-amount (:amount tx)) amount-w) "  "
+                               (str/truncate (or (:category tx) "·") cat-w "…"))]
+                 (cond (= i (:cursor st)) (term/style (str/pad-right text cols) :reverse)
+                       (money/negative? (:amount tx)) text
+                       :else (term/style text :green))))
+        body (for [j (range n)
+                   :let [i (+ (:top st) j) idx (get (:rows st) i)]]
+               (if idx (line i (nth txs idx)) ""))
+        status (case (:mode st)
+                 :filter (str "/" (:input st))
+                 :category (str "category: " (:input st) "  (Tab completes, Enter sets, Escape leaves)")
+                 (or (:message st)
+                     (str (count (:rows st)) " of " (count txs) " transactions"
+                          (when (seq (:filter st)) (str ", matching " (pr-str (:filter st))))
+                          (when (:only-uncategorized st) ", uncategorized")
+                          (when (:dirty st) " (unsaved)")
+                          "   ↑↓ / c u s q")))]
+    [(vec (concat [(term/style (str/pad-right "ledger" cols) :bold)] body [(str/truncate status cols)])) st]))
+
+;; ---- the terminal ----
+
+(defn run
+  "Browse ledger in the terminal until q: the ledger as it was left. save
+  (fn [ledger]) is called for s."
+  [ledger save]
+  (term/with-raw-mode {:alternate-screen true :hide-cursor true}
+    (loop [st (initial-state ledger) drawn nil]
+      (let [size (or (term/size) {:rows 24 :cols 80})
+            [lines st] (render st size)]
+        (when (not= drawn [lines size])
+          (print (str (term/cursor-to 1 1) (str/join "\r\n" (map (fn [l] (str l (term/clear :line-to-end))) lines))))
+          (flush))
+        (let [k (term/read-key :timeout 250)]
+          (cond (= k :eof) (:ledger st)
+                (nil? k) (recur st [lines size]) ; (a resize shows on the next pass)
+                :else
+                (let [st (step st k size)]
+                  (cond (:quit st) (:ledger st)
+                        (:save st) (do (save (:ledger st))
+                                       (recur (assoc st :save false :dirty false :message "Saved") nil))
+                        :else (recur st [lines size])))))))))

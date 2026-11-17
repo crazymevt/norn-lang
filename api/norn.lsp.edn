@@ -1,5 +1,0 @@
-;; norn.lsp's public interface, recorded by norn api-diff --record.
-{
- "main" {:arglists ["[& _]"], :kind :function}
- "serve" {:arglists ["[]"], :kind :function, :signature [{:result "Integer", :args []}]}
-}

@@ -5,10 +5,10 @@
 Most work on collections is a pipeline: select some items, transform
 them, group or sort them, and summarize the result. This chapter covers
 the functions that do that. It starts with the sequence abstraction that
-lets one set of functions work on every collection, then explains Norn's
+lets one set of functions work on every collection, then explains Skein's
 rule that these functions are eager and return the kind of collection
 they were given. After a tour of the common toolkit and the `for` and
-`doseq` comprehensions, it turns to laziness, which in Norn you ask for
+`doseq` comprehensions, it turns to laziness, which in Skein you ask for
 explicitly, and to transducers, which build pipelines that make no
 intermediate collections.
 
@@ -129,13 +129,13 @@ its work only when read, after `binding` has ended:
 (vec later) ; => ["1kg" "2kg"]
 ```
 
-In Norn you get the second behavior only when you ask for it.
+In Skein you get the second behavior only when you ask for it.
 
 ## The toolkit
 
 There are many sequence functions, and you'll pick them up by using them.
 This section groups the common ones by what they do, using the sales log.
-`norn doc norn.core` lists them all, and the [collections
+`skein doc skein.core` lists them all, and the [collections
 reference](../reference/collections.md#sequence-traversal) describes the
 traversal rules.
 
@@ -349,7 +349,7 @@ you want the action, not a collection.
 
 Eager functions need a finite input. Sometimes you want to describe a
 sequence that is unbounded, or expensive to produce in full, and consume
-only as much as you need. For that, Norn has *streams*: lazy sequences
+only as much as you need. For that, Skein has *streams*: lazy sequences
 whose items are computed when they are first read.
 
 ### Making streams
@@ -505,7 +505,7 @@ one of these:
 
 One transducer works with any of them, and with any kind of destination.
 `(into {} xf coll)` builds a map, `(into #{} xf coll)` a set, and so on.
-The same recipe can also run over a channel: `norn.async/transduce-chan`
+The same recipe can also run over a channel: `skein.async/transduce-chan`
 applies a transducer to the values flowing through one ([Chapter
 16](16-channels.md)).
 

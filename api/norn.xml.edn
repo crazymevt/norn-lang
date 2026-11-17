@@ -1,7 +1,0 @@
-;; norn.xml's public interface, recorded by norn api-diff --record.
-{
- "read-file" {:arglists ["[path]"], :kind :function, :signature [{:result "Map", :args ["String"]}]}
- "read-string" {:arglists ["[s]"], :kind :function, :signature [{:result "Map", :args ["String"]}]}
- "write-file" {:arglists ["[path root]"], :kind :function, :signature [{:result "Any", :args ["String" "Map"]}]}
- "write-string" {:arglists ["[root]"], :kind :function, :signature [{:result "String", :args ["Map"]}]}
-}

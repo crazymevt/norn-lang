@@ -1,17 +1,17 @@
-# Norn examples
+# Skein examples
 
 [Documentation home](../README.md)
 
 Build the binary from the repository root with
-`cargo build --release -p norn --bin norn`. Run the following commands
+`cargo build --release -p skein --bin skein`. Run the following commands
 from that same directory.
 
 | Program | Run | Prints |
 | --- | --- | --- |
-| [Totals](totals.norn) | `./target/release/norn docs/examples/totals.norn` | `[[:books 35] [:games 30]]` |
-| [Generic functions](dispatch.norn) | `./target/release/norn docs/examples/dispatch.norn` | `[:book-envelope :express-parcel :standard]` |
-| [Conditions and restarts](restarts.norn) | `./target/release/norn docs/examples/restarts.norn` | `[12 0 7]` |
-| [Producer and consumer](channels.norn) | `./target/release/norn docs/examples/channels.norn` | `[1 4 9 16 25]` |
+| [Totals](totals.skn) | `./target/release/skein docs/examples/totals.skn` | `[[:books 35] [:games 30]]` |
+| [Generic functions](dispatch.skn) | `./target/release/skein docs/examples/dispatch.skn` | `[:book-envelope :express-parcel :standard]` |
+| [Conditions and restarts](restarts.skn) | `./target/release/skein docs/examples/restarts.skn` | `[12 0 7]` |
+| [Producer and consumer](channels.skn) | `./target/release/skein docs/examples/channels.skn` | `[1 4 9 16 25]` |
 
 - **Totals** reads JSON with keyword keys and uses a transducer to select paid
   orders before reducing their totals. Change a `"paid"` field

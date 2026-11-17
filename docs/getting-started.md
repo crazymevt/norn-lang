@@ -1,4 +1,4 @@
-# Getting started with Norn
+# Getting started with Skein
 
 [Documentation home](README.md)
 
@@ -7,8 +7,8 @@
 From the repository root, use a stable Rust toolchain with Cargo.
 
 ```sh
-cargo build --release -p norn --bin norn
-./target/release/norn
+cargo build --release -p skein --bin skein
+./target/release/skein
 ```
 
 The REPL starts in the `user` namespace. Enter a form and it prints the
@@ -60,11 +60,11 @@ unbounded computation, start with an explicit stream and bound what you consume.
 ## Run a module
 
 A file that begins with `ns` is a module. It can require other modules and
-refer to functions defined later in the file. Save this as `greet.norn`.
+refer to functions defined later in the file. Save this as `greet.skn`.
 
 ```clojure
 (ns greet
-  (:require [norn.string :as str]))
+  (:require [skein.string :as str]))
 
 (defn greeting [name]
   (str "Hello, " (str/upper-case name) "!"))
@@ -76,18 +76,18 @@ Run it from the directory where you saved it, using the path to the binary
 you built. This command assumes you saved it at the repository root.
 
 ```sh
-./target/release/norn greet.norn
+./target/release/skein greet.skn
 ```
 
 It prints `Hello, ADA!`. A module can also be loaded by name. For example,
-`greet.people` lives at `greet/people.norn` under a library search path.
+`greet.people` lives at `greet/people.skn` under a library search path.
 Use `(require '[greet.people :as people])` at the REPL, or put
 `(:require [greet.people :as people])` in another module's `ns` form.
 
 ## Look up a name
 
 At the REPL, try `(doc map)`, `(source map)`, or `(apropos "range")`. From
-the shell, use `./target/release/norn doc norn.string norn.string/upper-case`
+the shell, use `./target/release/skein doc skein.string skein.string/upper-case`
 to list a namespace's definitions and show help for a single function.
 
 Continue with the [runnable examples](examples/README.md) or look up a topic

@@ -1,0 +1,421 @@
+;;;; skein.xml — namespace-aware reading for XML 1.0 documents without a DTD.
+
+(ns skein.xml
+  (:refer-core :exclude [read-string])
+  (:require [skein.bytes :as b] [skein.io :as io] [skein.string :as str]))
+
+(def ^:private xml-uri "http://www.w3.org/XML/1998/namespace")
+(def ^:private xmlns-uri "http://www.w3.org/2000/xmlns/")
+(def ^:private xml-space #{\space \tab \newline \return})
+
+(defn- xml-char? [n]
+  (or (= n 9) (= n 10) (= n 13) (<= 0x20 n 0xD7FF)
+      (<= 0xE000 n 0xFFFD) (<= 0x10000 n 0x10FFFF)))
+
+;; XML 1.0 NameStartChar and NameChar, with colon handled separately by QName.
+(defn- ncname-start? [n]
+  (or (<= 65 n 90) (<= 97 n 122) (= n 95)
+      (<= 0xC0 n 0xD6) (<= 0xD8 n 0xF6) (<= 0xF8 n 0x2FF)
+      (<= 0x370 n 0x37D) (<= 0x37F n 0x1FFF) (<= 0x200C n 0x200D)
+      (<= 0x2070 n 0x218F) (<= 0x2C00 n 0x2FEF) (<= 0x3001 n 0xD7FF)
+      (<= 0xF900 n 0xFDCF) (<= 0xFDF0 n 0xFFFD) (<= 0x10000 n 0xEFFFF)))
+
+(defn- ncname-char? [n]
+  (or (<= 48 n 57) (= n 45) (= n 46) (= n 0xB7)
+      (<= 0x300 n 0x36F) (<= 0x203F n 0x2040) (ncname-start? n)))
+
+(defn- fail-at! [{:keys [chars source]} at message]
+  (let [[line column] (loop [i 0 line 1 column 1]
+                        (cond (= i at) [line column]
+                              (= (nth chars i) \newline) (recur (inc i) (inc line) 1)
+                              :else (recur (inc i) line (inc column))))]
+    (error ParseError :source source :line line :column column
+           :message (str "XML, line " line ", column " column ": " message))))
+
+(defn- fail! [st message] (fail-at! st @(:pos st) message))
+
+(defn- peek-c
+  ([st] (peek-c st 0))
+  ([{:keys [chars pos]} offset] (nth chars (+ @pos offset) nil)))
+
+(defn- skip! [{:keys [pos]} n] (vreset! pos (+ @pos n)))
+
+(defn- looking-at? [{:keys [chars pos]} token]
+  (loop [i @pos more (seq token)]
+    (cond (nil? more) true
+          (= (first more) (nth chars i nil)) (recur (inc i) (next more))
+          :else false)))
+
+(defn- take-token! [st token]
+  (when (looking-at? st token)
+    (skip! st (count token))
+    true))
+
+(defn- expect-token! [st token]
+  (when-not (take-token! st token) (fail! st (str "expected " (pr-str token)))))
+
+(defn- skip-space! [{:keys [chars pos]}]
+  (let [start @pos]
+    (loop [i start]
+      (if (contains? xml-space (nth chars i nil))
+        (recur (inc i))
+        (when (> i start) (vreset! pos i) true)))))
+
+(defn- span [chars start end] (str/join (subvec chars start end)))
+
+(defn- ncname! [{:keys [chars pos] :as st}]
+  (let [start @pos c (nth chars start nil)]
+    (when-not (and c (ncname-start? (int c))) (fail! st "expected an XML name"))
+    (loop [i (inc start)]
+      (let [c (nth chars i nil)]
+        (if (and c (ncname-char? (int c)))
+          (recur (inc i))
+          (do (vreset! pos i) (span chars start i)))))))
+
+(defn- qname! [st]
+  (let [part (ncname! st)]
+    (if (= \: (peek-c st))
+      (do (skip! st 1) [part (ncname! st)])
+      [nil part])))
+
+(defn- qname-str [[prefix local]] (if prefix (str prefix ":" local) local))
+
+(defn- until! [{:keys [chars pos] :as st} token message]
+  ;; Leave the cursor at token. The caller decides whether to keep the span.
+  (let [token (vec token) lead (first token) size (count token)]
+    (loop [i @pos]
+      (let [c (nth chars i nil)]
+        (cond (nil? c) (fail-at! st i message)
+              (and (= c lead)
+                   (loop [k 1]
+                     (cond (= k size) true
+                           (= (nth token k) (nth chars (+ i k) nil)) (recur (inc k))
+                           :else false))) (vreset! pos i)
+              :else (recur (inc i)))))))
+
+(defn- section! [{:keys [chars pos] :as st} token message]
+  (let [start @pos end (until! st token message)]
+    (skip! st (count token))
+    (span chars start end)))
+
+(defn- misc! [st]
+  (cond
+    (take-token! st "<!--")
+    (do (until! st "--" "unclosed comment")
+        (when-not (take-token! st "-->") (fail! st "'--' is forbidden in a comment"))
+        true)
+
+    (take-token! st "<?")
+    (let [target (ncname! st)]
+      (when (= "xml" (str/lower-case target))
+        (fail! st "the XML declaration must be at the start of the document"))
+      (when-not (take-token! st "?>")
+        (when-not (skip-space! st) (fail! st "expected whitespace after the processing instruction target"))
+        (until! st "?>" "unclosed processing instruction")
+        (skip! st 2))
+      true)))
+
+(defn- skip-misc! [st]
+  (loop []
+    (skip-space! st)
+    (when (misc! st) (recur))))
+
+(defn- equals! [st]
+  (skip-space! st)
+  (expect-token! st "=")
+  (skip-space! st))
+
+(defn- quote! [st]
+  (let [c (peek-c st)]
+    (when-not (or (= c \') (= c \")) (fail! st "expected a quoted value"))
+    (skip! st 1)
+    c))
+
+(defn- declaration-value! [st field]
+  (expect-token! st field)
+  (equals! st)
+  (section! st (str (quote! st)) "unclosed XML declaration value"))
+
+(defn- declaration! [st file-encoding]
+  (skip! st 5)
+  (skip-space! st)
+  ;; XML 1.0 processing accepts other 1.x declarations under the same rules.
+  (when-not (re-matches #"1\.[0-9]+" (declaration-value! st "version"))
+    (fail! st "expected a 1.x XML version"))
+  (let [space? (skip-space! st)
+        space? (if (and space? (looking-at? st "encoding"))
+                 (let [encoding (declaration-value! st "encoding")]
+                   (when-not (re-matches #"[A-Za-z][A-Za-z0-9._-]*" encoding)
+                     (fail! st "invalid XML encoding name"))
+                   (when (and file-encoding (not= file-encoding (str/upper-case encoding)))
+                     (fail! st (str "declared encoding " encoding " differs from file encoding " file-encoding)))
+                   (skip-space! st))
+                 space?)]
+    (when (and space? (looking-at? st "standalone"))
+      (when-not (contains? #{"yes" "no"} (declaration-value! st "standalone"))
+        (fail! st "standalone must be 'yes' or 'no'"))
+      (skip-space! st)))
+  (expect-token! st "?>"))
+
+(defn- digit [c base]
+  (when c
+    (let [n (int c)]
+      (cond (<= 48 n 57) (- n 48)
+            (and (= base 16) (<= 65 n 70)) (- n 55)
+            (and (= base 16) (<= 97 n 102)) (- n 87)))))
+
+(defn- character-reference! [{:keys [chars pos] :as st}]
+  (let [base (if (take-token! st "x") 16 10) start @pos]
+    (loop [i start n 0]
+      (let [c (nth chars i nil)]
+        (if-let [d (digit c base)]
+          (let [value (+ (* n base) d)]
+            (when (> value 0x10FFFF) (fail-at! st i "character reference is out of range"))
+            (recur (inc i) value))
+          (do (when (or (= i start) (not= c \;)) (fail-at! st i "invalid character reference"))
+              (when-not (xml-char? n) (fail-at! st start "character reference is forbidden in XML"))
+              (vreset! pos (inc i))
+              (char n)))))))
+
+(defn- reference! [st]
+  (skip! st 1)
+  (if (take-token! st "#")
+    (character-reference! st)
+    (let [entity (ncname! st)]
+      (expect-token! st ";")
+      (case entity
+        "amp" \& "lt" \< "gt" \> "apos" \' "quot" \"
+        (fail! st (str "undeclared entity " (pr-str entity)))))))
+
+(defn- attribute-value! [{:keys [chars pos] :as st}]
+  (let [quote (quote! st)]
+    (loop [i @pos out (transient [])]
+      (let [c (nth chars i nil)]
+        (cond (nil? c) (fail-at! st i "unclosed attribute value")
+              (= c quote) (do (vreset! pos (inc i)) (str/join (persistent! out)))
+              (= c \<) (fail-at! st i "'<' is forbidden in an attribute value")
+              (= c \&) (do (vreset! pos i)
+                           (let [value (reference! st)] (recur @pos (conj! out value))))
+              :else (recur (inc i) (conj! out (if (contains? xml-space c) \space c))))))))
+
+(defn- attributes! [st]
+  (loop [attrs {}]
+    (let [space? (skip-space! st)]
+      (cond
+        (take-token! st "/>") [attrs true]
+        (take-token! st ">") [attrs false]
+        (not space?) (fail! st "expected whitespace before an attribute, '>' or '/>'")
+        :else (let [qname (qname! st)]
+                (when (contains? attrs qname) (fail! st (str "duplicate attribute " (qname-str qname))))
+                (equals! st)
+                (recur (assoc attrs qname (attribute-value! st))))))))
+
+(defn- declaration-name? [[prefix local]]
+  (or (= prefix "xmlns") (and (nil? prefix) (= local "xmlns"))))
+
+(defn- bind-namespace! [st bindings prefix uri]
+  (cond
+    (or (= prefix "xmlns") (= uri xmlns-uri)) (fail! st "the xmlns prefix and namespace are reserved")
+    (not= (= prefix "xml") (= uri xml-uri)) (fail! st "only the xml prefix can bind the XML namespace")
+    (= uri "") (if prefix
+                 (fail! st "a prefixed namespace declaration must have a nonempty URI")
+                 (dissoc bindings nil))
+    :else (assoc bindings prefix uri)))
+
+(defn- expanded-name! [st bindings [prefix local] element?]
+  (let [uri (cond (= prefix "xmlns") (fail! st "the xmlns prefix is reserved for namespace declarations")
+                  prefix (or (get bindings prefix) (fail! st (str "undeclared namespace prefix " (pr-str prefix))))
+                  element? (get bindings nil))]
+    [uri local]))
+
+(defn- start-tag! [st inherited]
+  (when (looking-at? st "<!DOCTYPE") (fail! st "DOCTYPE declarations are unsupported"))
+  (expect-token! st "<")
+  (let [qname (qname! st)
+        [attrs empty-tag?] (attributes! st)
+        ;; All declarations on a start tag apply to that tag, in any order.
+        bindings (reduce-kv (fn [bindings qname uri]
+                              (if (declaration-name? qname)
+                                (bind-namespace! st bindings (when (first qname) (second qname)) uri)
+                                bindings)) inherited attrs)
+        tag (expanded-name! st bindings qname true)
+        attrs (reduce-kv (fn [out qname value]
+                           (if (declaration-name? qname)
+                             out
+                             (let [key (expanded-name! st bindings qname false)]
+                               (when (contains? out key)
+                                 (fail! st (str "duplicate expanded attribute name " (pr-str key))))
+                               (assoc out key value)))) {} attrs)]
+    [{:qname qname :tag tag :attrs attrs :namespaces bindings :content []} empty-tag?]))
+
+(defn- text-run! [{:keys [chars pos] :as st}]
+  (let [start @pos]
+    (loop [i start]
+      (let [c (nth chars i nil)]
+        (cond (or (nil? c) (= c \<) (= c \&))
+              (do (vreset! pos i) (span chars start i))
+              (and (= c \]) (= \] (nth chars (inc i) nil)) (= \> (nth chars (+ i 2) nil)))
+              (fail-at! st i "']]>' is forbidden in ordinary character data")
+              :else (recur (inc i)))))))
+
+(defn- add-child [stack child]
+  (conj (pop stack) (update (peek stack) :content conj child)))
+
+(defn- element-content! [st root]
+  ;; An explicit stack keeps element depth off the call stack.
+  (loop [stack [root] text []]
+    (let [c (peek-c st) parent (peek stack)]
+      (cond
+        (nil? c) (fail! st (str "unclosed element " (qname-str (:qname parent))))
+        (= c \&) (recur stack (conj text (reference! st)))
+        (not= c \<) (recur stack (conj text (text-run! st)))
+        (misc! st) (recur stack text)
+        (take-token! st "<![CDATA[") (recur stack (conj text (section! st "]]>" "unclosed CDATA section")))
+        :else
+        (let [value (str/join text)
+              parent (if (= value "") parent (update parent :content conj value))
+              ancestors (pop stack)]
+          (if (take-token! st "</")
+            (let [qname (qname! st) element (dissoc parent :qname)]
+              (skip-space! st)
+              (expect-token! st ">")
+              (when-not (= qname (:qname parent))
+                (fail! st (str "closing tag " (qname-str qname) " does not match " (qname-str (:qname parent)))))
+              (if (empty? ancestors) element (recur (add-child ancestors element) [])))
+            (let [[child empty-tag?] (start-tag! st (:namespaces parent))
+                  stack (conj ancestors parent)]
+              (if empty-tag?
+                (recur (add-child stack (dissoc child :qname)) [])
+                (recur (conj stack child) [])))))))))
+
+(defn- read-document [s source file-encoding]
+  (let [text (str/replace (str/replace s "\r\n" "\n") "\r" "\n")
+        text (if (= (char 0xFEFF) (nth text 0 nil)) (subs text 1) text)
+        chars (vec text)
+        st {:chars chars :pos (volatile! 0) :source source}]
+    (loop [i 0]
+      (when-let [c (nth chars i nil)]
+        (when-not (xml-char? (int c)) (fail-at! st i "character is forbidden in XML"))
+        (recur (inc i))))
+    (when (and (looking-at? st "<?xml") (contains? xml-space (peek-c st 5)))
+      (declaration! st file-encoding))
+    (skip-misc! st)
+    (let [[root empty-tag?] (start-tag! st {"xml" xml-uri})
+          root (if empty-tag? (dissoc root :qname) (element-content! st root))]
+      (skip-misc! st)
+      (when (peek-c st) (fail! st "unexpected content after the root element"))
+      root)))
+
+(defn read-string
+  "Read a decoded XML 1.0 string and return its root element. :tag and
+  :attrs keys are [namespace-uri local-name], with nil for no namespace.
+  :namespaces maps in-scope prefixes to URIs, using nil for the default.
+  :content is a vector of text strings and child elements in document order.
+  Comments and processing instructions are discarded. DTDs are rejected.
+  Malformed input signals ParseError with :line and :column."
+  ^Map [^String s]
+  (read-document s "XML" nil))
+
+(defn read-file
+  "Read an XML 1.0 document from a UTF-8 file or a UTF-16 file with a byte
+  order mark, and return its root element."
+  ^Map [^String path]
+  (let [source (str path) data (io/read-bytes source)
+        encoding (case [(nth data 0 nil) (nth data 1 nil)] [255 254] :utf-16le [254 255] :utf-16be :utf-8)
+        text (try (b/decode-text data encoding)
+                  (catch ParseError e
+                    (error ParseError :source source
+                           :message (str (if (= encoding :utf-8) "XML file is not valid UTF-8: " "XML file: ")
+                                         (condition-message e)))))]
+    (read-document text source (if (= encoding :utf-8) "UTF-8" "UTF-16"))))
+
+(defn- ncname? [s]
+  (and (string? s) (seq s) (ncname-start? (int (first s)))
+       (every? #(ncname-char? (int %)) (rest s))))
+
+(defn- write-escaped [s attribute?]
+  (when-not (string? s) (error "XML text and attribute values must be strings" s))
+  (str/escape s (fn [c]
+                  (when-not (xml-char? (int c)) (error "Character is forbidden in XML" (int c)))
+                  (case c
+                    \& "&amp;" \< "&lt;" \> "&gt;" \return "&#13;"
+                    \" (when attribute? "&quot;")
+                    \newline (when attribute? "&#10;")
+                    \tab (when attribute? "&#9;")
+                    nil))))
+
+(defn- writer-bindings [node inherited]
+  (if-not (contains? node :namespaces) inherited
+          (let [decls (:namespaces node)]
+            (when-not (map? decls) (error "XML :namespaces must be a map"))
+            (reduce-kv (fn [out prefix uri]
+                         (when-not (and (or (nil? prefix) (ncname? prefix)) (string? uri)
+                                        (not= prefix "xmlns") (not= uri xmlns-uri)
+                                        (= (= prefix "xml") (= uri xml-uri))
+                                        (or (nil? prefix) (not= uri "")))
+                           (error "Invalid XML namespace binding" prefix uri))
+                         (if (= uri "") (dissoc out nil) (assoc out prefix uri)))
+                       (dissoc inherited nil) decls))))
+
+(defn- fresh-prefix [bindings]
+  (loop [i 1]
+    (let [prefix (str "ns" i)]
+      (if (contains? bindings prefix) (recur (inc i)) prefix))))
+
+(defn- writer-name [expanded bindings element?]
+  (when-not (and (vector? expanded) (= 2 (count expanded)))
+    (error "Expected an expanded XML name [namespace-uri local-name]" expanded))
+  (let [[uri local] expanded]
+    (when-not (and (or (nil? uri) (and (string? uri) (not= "" uri) (not= xmlns-uri uri)))
+                   (ncname? local) (or element? uri (not= "xmlns" local)))
+      (error "Invalid expanded XML name" expanded))
+    (cond
+      (nil? uri) [local (if element? (dissoc bindings nil) bindings)]
+      (and element? (= uri (get bindings nil))) [local bindings]
+      :else (let [existing (first (sort (keep (fn [[p u]] (when (and p (= u uri)) p)) bindings)))
+                  prefix (or existing (fresh-prefix bindings))]
+              [(qname-str [prefix local]) (if existing bindings (assoc bindings prefix uri))]))))
+
+(defn- element-output [node inherited]
+  (let [{:keys [tag attrs content]} node
+        [tag bindings] (writer-name tag (writer-bindings node inherited) true)
+        [attrs bindings] (reduce-kv (fn [[out scope] key value]
+                                      (let [[qname scope] (writer-name key scope false)]
+                                        [(conj out (str " " qname "=\"" (write-escaped value true) "\"")) scope]))
+                                    [[] bindings] (or attrs {}))
+        prefixes (sort (filter some? (keys bindings)))
+        declarations (keep (fn [p]
+                             (let [uri (get bindings p)]
+                               (when (not= uri (get inherited p))
+                                 (str " xmlns" (when p (str ":" p)) "=\"" (write-escaped (or uri "") true) "\""))))
+                           (cons nil prefixes))]
+    [(str "<" tag (str/join declarations) (str/join attrs)) tag bindings content]))
+
+(defn write-string
+  "Serialize an element tree using expanded names. Reuse :namespaces bindings
+  where possible and generate prefixes for any remaining qualified names.
+  An element without :namespaces inherits its parent's bindings. With
+  :namespaces, the map is the element's whole scope, as read-string returns
+  it: leaving out the nil key means no default namespace. XML 1.0 can't
+  undeclare a prefix, so inherited prefixes stay available either way."
+  ^String [^Map root]
+  (when-not (map? root) (error "XML document root must be an element map"))
+  (loop [work (list [root {"xml" xml-uri}]) out (transient [])]
+    (if-let [task (first work)]
+      (if (string? task)
+        (recur (next work) (conj! out task))
+        (let [[node inherited] task]
+          (if (string? node)
+            (recur (next work) (conj! out (write-escaped node false)))
+            (let [_ (when-not (map? node)
+                      (error "XML content must be text strings or element maps" node))
+                  [start tag bindings content] (element-output node inherited)]
+              (if (seq content)
+                (recur (reduce (fn [tasks child] (cons [child bindings] tasks))
+                               (cons (str "</" tag ">") (next work)) (reverse content))
+                       (conj! out (str start ">")))
+                (recur (next work) (conj! out (str start "/>"))))))))
+      (str/join (persistent! out)))))
+
+(defn write-file "Write an element tree as UTF-8 XML." [^String path ^Map root]
+  (io/write-text path (write-string root)))
