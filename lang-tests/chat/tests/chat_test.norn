@@ -103,11 +103,20 @@
     (with-server [s :rate 100000 :burst 100000]
       (let [ada (join! s "ada" "#lab")
             sloth (net/connect "127.0.0.1" (:port s))
-            filler (apply str (repeat 400 "x"))]
+            filler (apply str (repeat 4000 "x"))
+            left? (fn [l] (= l "* sloth left #lab"))]
         (io/write sloth "/nick sloth\n/join #lab\n")
         (c/until ada (fn [l] (= l "* sloth joined #lab")))
-        (dotimes [i 5000] (c/say! ada (str i " " filler)))
-        (is (some #{"* sloth left #lab"} (c/until ada (fn [l] (= l "* sloth left #lab")) 10000)))
+        ;; (sloth's outbox fills only once the kernel's buffers between the
+        ;; server and sloth have: a few hundred KB on macOS, several MB on
+        ;; Linux. So ada talks, 4 MB at a time, until sloth is let go: 64
+        ;; MB at most.)
+        (is (loop [batch 0]
+              (dotimes [i 1000] (c/say! ada (str batch ":" i " " filler)))
+              (cond (some left? (c/until ada left? 1000)) true
+                    (< batch 15) (recur (inc batch))
+                    :else false))
+            "sloth let go")
         (c/say! ada "/who")
         (is (= "* in #lab: ada" (last (c/until ada (fn [l] (str/starts-with? l "* in"))))))
         (io/close sloth)
