@@ -83,3 +83,16 @@
   (is (= [:call #'inc] [(:op call) (:var (:f call))]))
   (is (= [:local b] [(:op x-ref) (:binding x-ref)]) "x inside the fn is the let's binding, by identity"))
 (is (= 7 ((norn.compiler/generate (norn.compiler/analyze nil '(let* [x 1] ((fn* [y] (+ x y)) 6)))))))
+
+;;; Constants are shared by identity, as the seed shares them: the same
+;;; object twice is one constant, two equal ones are two. (The compiler
+;;; finds them by an identity index: a function with many of them, too.)
+(defn- consts-of [form]
+  (:consts (first (:arities (norn.compiler/%signature ((norn.compiler/compile-toplevel form)))))))
+(let [s (str "sh" "ared") t (str "sh" "ared")]
+  (is (= 1 (count (filter (fn [k] (identical? k s)) (consts-of (list 'fn* [] (list 'vector s s s)))))))
+  (is (= 2 (count (filter (fn [k] (= k "shared")) (consts-of (list 'fn* [] (list 'vector s t s t)))))))
+  (let [many (mapv (fn [i] (str "k" i)) (range 300))
+        ks (consts-of (list 'fn* [] (cons 'do (concat many (reverse many) [nil]))))]
+    (is (= 300 (count ks)) "each once")
+    (is (= (count many) (count (filter string? ks))))))

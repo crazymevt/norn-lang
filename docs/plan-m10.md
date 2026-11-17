@@ -226,25 +226,35 @@ baseline compared.
 ## Open after part 4 (2026-11-16)
 
 Where to pick up. Parts 0–4 are committed on branch `m10` (not merged,
-not pushed); part 5 is next in the plan, but the user asked to weigh the
-first item against it.
+not pushed); part 5 is next in the plan. The user chose (2026-11-17) to
+win back compile time first: done, below.
 
-**To decide first: win back compile time, or start part 5.**
-
-- **Compile time.** Inlining made compiling slower: `http.norn` compiles
-  and loads in 67 ms at tier 0 (45 before part 4; 51 without inlining,
-  the rest the specialised contract wrappers and the shape analysis) and
-  51 ms at tier 1 (0.96× the baseline; the done-check allows 5%). A
-  profile of 20 compiles at tier 0: `gen-inline!` about a quarter of the
-  time (each call site generates the callee's body again); the
-  compiler's state atom (`swap!`/`update` in `emit!`, `alloc!`,
-  `upd-ar!`) the largest share overall; `%index-of` in `konst!`, a
-  linear scan of the constants by identity (an `=` map would merge equal
-  constants and break the seed comparison, so it needs an identity
-  index). Lowering the inline budget or depth barely helped (60–67 ms).
-  Ideas: a mutable code buffer per arity instead of the atom of maps; an
-  identity index for constants; caching the specialised wrapper per
-  (callee, contract) rather than per caller module.
+- **Compile time: done (2026-11-17).** Inlining had made compiling
+  slower: `http.norn` compiled and loaded in 67 ms at tier 0 (45 before
+  part 4). A profile put most of it in the compiler's state, an atom of
+  maps (`swap!`/`update` on every `emit!`, `alloc!`, `upd-ar!`), and in
+  `konst!`'s linear scan of the constants. The state is now mutable:
+  transient vectors used as records (the state, each function context,
+  each arity, with the arity being generated kept on the state) and as
+  buffers that grow in place (code, constants, locals, debug info,
+  upvalues), and constants are found by an index on `%identity-hash`
+  (checked with `identical?`, so equal constants stay apart as the seed
+  keeps them; the GC doesn't move objects). **Measured:** 67 → 35 ms at
+  tier 0 (1.23× the baseline) and 55 → 24–28 ms at tier 1 (2.0×);
+  `norn -e nil` starts in 0.09 s at tier 0 (0.11). `gen-inline!` fell
+  from about a quarter of compiling to 13%; caching inlined bodies or
+  wrappers (registers differ per call site) wasn't worth it after that.
+  Every function of the standard library, core and the expander (2,319)
+  compiles to the same code as before at both tiers (with `NORN_CACHE=off`:
+  a module loaded from the cache has its forms' shared strings apart, so
+  their constants aren't shared, with either compiler). compiler_test
+  checks constants are shared by identity. **Seen on the way:** group-by
+  and frequencies read about 7% slower than with the old compiler, with
+  the same code: the old one's garbage at boot grew the heap, so later
+  work collected less often. With `NORN_HEAP_MIN=1g` both run it in 70 ms
+  (49 at tier 1) against 200 (170): that workload is mostly GC, and the
+  heap's growth policy is worth a look (part 6's allocations, or MMTk's
+  dynamic heap size).
 - **norn.core isn't inlined.** The Rust seed compiles it at boot, which
   keeps no IR, so `second`, `not`, `some?` and the like are linked (part
   3) but never inlined. Options: compile core with `norn.compiler` once
