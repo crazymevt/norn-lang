@@ -1,11 +1,15 @@
-;;;; norn.prof: a sampling profiler. Profiles are process-wide (other
-;;;; suites run beside this one), so these look for what they ran, not for
-;;;; it alone.
+;;;; norn.prof: a sampling profiler. Profiles are process-wide, so these
+;;;; look for what they ran, not for it alone; and the file runs when no
+;;;; other does (run-alone!, below).
 
 (ns prof-test
   (:require [norn.prof :as prof]
             [norn.string :as str]
             [norn.test :refer [deftest is testing]]))
+
+;; (a profile samples every carrier: beside other files, on a machine with
+;; few cores their fibers took the samples, and spin got none)
+(norn.test/run-alone!)
 
 (defn spin
   "Busy for about ms milliseconds."

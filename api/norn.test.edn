@@ -9,6 +9,7 @@
  "is" {:arglists ["[form]" "[form msg]"], :kind :macro}
  "main" {:arglists ["[& args]"], :kind :function}
  "parallel-tests!" {:arglists ["[]"], :kind :function}
+ "run-alone!" {:arglists ["[]"], :kind :function}
  "run-file" {:arglists ["[path & {:keys [only]}]"], :kind :function}
  "run-files" {:arglists ["[paths & {:keys [only serial]}]"], :kind :function}
  "run-ns" {:arglists ["[ns-name]" "[ns-name only]"], :kind :function}

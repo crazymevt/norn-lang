@@ -342,7 +342,10 @@ Test files run in parallel, each on its own fibers (see
 [Chapter 15](15-fibers-and-scopes.md)). Within a file, tests run one after
 another, in the order you defined them. A namespace whose tests share no
 state they change can call `(norn.test/parallel-tests!)` at the top level,
-and then its tests run concurrently, one fiber each. `norn test --serial`
+and then its tests run concurrently, one fiber each. A file whose tests
+measure the process as a whole, such as a profiler's samples or a timing,
+can call `(norn.test/run-alone!)` instead: it then runs after the others,
+with nothing beside it. `norn test --serial`
 turns all of that off and runs everything one at a time, which helps when
 tests share an outside resource, or when output from different files is
 interleaving.

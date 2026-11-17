@@ -23,8 +23,10 @@
 ;;;;   bindings carry into spawned fibers).
 ;;;; - Files run in parallel, each on its own fibers. The tests in a file run
 ;;;;   one after another, in definition order, unless its namespace calls
-;;;;   (parallel-tests!): then they run concurrently, one fiber each. `norn
-;;;;   test --serial` runs everything one at a time.
+;;;;   (parallel-tests!): then they run concurrently, one fiber each. A file
+;;;;   that calls (run-alone!) runs after the others, on its own (its tests
+;;;;   measure the process: a profiler's, say). `norn test --serial` runs
+;;;;   everything one at a time.
 
 (ns norn.test
   (:require [norn.cover :as cover] [norn.io :as io] [norn.string :as str] [norn.walk])
@@ -67,6 +69,26 @@
   []
   (swap! parallel-nss conj (str (current-ns)))
   nil)
+
+(defn run-alone!
+  "Called at a test file's top level: run the file when no other is
+  running (files run in parallel otherwise), after the rest. For tests
+  that measure the process as a whole: a profiler's samples, timings that
+  other files' work would disturb. The runner finds the call by reading
+  the file before running it. nil."
+  []
+  nil)
+
+(defn- alone?
+  "Does test file p call (run-alone!) at its top level? (Read, not run.)"
+  [p]
+  (try (let [r (%reader (slurp p) p)]
+         (loop []
+           (let [f (%read r)]
+             (cond (%eof? f) false
+                   (and (seq? f) (symbol? (first f)) (= "run-alone!" (name (first f)))) true
+                   :else (recur)))))
+       (catch Error _ false)))
 
 (def ^:dynamic *serial* "When true, nothing runs in parallel." false)
 
@@ -252,15 +274,20 @@
 (declare find-tests)
 
 (defn run-files
-  "Run test files, in parallel (one fiber per file) unless :serial; a
-  directory stands for every *_test.norn under it. Returns {:files […]
-  :totals {…}}."
+  "Run test files, in parallel (one fiber per file) unless :serial, those
+  that call (run-alone!) after the rest, one at a time; a directory stands
+  for every *_test.norn under it. Returns {:files […] :totals {…}}, the
+  files in the order given."
   [paths & {:keys [only serial]}]
   (let [paths (vec (mapcat (fn [p] (if (str/ends-with? p ".norn") [p] (find-tests p))) paths))
         run (fn [p] (binding [*serial* (if serial true false)] (run-file p :only only)))
         files (if serial
                 (mapv run paths)
-                (with-scope [s] (mapv await (mapv (fn [p] (spawn s (run p))) paths))))]
+                (let [alone (filterv alone? paths)
+                      together (filterv (complement (set alone)) paths)
+                      ran (with-scope [s] (mapv await (mapv (fn [p] (spawn s (run p))) together)))
+                      by-path (zipmap (concat together alone) (concat ran (mapv run alone)))]
+                  (mapv by-path paths)))]
     {:files files :totals (totals files)}))
 
 (defn run-tests

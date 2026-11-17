@@ -134,6 +134,18 @@
 (is (= (vec (sort (filter (fn [n] (str/ends-with? n "_test.norn")) (io/list-dir dir))))
        (mapv (fn [f] (io/file-name (:file f))) (:files (t/run-files [dir] :serial true))))
     "a directory stands for its test files")
+;; a file that calls (run-alone!) runs after the rest, with none beside it;
+;; the results keep the files' order
+(def alone-order (atom []))
+(let [d (io/path dir "alone")]
+  (io/mkdirs! d)
+  (io/write-text (io/path d "alone_test.norn")
+                 "(ns alone-test)\n(norn.test/run-alone!)\n(swap! test-test/alone-order conj :alone)\n")
+  (io/write-text (io/path d "slow_test.norn")
+                 "(ns slow-test)\n(swap! test-test/alone-order conj :slow)\n(sleep 300)\n(swap! test-test/alone-order conj :slow-done)\n")
+  (let [r (t/run-files [d])]
+    (is (= [:slow :slow-done :alone] @alone-order))
+    (is (= ["alone_test.norn" "slow_test.norn"] (mapv (fn [f] (io/file-name (:file f))) (:files r))))))
 (let [human (t/%human all)]
   (is (str/includes? human "FAIL in adds"))
   (is (str/includes? human "small › really"))
