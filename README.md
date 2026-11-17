@@ -7,8 +7,8 @@ runtime built for many cores.
 
 - [User documentation](docs/README.md) — getting started, runnable examples,
   language reference, and symbol index.
-- Language design: [docs/design.md](docs/design.md)
-- Runtime architecture and milestones: [docs/runtime.md](docs/runtime.md)
+- Language design: [docs/internals/design.md](docs/internals/design.md)
+- Runtime architecture and milestones: [docs/internals/runtime.md](docs/internals/runtime.md)
 
 **Status: M7** — a bytecode interpreter running millions of fibers on a
 work-stealing scheduler (one carrier per core), with channels, `alts!`,
@@ -37,7 +37,7 @@ the rest (`norn.math`, `norn.set`, `norn.walk`, `norn.random`,
 `norn fmt`, `norn lint`, `norn doc`, `norn check` and `norn image`, plus
 `doc`, `source`, `apropos`, `inspect`, `trace` and `norn.bench` at the
 REPL.
-See [runtime.md §12](docs/runtime.md#12-revised-milestones) for what exists
+See [runtime.md §12](docs/internals/runtime.md#12-revised-milestones) for what exists
 and what's next.
 
 ## Build and run

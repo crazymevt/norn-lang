@@ -141,5 +141,5 @@ The metaobject protocol exposes generic functions for object construction,
 slot access, printing, and dispatch. Start with `make-instance`,
 `initialize-instance`, `slot-value-using-class`, `print-object`,
 `compute-applicable-methods`, and `compute-effective-method`. See the
-[object system design](../design.md#43-meta-object-protocol-decided) for
+[object system design](../internals/design.md#43-meta-object-protocol-decided) for
 the customization model.

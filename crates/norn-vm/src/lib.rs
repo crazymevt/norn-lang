@@ -1,5 +1,5 @@
 //! Norn tier 0: the bootstrap reader, seed compiler, bytecode interpreter
-//! and primitives. See docs/runtime.md §8.1 and §9.
+//! and primitives. See docs/internals/runtime.md §8.1 and §9.
 
 pub mod binfmt;
 pub mod blocking;

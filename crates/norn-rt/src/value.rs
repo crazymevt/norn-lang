@@ -1,4 +1,4 @@
-//! The universal value word. See docs/runtime.md §2.1.
+//! The universal value word. See docs/internals/runtime.md §2.1.
 //!
 //! ```text
 //! ...xxxxxxx0   fixnum (63-bit)

@@ -1,7 +1,7 @@
 # lang-tests
 
 Programs written to try Norn the way its users will, before its standard
-library was sealed. What they found is in `docs/todo.md`. Each is a project
+library was sealed. What they found is in `docs/plans/todo.md`. Each is a project
 of its own, with its own `norn.edn` and tests (`norn test` in its folder).
 Each was a repository of its own until 2026-11-17, and its history came
 with it (`git log lang-tests/quire`).

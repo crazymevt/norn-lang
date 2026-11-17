@@ -1,6 +1,6 @@
 ;;;; Run the benchmark suites at both tiers and compare them with the
 ;;;; recorded baseline (bench/baseline.edn): M10's measuring stick
-;;;; (docs/plan-m10.md, part 0). Each suite runs in a process of its own,
+;;;; (docs/plans/plan-m10.md, part 0). Each suite runs in a process of its own,
 ;;;; with this norn, one tier at a time. With sbcl or clojure on the PATH,
 ;;;; the Mandelbrot program is also compared with the same kernel in SBCL
 ;;;; (bench/mandelbrot.lisp) and Clojure (bench/mandelbrot.clj).

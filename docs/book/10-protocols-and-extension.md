@@ -544,7 +544,7 @@ Both calls had a `String` argument, so methods were computed once.
 Classes and generic functions that specialize none of these keep Norn's fast
 paths: making, reading and dispatching go straight to the runtime. You pay
 for the MOP only where you use it. The
-[object system design](../design.md#43-meta-object-protocol-decided) and
+[object system design](../internals/design.md#43-meta-object-protocol-decided) and
 the [reference](../reference/objects.md) list the protocol's generic
 functions.
 

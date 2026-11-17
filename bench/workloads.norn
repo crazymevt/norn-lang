@@ -1,6 +1,6 @@
 ;;;; Whole jobs, timed: data formats, source tools, text, storage, the
 ;;;; network and concurrency. The baseline M10's optimiser is measured
-;;;; against, and the survey before sealing (docs/perf-survey.md).
+;;;; against, and the survey before sealing (docs/internals/perf-survey.md).
 ;;;;
 ;;;;   norn bench/workloads.norn               (tier 1, the default)
 ;;;;   NORN_TIER=0 norn bench/workloads.norn   (tier 0)

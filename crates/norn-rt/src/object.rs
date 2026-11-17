@@ -1,4 +1,4 @@
-//! Heap object model. See docs/runtime.md §2.2.
+//! Heap object model. See docs/internals/runtime.md §2.2.
 //!
 //! ```text
 //!  word 0   layout*   → Layout (kind, name; class version from M2)

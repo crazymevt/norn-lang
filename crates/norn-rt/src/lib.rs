@@ -1,4 +1,4 @@
-//! Norn runtime core. See docs/runtime.md.
+//! Norn runtime core. See docs/internals/runtime.md.
 //!
 //! M0 scope: value representation, NoGC heap, object model, persistent
 //! collections, structural equality/hashing, printer, namespaces and vars.

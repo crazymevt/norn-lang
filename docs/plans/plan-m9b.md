@@ -187,7 +187,7 @@ shape and 4's op).
   its connections and adds `:conn`; requests are `[conn id]`, output
   events carry `:conn`, and a connection drops others' output.
 - **5, `norn lsp`: done, checked in VS Code (as Antigravity IDE,
-  2026-11-17: `editors/vscode`, docs/plan-vscode.md); Zed's extension
+  2026-11-17: `editors/vscode`, docs/plans/plan-vscode.md); Zed's extension
   moved to todo.md.**
   `norn.lsp` runs in the project's own Norn (`norn lsp`) and answers
   through the editor protocol's ops in-process (`%serve-request`):

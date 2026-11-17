@@ -3,7 +3,7 @@
 The contract between `norn.ui` (Norn: state, views, diffing, widgets,
 commands) and the `norn-ui` engine (Rust: the retained node tree, layout,
 styling, text, painting, input). Design: design §9.1; plan:
-`docs/plan-m7.5.md`. This document is versioned with `norn-ui`.
+`docs/plans/plan-m7.5.md`. This document is versioned with `norn-ui`.
 
 ## 1. Principles
 

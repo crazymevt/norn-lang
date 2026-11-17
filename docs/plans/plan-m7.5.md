@@ -25,10 +25,10 @@ Linux and Windows (M12) are mostly backend glue.
 |---|---|
 | 1.1 | **The native extension API** (`norn_vm::ext`). A Rust crate implements `Extension`: a name, primitives to register in a namespace it owns (`norn.ui.native` for the UI), and a start hook. Native objects are `Handle` values (M6) with cleanups. Threads outside the carriers post to channels with `ext::post(chan, build)`, where `build` makes the Norn value inside `delivering` on the shared feeder mutator (runtime.md §5.5), so the rule for foreign threads is enforced by the API rather than by care. Primitive tables become extensible at start-up (today they're one static table). |
 | 1.2 | **Main-thread handoff.** A builder for embedding: `Norn::builder().extension(e).run_on_main(f)` starts the carriers, loads the image or core, runs the entry or REPL on a carrier, and gives the process's first thread to `f` (the UI's event loop; macOS requires it). The terminal REPL's stdin reading moves off the main thread. Shutdown: `f` returning ends the process the way `exit` does; `exit` from Norn wakes `f` to return. |
-| 1.3 | **The UI protocol spec** (`docs/ui-protocol.md`), the contract between `norn.ui` (Norn) and the engine (Rust). See the outline below. |
+| 1.3 | **The UI protocol spec** (`docs/internals/ui-protocol.md`), the contract between `norn.ui` (Norn) and the engine (Rust). See the outline below. |
 | 1.4 | **Done-check here:** a test-only extension crate registers primitives, posts from a foreign thread at a high rate under `NORN_GC_STRESS=2`, and runs a fake event loop through `run_on_main`; images saved with extension handles report `ResourceLost` as M6's sockets do. Docs: runtime.md §5.7 (extensions) and the M7.5 status. |
 
-### The protocol, in outline (written in full: `docs/ui-protocol.md`)
+### The protocol, in outline (written in full: `docs/internals/ui-protocol.md`)
 
 - **Transport:** Norn data in one process, never serialized. Norn →
   engine: a primitive, `apply!`, that queues a *batch* (a vector of patch

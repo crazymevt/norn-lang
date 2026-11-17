@@ -503,7 +503,7 @@ Tier 1 speeds up what your own code does: calls, branches, loops, var
 reads, and fixnum arithmetic. It doesn't speed up work done inside the
 runtime's primitives, such as reading JSON, sorting, or matching a regex,
 or the time the collector takes. The performance survey
-([docs/perf-survey.md](../perf-survey.md)) measured both tiers on an Apple
+([docs/internals/perf-survey.md](../internals/perf-survey.md)) measured both tiers on an Apple
 M4:
 
 | Operation (ns each) | Tier 0 | Tier 1 |

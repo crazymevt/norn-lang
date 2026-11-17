@@ -1781,7 +1781,7 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
 
 ### 12.7 M6 status (2026-11-13)
 
-**Built** (plan: `docs/plan-m6-m7.md`):
+**Built** (plan: `docs/plans/plan-m6-m7.md`):
 - **Library loading** before modules: `require` with `:as` and `:refer`,
   `ns` `(:require …)`, embedded libraries, and `NORN_PATH`.
 - **Weak references and cleanups** (§4.5).
@@ -1826,7 +1826,7 @@ load handshake on PARK/CANCEL with sequentially consistent ordering (see
 
 ### 12.8 M7 status (2026-11-13)
 
-**Built** (plan and decisions: `docs/plan-m6-m7.md`):
+**Built** (plan and decisions: `docs/plans/plan-m6-m7.md`):
 - **The numeric tower** (§2.5): bignums and ratios, promotion in the
   primitives and at tier 1.
 - **Equality declarations and owned mutable objects** (design §3.4, §4.2).
@@ -1873,9 +1873,9 @@ tests (they now wait for what they check, or watch their own handles).
 
 ### 12.9 M7.5 status (2026-11-13)
 
-**Built** (plan and decisions: `docs/plan-m7.5.md`):
+**Built** (plan and decisions: `docs/plans/plan-m7.5.md`):
 - **Here:** native extensions and the main-thread handoff (§5.7), and the
-  UI protocol, version 1 (`docs/ui-protocol.md`). There were also core
+  UI protocol, version 1 (`docs/internals/ui-protocol.md`). There were also core
   additions `norn.ui` needed: watches on atoms, after-eval hooks, `for`,
   and `require` of extension namespaces.
 - **In `norn-ui` 0.1** (`~/projects/norn/norn-ui`):
