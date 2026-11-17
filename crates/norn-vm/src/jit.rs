@@ -264,6 +264,12 @@ pub(crate) fn isa() -> Option<&'static OwnedTargetIsa> {
         let mut flags = settings::builder();
         flags.set("opt_level", if std::env::var("NORN_JIT_OPT").as_deref() == Ok("none") { "none" } else { "speed" }).ok()?;
         flags.set("is_pic", "true").ok()?;
+        // (native functions reach each other by return_call, and
+        // Cranelift's x86-64 backend emits tail calls only from functions
+        // that keep a frame pointer: without this every compile panics and
+        // tier 1 silently falls back to tier 0. arm64 needs no flag)
+        #[cfg(target_arch = "x86_64")]
+        flags.set("preserve_frame_pointers", "true").ok()?;
         cranelift_native::builder().ok()?.finish(settings::Flags::new(flags)).ok()
     })
     .as_ref()
