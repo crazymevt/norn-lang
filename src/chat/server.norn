@@ -43,11 +43,19 @@
     (log/info "letting go of a client too slow to keep up" :name (:name u))
     ((:kick u))))
 
+(defn- tell!
+  "Send line to connection conn ({:name :outbox :kick}): one too slow to
+  take it (its outbox full) is let go, as a broadcast lets go of those it
+  can't reach. (Dropping the line instead left the client waiting for an
+  answer that never came, on a connection that stayed open.)"
+  [conn line]
+  (when-not (send! (:outbox conn) line) (drop-slow! [conn])))
+
 (defn- command
   "Handle one line from conn, {:name :outbox}: the conn as it is after."
   [st conn line limiter]
   (let [{:keys [name outbox kick]} conn
-        reply (fn [l] (send! outbox l) conn)
+        reply (fn [l] (tell! conn l) conn)
         [cmd arg] (str/split (str/trim line) #"\s+" 2)]
     (cond
       (str/blank? line) conn
@@ -57,7 +65,7 @@
             (state/claim-name! st name arg outbox kick)
             (do (when-let [room (and name (:room (state/user st arg)))]
                   (drop-slow! (broadcast! st room (str "* " name " is now " arg))))
-                (send! outbox (str "* you are " arg))
+                (tell! conn (str "* you are " arg))
                 (assoc conn :name arg))
             :else (reply (str "! " arg " is taken")))
 
@@ -68,7 +76,7 @@
         (reply "! a room is # and 1–20 letters, digits, - or _")
         (let [[left recent] (state/join! st name arg)]
           (when (and left (not= left arg)) (drop-slow! (broadcast! st left (str "* " name " left " left))))
-          (doseq [l recent] (send! outbox l))
+          (doseq [l recent] (tell! conn l))
           (drop-slow! (broadcast! st arg (str "* " name " joined " arg)))
           conn))
 

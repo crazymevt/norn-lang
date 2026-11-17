@@ -154,3 +154,18 @@
           rooms @(:rooms st)]
       (is (= (set (for [[r ms] rooms m ms] [m r]))
              (set (for [[n u] users :when (:room u)] [n (:room u)])))))))
+
+(deftest a-reply-that-cant-be-sent-lets-the-client-go
+  ;; (an answer to a client whose outbox is full isn't dropped while its
+  ;; connection goes on, leaving it waiting: it's let go, as a broadcast lets
+  ;; go of those it can't reach, so it sees its connection end)
+  (let [command (var-get (get (ns-interns 'chat.server) 'command))
+        st (state/new-state)
+        outbox (chan 1)
+        kicked (atom 0)
+        conn {:name nil :outbox outbox :kick (fn [] (swap! kicked inc) (close! outbox))}]
+    (offer! outbox "a line it hasn't taken yet")
+    (command st conn "/rooms" nil)
+    (is (= 1 @kicked) "let go")
+    (command st conn "/rooms" nil)
+    (is (= 1 @kicked) "once")))
