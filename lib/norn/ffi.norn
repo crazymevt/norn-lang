@@ -58,7 +58,7 @@
 ;;;; next of its signature.
 ;;;;
 ;;;; Structs by value and variadic functions are for arm64 (macOS and
-;;;; Linux) so far; elsewhere they're an error.
+;;;; Linux) and x86-64 System V (Linux) so far; elsewhere they're an error.
 
 (ns norn.ffi
   (:unsafe))

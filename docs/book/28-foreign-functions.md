@@ -346,8 +346,8 @@ struct by value. The C library's `ldiv` returns one:
 (ldiv -17 5) ; => {:quot -3 :rem -2}
 ```
 
-Structs by value and variadic functions work on 64-bit ARM, on macOS and
-Linux, in this release. Elsewhere they signal an error.
+Structs by value and variadic functions work on 64-bit ARM (macOS and
+Linux) and on x86-64 Linux in this release. Elsewhere they signal an error.
 
 ## Callbacks
 
