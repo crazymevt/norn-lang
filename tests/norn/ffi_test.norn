@@ -189,6 +189,8 @@
 (ffi/defcstruct v4 [x :double y :double z :double w :double])
 (ffi/defcstruct big [a :long b :long c :long])
 (ffi/defcstruct padded [c :char d :double s :short])
+(ffi/defcstruct dl [d :double l :long])
+(ffi/defcstruct if-pair [i :int f :float])
 (ffi/defcstruct flags [a [:bits :u32 3] b [:bits :u32 5] c [:bits :i32 4] d [:bits :u32 22] e [:bits :u8 2] f [:bits :u64 40]])
 (ffi/defcunion any [i :int f :float c [:array :char 6] d :double])
 (ffi/defcstruct tagged [tag :char u any])
@@ -238,6 +240,11 @@
 (ffi/defcfun padded-sum fix "padded_sum" [p padded] :double)
 (ffi/defcfun tagged-check fix "tagged_check" [t tagged] :long)
 (ffi/defcfun flags-sum fix "flags_sum" [f flags] :long)
+(ffi/defcfun dl-make fix "dl_make" [d :double l :long] dl)
+(ffi/defcfun dl-sum fix "dl_sum" [x dl] :double)
+(ffi/defcfun if-make fix "if_make" [i :int f :float] if-pair)
+(ffi/defcfun if-sum fix "if_sum" [x if-pair] :double)
+(ffi/defcfun five-then-odd fix "five_then_odd" [a1 :long a2 :long a3 :long a4 :long a5 :long o odd12 after :long] :long)
 (ffi/defcfun many-ints fix "many_ints"
   [a1 :long a2 :long a3 :long a4 :long a5 :long a6 :long a7 :long o odd12 after :long] :long)
 (ffi/defcfun many-floats fix "many_floats"
@@ -254,12 +261,16 @@
   (testing "larger: by reference, and the result through x8"
     (is (= [{:a 7 :b 14 :c 21} 6] [(big-make 7) (big-sum {:a 1 :b 2 :c 3})]))
     (is (= [{:c 1 :d 2.5 :s 3} 6.5] [(padded-make 1 2.5 3) (padded-sum {:c 1 :d 2.5 :s 3})])))
+  (testing "a double and a long, and an int and a float in one word (x86-64: float and integer registers mixed)"
+    (is (= [{:d 1.5 :l 4} 41.5] [(dl-make 1.5 4) (dl-sum {:d 1.5 :l 4})]))
+    (is (= [{:i 3 :f 0.5} 8.0] [(if-make 3 0.5) (if-sum {:i 3 :f 0.5})])))
   (testing "with a union in it, and bit fields"
     (is (= 3007 (tagged-check {:tag 3 :u {:i 7}})))
     (is (= 41 (flags-sum {:a 1 :b 2 :c -3 :d 4 :e 3 :f 34}))))
   (testing "when the registers run out, on the stack, whole"
     (is (= 9321028 (many-ints 1 2 3 4 5 6 7 {:a 1 :b 2 :c 3} 9)))
-    (is (= 80103.0 (many-floats 1 2 3 4 5 6 7 {:x 0.5 :y 0.25} 8))))
+    (is (= 80103.0 (many-floats 1 2 3 4 5 6 7 {:x 0.5 :y 0.25} 8)))
+    (is (= 9321015 (five-then-odd 1 2 3 4 5 {:a 1 :b 2 :c 3} 9)) "x86-64: what follows still takes the register left"))
   (testing "an address will do for a map: it's copied"
     (ffi/with-alloc [p pair {:a 20 :b 22}]
       (is (= 42 (pair-sum p))))))
@@ -278,6 +289,9 @@
 (ffi/defcfun apply-pair fix "apply_pair" [f [:callback [pair :int] pair] p pair k :int] pair)
 (ffi/defcfun apply-v4 fix "apply_v4" [f [:callback [v4 :double] v4] v v4] v4)
 (ffi/defcfun apply-big fix "apply_big" [f [:callback [big] big] b big] big)
+(ffi/defcfun apply-dl fix "apply_dl" [f [:callback [dl if-pair] dl] x dl y if-pair] dl)
+(ffi/defcfun apply-five-then-odd fix "apply_five_then_odd"
+  [f [:callback [:long :long :long :long :long odd12 :long] :long]] :long)
 (ffi/defcfun apply-many fix "apply_many"
   [f [:callback [:long :long :long :long :long :long :long odd12 :long] :long]] :long)
 (ffi/defcfun apply-many-floats fix "apply_many_floats"
@@ -289,6 +303,8 @@
   (is (= {:a 20 :b 13} (apply-pair (fn [p k] {:a (* k (:a p)) :b (+ k (:b p))}) {:a 2 :b 3} 10)))
   (is (= {:x 2.0 :y 4.0 :z 6.0 :w 8.0} (apply-v4 (fn [v k] (update-vals v (fn [x] (* k x)))) {:x 1.0 :y 2.0 :z 3.0 :w 4.0})))
   (is (= {:a 2 :b 3 :c 4} (apply-big (fn [b] (update-vals b inc)) {:a 1 :b 2 :c 3})) "by reference both ways")
+  (is (= {:d 2.0 :l 7} (apply-dl (fn [x y] {:d (+ (:d x) (:f y)) :l (+ (:l x) (:i y))}) {:d 1.5 :l 4} {:i 3 :f 0.5})))
+  (is (= 8321015 (apply-five-then-odd (fn [a b c d e o h] (+ a b c d e (* 1000 (+ (:a o) (* 10 (:b o)) (* 100 (:c o)))) (* 1000000 h))))))
   (is (= 8321028 (apply-many (fn [a b c d e f g o h] (+ a b c d e f g (* 1000 (+ (:a o) (* 10 (:b o)) (* 100 (:c o)))) (* 1000000 h))))))
   (is (= 80103.0 (apply-many-floats (fn [a b c d e f g v h] (+ a b c d e f g (* 100 (+ (:x v) (:y v))) (* 10000 h)))))))
 

@@ -15,6 +15,8 @@ typedef struct { float x, y; } V2;               // 2 floats: float registers
 typedef struct { double x, y, z, w; } V4;        // 4 doubles: float registers
 typedef struct { long a, b, c; } Big;            // 24 bytes: by reference
 typedef struct { char c; double d; short s; } Padded;
+typedef struct { double d; long l; } DL;       // x86-64: a float eightbyte, then an integer one
+typedef struct { int i; float f; } IF;         // x86-64: an int and a float in one eightbyte: integer
 typedef struct {
     unsigned a : 3;
     unsigned b : 5;
@@ -82,6 +84,17 @@ double padded_sum(Padded p) { return p.c + p.d + p.s; }
 long tagged_check(Tagged t) { return t.tag * 1000 + t.u.i; }
 long flags_sum(Flags f) { return f.a + f.b + f.c + f.d + f.e + (long)f.f; }
 
+DL dl_make(double d, long l) { DL r = {d, l}; return r; }
+double dl_sum(DL x) { return x.d + x.l * 10; }
+IF if_make(int i, float f) { IF r = {i, f}; return r; }
+double if_sum(IF x) { return x.i + x.f * 10; }
+
+// (x86-64: the struct needs two registers and one is left: it goes on the
+// stack, and the next argument still takes that last register)
+long five_then_odd(long a1, long a2, long a3, long a4, long a5, Odd12 o, long after) {
+    return a1 + a2 + a3 + a4 + a5 + odd_sum(o) * 1000 + after * 1000000;
+}
+
 // (the registers run out: the struct goes on the stack, whole)
 long many_ints(long a1, long a2, long a3, long a4, long a5, long a6, long a7, Odd12 o, long after) {
     return a1 + a2 + a3 + a4 + a5 + a6 + a7 + odd_sum(o) * 1000 + after * 1000000;
@@ -95,6 +108,11 @@ double many_floats(double d1, double d2, double d3, double d4, double d5, double
 Pair apply_pair(Pair (*f)(Pair, int), Pair p, int k) { return f(p, k); }
 V4 apply_v4(V4 (*f)(V4, double), V4 v) { return f(v, 2.0); }
 Big apply_big(Big (*f)(Big), Big b) { return f(b); }
+DL apply_dl(DL (*f)(DL, IF), DL x, IF y) { return f(x, y); }
+long apply_five_then_odd(long (*f)(long, long, long, long, long, Odd12, long)) {
+    Odd12 o = {1, 2, 3};
+    return f(1, 2, 3, 4, 5, o, 8);
+}
 long apply_many(long (*f)(long, long, long, long, long, long, long, Odd12, long)) {
     Odd12 o = {1, 2, 3};
     return f(1, 2, 3, 4, 5, 6, 7, o, 8);

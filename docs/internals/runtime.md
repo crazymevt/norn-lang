@@ -759,9 +759,14 @@ heap under GC stress in M6; the fix and this rule came together.
     signature.
   - `tests/norn/ffi_fixture.c`, built by `ffi_test.norn` with `cc`,
     checks every case against C.
-- **Not yet:** structs by value and variadic functions on x86-64 (System
-  V's rules classify each eight bytes, and a variadic call sets `%al`,
-  which Cranelift can't), and on Windows.
+  - **x86-64 System V** (M12): each eightbyte of a struct up to 16 bytes
+    goes in a float register if it holds only floats, else an integer
+    one; a struct with too few registers left, or larger, is copied onto
+    the stack (Cranelift's `StructArgument`, whose memcpy call the FFI
+    links itself), and later arguments may still take registers. A
+    variadic call is made through a thunk that sets `%al` (which
+    Cranelift can't) and jumps to the function.
+- **Not yet:** structs by value and variadic functions on Windows.
 
 ### 5.7 Native extensions and the main thread **[built in M7.5]**
 

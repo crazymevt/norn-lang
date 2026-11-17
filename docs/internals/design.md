@@ -762,8 +762,8 @@ As built (M9 parts 9.3 and 9.4):
 signatures, `defcstruct`, memory access and callbacks from C (on the
 calling thread, or posted to a fiber from any other). A module using it
 says `(:unsafe)` in its `ns`. Since 9.8b it also has unions, bit fields,
-structs by value (calls and callbacks) and variadic functions, on arm64;
-x86-64 waits for M12's Linux and Windows work.
+structs by value (calls and callbacks) and variadic functions, on arm64
+and (since M12's Linux work) x86-64 System V; Windows waits for M12.
 
 ### 9.1 UI: `norn.ui` **[decided, 2026-11-13]**
 

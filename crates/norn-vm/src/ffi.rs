@@ -33,7 +33,8 @@
 //! (`norn.ffi`). **Callbacks** are below.
 //!
 //! Structs by value and variadic functions are done for arm64 (Apple's and
-//! AAPCS64); on other machines they're an error for now.
+//! AAPCS64) and x86-64 System V (Linux, the BSDs); on other machines
+//! they're an error for now.
 
 use crate::reactor::{self, Io};
 use crate::vm::{Error, Result, Vm};
@@ -107,17 +108,39 @@ impl CType {
     fn is_float(self) -> bool {
         matches!(self, CType::F32 | CType::F64)
     }
+
+    /// Its size in bytes.
+    fn size(self) -> u32 {
+        match self {
+            CType::Void => 0,
+            CType::I8 | CType::U8 => 1,
+            CType::I16 | CType::U16 => 2,
+            CType::I32 | CType::U32 | CType::F32 => 4,
+            CType::I64 | CType::U64 | CType::F64 | CType::Ptr => 8,
+        }
+    }
 }
 
-/// How a struct goes by value, by arm64's rules (AAPCS64; Apple's agree):
-/// one to four floats or doubles of one type (a homogeneous floating-point
-/// aggregate) in float registers; anything else of up to 16 bytes in one or
-/// two integer registers, as words of its memory; larger, as a pointer to a
-/// copy (and a larger result through the pointer in x8).
+/// How a struct goes by value.
+///
+/// By arm64's rules (AAPCS64; Apple's agree): one to four floats or
+/// doubles of one type (a homogeneous floating-point aggregate) in float
+/// registers; anything else of up to 16 bytes in one or two integer
+/// registers, as words of its memory; larger, as a pointer to a copy (and a
+/// larger result through the pointer in x8).
+///
+/// By x86-64 System V's: up to 16 bytes, as its one or two eightbytes, each
+/// in a float register if it holds only floats and doubles, else in an
+/// integer register; when there aren't registers enough for all of it, or
+/// it's larger (or a field straddles an eightbyte), as a copy on the stack.
+/// A larger result goes through a pointer the caller passes first.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Agg {
     Hfa(CType, u8),
     Words(u8),
+    /// System V: n eightbytes, bit k set if eightbyte k goes in a float register.
+    Eights(u8, u8),
+    /// arm64: by reference. System V: in memory (a copy on the stack).
     Indirect,
 }
 
@@ -135,14 +158,18 @@ pub(crate) enum Ty {
 }
 
 const APPLE_ARM64: bool = cfg!(all(target_arch = "aarch64", target_vendor = "apple"));
+const SYSV_X64: bool = cfg!(all(target_arch = "x86_64", not(windows)));
 
 fn float_type(t: CType) -> cranelift_codegen::ir::Type {
     if t == CType::F32 { types::F32 } else { types::F64 }
 }
 
 fn classify(size: u32, leaves: &[(u32, CType)]) -> Result<Agg> {
+    if SYSV_X64 {
+        return Ok(classify_sysv(size, leaves));
+    }
     if !cfg!(target_arch = "aarch64") {
-        return Err(Error::new("Structs by value aren't supported on this machine yet (only arm64): pass a pointer"));
+        return Err(Error::new("Structs by value aren't supported on this machine yet (only arm64 and x86-64 System V): pass a pointer"));
     }
     let n = leaves.len() as u32;
     if (1..=4).contains(&n) {
@@ -153,6 +180,28 @@ fn classify(size: u32, leaves: &[(u32, CType)]) -> Result<Agg> {
         }
     }
     Ok(if size <= 16 { Agg::Words(size.div_ceil(8).max(1) as u8) } else { Agg::Indirect })
+}
+
+/// By System V's rules (see `Agg`): an eightbyte is a float one if every
+/// leaf in it is a float or double (a union's leaves overlap, and any
+/// integer among them makes it an integer one).
+fn classify_sysv(size: u32, leaves: &[(u32, CType)]) -> Agg {
+    if size > 16 {
+        return Agg::Indirect;
+    }
+    let n = size.div_ceil(8).max(1);
+    let (mut seen, mut ints) = (0u8, 0u8);
+    for &(off, t) in leaves {
+        let end = off + t.size().max(1) - 1;
+        if off / 8 != end / 8 || end >= n * 8 {
+            return Agg::Indirect; // (unaligned: packed)
+        }
+        seen |= 1 << (off / 8);
+        if !t.is_float() {
+            ints |= 1 << (off / 8);
+        }
+    }
+    Agg::Eights(n as u8, seen & !ints)
 }
 
 /// `[:struct size [[offset type]…]]` (a struct by value), or None.
@@ -173,13 +222,15 @@ fn parse_struct(v: Value) -> Result<Option<SAbi>> {
 }
 
 /// One parameter of the C signature: an argument word, a piece of a struct
-/// (its argument, offset and type), a struct's address, or a filler that
-/// uses up a register so what follows goes on the stack.
+/// (its argument, offset and type), a struct's address, a struct copied
+/// whole onto the stack (its argument and size, a multiple of 8), or a
+/// filler that uses up a register so what follows goes on the stack.
 #[derive(Clone, Copy, Debug)]
 enum Piece {
     Word(usize, CType),
     Part(usize, u32, cranelift_codegen::ir::Type),
     Ptr(usize),
+    Stack(usize, u32),
     Filler(cranelift_codegen::ir::Type),
 }
 
@@ -187,8 +238,11 @@ enum Piece {
 /// argument that doesn't fit the registers left goes on the stack whole,
 /// and so does everything after it of its kind (fillers take the rest of
 /// the registers). On Apple arm64, every variadic argument goes on the
-/// stack too.
-fn lower(params: &[Ty], variadic_from: Option<usize>) -> Vec<Piece> {
+/// stack too. (System V: see lower_sysv.)
+fn lower(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Vec<Piece> {
+    if SYSV_X64 {
+        return lower_sysv(params, ret);
+    }
     let (mut ngrn, mut nsrn) = (0u32, 0u32);
     let mut out = Vec::new();
     let fill_ints = |out: &mut Vec<Piece>, ngrn: &mut u32| {
@@ -250,9 +304,59 @@ fn lower(params: &[Ty], variadic_from: Option<usize>) -> Vec<Piece> {
                 ngrn = (ngrn + 1).min(8);
                 out.push(Piece::Ptr(i));
             }
+            Ty::S(SAbi { agg: Agg::Eights(..), .. }) => unreachable!("System V structs are lowered by lower_sysv"),
         }
     }
     out
+}
+
+/// The C signature's parameters for params by System V's rules: six
+/// integer registers and eight float ones (one fewer integer register when
+/// the result goes through a pointer). A struct goes in registers only if
+/// all its eightbytes fit; else it's copied onto the stack whole, and what
+/// follows may still take the registers left. Scalars that don't fit go on
+/// the stack in order, as Cranelift places them. A variadic call passes its
+/// arguments the same way.
+fn lower_sysv(params: &[Ty], ret: Ty) -> Vec<Piece> {
+    let mut ints = matches!(ret, Ty::S(SAbi { agg: Agg::Indirect, .. })) as u32;
+    let mut floats = 0u32;
+    let mut out = Vec::new();
+    for (i, &t) in params.iter().enumerate() {
+        match t {
+            Ty::C(c) if c.is_float() => {
+                floats += 1;
+                out.push(Piece::Word(i, c));
+            }
+            Ty::C(c) => {
+                ints += 1;
+                out.push(Piece::Word(i, c));
+            }
+            Ty::S(SAbi { agg: Agg::Eights(n, sse), size }) => {
+                let nf = sse.count_ones();
+                let ni = n as u32 - nf;
+                if ints + ni <= 6 && floats + nf <= 8 {
+                    ints += ni;
+                    floats += nf;
+                    out.extend((0..n as u32).map(|k| Piece::Part(i, k * 8, if sse >> k & 1 == 1 { types::F64 } else { types::I64 })));
+                } else {
+                    out.push(Piece::Stack(i, size.div_ceil(8) * 8));
+                }
+            }
+            Ty::S(SAbi { agg: Agg::Indirect, size }) => out.push(Piece::Stack(i, size.div_ceil(8) * 8)),
+            Ty::S(_) => unreachable!("arm64 structs aren't classified on System V"),
+        }
+    }
+    out
+}
+
+/// The register results a struct comes back in, or none (by pointer).
+fn struct_returns(agg: Agg) -> Vec<cranelift_codegen::ir::Type> {
+    match agg {
+        Agg::Hfa(c, n) => vec![float_type(c); n as usize],
+        Agg::Words(w) => vec![types::I64; w as usize],
+        Agg::Eights(n, sse) => (0..n).map(|k| if sse >> k & 1 == 1 { types::F64 } else { types::I64 }).collect(),
+        Agg::Indirect => vec![],
+    }
 }
 
 fn piece_abi(p: Piece) -> AbiParam {
@@ -260,6 +364,7 @@ fn piece_abi(p: Piece) -> AbiParam {
         Piece::Word(_, c) => c.abi().expect("a parameter isn't void"),
         Piece::Part(_, _, t) | Piece::Filler(t) => AbiParam::new(t),
         Piece::Ptr(_) => AbiParam::new(types::I64),
+        Piece::Stack(_, size) => AbiParam::special(types::I64, ArgumentPurpose::StructArgument(size)),
     }
 }
 
@@ -273,9 +378,7 @@ fn c_signature(cc: cranelift_codegen::isa::CallConv, pieces: &[Piece], ret: Ty) 
     sig.params.extend(pieces.iter().map(|&p| piece_abi(p)));
     match ret {
         Ty::C(c) => sig.returns.extend(c.abi()),
-        Ty::S(SAbi { agg: Agg::Hfa(c, n), .. }) => sig.returns.extend((0..n).map(|_| AbiParam::new(float_type(c)))),
-        Ty::S(SAbi { agg: Agg::Words(w), .. }) => sig.returns.extend((0..w).map(|_| AbiParam::new(types::I64))),
-        Ty::S(SAbi { agg: Agg::Indirect, .. }) => {}
+        Ty::S(s) => sig.returns.extend(struct_returns(s.agg).into_iter().map(AbiParam::new)),
     }
     sig
 }
@@ -321,7 +424,40 @@ fn compile(func: Function, what: &str) -> Result<usize> {
     let isa = crate::jit::isa().ok_or_else(|| Error::new("No native code generator for this machine"))?;
     let mut ctx = cranelift_codegen::Context::for_function(func);
     let code = ctx.compile(&**isa, &mut ControlPlane::default()).map_err(|e| Error::new(format!("Can't compile {what}: {e:?}")))?;
-    crate::jit::install_code(code.code_buffer()).ok_or_else(|| Error::new("Out of executable memory"))
+    let bytes = link_memcpy(code.code_buffer(), code.buffer.relocs()).map_err(|e| Error::new(format!("Can't compile {what}: {e}")))?;
+    crate::jit::install_code(&bytes).ok_or_else(|| Error::new("Out of executable memory"))
+}
+
+/// The code with its relocations done. The one kind a stub or callback
+/// has: on x86-64, Cranelift copies a struct passed on the stack
+/// (`StructArgument`) by calling memcpy, through a GOT entry (is_pic) or an
+/// absolute address. The GOT entry is a word appended to the code.
+fn link_memcpy(code: &[u8], relocs: &[cranelift_codegen::MachReloc]) -> std::result::Result<Vec<u8>, String> {
+    use cranelift_codegen::binemit::Reloc;
+    use cranelift_codegen::ir::{ExternalName, LibCall};
+    let mut out = code.to_vec();
+    if relocs.is_empty() {
+        return Ok(out);
+    }
+    let memcpy = libc::memcpy as *const () as usize as u64;
+    out.resize(code.len().div_ceil(8) * 8, 0);
+    let slot = out.len() as i64;
+    out.extend_from_slice(&memcpy.to_le_bytes());
+    for r in relocs {
+        if !matches!(r.target, cranelift_codegen::RelocTarget::ExternalName(ExternalName::LibCall(LibCall::Memcpy))) {
+            return Err(format!("unexpected relocation {:?} to {:?}", r.kind, r.target));
+        }
+        let at = r.offset as usize;
+        match r.kind {
+            Reloc::X86GOTPCRel4 => {
+                let rel = i32::try_from(slot + r.addend - at as i64).map_err(|_| "a GOT offset out of range")?;
+                out[at..at + 4].copy_from_slice(&rel.to_le_bytes());
+            }
+            Reloc::Abs8 => out[at..at + 8].copy_from_slice(&memcpy.wrapping_add(r.addend as u64).to_le_bytes()),
+            k => return Err(format!("unexpected relocation {k:?}")),
+        }
+    }
+    Ok(out)
 }
 
 /// The call stub for a signature (compiled once).
@@ -332,7 +468,7 @@ fn stub_for(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Result<usiz
     }
     let isa = crate::jit::isa().ok_or_else(|| Error::new("No native code generator for this machine"))?;
     let cc = isa.default_call_conv();
-    let pieces = lower(params, variadic_from);
+    let pieces = lower(params, ret, variadic_from);
     let target = c_signature(cc, &pieces, ret);
     let mut sig = Signature::new(cc);
     sig.params.extend([AbiParam::new(types::I64), AbiParam::new(types::I64), AbiParam::new(types::I64)]);
@@ -379,7 +515,8 @@ fn stub_for(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Result<usiz
                     let base = b.ins().load(types::I64, flags, args, (i * 8) as i32);
                     b.ins().load(t, flags, base, off as i32)
                 }
-                Piece::Ptr(i) => b.ins().load(types::I64, flags, args, (i * 8) as i32),
+                // (StructArgument: Cranelift copies the struct from this address)
+                Piece::Ptr(i) | Piece::Stack(i, _) => b.ins().load(types::I64, flags, args, (i * 8) as i32),
                 Piece::Filler(t) if t == types::F64 => b.ins().f64const(0.0),
                 Piece::Filler(_) => b.ins().iconst(types::I64, 0),
             };
@@ -405,7 +542,7 @@ fn stub_for(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Result<usiz
                     b.ins().store(flags, r, retp, (k * es) as i32);
                 }
             }
-            Ty::S(SAbi { agg: Agg::Words(_), .. }) => {
+            Ty::S(SAbi { agg: Agg::Words(_) | Agg::Eights(..), .. }) => {
                 for (k, &r) in results.iter().enumerate() {
                     b.ins().store(flags, r, retp, (k * 8) as i32);
                 }
@@ -417,6 +554,26 @@ fn stub_for(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Result<usiz
     }
     let at = compile(func, "an FFI stub")?;
     STUBS.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, at);
+    Ok(at)
+}
+
+/// System V has a variadic call say in %al how many float registers it
+/// uses (at most 8: an upper bound will do), and the callee's va_start
+/// saves them only if it's nonzero. Cranelift can't set %al, so a variadic
+/// function is called through a thunk, one per function: `movabs r11,
+/// target; mov al, 8; jmp r11` (r11 is a scratch register no argument uses).
+fn al_thunk(target: usize) -> Result<usize> {
+    static THUNKS: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
+    let mut thunks = THUNKS.lock().unwrap();
+    let thunks = thunks.get_or_insert_with(HashMap::new);
+    if let Some(&t) = thunks.get(&target) {
+        return Ok(t);
+    }
+    let mut code = vec![0x49, 0xBB];
+    code.extend_from_slice(&(target as u64).to_le_bytes());
+    code.extend_from_slice(&[0xB0, 0x08, 0x41, 0xFF, 0xE3]);
+    let at = crate::jit::install_code(&code).ok_or_else(|| Error::new("Out of executable memory"))?;
+    thunks.insert(target, at);
     Ok(at)
 }
 
@@ -477,8 +634,8 @@ pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret:
         }
         let k = keyword_name(p)?;
         if k == "..." {
-            if !cfg!(target_arch = "aarch64") {
-                return Err(Error::new("Variadic functions aren't supported on this machine yet (only arm64)"));
+            if !cfg!(target_arch = "aarch64") && !SYSV_X64 {
+                return Err(Error::new("Variadic functions aren't supported on this machine yet (only arm64 and x86-64 System V)"));
             }
             variadic = Some(ps.len());
             continue;
@@ -512,6 +669,7 @@ pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret:
             unsafe { l.get::<*const ()>(cname.as_bytes_with_nul()) }.map(|s| *s as usize).map_err(|e| Error::new(format!("No symbol {name}: {e}")))?
         }
     };
+    let addr = if SYSV_X64 && variadic.is_some() { al_thunk(addr)? } else { addr };
     let f = Foreign { addr, stub, params: ps, tys, ret: ret_ty, ret_string, variadic, mode, _lib: lib_arc };
     let entries = [
         ("library", lib),
@@ -1082,7 +1240,7 @@ fn trampoline(id: u64, params: &[Ty], ret: Ty) -> Result<usize> {
     use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
     let isa = crate::jit::isa().ok_or_else(|| Error::new("No native code generator for this machine"))?;
     let cc = isa.default_call_conv();
-    let pieces = lower(params, None);
+    let pieces = lower(params, ret, None);
     let sig = c_signature(cc, &pieces, ret);
     let mut target = Signature::new(cc);
     target.params.extend([AbiParam::new(types::I64), AbiParam::new(types::I64), AbiParam::new(types::I64)]);
@@ -1094,8 +1252,9 @@ fn trampoline(id: u64, params: &[Ty], ret: Ty) -> Result<usize> {
     let mut at = ((nwords + 1) * 8) as u32;
     let mut areas = vec![None; params.len()];
     for (i, t) in params.iter().enumerate() {
+        // (a struct that comes in registers; one on the stack is used where it is)
         if let Ty::S(s) = t
-            && s.agg != Agg::Indirect
+            && pieces.iter().any(|p| matches!(p, Piece::Part(j, ..) if *j == i))
         {
             areas[i] = Some(at);
             at += round16(s.size);
@@ -1141,7 +1300,8 @@ fn trampoline(id: u64, params: &[Ty], ret: Ty) -> Result<usize> {
                     let area = areas[i].expect("a struct in pieces has an area");
                     b.ins().stack_store(types::I64, v, slot, (area + off) as i32);
                 }
-                Piece::Ptr(i) => {
+                // (a struct on the stack arrives as its address there)
+                Piece::Ptr(i) | Piece::Stack(i, _) => {
                     b.ins().stack_store(types::I64, v, slot, ((shift + i) * 8) as i32);
                 }
                 Piece::Filler(_) => {}
@@ -1189,10 +1349,10 @@ fn trampoline(id: u64, params: &[Ty], ret: Ty) -> Result<usize> {
                     out.push(b.ins().stack_load(types::I64, float_type(c), slot, (a + k * es) as i32));
                 }
             }
-            Ty::S(SAbi { agg: Agg::Words(w), .. }) => {
+            Ty::S(SAbi { agg: agg @ (Agg::Words(_) | Agg::Eights(..)), .. }) => {
                 let a = ret_area.unwrap();
-                for k in 0..w as u32 {
-                    out.push(b.ins().stack_load(types::I64, types::I64, slot, (a + k * 8) as i32));
+                for (k, t) in struct_returns(agg).into_iter().enumerate() {
+                    out.push(b.ins().stack_load(types::I64, t, slot, (a + k as u32 * 8) as i32));
                 }
             }
             Ty::S(SAbi { agg: Agg::Indirect, .. }) => {}
