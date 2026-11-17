@@ -288,11 +288,26 @@ baseline compared.
     across many blocks are kept on the stack by the register allocator
     (a probe loop reading a var each turn: 11 ns against the benchmark's
     3.4); moving them across calls as integer bits made it worse, so it's
-    left; (3) **lint and group-by are mostly GC:** with
-    `NORN_HEAP_MIN=1g`, linting http.norn takes 80–93 ms against 510–560
-    (6×), group-by 70 against 200; the heap's growth policy (64 MB to
-    start, MMTk's dynamic size) is likely the largest win left on the
-    library workloads, and why they swing run to run (todo).
+    left; (3) **lint and group-by were mostly GC:** with
+    `NORN_HEAP_MIN=1g`, linting http.norn took 80–93 ms against 510–560
+    (6×), group-by 70 against 200. See "The heap's growth" below.
+- **The heap's growth: done (2026-11-17),** outside the plan's parts.
+  MMTk's dynamic heap size (MemBalancer) left only a few MB above live
+  data, since Norn traces fast against how much it allocates: with the
+  workloads' 65 MB live, linting http.norn collected about 100 times a
+  run. A trigger of Norn's own (`ProportionalTrigger` in heap.rs) lets the
+  heap grow to live × (1 + `NORN_HEAP_GROWTH`%), 100 by default, as Go's
+  GOGC; MemBalancer stays as `NORN_HEAP_GROWTH=balancer`. Tried 50, 100,
+  200: lint with the data live 139, 124, 110 ms (peak RSS 183, 233, 376
+  MB, against 137 before); 100 chosen. **Measured** (against the
+  baseline, tier 0 / tier 1): lint 5.4× / 5.9×, into a map 7.8× / 11.4×,
+  group-by 3.7× / 4.9×, the printing workloads (JSON write, EDN pr-str,
+  bin encode, which read 0.84–0.9× through M10: GC, not code) about 1.5×,
+  the log report 1.15× / 1.44×, the ledger 1.12× / 1.34×; 1M fibers then
+  10M messages 22.5 → 5.9 s (163 → 7 GCs, peak RSS 2.2 → 3.3 GB);
+  `norn -e nil` unchanged (79 MB). The suites pass at both tiers; under
+  `NORN_GC_STRESS=2` io_test's 30 s timing limit on reading 50,000 lines
+  was overrun once in the full run (passing alone, before and after).
   - **5.3, types in the IR.** compiler.norn infers types from literals,
     primitives' result types, signatures (results: the callee's contract
     checks them; parameters: speculation, decision 8), `(declare (type

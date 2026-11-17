@@ -310,8 +310,19 @@ values rather than boxes.
 - **M1: MMTk 0.33, `Immix` plan built with `immix_non_moving`**
   (`norn-rt/src/heap.rs`): parallel (one GC worker per core), stop-the-world,
   and objects never move, so the interpreter's cached code and frame pointers
-  stay valid across a GC. Dynamic heap size, 64 MB up to 8 GB by default
-  (`NORN_HEAP_MIN`, `NORN_HEAP_MAX`).
+  stay valid across a GC. The heap is 64 MB to 8 GB by default
+  (`NORN_HEAP_MIN`, `NORN_HEAP_MAX`); after each collection it may grow to
+  what's live times 1 + `NORN_HEAP_GROWTH` percent (100 by default: a
+  collection when the heap has doubled, as Go's `GOGC=100`), a trigger of
+  our own (`ProportionalTrigger`, MMTk's delegated trigger). MMTk's dynamic
+  size (MemBalancer, still there as `NORN_HEAP_GROWTH=balancer`) sized
+  the room above live data by how fast collections trace against how fast
+  the program allocates: Norn traces fast and allocates a lot, so it left
+  a few MB, and a program with 65 MB live collected every few MB it
+  allocated (linting `http.norn` beside the workloads' data: about 100
+  collections and 560 ms a run; now 4 and 124 ms, peak RSS 137 → 233 MB).
+  Small programs stay within the minimum (`norn -e nil`: 79 MB either
+  way).
 - **Next: generational `StickyImmix`** with `sticky_immix_non_moving_nursery`.
   It needs write barriers on stores into possibly-old objects (var roots,
   atoms, fiber, channel and scope fields; §4.4). Stack frames don't need
@@ -1501,7 +1512,7 @@ each part needs from the runtime:
 
 | Run | Result |
 |---|---|
-| 1M fibers alive at once, then 10M messages | ✅ 1.73 GB heap; 4.6 s with `NORN_HEAP_MIN=3g` (1 GC); 21 s from the default 64 MB heap (161 GCs, mostly while spawning) |
+| 1M fibers alive at once, then 10M messages | ✅ 1.73 GB heap; 4.6 s with `NORN_HEAP_MIN=3g` (1 GC); 21 s from the default 64 MB heap (161 GCs, mostly while spawning); with growth proportional to live data (M10), 5.9 s and 7 GCs from the default heap, peak RSS 2.2 → 3.3 GB |
 | 1M fibers, `NORN_GC_STRESS=20` | ✅ 441 GCs, 68 s |
 | 40k fibers, `NORN_GC_STRESS=1` | ✅ 65,694 GCs, 2M messages, checksums correct |
 | core suite, `NORN_GC_STRESS=1` | ✅ 2,032,983 GCs, 0 failures |

@@ -24,6 +24,9 @@ use crate::value::{TAG_CONS, TAG_MASK, TAG_OBJ, Value};
 use mmtk::util::alloc::AllocationOptions;
 use mmtk::util::copy::{CopySemantics, GCWorkerCopyContext};
 use mmtk::util::opaque_pointer::{OpaquePointer, VMMutatorThread, VMThread, VMWorkerThread};
+use mmtk::Plan;
+use mmtk::util::constants::LOG_BYTES_IN_PAGE;
+use mmtk::util::heap::{GCTriggerPolicy, SpaceStats};
 use mmtk::util::options::{GCTriggerSelector, PlanSelector};
 use mmtk::util::{Address, ObjectReference};
 use mmtk::vm::slot::{Slot, UnimplementedMemorySlice};
@@ -73,6 +76,58 @@ fn env_bytes(name: &str) -> Option<usize> {
     num.parse::<usize>().ok().map(|n| n * mult)
 }
 
+// ---- when to collect ------------------------------------------------------------------
+//
+// After each collection the heap may grow to what's live times (1 +
+// NORN_HEAP_GROWTH percent), 100 by default: a collection when the heap has
+// doubled, as Go's GOGC=100; within NORN_HEAP_MIN (64 MB) and NORN_HEAP_MAX
+// (8 GB). MMTk's own dynamic size (MemBalancer, NORN_HEAP_GROWTH=balancer)
+// sizes the room above live data by how fast collections trace against how
+// fast the program allocates; Norn traces fast and allocates a lot, so it
+// left a few MB above live data, and a program with 65 MB live collected
+// every few MB it allocated: linting a 34 KB file took about 100
+// collections and 550 ms, against 12 or so and 150 ms now.
+
+static HEAP_MIN_PAGES: AtomicUsize = AtomicUsize::new(0);
+static HEAP_MAX_PAGES: AtomicUsize = AtomicUsize::new(0);
+static HEAP_GROWTH: AtomicUsize = AtomicUsize::new(100);
+
+struct ProportionalTrigger {
+    /// The heap's size now, in pages: a collection when it's full.
+    current: AtomicUsize,
+    /// Pages that allocations waiting on this collection need.
+    pending: AtomicUsize,
+}
+
+impl GCTriggerPolicy<Norn> for ProportionalTrigger {
+    fn on_pending_allocation(&self, pages: usize) {
+        self.pending.fetch_add(pages, Ordering::SeqCst);
+    }
+    fn on_gc_end(&self, mmtk: &'static MMTK<Norn>) {
+        // (what's live, with the plan's reserve for collecting)
+        let live = mmtk.get_plan().get_reserved_pages();
+        let growth = HEAP_GROWTH.load(Ordering::Relaxed);
+        let want = live + live / 100 * growth + self.pending.swap(0, Ordering::SeqCst);
+        let (min, max) = (HEAP_MIN_PAGES.load(Ordering::Relaxed), HEAP_MAX_PAGES.load(Ordering::Relaxed));
+        self.current.store(want.clamp(min, max), Ordering::Relaxed);
+    }
+    fn is_gc_required(&self, space_full: bool, space: Option<SpaceStats<Norn>>, plan: &dyn Plan<VM = Norn>) -> bool {
+        plan.collection_required(space_full, space)
+    }
+    fn is_heap_full(&self, plan: &dyn Plan<VM = Norn>) -> bool {
+        plan.get_reserved_pages() > self.current.load(Ordering::Relaxed)
+    }
+    fn get_current_heap_size_in_pages(&self) -> usize {
+        self.current.load(Ordering::Relaxed)
+    }
+    fn get_max_heap_size_in_pages(&self) -> usize {
+        HEAP_MAX_PAGES.load(Ordering::Relaxed)
+    }
+    fn can_heap_size_grow(&self) -> bool {
+        self.current.load(Ordering::Relaxed) < HEAP_MAX_PAGES.load(Ordering::Relaxed)
+    }
+}
+
 /// Initialise MMTk (once per process). Collection stays disabled until
 /// `enable_collection`, so boot code needs no safepoints.
 pub fn init_heap() {
@@ -81,7 +136,17 @@ pub fn init_heap() {
         b.options.plan.set(PlanSelector::Immix);
         let max = env_bytes("NORN_HEAP_MAX").unwrap_or(8 << 30);
         let min = env_bytes("NORN_HEAP_MIN").unwrap_or(64 << 20).min(max);
-        b.options.gc_trigger.set(GCTriggerSelector::DynamicHeapSize(min, max));
+        let growth = std::env::var("NORN_HEAP_GROWTH").ok();
+        if growth.as_deref() == Some("balancer") {
+            b.options.gc_trigger.set(GCTriggerSelector::DynamicHeapSize(min, max));
+        } else {
+            HEAP_MIN_PAGES.store(min >> LOG_BYTES_IN_PAGE, Ordering::Relaxed);
+            HEAP_MAX_PAGES.store(max >> LOG_BYTES_IN_PAGE, Ordering::Relaxed);
+            if let Some(g) = growth.and_then(|g| g.parse::<usize>().ok()) {
+                HEAP_GROWTH.store(g, Ordering::Relaxed);
+            }
+            b.options.gc_trigger.set(GCTriggerSelector::Delegated);
+        }
         let m: &'static MMTK<Norn> = Box::leak(memory_manager::mmtk_init::<Norn>(&b));
         LOS_THRESHOLD.store(m.get_plan().constraints().max_non_los_default_alloc_bytes, Ordering::Relaxed);
         m
@@ -496,6 +561,10 @@ impl Collection<Norn> for Norn {
         for m in Norn::mutators() {
             visitor(m);
         }
+    }
+    fn create_gc_trigger() -> Box<dyn GCTriggerPolicy<Norn>> {
+        let min = HEAP_MIN_PAGES.load(Ordering::Relaxed);
+        Box::new(ProportionalTrigger { current: AtomicUsize::new(min), pending: AtomicUsize::new(0) })
     }
     fn resume_mutators(_: VMWorkerThread) {
         GC_COUNT.fetch_add(1, Ordering::Relaxed);
