@@ -79,8 +79,7 @@ pub(crate) fn start(vm: &mut Vm, s: Spawn) -> Result<Value> {
     let m = &mut vm.m;
     let stdin = match child.stdin.take() {
         Some(x) => {
-            let tx = mio::unix::pipe::Sender::from(x);
-            tx.set_nonblocking(true).map_err(|e| Error::new(e.to_string()))?;
+            let tx = platform::child_input(x).map_err(|e| Error::new(e.to_string()))?;
             reactor::register(m, Io::PipeOut(tx), "pipe-out", Value::NIL).map_err(Error::new)?
         }
         None => Value::NIL,
@@ -88,8 +87,7 @@ pub(crate) fn start(vm: &mut Vm, s: Spawn) -> Result<Value> {
     let mut reader = |x: Option<std::process::ChildStdout>| -> Result<Value> {
         Ok(match x {
             Some(x) => {
-                let rx = mio::unix::pipe::Receiver::from(x);
-                rx.set_nonblocking(true).map_err(|e| Error::new(e.to_string()))?;
+                let rx = platform::child_output(x).map_err(|e| Error::new(e.to_string()))?;
                 reactor::register(m, Io::PipeIn(rx), "pipe-in", Value::NIL).map_err(Error::new)?
             }
             None => Value::NIL,
@@ -98,8 +96,7 @@ pub(crate) fn start(vm: &mut Vm, s: Spawn) -> Result<Value> {
     let stdout = reader(child.stdout.take())?;
     let stderr = match child.stderr.take() {
         Some(x) => {
-            let rx = mio::unix::pipe::Receiver::from(x);
-            rx.set_nonblocking(true).map_err(|e| Error::new(e.to_string()))?;
+            let rx = platform::child_errors(x).map_err(|e| Error::new(e.to_string()))?;
             reactor::register(m, Io::PipeIn(rx), "pipe-in", Value::NIL).map_err(Error::new)?
         }
         None => Value::NIL,
@@ -116,13 +113,8 @@ pub(crate) fn start(vm: &mut Vm, s: Spawn) -> Result<Value> {
 /// session). `{:process h :pid n :in h :out h :err nil}`: :in writes to the
 /// terminal (the keyboard), :out reads it (the screen); both the master's.
 pub(crate) fn pty_start(vm: &mut Vm, s: Spawn, rows: u16, cols: u16) -> Result<Value> {
-    let (master, slave) = platform::open_pty(rows, cols).map_err(|e| Error::new(format!("Can't open a pseudo-terminal: {e}")))?;
-    let io_err = |e: std::io::Error| Error::new(e.to_string());
     let mut c = std::process::Command::new(&s.cmd);
-    c.args(&s.args)
-        .stdin(slave.try_clone().map_err(io_err)?)
-        .stdout(slave.try_clone().map_err(io_err)?)
-        .stderr(slave.try_clone().map_err(io_err)?);
+    c.args(&s.args);
     if let Some(d) = &s.dir {
         c.current_dir(d);
     }
@@ -130,16 +122,12 @@ pub(crate) fn pty_start(vm: &mut Vm, s: Spawn, rows: u16, cols: u16) -> Result<V
         c.env_clear();
     }
     c.envs(s.env.iter().map(|(k, v)| (k, v)));
-    // (a session of its own, with the terminal as its controlling terminal)
-    platform::enter_terminal_session(&mut c);
-    let child = c.spawn().map_err(|e| spawn_err(&s, &e))?;
-    drop(c); // (the parent's copies of the slave)
-    drop(slave);
+    let (child, rx, tx) = platform::spawn_on_pty(&mut c, rows, cols).map_err(|e| match e {
+        platform::PtyError::Open(e) => Error::new(format!("Can't open a pseudo-terminal: {e}")),
+        platform::PtyError::Spawn(e) => spawn_err(&s, &e),
+    })?;
+    drop(c);
     let pid = child.id();
-    let writer = master.try_clone().map_err(io_err)?;
-    let rx = mio::unix::pipe::Receiver::from(master);
-    rx.set_nonblocking(true).map_err(io_err)?;
-    let tx = mio::unix::pipe::Sender::from(writer);
     let m = &mut vm.m;
     let out = reactor::register(m, Io::PipeIn(rx), "pipe-in", Value::NIL).map_err(Error::new)?;
     let input = reactor::register(m, Io::PipeOut(tx), "pipe-out", Value::NIL).map_err(Error::new)?;
@@ -208,7 +196,7 @@ fn signal_name(n: i32) -> Option<&'static str> {
 
 /// Stops a signal subscription (and unroots its channel) when dropped.
 struct Listening {
-    handle: signal_hook::iterator::Handle,
+    handle: platform::SignalHandle,
     root: u64,
     nums: Vec<i32>,
 }
@@ -259,16 +247,8 @@ fn keep_default(sig: i32) -> Result<()> {
         return Ok(());
     }
     if platform::default_disposition(sig).map_err(|e| Error::new(format!("Can't listen for signals: {e}")))? {
-        // SAFETY: the action only loads an atomic and calls
-        // emulate_default_handler, both async-signal-safe.
-        unsafe {
-            signal_hook::low_level::register(sig, move || {
-                if LISTENERS[sig as usize].load(Ordering::SeqCst) == 0 {
-                    let _ = signal_hook::low_level::emulate_default_handler(sig);
-                }
-            })
-        }
-        .map_err(|e| Error::new(format!("Can't listen for signals: {e}")))?;
+        platform::default_when(sig, move || LISTENERS[sig as usize].load(Ordering::SeqCst) == 0)
+            .map_err(|e| Error::new(format!("Can't listen for signals: {e}")))?;
     }
     prepared[sig as usize] = true;
     Ok(())
@@ -295,22 +275,20 @@ pub(crate) fn listen(vm: &mut Vm, names: &[String]) -> Result<Value> {
         }
         keep_default(n)?;
     }
-    let mut signals = signal_hook::iterator::Signals::new(&nums).map_err(|e| Error::new(format!("Can't listen for signals: {e}")))?;
     let c = skein_rt::conc::chan_new(&mut vm.m, 64);
     let root = sched::root(c);
-    let handle = signals.handle();
+    let handle =
+        match platform::on_signals(&nums, "skein-signals", move |s| crate::sys::feed(c, |m| kw(m, signal_name(s).unwrap_or("other")))) {
+            Ok(h) => h,
+            Err(e) => {
+                sched::unroot(root);
+                return Err(Error::new(format!("Can't listen for signals: {e}")));
+            }
+        };
     for &n in &nums {
         LISTENERS[n as usize].fetch_add(1, Ordering::SeqCst);
     }
-    let listening = Listening { handle: handle.clone(), root, nums };
-    std::thread::Builder::new()
-        .name("skein-signals".into())
-        .spawn(move || {
-            for s in signals.forever() {
-                crate::sys::feed(c, |m| kw(m, signal_name(s).unwrap_or("other")));
-            }
-        })
-        .map_err(|e| Error::new(e.to_string()))?;
+    let listening = Listening { handle, root, nums };
     let h = reactor::register(&mut vm.m, Io::Watch(Box::new(listening)), "signals", Value::NIL).map_err(Error::new)?;
     Ok(vec_from_slice(&mut vm.m, &[h, c]))
 }
@@ -570,10 +548,5 @@ pub(crate) fn fiber_dump(vm: &mut Vm) -> Result<Value> {
 
 /// Print a fiber dump to standard error on SIGQUIT (Ctrl-\), as the JVM does.
 pub(crate) fn dump_on_sigquit() {
-    let Ok(mut s) = signal_hook::iterator::Signals::new([platform::SIGQUIT]) else { return };
-    let _ = std::thread::Builder::new().name("skein-sigquit".into()).spawn(move || {
-        for _ in s.forever() {
-            eprint!("{}", dump_text());
-        }
-    });
+    let _ = platform::on_signals(&[platform::SIGQUIT], "skein-sigquit", |_| eprint!("{}", dump_text()));
 }

@@ -11,9 +11,14 @@
 //! What a platform provides:
 //!
 //! - **processes**: `exit_signal`, `kill`, `raise`, and the signals Skein
-//!   names (`SIGNALS`, `SIGINT`, `SIGQUIT`, `MAX_SIGNAL`, `catchable`,
-//!   `default_disposition`);
-//! - **pseudo-terminals**: `open_pty`, `enter_terminal_session`,
+//!   names (`SIGNALS`, `SIGINT`, `SIGQUIT`, `MAX_SIGNAL`, `catchable`);
+//! - **listening for signals**: `on_signals` (a thread that's told of each)
+//!   and its `SignalHandle`, `default_disposition`, `default_when`;
+//! - **pipes** the reactor can poll: the types `PipeIn` and `PipeOut`
+//!   (each a `mio::event::Source` that reads or writes without blocking),
+//!   `pipe`, and a child's ends, `child_input`, `child_output`,
+//!   `child_errors`;
+//! - **pseudo-terminals**: `spawn_on_pty` (and `PtyError`),
 //!   `set_window_size`, `is_pty_closed`;
 //! - **the host terminal**: `is_terminal`, `terminal_size`,
 //!   `terminal_raw`, `terminal_restore`, `terminal_read`;
@@ -21,16 +26,9 @@
 //!   `local_offset`, `raise_file_limit`;
 //! - **executable memory** for tier 1: `code_alloc`, `code_write`.
 //!
-//! What isn't behind this yet, and is still Unix's (a port has these to
-//! design, not only to fill in):
-//!
-//! - the reactor's pipes (`reactor.rs` `Io::PipeIn`/`PipeOut` are
-//!   `mio::unix::pipe`; `os.rs` makes a child's pipes and a
-//!   pseudo-terminal's master into them, and `prims.rs` `%pipe` makes a
-//!   pair);
-//! - listening for signals (`os.rs` `listen` and `dump_on_sigquit`, on
-//!   `signal_hook::iterator`);
-//! - file descriptors 0 to 2 as what a terminal is (`sys.rs`).
+//! What's left outside it that a port must still look at: `sys.rs` takes
+//! a terminal to be descriptor 0, 1 or 2, and signals are numbers
+//! everywhere (`os.rs`, `prims.rs`, and `skein.signal` in Skein).
 
 #[cfg(unix)]
 mod unix;

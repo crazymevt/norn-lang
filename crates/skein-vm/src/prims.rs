@@ -353,7 +353,7 @@ prims! {
     "%base64-encode" 2 Some(2) => |vm, a| { expect(a[0], Kind::Bytes, "base64")?; Ok(str_new(&mut vm.m, &crate::codec::base64_encode(a[0].as_bytes(), a[1].truthy()))) };
     "%base64-decode" 1 Some(1) => |vm, a| { expect(a[0], Kind::String, "unbase64")?; let b = crate::codec::base64_decode(a[0].as_str()).map_err(Error::new)?; Ok(skein_rt::string::bytes_new(&mut vm.m, &b)) };
     // I/O handles (the reactor and the blocking pool; runtime.md §5.5)
-    "%pipe" 0 Some(0) => |vm, _| { let (tx, rx) = mio::unix::pipe::new().map_err(|e| Error::new(e.to_string()))?; let r = crate::reactor::register(&mut vm.m, crate::reactor::Io::PipeIn(rx), "pipe-in", Value::NIL).map_err(Error::new)?; let w = crate::reactor::register(&mut vm.m, crate::reactor::Io::PipeOut(tx), "pipe-out", Value::NIL).map_err(Error::new)?; Ok(vec_from_slice(&mut vm.m, &[r, w])) };
+    "%pipe" 0 Some(0) => |vm, _| { let (tx, rx) = crate::platform::pipe().map_err(|e| Error::new(e.to_string()))?; let r = crate::reactor::register(&mut vm.m, crate::reactor::Io::PipeIn(rx), "pipe-in", Value::NIL).map_err(Error::new)?; let w = crate::reactor::register(&mut vm.m, crate::reactor::Io::PipeOut(tx), "pipe-out", Value::NIL).map_err(Error::new)?; Ok(vec_from_slice(&mut vm.m, &[r, w])) };
     "%io-seq" 2 Some(2) => |_, a| Ok(Value::fix(crate::reactor::seq(a[0], io_dir(a[1])?)? as i64));
     "%io-wait" 3 Some(3) => |vm, a| crate::reactor::wait(vm, a[0], io_dir(a[1])?, int(a[2], "%io-wait")? as u64);
     "%io-read" 2 Some(2) => |vm, a| io_read(vm, a[0], int(a[1], "read")?);
