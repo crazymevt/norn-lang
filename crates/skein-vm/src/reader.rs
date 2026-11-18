@@ -401,7 +401,10 @@ impl<'a> Reader<'a> {
                         // values would be dropped with nothing said. As in
                         // Clojure and EDN.)
                         if map.map_get(kv[0]).is_some() {
-                            return Err(ReadError::Syntax(format!("Duplicate key in a map literal: {}", skein_rt::print::pr_str(kv[0], true))));
+                            return Err(ReadError::Syntax(format!(
+                                "Duplicate key in a map literal: {}",
+                                skein_rt::print::pr_str(kv[0], true)
+                            )));
                         }
                         map = map_assoc(&mut vm.m, map, kv[0], kv[1]);
                     }
@@ -644,7 +647,11 @@ impl<'a> Reader<'a> {
                     let r = vm.apply(f, &[tag, form]).map_err(|e| ReadError::Syntax(e.msg))?;
                     let ok = r.is(Kind::Vector) && r.vec_count() == 2 && r.vec_nth(0) == Value::TRUE;
                     let x = if r.is(Kind::Vector) && r.vec_count() == 2 { r.vec_nth(1) } else { Value::NIL };
-                    return if ok { Ok(Some(x)) } else { Err(ReadError::Syntax(if x.is(Kind::String) { x.as_str().to_owned() } else { format!("#{tok}: no value") })) };
+                    return if ok {
+                        Ok(Some(x))
+                    } else {
+                        Err(ReadError::Syntax(if x.is(Kind::String) { x.as_str().to_owned() } else { format!("#{tok}: no value") }))
+                    };
                 }
                 if tok == "lang" {
                     Err(ReadError::Syntax("#lang isn't part of Skein (design.md §8.1): a file's language is Skein".into()))
@@ -809,10 +816,7 @@ impl<'a> Reader<'a> {
                         let ns = target.sym_name().to_owned();
                         Ok(rt().keyword(&mut vm.m, Some(&ns), kname))
                     }
-                    None => Err(ReadError::Syntax(format!(
-                        "Invalid token: {tok} ({alias} isn't an alias in {})",
-                        vm.ns.name.sym_name()
-                    ))),
+                    None => Err(ReadError::Syntax(format!("Invalid token: {tok} ({alias} isn't an alias in {})", vm.ns.name.sym_name()))),
                 };
             }
             if name.is_empty() || name.contains('/') {

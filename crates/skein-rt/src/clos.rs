@@ -632,15 +632,9 @@ pub fn cache_put(m: &mut Mutator, gf: Value, epoch: u64, class_epoch: u64, key: 
         entries.push((key.to_vec(), em));
         let cap = (entries.len() * 2).next_power_of_two().max(4);
         let cache = cache_build(m, key.len(), cap, &entries);
-        let new_state = array_from(
-            m,
-            &[state.arr_get(generic::S_MASK), state.arr_get(generic::S_EQLS), cache, Value::fix(class_epoch as i64)],
-        );
-        if gf
-            .atomic_word(generic::STATE)
-            .compare_exchange(state.0, new_state.0, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
+        let new_state =
+            array_from(m, &[state.arr_get(generic::S_MASK), state.arr_get(generic::S_EQLS), cache, Value::fix(class_epoch as i64)]);
+        if gf.atomic_word(generic::STATE).compare_exchange(state.0, new_state.0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             return true;
         }
     }

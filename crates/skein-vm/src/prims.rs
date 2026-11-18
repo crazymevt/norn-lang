@@ -697,7 +697,8 @@ fn mbuf_offset(d: Value, offset: Value, width: usize) -> Result<usize> {
     let o = int(offset, "mutable buffer")?;
     let len = d.as_bytes().len();
     if o < 0 || o as usize + width > len {
-        return Err(Error::of("IndexError", format!("Mutable buffer offset {o} is outside its {len} bytes")).with("index", crate::vm::ErrData::Int(o)));
+        return Err(Error::of("IndexError", format!("Mutable buffer offset {o} is outside its {len} bytes"))
+            .with("index", crate::vm::ErrData::Int(o)));
     }
     Ok(o as usize)
 }
@@ -1161,8 +1162,10 @@ fn pty_start(vm: &mut Vm, a: &[Value]) -> Result<Value> {
             true
         });
     }
-    let size: Vec<i64> = seq::SeqIter::new(a[5]).map(|it| it.map(|v| if v.is_fixnum() { v.as_fixnum() } else { 0 }).collect()).unwrap_or_default();
-    let (rows, cols) = (size.first().copied().unwrap_or(24).clamp(1, 65535) as u16, size.get(1).copied().unwrap_or(80).clamp(1, 65535) as u16);
+    let size: Vec<i64> =
+        seq::SeqIter::new(a[5]).map(|it| it.map(|v| if v.is_fixnum() { v.as_fixnum() } else { 0 }).collect()).unwrap_or_default();
+    let (rows, cols) =
+        (size.first().copied().unwrap_or(24).clamp(1, 65535) as u16, size.get(1).copied().unwrap_or(80).clamp(1, 65535) as u16);
     let spawn = crate::os::Spawn {
         cmd: text(a[0]),
         args: strs(a[1]),
@@ -1439,7 +1442,10 @@ fn transient_op(vm: &mut Vm, t: Value, op: TOp) -> Result<Value> {
             TOp::Assoc(k, v) => match index_of(k).filter(|&i| i <= n) {
                 Some(i) if i == n => return transient_op(vm, t, TOp::Conj(v)),
                 Some(i) => buf.arr_set(i, v),
-                None => return Err(Error::of("IndexError", format!("Index out of bounds: {}", pr_str(k, true))).with("index", crate::vm::ErrData::Val(k))),
+                None => {
+                    return Err(Error::of("IndexError", format!("Index out of bounds: {}", pr_str(k, true)))
+                        .with("index", crate::vm::ErrData::Val(k)));
+                }
             },
             TOp::Pop => {
                 if n == 0 {
@@ -1457,10 +1463,18 @@ fn transient_op(vm: &mut Vm, t: Value, op: TOp) -> Result<Value> {
         TOp::Conj(x) => conj(vm, &[c, x])?,
         TOp::Assoc(k, v) if t.word(T_KIND) == TM => assoc(vm, &[c, k, v])?,
         TOp::Dissoc(k) if t.word(T_KIND) == TM => {
-            if c.is(Kind::Sorted) { crate::sorted::dissoc(&mut vm.m, c, k)? } else { map_dissoc(&mut vm.m, c, k) }
+            if c.is(Kind::Sorted) {
+                crate::sorted::dissoc(&mut vm.m, c, k)?
+            } else {
+                map_dissoc(&mut vm.m, c, k)
+            }
         }
         TOp::Disj(k) if t.word(T_KIND) == TS => {
-            if c.is(Kind::Sorted) { crate::sorted::dissoc(&mut vm.m, c, k)? } else { set_disj(&mut vm.m, c, k) }
+            if c.is(Kind::Sorted) {
+                crate::sorted::dissoc(&mut vm.m, c, k)?
+            } else {
+                set_disj(&mut vm.m, c, k)
+            }
         }
         _ => return Err(Error::new("That operation doesn't apply to this transient")),
     };
@@ -1481,7 +1495,8 @@ fn transient_get(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     }
     let c = t.field(T_DATA);
     if c.is(Kind::Sorted) {
-        let r = if c.sorted_is_set() { crate::sorted::find(c.sorted_root(), a[1])?.map(|n| n.field(0)) } else { crate::sorted::get(c, a[1])? };
+        let r =
+            if c.sorted_is_set() { crate::sorted::find(c.sorted_root(), a[1])?.map(|n| n.field(0)) } else { crate::sorted::get(c, a[1])? };
         return Ok(r.unwrap_or(dflt));
     }
     Ok(get(c, a[1]).unwrap_or(dflt))
@@ -1575,7 +1590,8 @@ fn nth(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 /// vector of the pairs is taken too: what binding expanded to before, which
 /// the module cache may hold.
 fn bind_map(vm: &mut Vm, a: &[Value]) -> Result<Value> {
-    let pairs: Vec<Value> = if a.len() == 1 && a[0].is(Kind::Vector) { (0..a[0].vec_count()).map(|i| a[0].vec_nth(i)).collect() } else { a.to_vec() };
+    let pairs: Vec<Value> =
+        if a.len() == 1 && a[0].is(Kind::Vector) { (0..a[0].vec_count()).map(|i| a[0].vec_nth(i)).collect() } else { a.to_vec() };
     if !pairs.len().is_multiple_of(2) {
         return Err(Error::new("%bind-map expects var/value pairs"));
     }
@@ -1589,8 +1605,21 @@ fn bind_map(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 }
 
 /// `(get coll key default?)`.
-fn get_prim(vm: &mut Vm, a: &[Value]) -> Result<Value> { crate::owned::check(vm, a[0], false)?; if a[0].is(Kind::Transient) { return transient_get(vm, a); }
-        if a[0].is(Kind::Sorted) { let r = if a[0].sorted_is_set() { crate::sorted::find(a[0].sorted_root(), a[1])?.map(|n| n.field(0)) } else { crate::sorted::get(a[0], a[1])? }; return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))); } Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) }
+fn get_prim(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    crate::owned::check(vm, a[0], false)?;
+    if a[0].is(Kind::Transient) {
+        return transient_get(vm, a);
+    }
+    if a[0].is(Kind::Sorted) {
+        let r = if a[0].sorted_is_set() {
+            crate::sorted::find(a[0].sorted_root(), a[1])?.map(|n| n.field(0))
+        } else {
+            crate::sorted::get(a[0], a[1])?
+        };
+        return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL)));
+    }
+    Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL)))
+}
 
 /// `(%kw-get x key default?)`: what (get (%as-map x) key default) gives, a
 /// map destructuring's key, without the map: a seq of keyword arguments
@@ -1635,7 +1664,10 @@ fn assoc(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         } else if c.is(Kind::Vector) {
             match index_of(kv[0]).filter(|&i| i <= c.vec_count()) {
                 Some(i) => vec_assoc(&mut vm.m, c, i, kv[1]),
-                None => return Err(Error::of("IndexError", format!("Index out of bounds: {}", pr_str(kv[0], true))).with("index", crate::vm::ErrData::Val(kv[0]))),
+                None => {
+                    return Err(Error::of("IndexError", format!("Index out of bounds: {}", pr_str(kv[0], true)))
+                        .with("index", crate::vm::ErrData::Val(kv[0])));
+                }
             }
         } else {
             return Err(type_err("assoc", "a map or vector", c));
@@ -1835,7 +1867,8 @@ fn subs(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     };
     if start < 0 || end < start || end as usize > n {
         let bad = if start < 0 || start as usize > n { start } else { end };
-        return Err(Error::of("IndexError", format!("String index out of range: {start}..{end} of {n}")).with("index", crate::vm::ErrData::Int(bad)));
+        return Err(Error::of("IndexError", format!("String index out of range: {start}..{end} of {n}"))
+            .with("index", crate::vm::ErrData::Int(bad)));
     }
     if ascii {
         let out = &s[start as usize..end as usize];
@@ -1938,14 +1971,8 @@ fn fiber_stats(vm: &mut Vm, _: &[Value]) -> Result<Value> {
     let spawned = s.spawned.load(Ordering::Relaxed) as i64;
     let finished = s.finished.load(Ordering::Relaxed) as i64;
     let k = |vm: &mut Vm, n: &str| rt().keyword(&mut vm.m, None, n);
-    let kvs = [
-        k(vm, "spawned"),
-        Value::fix(spawned),
-        k(vm, "finished"),
-        Value::fix(finished),
-        k(vm, "live"),
-        Value::fix(spawned - finished),
-    ];
+    let kvs =
+        [k(vm, "spawned"), Value::fix(spawned), k(vm, "finished"), Value::fix(finished), k(vm, "live"), Value::fix(spawned - finished)];
     hash_map(vm, &kvs)
 }
 
@@ -2115,7 +2142,11 @@ fn slot_value(vm: &mut Vm, inst: Value, k: Value) -> Result<Value> {
     expect(inst, Kind::Instance, "slot-value")?;
     crate::owned::check(vm, inst, false)?;
     skein_rt::clos::slot_get(inst, k).ok_or_else(|| {
-        Error::new(format!("{} has no slot {}", pr_str(inst.instance_class().class_field(skein_rt::clos::class::NAME), true), pr_str(k, true)))
+        Error::new(format!(
+            "{} has no slot {}",
+            pr_str(inst.instance_class().class_field(skein_rt::clos::class::NAME), true),
+            pr_str(k, true)
+        ))
     })
 }
 
@@ -2212,13 +2243,7 @@ fn register_frame_kinds(_: &mut Vm, a: &[Value]) -> Result<Value> {
     for &f in a {
         expect(f, Kind::Closure, "%register-frame-kinds!")?;
     }
-    let _ = crate::vm::FRAME_KINDS.set(crate::vm::FrameKinds {
-        catch: a[0],
-        unwind: a[1],
-        bind: a[2],
-        finish: a[3],
-        runtime_error: a[4],
-    });
+    let _ = crate::vm::FRAME_KINDS.set(crate::vm::FrameKinds { catch: a[0], unwind: a[1], bind: a[2], finish: a[3], runtime_error: a[4] });
     Ok(Value::NIL)
 }
 
@@ -2289,7 +2314,13 @@ fn make_proto(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let consts = to_vec(vm, a[4])?;
     let code: Vec<u32> = to_vec(vm, a[5])?
         .iter()
-        .map(|&i| if i.is_fixnum() && (0..=u32::MAX as i64).contains(&i.as_fixnum()) { Ok(i.as_fixnum() as u32) } else { Err(Error::new("%make-proto: bad instruction")) })
+        .map(|&i| {
+            if i.is_fixnum() && (0..=u32::MAX as i64).contains(&i.as_fixnum()) {
+                Ok(i.as_fixnum() as u32)
+            } else {
+                Err(Error::new("%make-proto: bad instruction"))
+            }
+        })
         .collect::<Result<_>>()?;
     let locals = to_vec(vm, a[6])?;
     if nregs > 255 || nfixed > nregs {
@@ -2329,16 +2360,24 @@ fn proto_parts(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let consts = vec_from_slice(&mut vm.m, p.proto_consts().arr_slice());
     let locals = vec_from_slice(&mut vm.m, p.proto_locals().arr_slice());
     let kvs = [
-        k(vm, "name"), p.proto_name(),
-        k(vm, "nfixed"), Value::fix(p.proto_nfixed() as i64),
-        k(vm, "variadic"), Value::bool(p.proto_variadic()),
-        k(vm, "nregs"), Value::fix(p.proto_nregs() as i64),
-        k(vm, "consts"), consts,
-        k(vm, "code"), code_v,
-        k(vm, "locals"), locals,
+        k(vm, "name"),
+        p.proto_name(),
+        k(vm, "nfixed"),
+        Value::fix(p.proto_nfixed() as i64),
+        k(vm, "variadic"),
+        Value::bool(p.proto_variadic()),
+        k(vm, "nregs"),
+        Value::fix(p.proto_nregs() as i64),
+        k(vm, "consts"),
+        consts,
+        k(vm, "code"),
+        code_v,
+        k(vm, "locals"),
+        locals,
         // (compiled to tier 1 and installed: what tests of optimised code
         // check they are testing)
-        k(vm, "native"), Value::bool(p.proto_native() >= crate::jit::MIN_ENTRY),
+        k(vm, "native"),
+        Value::bool(p.proto_native() >= crate::jit::MIN_ENTRY),
     ];
     hash_map(vm, &kvs)
 }

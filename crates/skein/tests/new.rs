@@ -69,7 +69,11 @@ fn a_new_library_tests_and_is_used_as_a_package() {
     run(skein().args(["new", "user", "--no-git"]).current_dir(&dir));
     let app = dir.join("user");
     std::fs::write(app.join("skein.edn"), "{:name user :main user.main/main :deps {text-kit {:path \"../text-kit\"}}}\n").unwrap();
-    std::fs::write(app.join("src/user/main.skn"), "(ns user.main (:require [text-kit :as k]))\n(defn main [& args] (println (k/greeting \"Ada\")) 0)\n").unwrap();
+    std::fs::write(
+        app.join("src/user/main.skn"),
+        "(ns user.main (:require [text-kit :as k]))\n(defn main [& args] (println (k/greeting \"Ada\")) 0)\n",
+    )
+    .unwrap();
     assert_eq!((0, "Hello, Ada!\n".to_string()), run(skein().arg("run").current_dir(&app)));
     let (code, text) = run(skein().args(["new", "both", "--lib", "--app", "--no-git"]).current_dir(&dir));
     assert!(code != 0 && text.contains("don't go together"), "{text}");

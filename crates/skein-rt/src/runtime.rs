@@ -272,11 +272,7 @@ impl Runtime {
     pub fn find_or_create_ns(&self, name: Value) -> &'static Namespace {
         let mut t = self.namespaces.lock().unwrap();
         t.entry(name).or_insert_with(|| {
-            Box::leak(Box::new(Namespace {
-                name,
-                mappings: RwLock::new(HashMap::new()),
-                aliases: RwLock::new(HashMap::new()),
-            }))
+            Box::leak(Box::new(Namespace { name, mappings: RwLock::new(HashMap::new()), aliases: RwLock::new(HashMap::new()) }))
         })
     }
 

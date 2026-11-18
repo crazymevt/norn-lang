@@ -15,16 +15,18 @@
 use crate::numeric::{Num, num, value};
 use crate::prims::int;
 use crate::vm::{Error, Result, Vm};
-use skein_rt::string::float_new;
-use skein_rt::Value;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::{FromPrimitive, Signed};
+use skein_rt::Value;
+use skein_rt::string::float_new;
 use std::cell::Cell;
 
 fn real(v: Value, op: &str) -> Result<f64> {
-    num(v).map(|n| n.as_f64()).map_err(|_| Error::of("TypeError", format!("{op} expects a number, got {}", skein_rt::print::pr_str(v, true))))
+    num(v)
+        .map(|n| n.as_f64())
+        .map_err(|_| Error::of("TypeError", format!("{op} expects a number, got {}", skein_rt::print::pr_str(v, true))))
 }
 
 /// `(%math1 op x)`: a one-argument floating-point function.
@@ -99,7 +101,8 @@ pub(crate) fn round(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 }
 
 fn integer(v: Value, op: &str) -> Result<BigInt> {
-    skein_rt::numbers::int_of(v).ok_or_else(|| Error::of("TypeError", format!("{op} expects an integer, got {}", skein_rt::print::pr_str(v, true))))
+    skein_rt::numbers::int_of(v)
+        .ok_or_else(|| Error::of("TypeError", format!("{op} expects an integer, got {}", skein_rt::print::pr_str(v, true))))
 }
 
 /// `(%gcd a b)` (non-negative).
@@ -167,11 +170,7 @@ fn next_default() -> u64 {
 /// 64 random bits as a Skein value: `kind` 0 a fixnum in [0, 2^62), 1 a
 /// float in [0, 1).
 fn bits_value(vm: &mut Vm, bits: u64, kind: i64) -> Value {
-    if kind == 1 {
-        float_new(&mut vm.m, (bits >> 11) as f64 * (1.0 / (1u64 << 53) as f64))
-    } else {
-        Value::fix((bits >> 2) as i64)
-    }
+    if kind == 1 { float_new(&mut vm.m, (bits >> 11) as f64 * (1.0 / (1u64 << 53) as f64)) } else { Value::fix((bits >> 2) as i64) }
 }
 
 /// `(%rand kind)`: from this carrier's default generator.

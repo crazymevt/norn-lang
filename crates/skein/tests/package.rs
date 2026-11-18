@@ -99,7 +99,8 @@ fn a_macos_app_is_a_signed_bundle_that_runs() {
         assert!(contents.join(f).is_file(), "{f} is in the bundle");
     }
     let plist = std::fs::read_to_string(contents.join("Info.plist")).unwrap();
-    for want in ["<string>echo-app</string>", "<string>dev.skein.test.echo</string>", "<string>Echo App</string>", "<string>1.2.0</string>"] {
+    for want in ["<string>echo-app</string>", "<string>dev.skein.test.echo</string>", "<string>Echo App</string>", "<string>1.2.0</string>"]
+    {
         assert!(plist.contains(want), "Info.plist has {want}:\n{plist}");
     }
     run_ok(Command::new("codesign").args(["--verify", "--strict"]).arg(&app));

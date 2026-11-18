@@ -201,14 +201,7 @@ fn map_file_exec(bytes: &[u8]) -> Res<i64> {
     let file = std::fs::File::open(&path)?;
     // SAFETY: mapping a file we just wrote; length matches its size.
     let result = unsafe {
-        let p = libc::mmap(
-            std::ptr::null_mut(),
-            bytes.len(),
-            libc::PROT_READ | libc::PROT_EXEC,
-            libc::MAP_PRIVATE,
-            file.as_raw_fd(),
-            0,
-        );
+        let p = libc::mmap(std::ptr::null_mut(), bytes.len(), libc::PROT_READ | libc::PROT_EXEC, libc::MAP_PRIVATE, file.as_raw_fd(), 0);
         if p == libc::MAP_FAILED {
             Err(format!("{}", std::io::Error::last_os_error()).into())
         } else {
@@ -253,14 +246,8 @@ fn map_copy_exec(bytes: &[u8]) -> Res<i64> {
         };
         #[cfg(not(target_os = "macos"))]
         let p = {
-            let p = libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            );
+            let p =
+                libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0);
             if p == libc::MAP_FAILED {
                 return Err(format!("mmap failed: {}", std::io::Error::last_os_error()).into());
             }

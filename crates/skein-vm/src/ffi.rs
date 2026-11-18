@@ -592,7 +592,11 @@ pub(crate) fn open(vm: &mut Vm, path: &str) -> Result<Value> {
 }
 
 fn keyword_name(v: Value) -> Result<String> {
-    if v.is_keyword() { Ok(v.sym_name().to_owned()) } else { Err(Error::new(format!("Expected a type keyword, got {}", skein_rt::print::pr_str(v, true)))) }
+    if v.is_keyword() {
+        Ok(v.sym_name().to_owned())
+    } else {
+        Err(Error::new(format!("Expected a type keyword, got {}", skein_rt::print::pr_str(v, true))))
+    }
 }
 
 /// Where a foreign function's calls run.
@@ -655,7 +659,9 @@ pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret:
         Some(s) => (Ty::S(s), false),
         None => {
             let rk = keyword_name(ret)?;
-            let t = CType::parse(&rk).filter(|_| !matches!(rk.as_str(), "bytes" | "out")).ok_or_else(|| Error::new(format!("Unknown return type :{rk}")))?;
+            let t = CType::parse(&rk)
+                .filter(|_| !matches!(rk.as_str(), "bytes" | "out"))
+                .ok_or_else(|| Error::new(format!("Unknown return type :{rk}")))?;
             (Ty::C(t), rk == "string")
         }
     };
@@ -666,7 +672,9 @@ pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret:
             let name = name.as_str();
             let cname = std::ffi::CString::new(name).map_err(|_| Error::new("A symbol name can't contain NUL"))?;
             // SAFETY: we only take the symbol's address.
-            unsafe { l.get::<*const ()>(cname.as_bytes_with_nul()) }.map(|s| *s as usize).map_err(|e| Error::new(format!("No symbol {name}: {e}")))?
+            unsafe { l.get::<*const ()>(cname.as_bytes_with_nul()) }
+                .map(|s| *s as usize)
+                .map_err(|e| Error::new(format!("No symbol {name}: {e}")))?
         }
     };
     let addr = if SYSV_X64 && variadic.is_some() { al_thunk(addr)? } else { addr };
@@ -760,10 +768,22 @@ fn prepare(f: &Foreign, args: &[Value]) -> Result<Prepared> {
         let w = match param {
             Param::Int(t) => int_arg(a, t)?,
             Param::Float(t) => {
-                let x = if a.is_fixnum() { a.as_fixnum() as f64 } else if a.is(Kind::Float) { a.as_f64() } else { return Err(Error::new("Expected a number argument")) };
+                let x = if a.is_fixnum() {
+                    a.as_fixnum() as f64
+                } else if a.is(Kind::Float) {
+                    a.as_f64()
+                } else {
+                    return Err(Error::new("Expected a number argument"));
+                };
                 if t == CType::F32 { (x as f32).to_bits() as u64 } else { x.to_bits() }
             }
-            Param::Pointer => if a.is_nil() { 0 } else { int_arg(a, CType::U64)? },
+            Param::Pointer => {
+                if a.is_nil() {
+                    0
+                } else {
+                    int_arg(a, CType::U64)?
+                }
+            }
             Param::Struct => address(a, "a struct argument")? as u64,
             Param::Bytes => {
                 if !a.is(Kind::Bytes) {
@@ -778,9 +798,12 @@ fn prepare(f: &Foreign, args: &[Value]) -> Result<Prepared> {
             Param::Str if a.is_nil() => 0,
             Param::Str => {
                 if !a.is(Kind::String) {
-                    return Err(Error::of("TypeError", format!("A :string argument must be a string or nil, got {}: {}", a.type_name(), skein_rt::print::pr_str(a, true)))
-                        .with("expected", crate::vm::ErrData::Str("a string or nil".into()))
-                        .with("value", crate::vm::ErrData::Val(a)));
+                    return Err(Error::of(
+                        "TypeError",
+                        format!("A :string argument must be a string or nil, got {}: {}", a.type_name(), skein_rt::print::pr_str(a, true)),
+                    )
+                    .with("expected", crate::vm::ErrData::Str("a string or nil".into()))
+                    .with("value", crate::vm::ErrData::Val(a)));
                 }
                 let c = std::ffi::CString::new(a.as_str().to_owned()).map_err(|_| Error::new("A C string can't contain NUL"))?;
                 let ptr = c.as_ptr() as u64;
@@ -847,7 +870,9 @@ pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
         let Some(Io::Foreign(f)) = io.as_ref() else { return Err(Error::new("The foreign function is closed")) };
         let (ret_at, args) = match f.ret {
             Ty::S(_) => {
-                let Some(&first) = args.first() else { return Err(Error::new("A function returning a struct takes the address for it first")) };
+                let Some(&first) = args.first() else {
+                    return Err(Error::new("A function returning a struct takes the address for it first"));
+                };
                 (Some(address(first, "a struct result")?), &args[1..])
             }
             Ty::C(_) => (None, args),
@@ -896,8 +921,8 @@ pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
         // On the main thread, a string result is copied before the next
         // call runs: C libraries often return text in a static buffer.
         // SAFETY: the function promised a NUL-terminated string.
-        let text = (main && ret.1 && r != 0)
-            .then(|| unsafe { std::ffi::CStr::from_ptr(r as *const libc::c_char) }.to_string_lossy().into_owned());
+        let text =
+            (main && ret.1 && r != 0).then(|| unsafe { std::ffi::CStr::from_ptr(r as *const libc::c_char) }.to_string_lossy().into_owned());
         let outs = std::mem::take(&mut prep.outs);
         Box::new(move |m: &mut Mutator| {
             drop(prep);
@@ -924,7 +949,8 @@ fn address(v: Value, op: &str) -> Result<usize> {
     if v.is_nil() {
         return Err(Error::new(format!("{op}: a NULL pointer")));
     }
-    let a = int_arg(v, CType::U64).map_err(|_| Error::of("TypeError", format!("{op} expects an address (an integer), got {}", v.type_name())))?;
+    let a = int_arg(v, CType::U64)
+        .map_err(|_| Error::of("TypeError", format!("{op} expects an address (an integer), got {}", v.type_name())))?;
     if a == 0 {
         return Err(Error::new(format!("{op}: a NULL pointer")));
     }
@@ -933,7 +959,9 @@ fn address(v: Value, op: &str) -> Result<usize> {
 
 fn type_arg(v: Value, op: &str) -> Result<CType> {
     let k = keyword_name(v)?;
-    CType::parse(&k).filter(|t| *t != CType::Void && !matches!(k.as_str(), "bytes" | "string" | "out")).ok_or_else(|| Error::new(format!("{op}: not a C type: :{k}")))
+    CType::parse(&k)
+        .filter(|t| *t != CType::Void && !matches!(k.as_str(), "bytes" | "string" | "out"))
+        .ok_or_else(|| Error::new(format!("{op}: not a C type: :{k}")))
 }
 
 fn offset_arg(v: Value) -> Result<usize> {

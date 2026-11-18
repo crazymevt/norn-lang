@@ -23,7 +23,11 @@ const RECEIVE: &str = "(let [ch (chan 64)] (skein.demo/subscribe ch 20000) \
 
 #[test]
 fn the_main_thread_feeds_a_channel_in_order_under_gc_stress() {
-    for env in [&[("SKEIN_GC_STRESS", "2"), ("SKEIN_TIER", "0")][..], &[("SKEIN_GC_STRESS", "2"), ("SKEIN_THREADS", "2"), ("SKEIN_TIER", "0")][..], &[][..]] {
+    for env in [
+        &[("SKEIN_GC_STRESS", "2"), ("SKEIN_TIER", "0")][..],
+        &[("SKEIN_GC_STRESS", "2"), ("SKEIN_THREADS", "2"), ("SKEIN_TIER", "0")][..],
+        &[][..],
+    ] {
         let (ok, out, err) = demo(&["-e", RECEIVE], env);
         assert!(ok, "{env:?}: {err}");
         assert_eq!(out, "[20000 20000 true 20000]", "{env:?}");
@@ -33,8 +37,11 @@ fn the_main_thread_feeds_a_channel_in_order_under_gc_stress() {
 #[test]
 fn extension_primitives_and_native_handles() {
     let (ok, out, err) = demo(
-        &["-e", "(let [c (skein.demo/counter)] [(skein.demo/bump! c) (skein.demo/bump! c) (handle-kind c) \
-                 (do (%io-close c) (try (skein.demo/bump! c) (catch Error e (condition-message e))))])"],
+        &[
+            "-e",
+            "(let [c (skein.demo/counter)] [(skein.demo/bump! c) (skein.demo/bump! c) (handle-kind c) \
+                 (do (%io-close c) (try (skein.demo/bump! c) (catch Error e (condition-message e))))])",
+        ],
         &[],
     );
     assert!(ok, "{err}");
@@ -56,7 +63,8 @@ fn images_remember_their_extensions() {
     let (ok, _, err) = demo(&["-e", &save], &[]);
     assert!(ok, "{err}");
     // Reloaded in the same binary, the native object is gone, like a socket.
-    let (ok, out, err) = demo(&["--image", img.to_str().unwrap(), "-e", "(try (skein.demo/bump! c) (catch Error e (condition-message e)))"], &[]);
+    let (ok, out, err) =
+        demo(&["--image", img.to_str().unwrap(), "-e", "(try (skein.demo/bump! c) (catch Error e (condition-message e)))"], &[]);
     assert!(ok, "{err}");
     assert!(out.contains("Resource lost"), "{out}");
     // A binary without the extension refuses the image.

@@ -21,7 +21,45 @@ fn run(suite: &str, tier: &str) -> String {
 
 #[test]
 fn tier0_and_tier1_agree_on_every_suite() {
-    for suite in ["core_test.skn", "conc_test.skn", "clos_test.skn", "cond_test.skn", "compiler_test.skn", "lib_test.skn", "test_test.skn", "syntax_test.skn", "expander_test.skn", "module_test.skn", "phase_test.skn", "cache_test.skn", "pattern_test.skn", "deps_test.skn", "verify_test.skn", "http_test.skn", "errors_test.skn", "later_test.skn", "match_test.skn", "contracts_test.skn", "mop_test.skn", "actor_test.skn", "stm_test.skn", "ffi_test.skn", "sqlite_test.skn", "pty_test.skn", "bin_test.skn", "small_libs_test.skn", "xml_test.skn", "data_formats_test.skn", "io_test.skn", "property_test.skn", "cli_test.skn", "time_test.skn", "tags_test.skn", "api_diff_test.skn", "terminal_test.skn"] {
+    for suite in [
+        "core_test.skn",
+        "conc_test.skn",
+        "clos_test.skn",
+        "cond_test.skn",
+        "compiler_test.skn",
+        "lib_test.skn",
+        "test_test.skn",
+        "syntax_test.skn",
+        "expander_test.skn",
+        "module_test.skn",
+        "phase_test.skn",
+        "cache_test.skn",
+        "pattern_test.skn",
+        "deps_test.skn",
+        "verify_test.skn",
+        "http_test.skn",
+        "errors_test.skn",
+        "later_test.skn",
+        "match_test.skn",
+        "contracts_test.skn",
+        "mop_test.skn",
+        "actor_test.skn",
+        "stm_test.skn",
+        "ffi_test.skn",
+        "sqlite_test.skn",
+        "pty_test.skn",
+        "bin_test.skn",
+        "small_libs_test.skn",
+        "xml_test.skn",
+        "data_formats_test.skn",
+        "io_test.skn",
+        "property_test.skn",
+        "cli_test.skn",
+        "time_test.skn",
+        "tags_test.skn",
+        "api_diff_test.skn",
+        "terminal_test.skn",
+    ] {
         let t0 = run(suite, "0");
         let t1 = run(suite, "1");
         assert!(t0.ends_with(" 0 failed, 0 errors"), "{suite} tier 0: {t0}");
@@ -67,11 +105,7 @@ fn promotion_past_62_bits_is_identical_at_both_tiers() {
 (prn [(mix 100) (edges) (reduce + (map (fn [i] (* i i i i i)) (range 2000)))])
 "#;
     let run = |tier: &str| {
-        let out = Command::new(env!("CARGO_BIN_EXE_skein"))
-            .args(["-e", code])
-            .env("SKEIN_TIER", tier)
-            .output()
-            .expect("run skein");
+        let out = Command::new(env!("CARGO_BIN_EXE_skein")).args(["-e", code]).env("SKEIN_TIER", tier).output().expect("run skein");
         assert!(out.status.success(), "tier {tier}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").to_owned()
     };

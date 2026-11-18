@@ -8,13 +8,13 @@
 //! failing. Dividing integers gives a ratio unless it divides exactly.
 
 use crate::vm::{Error, Result};
+use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 use skein_rt::numbers::{int_of, int_value, ratio_of, ratio_value};
 use skein_rt::print::pr_str;
 use skein_rt::string::float_new;
 use skein_rt::{Kind, Mutator, Value};
-use num_bigint::BigInt;
-use num_rational::BigRational;
-use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 
 #[derive(Clone, Debug)]

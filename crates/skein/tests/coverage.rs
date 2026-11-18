@@ -58,13 +58,7 @@ fn project(name: &str) -> PathBuf {
 }
 
 fn skein_test(dir: &Path, tier: &str, args: &[&str]) -> (bool, String) {
-    let o = Command::new(env!("CARGO_BIN_EXE_skein"))
-        .arg("test")
-        .args(args)
-        .current_dir(dir)
-        .env("SKEIN_TIER", tier)
-        .output()
-        .unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_skein")).arg("test").args(args).current_dir(dir).env("SKEIN_TIER", tier).output().unwrap();
     (o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
 }
 

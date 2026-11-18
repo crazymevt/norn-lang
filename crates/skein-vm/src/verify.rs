@@ -111,7 +111,9 @@ pub fn proto(p: Value, nups: usize, from_image: bool) -> R {
         return Err("its code isn't code".into());
     }
     let locals = p.proto_locals();
-    if !(locals.is_nil() || locals.is(Kind::Array) && locals.arr_len().is_multiple_of(2) && locals.arr_slice().chunks(2).all(|l| l[1].is_fixnum())) {
+    if !(locals.is_nil()
+        || locals.is(Kind::Array) && locals.arr_len().is_multiple_of(2) && locals.arr_slice().chunks(2).all(|l| l[1].is_fixnum()))
+    {
         return Err("its debug locals aren't name/register pairs".into());
     }
     let n = code.code_len();
@@ -240,7 +242,10 @@ pub fn fiber_frames(f: Value) -> R {
         let (func, p, resume, prev) = (slot(F_FN), slot(F_PROTO), slot(F_RESUME), slot(F_PREV));
         closure(func).map_err(|e| format!("a frame's function: {e}"))?;
         if !func.closure_template().template_arities().arr_slice().contains(&p) {
-            return Err(format!("a frame of {} runs a proto that isn't one of its arities", name_of(func.closure_template().template_name())));
+            return Err(format!(
+                "a frame of {} runs a proto that isn't one of its arities",
+                name_of(func.closure_template().template_name())
+            ));
         }
         proto(p, func.closure_template().template_nups(), true)?;
         if fp + HDR + p.proto_nregs() > cap {

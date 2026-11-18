@@ -21,7 +21,7 @@ use crate::bytecode::*;
 use crate::prims::{ABORT_FIBER, APPLY, EVAL, RESTART_FRAME, THROW};
 use skein_rt::conc::fiber;
 use skein_rt::func::{
-    VAR_DYNBOUND, Capture, F_FN, F_PREV, F_PROTO, F_RESUME, HDR, PREV_BOUNDARY, PREV_SEG_START, closure_new, segment_new,
+    Capture, F_FN, F_PREV, F_PROTO, F_RESUME, HDR, PREV_BOUNDARY, PREV_SEG_START, VAR_DYNBOUND, closure_new, segment_new,
 };
 use skein_rt::list::list_from_with_tail;
 use skein_rt::print::pr_str;
@@ -125,12 +125,7 @@ impl Error {
     }
     /// Ask the interpreter to realize stream `s` (one cell, or `all` of it).
     pub fn force(s: Value, all: bool) -> Error {
-        Error {
-            msg: "A stream had to be realized outside a fiber".into(),
-            trace: Vec::new(),
-            kind: ErrKind::Force(s, all),
-            class: None,
-        }
+        Error { msg: "A stream had to be realized outside a fiber".into(), trace: Vec::new(), kind: ErrKind::Force(s, all), class: None }
     }
     /// An I/O error, as its class (by its kind) with :reason, and :path or
     /// :address when given.
@@ -201,11 +196,14 @@ impl Failure {
                 let data = data
                     .into_iter()
                     .map(|(k, v)| {
-                        (k, match v {
-                            FailData::Str(s) => ErrData::Str(s),
-                            FailData::Int(n) => ErrData::Int(n),
-                            FailData::Kw(w) => ErrData::Kw(w),
-                        })
+                        (
+                            k,
+                            match v {
+                                FailData::Str(s) => ErrData::Str(s),
+                                FailData::Int(n) => ErrData::Int(n),
+                                FailData::Kw(w) => ErrData::Kw(w),
+                            },
+                        )
                     })
                     .collect();
                 Error { class: Some(ErrClass::Named(c, data)), ..Error::new(self.msg) }
@@ -274,9 +272,13 @@ pub fn shown_trace(trace: &[String]) -> Vec<&String> {
     // (where the evaluator's frames begin: after the form's own, or at the
     // function that reads and runs a file's or the REPL's forms)
     let evaluator = |t: &String| {
-        t.starts_with("skein.expander/eval-") || t.starts_with("skein.core/%repl-eval") || t == "skein.core/%eval-root" || t == "skein.core/load-file"
+        t.starts_with("skein.expander/eval-")
+            || t.starts_with("skein.core/%repl-eval")
+            || t == "skein.core/%eval-root"
+            || t == "skein.core/load-file"
     };
-    let end = trace.iter().position(|t| t == "<toplevel>").map(|i| i + 1).or_else(|| trace.iter().position(evaluator)).unwrap_or(trace.len());
+    let end =
+        trace.iter().position(|t| t == "<toplevel>").map(|i| i + 1).or_else(|| trace.iter().position(evaluator)).unwrap_or(trace.len());
     // (and the expander's and compiler's, in an error found compiling)
     let own = |t: &&String| !(t.starts_with("skein.core/%") || t.starts_with("skein.expander/") || t.starts_with("skein.compiler/"));
     trace[..end].iter().filter(own).collect()
@@ -583,9 +585,10 @@ fn closure_arity(f: Value, argc: usize) -> Option<Value> {
     }
     let ps = f.closure_template().template_arities();
     let ps = ps.arr_slice();
-    ps.iter().copied().find(|p| !p.proto_variadic() && p.proto_nfixed() == argc).or_else(|| {
-        ps.iter().copied().find(|p| p.proto_variadic() && argc >= p.proto_nfixed())
-    })
+    ps.iter()
+        .copied()
+        .find(|p| !p.proto_variadic() && p.proto_nfixed() == argc)
+        .or_else(|| ps.iter().copied().find(|p| p.proto_variadic() && argc >= p.proto_nfixed()))
 }
 
 /// Whether calling f means working out what it calls (jit_resolve): not
@@ -960,11 +963,7 @@ impl Vm {
             let mut next = nfixed;
             std::ptr::copy_nonoverlapping(args.as_ptr(), regs, nfixed);
             if proto.proto_variadic() {
-                let rest = if args.len() > nfixed {
-                    list_from_with_tail(&mut self.m, &args[nfixed..], Value::NIL)
-                } else {
-                    Value::NIL
-                };
+                let rest = if args.len() > nfixed { list_from_with_tail(&mut self.m, &args[nfixed..], Value::NIL) } else { Value::NIL };
                 *regs.add(nfixed) = rest;
                 next += 1;
             }
@@ -1194,9 +1193,7 @@ impl Vm {
             if self.budget <= 0 {
                 self.budget = BUDGET;
             }
-            if self.can_park()
-                && (pausing || (crate::sched::has_other_work(self.carrier) && self.slice_start.elapsed() >= MIN_SLICE))
-            {
+            if self.can_park() && (pausing || (crate::sched::has_other_work(self.carrier) && self.slice_start.elapsed() >= MIN_SLICE)) {
                 // Time slice over: continue exactly here later.
                 // SAFETY: st describes the current frame.
                 unsafe { st.set_resume(st.pc) };
@@ -1295,7 +1292,8 @@ impl Vm {
                 }
                 Err(e) if e.kind == ErrKind::Runtime => match args.iter().find_map(|&a| skein_rt::seq::first_unrealized(a)) {
                     Some(s) => {
-                        let one_step = matches!(crate::ext::prim(f.prim_index()).name, "first" | "rest" | "next" | "seq" | "nth" | "empty?");
+                        let one_step =
+                            matches!(crate::ext::prim(f.prim_index()).name, "first" | "rest" | "next" | "seq" | "nth" | "empty?");
                         if self.nested > 0 {
                             // A run from Rust realizes the stream here and
                             // calls the primitive again. (Handed up, the
@@ -1449,12 +1447,17 @@ impl Vm {
                             // the condition system's handing it on)
                             let given = args[1];
                             let trace = if given.is_nil() || (given.is(Kind::Vector) && given.vec_count() == 0) {
-                                let lines: Vec<String> = self.backtrace(st)
+                                let lines: Vec<String> = self
+                                    .backtrace(st)
                                     .into_iter()
                                     .skip_while(|t| {
                                         matches!(
                                             t.as_str(),
-                                            "skein.core/%abort" | "skein.core/invoke-debugger" | "skein.core/error" | "skein.core/throw" | "skein.core/signal"
+                                            "skein.core/%abort"
+                                                | "skein.core/invoke-debugger"
+                                                | "skein.core/error"
+                                                | "skein.core/throw"
+                                                | "skein.core/signal"
                                         )
                                     })
                                     .collect();
@@ -1633,11 +1636,7 @@ impl Vm {
                     a.extend(skein_rt::seq::to_vec(&mut self.m, *regs.add(proto.proto_nfixed()))?);
                 }
                 let name = proto.proto_name();
-                let newest = if name.is_symbol() {
-                    self.resolve(name).map(|v| v.var_root()).filter(|v| v.is(Kind::Closure))
-                } else {
-                    None
-                };
+                let newest = if name.is_symbol() { self.resolve(name).map(|v| v.var_root()).filter(|v| v.is(Kind::Closure)) } else { None };
                 x = newest.unwrap_or(f);
                 xargs = vec_from_slice(&mut self.m, &a);
             }
@@ -1946,11 +1945,8 @@ impl Vm {
                 let thunk = f.field(fiber::THUNK);
                 f.set_field(fiber::THUNK, Value::NIL);
                 // A thunk is a callable, or an internal [f arg…] call spec.
-                let (callee, args) = if thunk.is(Kind::Array) {
-                    (thunk.arr_get(0), thunk.arr_slice()[1..].to_vec())
-                } else {
-                    (thunk, Vec::new())
-                };
+                let (callee, args) =
+                    if thunk.is(Kind::Array) { (thunk.arr_get(0), thunk.arr_slice()[1..].to_vec()) } else { (thunk, Vec::new()) };
                 let mut callee = callee;
                 while callee.is(Kind::Var) {
                     callee = Self::deref_var(callee)?;

@@ -99,7 +99,18 @@ pub(crate) fn info(vm: &mut Vm, path: String) -> Result<Value> {
         |m, md| {
             let Some(md) = md else { return Value::NIL };
             let t = md.file_type();
-            let ty = kw(m, if t.is_symlink() { "symlink" } else if t.is_dir() { "dir" } else if t.is_file() { "file" } else { "other" });
+            let ty = kw(
+                m,
+                if t.is_symlink() {
+                    "symlink"
+                } else if t.is_dir() {
+                    "dir"
+                } else if t.is_file() {
+                    "file"
+                } else {
+                    "other"
+                },
+            );
             let modified = md
                 .modified()
                 .ok()
@@ -239,7 +250,10 @@ pub(crate) fn file_read(vm: &mut Vm, h: Value, n: usize) -> Result<Value> {
             let mut io = e.io.lock().unwrap();
             let Some(Io::File(f)) = io.as_mut() else { return Err(Failure::from("The handle is closed")) };
             let mut buf = vec![0u8; n.clamp(1, 1 << 24)];
-            let k = f.read(&mut buf).map_err(|e| { let (c, r) = crate::vm::io_kind(&e); Failure::of(c, format!("read failed: {e}")).with("reason", FailData::Kw(r)) })?;
+            let k = f.read(&mut buf).map_err(|e| {
+                let (c, r) = crate::vm::io_kind(&e);
+                Failure::of(c, format!("read failed: {e}")).with("reason", FailData::Kw(r))
+            })?;
             buf.truncate(k);
             Ok(buf)
         },
@@ -273,7 +287,10 @@ pub(crate) fn file_write(vm: &mut Vm, h: Value, data: Vec<u8>) -> Result<Value> 
             use std::io::Write;
             let mut io = e.io.lock().unwrap();
             let Some(Io::File(f)) = io.as_mut() else { return Err(Failure::from("The handle is closed")) };
-            f.write_all(&data).map_err(|e| { let (c, r) = crate::vm::io_kind(&e); Failure::of(c, format!("write failed: {e}")).with("reason", FailData::Kw(r)) })?;
+            f.write_all(&data).map_err(|e| {
+                let (c, r) = crate::vm::io_kind(&e);
+                Failure::of(c, format!("write failed: {e}")).with("reason", FailData::Kw(r))
+            })?;
             Ok(data.len())
         },
         |_, n| Value::fix(n as i64),
@@ -507,7 +524,15 @@ fn total_memory() -> Option<u64> {
 
 /// Everything skein.sys reports about the machine and the process.
 pub(crate) fn system(m: &mut Mutator) -> Value {
-    let os = kw(m, match std::env::consts::OS { "macos" => "macos", "linux" => "linux", "windows" => "windows", o => o });
+    let os = kw(
+        m,
+        match std::env::consts::OS {
+            "macos" => "macos",
+            "linux" => "linux",
+            "windows" => "windows",
+            o => o,
+        },
+    );
     let family = kw(m, std::env::consts::FAMILY);
     let arch = kw(m, std::env::consts::ARCH);
     let endian = kw(m, if cfg!(target_endian = "little") { "little" } else { "big" });
@@ -583,7 +608,13 @@ pub(crate) fn glob_base(pattern: &str) -> String {
     let fixed: Vec<&str> = pattern.split('/').take_while(|s| !s.contains(['*', '?'])).collect();
     let n = fixed.len().min(pattern.split('/').count().saturating_sub(1));
     let base = fixed[..n].join("/");
-    if base.is_empty() && pattern.starts_with('/') { "/".into() } else if base.is_empty() { ".".into() } else { base }
+    if base.is_empty() && pattern.starts_with('/') {
+        "/".into()
+    } else if base.is_empty() {
+        ".".into()
+    } else {
+        base
+    }
 }
 
 // ---- the host terminal ------------------------------------------------------------------------

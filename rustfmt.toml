@@ -1,0 +1,5 @@
+# The style the code is written in: wide lines, and short forms kept on one
+# line. (The primitive tables in prims.rs are macro input, which rustfmt
+# leaves as it is.)
+max_width = 140
+use_small_heuristics = "Max"

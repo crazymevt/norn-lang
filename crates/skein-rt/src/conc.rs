@@ -69,9 +69,8 @@ pub mod fiber {
     pub const WORDS: usize = 24;
 
     /// Fields holding values (everything else is raw).
-    pub const VALUE_FIELDS: &[usize] = &[
-        SEG, FP, WAKE_VALUE, WAKE_AUX, RESULT, ERROR, TRACE, JOINERS, THUNK, SCOPE, PARK, WAKE_ERR, JOINING, DYN, LOC, CONDITION,
-    ];
+    pub const VALUE_FIELDS: &[usize] =
+        &[SEG, FP, WAKE_VALUE, WAKE_AUX, RESULT, ERROR, TRACE, JOINERS, THUNK, SCOPE, PARK, WAKE_ERR, JOINING, DYN, LOC, CONDITION];
 
     // States.
     pub const QUEUED: u64 = 0;

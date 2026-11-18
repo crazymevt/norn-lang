@@ -101,7 +101,9 @@ mod tests {
 
     #[test]
     fn rfc4648_vectors() {
-        for (plain, enc) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
+        for (plain, enc) in
+            [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")]
+        {
             assert_eq!(base64_encode(plain.as_bytes(), false), enc);
         }
         assert!(base64_decode("Zm9v=Yg").is_err());
