@@ -29,6 +29,6 @@ unicode-segmentation = "1"
 unicode-width = "0.2"
 
 [features]
-default = ["non-moving"]
+default = []
 # (skein-rt's: the collector never moves an object)
 non-moving = ["skein-rt/non-moving"]

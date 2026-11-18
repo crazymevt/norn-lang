@@ -242,12 +242,24 @@ impl GCTriggerPolicy<Skein> for ProportionalTrigger {
 pub fn init_heap() {
     let m = *MMTK_INSTANCE.get_or_init(|| {
         let mut b = MMTKBuilder::new();
-        // (SKEIN_GC_PLAN=marksweep: MMTk's free-list plan, to compare; see M11)
-        let plan = match std::env::var("SKEIN_GC_PLAN").as_deref() {
+        // The plan (M11): generations, the young copied (MMTk's StickyImmix),
+        // in a build that moves objects, which is the default one. Without
+        // generations (SKEIN_GC_PLAN=immix), and in a build with the
+        // `non-moving` feature, it's Immix alone, as it was before M11.
+        // (SKEIN_GC_PLAN=marksweep: MMTk's free-list plan, to compare.
+        // SKEIN_GC_PLAN=sticky in a non-moving build: generations with
+        // nothing copied.)
+        let asked = std::env::var("SKEIN_GC_PLAN");
+        let plan = match asked.as_deref() {
             Ok("marksweep") => PlanSelector::MarkSweep,
-            // (M11 parts 3 and 4: generations, the young copied in a build
-            // that moves objects; it needs the write barrier)
-            Ok("sticky") => {
+            Ok("immix") => PlanSelector::Immix,
+            Ok("sticky") => PlanSelector::StickyImmix,
+            Err(_) if !cfg!(feature = "non-moving") => PlanSelector::StickyImmix,
+            _ => PlanSelector::Immix,
+        };
+        let plan = match plan {
+            // (generations need the write barrier)
+            PlanSelector::StickyImmix => {
                 BARRIER.store(true, Ordering::Relaxed);
                 // The nursery: how much may be allocated before a young
                 // collection (SKEIN_GC_NURSERY, 256 MB), and the least room
@@ -260,7 +272,7 @@ pub fn init_heap() {
                 b.options.nursery.set(mmtk::util::options::NurserySize::Bounded { min: 2 << 20, max });
                 PlanSelector::StickyImmix
             }
-            _ => PlanSelector::Immix,
+            other => other,
         };
         b.options.plan.set(plan);
         // (the live bytes each collection finds: what the heap's growth goes by)

@@ -1,7 +1,9 @@
 # Every night (and on demand): every Skein suite in the modes too slow for
 # each push, which are what catch tier-1 and collector bugs: tier 0 alone,
 # everything compiled from its first call, and a collection forced every
-# 50th slow-path poll (SKEIN_GC_STRESS). Scheduled runs use main.
+# 50th slow-path poll (SKEIN_GC_STRESS); then the collector's own modes
+# (M11), and the two other builds: with the heap checked after every
+# collection, and with nothing moved. Scheduled runs use main.
 name: Nightly
 
 on:
@@ -30,7 +32,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: macOS file limits
         if: runner.os == 'macOS'
@@ -69,12 +71,11 @@ jobs:
         env:
           SKEIN_GC_STRESS: "50"
 
-  # M11: the build whose collector moves objects (no `non-moving` feature),
-  # under the modes that show a stale pointer or a missed write barrier.
-  # Each is rare in an ordinary run and each is a crash or a wrong answer
-  # far from its cause, so these run every night, on both systems.
-  moving:
-    name: Moving collector, ${{ matrix.name }}
+  # M11: the collector moves objects and has generations. The modes that
+  # show a stale pointer or a missed write barrier: each is rare in an
+  # ordinary run and each is a crash or a wrong answer far from its cause.
+  collector:
+    name: Collector, ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
@@ -84,12 +85,13 @@ jobs:
           - name: Linux arm64
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    timeout-minutes: 120
     env:
-      SKEIN: target/moving/release/skein
-      SKEIN_CHECKED: target/moving-check/release/skein
+      SKEIN: target/release/skein
+      SKEIN_CHECKED: target/check/release/skein
+      SKEIN_NON_MOVING: target/non-moving/release/skein
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: macOS file limits
         if: runner.os == 'macOS'
@@ -103,73 +105,66 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: moving
+          key: collector
           workspaces: |
-            . -> target/moving
-            . -> target/moving-check
+            . -> target
+            . -> target/check
+            . -> target/non-moving
 
       - name: Build
-        run: cargo build --locked --release --no-default-features --target-dir target/moving
+        run: cargo build --locked --release
 
       - name: Build with the heap check
-        run: cargo build --locked --release --no-default-features --features skein-rt/gc-check --target-dir target/moving-check
+        run: cargo build --locked --release --features skein-rt/gc-check --target-dir target/check
 
-      # Every collection moves whatever it may: a pointer kept across a
-      # safepoint is stale at the next one.
-      - name: Everything moved at each collection, tier 0
+      - name: Build with nothing moved
+        run: cargo build --locked --release -p skein --features non-moving --target-dir target/non-moving
+
+      # Young collections trace only what the write barrier recorded, so a
+      # store without one loses an object.
+      - name: GC stress, tier 0
         if: ${{ !cancelled() }}
         run: $SKEIN test tests/skein
         env:
           SKEIN_TIER: "0"
-          SKEIN_GC_MOVE: stress
           SKEIN_GC_STRESS: "50"
 
-      # Generations: young collections trace only what the write barrier
-      # recorded, so a store without one loses an object.
-      - name: Generations, tier 0
-        if: ${{ !cancelled() }}
-        run: $SKEIN test tests/skein
-        env:
-          SKEIN_TIER: "0"
-          SKEIN_GC_PLAN: sticky
-          SKEIN_GC_STRESS: "50"
-
-      - name: Generations, tier 1
-        if: ${{ !cancelled() }}
-        run: $SKEIN test tests/skein
-        env:
-          SKEIN_GC_PLAN: sticky
-          SKEIN_GC_STRESS: "50"
-
-      - name: Generations, everything compiled from its first call
+      - name: GC stress, everything compiled from its first call
         if: ${{ !cancelled() }}
         run: $SKEIN test tests/skein
         env:
           SKEIN_TIER: "1"
           SKEIN_JIT_THRESHOLD: "1"
           SKEIN_JIT_SYNC: "1"
-          SKEIN_GC_PLAN: sticky
           SKEIN_GC_STRESS: "50"
 
-      - name: Generations, a small nursery
+      - name: A small nursery
         if: ${{ !cancelled() }}
         run: $SKEIN test tests/skein
         env:
-          SKEIN_GC_PLAN: sticky
           SKEIN_GC_NURSERY: 4m
 
-      - name: Generations, the programs
+      # Without generations, every collection moving whatever it may: a
+      # pointer kept across a safepoint is stale at the next one.
+      - name: Everything moved at each collection, tier 0
         if: ${{ !cancelled() }}
-        run: $SKEIN lang-tests/run.skn
+        run: $SKEIN test tests/skein
         env:
-          SKEIN_GC_PLAN: sticky
+          SKEIN_TIER: "0"
+          SKEIN_GC_PLAN: immix
+          SKEIN_GC_MOVE: stress
+          SKEIN_GC_STRESS: "50"
 
       # The heap walked after every collection: a bad reference is reported
       # at the collection that made it, with the object that holds it.
-      - name: Generations, the heap checked after every collection
+      - name: The heap checked after every collection
         if: ${{ !cancelled() }}
         run: $SKEIN_CHECKED test tests/skein
         env:
           SKEIN_TIER: "0"
-          SKEIN_GC_PLAN: sticky
           SKEIN_GC_STRESS: "200"
+
+      # The build of before M11 (the `non-moving` feature): kept working.
+      - name: Nothing moved
+        if: ${{ !cancelled() }}
+        run: $SKEIN_NON_MOVING test tests/skein

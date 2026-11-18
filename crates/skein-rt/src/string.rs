@@ -187,9 +187,9 @@ impl Value {
 /// front to back (a parser, a loop over `nth` or `subs`) then costs what its
 /// text does, instead of what the text before each step does.
 ///
-/// Entries are keyed by the string's address and byte length. Objects never
-/// move (the heap plan is non-moving) and memory is reused only after a
-/// collection, so an entry holds until the next one; each records the
+/// Entries are keyed by the string's address and byte length. A string
+/// moves, and memory is reused, only at a collection, so an entry holds
+/// until the next one; each records the
 /// collection count it was made in. Only heap strings, which these
 /// functions are given through `Value`, may be looked up here.
 mod positions {
