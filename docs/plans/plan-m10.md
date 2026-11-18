@@ -830,6 +830,11 @@ Status, above.
   load).
 - actor_test's supervisor strategies and module_test's cyclic loads
   (both timing: `eventually`, sleeps and timeouts), once at tier 0 in part
-  6.4's full run; passing alone and in two full runs after.
+  6.4's full run; passing alone and in two full runs after. **Timing
+  taken out (2026-11-17):** actor_test's `eventually` tries for 20 s, not
+  2 (its only way to fail was a slow machine), and the cyclic modules
+  tell each other their loads have begun through promises instead of
+  sleeping 200 ms. conc_test's cancelled-cleanup check (CI's failure on
+  x86-64 Linux, the same kind: a 5 ms sleep) waits for its child too.
 - One tier-1 suite failure in part 2 (1 run in 34), never captured or
   seen again.

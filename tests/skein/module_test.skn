@@ -153,9 +153,13 @@
         "a template only names run-time code")))
 
 (deftest fibers-loading-opposite-ends-of-a-cycle-get-an-error
-  ;; (each waits before requiring the other, so both loads are under way)
-  (module! "cyca" "(ns mt.cyca)\n(sleep 200)\n(require (quote mt.cycb))\n(def a 1)\n")
-  (module! "cycb" "(ns mt.cycb)\n(sleep 200)\n(require (quote mt.cyca))\n(def b 2)\n")
+  ;; (each says its load has begun and waits for the other's, so both are
+  ;; under way before either requires the other)
+  (run '(do (ns mt.cycgate) (def a (promise)) (def b (promise)) (in-ns 'module-test)))
+  (module! "cyca" (str "(ns mt.cyca)\n(deliver mt.cycgate/a true)\n(deref mt.cycgate/b 10000 nil)\n"
+                       "(require (quote mt.cycb))\n(def a 1)\n"))
+  (module! "cycb" (str "(ns mt.cycb)\n(deliver mt.cycgate/b true)\n(deref mt.cycgate/a 10000 nil)\n"
+                       "(require (quote mt.cyca))\n(def b 2)\n"))
   (let [load (fn [lib] (future (try (run (list 'require (list 'quote lib))) :loaded
                                     (catch Error e (condition-message e)))))
         results [(load 'mt.cyca) (load 'mt.cycb)]

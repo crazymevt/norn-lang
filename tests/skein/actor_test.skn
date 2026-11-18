@@ -6,10 +6,11 @@
   (:require [skein.test :refer [is deftest testing]] [skein.actor :as a]))
 
 (defn- eventually
-  "(f) once it's true, trying for at most 2 s (nil if it never is)."
+  "(f) once it's true, trying for at most 20 s (nil if it never is: long
+  enough for a loaded machine, and a passing test never waits it out)."
   [f]
   (loop [n 0]
-    (or (f) (when (< n 200) (sleep 10) (recur (inc n))))))
+    (or (f) (when (< n 2000) (sleep 10) (recur (inc n))))))
 
 (defn- class-name-of [c] (when-not (keyword? c) (name (class-name (class-of c)))))
 
