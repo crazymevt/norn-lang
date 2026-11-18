@@ -1075,9 +1075,14 @@ fn submit(job: Job) {
 pub fn process_external(vm: &mut Vm) {
     let s = sched();
     // Cleanups of collected objects (skein-rt weak.rs) each run in a fiber.
+    // (with no dynamic environment: at a poll this carrier is running a
+    // fiber, and `spawn` would give the cleanup that fiber's bindings and
+    // handlers, a fiber that has nothing to do with it)
+    let mine = std::mem::replace(&mut vm.dyn_env, Value::NIL);
     for f in skein_rt::weak::take_ready() {
         spawn(vm, f, Value::NIL);
     }
+    vm.dyn_env = mine;
     if s.external_len.load(Ordering::Acquire) == 0 {
         return;
     }
@@ -1205,6 +1210,14 @@ fn run_one(vm: &mut Vm, f: Value) {
         }
     }
     vm.current = Value::NIL;
+    // (and no dynamic environment between fibers: what the carrier itself
+    // spawns then, a collected object's cleanup or a root fiber
+    // (process_external), starts in the environment `spawn` finds here.
+    // It was the last fiber's, which is the wrong one, and after a
+    // collection that moved or freed that map a pointer to nothing: a
+    // new fiber with it crashed one run in three once (gc) collected
+    // here (M11 part 5).)
+    vm.dyn_env = Value::NIL;
     s.currents[vm.carrier].store(Value::NIL.0, Ordering::Release);
 }
 

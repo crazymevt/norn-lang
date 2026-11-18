@@ -272,6 +272,17 @@
 (is (= nil (first (alts! [not-cleaned (timeout 100)]))))
 (is (= false (cancel-cleanup! c)))
 
+;; a cleanup runs with no dynamic bindings, whatever the fiber that was
+;; running when its object was collected had bound (it started in that
+;; fiber's environment: its carrier's last, which a collection might have
+;; moved or freed by then)
+(def ^:dynamic *cleanup-sees* :nothing-bound)
+(def reported (chan 1))
+(defn- cleanup-reporting [ch] (add-cleanup! (vec (range 100)) (fn [] (put! ch *cleanup-sees*))))
+(def r (cleanup-reporting reported))
+(binding [*cleanup-sees* :the-collecting-fibers] (gc))
+(is (= :nothing-bound (first (alts! [reported (timeout 5000)]))))
+
 ;;; the reactor: fibers parked on pipes (many pairs at once, to shake out
 ;;; lost wake-ups between "would block" and parking)
 (defn- io-retry [h dir f]
