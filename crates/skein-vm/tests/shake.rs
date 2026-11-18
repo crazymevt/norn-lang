@@ -50,8 +50,7 @@ fn the_shake_keeps_every_name_the_runtime_looks_up() {
     // (only names skein.core defines: a symbol made for another use isn't one)
     let defined = |n: &str| {
         let q = regex::escape(n);
-        regex::Regex::new(&format!(r"\(def[a-z-]*\s+(\^\S+\s+)*{q}[\s)]")).unwrap().is_match(&core)
-            || rust.contains(&format!("\"{n}\" "))
+        regex::Regex::new(&format!(r"\(def[a-z-]*\s+(\^\S+\s+)*{q}[\s)]")).unwrap().is_match(&core) || rust.contains(&format!("\"{n}\" "))
     };
     let missing: Vec<&String> = looked_up.iter().filter(|n| defined(n) && !kept.contains(*n)).collect();
     assert!(looked_up.len() > 15, "the patterns found too little: {looked_up:?}");

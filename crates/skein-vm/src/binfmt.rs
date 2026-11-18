@@ -17,12 +17,12 @@
 //! objects (values only), and metadata.
 
 use crate::vm::{Error, Result};
+use num_bigint::{BigInt, Sign};
 use skein_rt::map::{map_assoc, map_empty, set_conj, set_empty};
 use skein_rt::runtime::rt;
 use skein_rt::string::{bytes_new, float_new, str_new};
 use skein_rt::vector::vec_from_slice;
 use skein_rt::{Kind, Mutator, Value, clos, colls, seq};
-use num_bigint::{BigInt, Sign};
 use std::collections::HashMap;
 
 const MAGIC: &[u8; 4] = b"NRNB";

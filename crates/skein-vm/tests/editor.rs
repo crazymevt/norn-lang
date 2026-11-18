@@ -46,10 +46,7 @@ impl Editor {
             match self.lines.recv_timeout(left) {
                 Ok(line) if pred(&line) => return line,
                 Ok(line) => self.backlog.borrow_mut().push(line),
-                Err(_) => panic!(
-                    "timed out waiting for {what}; unmatched lines:\n{}",
-                    self.backlog.borrow().join("\n")
-                ),
+                Err(_) => panic!("timed out waiting for {what}; unmatched lines:\n{}", self.backlog.borrow().join("\n")),
             }
         }
     }
@@ -97,7 +94,11 @@ fn fix_a_crashed_fiber_from_the_editor_and_resume_it() {
              (fiber-id worker)"
         )
     ));
-    let fiber: u64 = r.split(":value \"").nth(1).and_then(|s| s.split('"').next()).and_then(|s| s.parse().ok())
+    let fiber: u64 = r
+        .split(":value \"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| panic!("no fiber id in {r}"));
 
     // 2. The worker crashes on x = 0 and the editor is told it is waiting.
@@ -111,20 +112,19 @@ fn fix_a_crashed_fiber_from_the_editor_and_resume_it() {
     assert!(bt.contains("{x 0}"), "{bt}");
     let idx = ed.request(&format!(
         ":op :eval :code {}",
-        quote(&format!(
-            "(let [fs (backtrace {fiber})] (some (fn [i] (when (= 'user/process (:fn (nth fs i))) i)) (range (count fs))))"
-        ))
+        quote(&format!("(let [fs (backtrace {fiber})] (some (fn [i] (when (= 'user/process (:fn (nth fs i))) i)) (range (count fs))))"))
     ));
-    let frame: usize = idx.split(":value \"").nth(1).and_then(|s| s.split('"').next()).and_then(|s| s.parse().ok())
+    let frame: usize = idx
+        .split(":value \"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| panic!("no frame index in {idx}"));
     let local = ed.request(&format!(":op :eval-in-frame :fiber {fiber} :frame {frame} :code {}", quote("(+ x 1)")));
     assert!(local.contains(":value \"1\""), "{local}");
 
     // 4. Fix the code in the running image.
-    let fix = ed.request(&format!(
-        ":op :eval :code {}",
-        quote("(defn process [x] (if (zero? x) 0 (/ 100 x)))")
-    ));
+    let fix = ed.request(&format!(":op :eval :code {}", quote("(defn process [x] (if (zero? x) 0 (/ 100 x)))")));
     assert!(fix.contains("#'user/process"), "{fix}");
 
     // 5. Resume the crashed fiber by restarting the failed frame: it calls the

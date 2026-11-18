@@ -54,11 +54,7 @@ impl Value {
     /// A fixnum, or `None` if `n` doesn't fit in 63 bits.
     #[inline]
     pub fn fixnum(n: i64) -> Option<Value> {
-        if (FIXNUM_MIN..=FIXNUM_MAX).contains(&n) {
-            Some(Value((n << 1) as u64))
-        } else {
-            None
-        }
+        if (FIXNUM_MIN..=FIXNUM_MAX).contains(&n) { Some(Value((n << 1) as u64)) } else { None }
     }
 
     /// A fixnum from a value the caller knows is in range.

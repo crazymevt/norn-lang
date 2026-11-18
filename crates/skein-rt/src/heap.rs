@@ -21,19 +21,18 @@ use crate::conc::{chan, fiber, scope, waiter};
 use crate::func::SEG_HEADER;
 use crate::object::{Kind, Layout};
 use crate::value::{TAG_CONS, TAG_MASK, TAG_OBJ, Value};
-use mmtk::util::alloc::AllocationOptions;
-use mmtk::util::copy::{CopySemantics, GCWorkerCopyContext};
-use mmtk::util::opaque_pointer::{OpaquePointer, VMMutatorThread, VMThread, VMWorkerThread};
 use mmtk::Plan;
+use mmtk::util::alloc::AllocationOptions;
 use mmtk::util::constants::LOG_BYTES_IN_PAGE;
+use mmtk::util::copy::{CopySemantics, GCWorkerCopyContext};
 use mmtk::util::heap::{GCTriggerPolicy, SpaceStats};
+use mmtk::util::opaque_pointer::{OpaquePointer, VMMutatorThread, VMThread, VMWorkerThread};
 use mmtk::util::options::{GCTriggerSelector, PlanSelector};
 use mmtk::util::{Address, ObjectReference};
 use mmtk::vm::slot::{Slot, UnimplementedMemorySlice};
 use mmtk::vm::{
-    ActivePlan, Collection, Finalizable, GCThreadContext, ObjectModel, ReferenceGlue, RootsWorkFactory, Scanning,
-    SlotVisitor, VMBinding, VMGlobalLogBitSpec, VMLocalForwardingBitsSpec, VMLocalForwardingPointerSpec,
-    VMLocalLOSMarkNurserySpec, VMLocalMarkBitSpec,
+    ActivePlan, Collection, Finalizable, GCThreadContext, ObjectModel, ReferenceGlue, RootsWorkFactory, Scanning, SlotVisitor, VMBinding,
+    VMGlobalLogBitSpec, VMLocalForwardingBitsSpec, VMLocalForwardingPointerSpec, VMLocalLOSMarkNurserySpec, VMLocalMarkBitSpec,
 };
 use mmtk::{AllocationSemantics, MMTK, MMTKBuilder, memory_manager};
 use std::cell::Cell;
@@ -191,8 +190,7 @@ pub struct Mutator {
     cell: Box<AtomicUsize>,
 }
 
-const ALLOC_OPTIONS: AllocationOptions =
-    AllocationOptions { allow_overcommit: true, at_safepoint: false, allow_oom_call: true };
+const ALLOC_OPTIONS: AllocationOptions = AllocationOptions { allow_overcommit: true, at_safepoint: false, allow_oom_call: true };
 
 impl Default for Mutator {
     fn default() -> Self {
@@ -220,11 +218,7 @@ impl Mutator {
     #[inline]
     pub fn alloc_words(&mut self, words: usize) -> *mut u64 {
         let bytes = words * 8;
-        let sem = if bytes > LOS_THRESHOLD.load(Ordering::Relaxed) {
-            AllocationSemantics::Los
-        } else {
-            AllocationSemantics::Default
-        };
+        let sem = if bytes > LOS_THRESHOLD.load(Ordering::Relaxed) { AllocationSemantics::Los } else { AllocationSemantics::Default };
         let a = memory_manager::alloc_with_options(&mut self.mm, bytes, 8, 0, sem, ALLOC_OPTIONS);
         if a.is_zero() {
             panic!("out of memory allocating {bytes} bytes");
@@ -331,7 +325,9 @@ pub(crate) fn size_words(kind: Kind, w: impl Fn(usize) -> usize) -> usize {
         Kind::Scope => 2 + scope::WORDS,
         Kind::Class => 2 + class::WORDS,
         Kind::Generic => 2 + generic::WORDS,
-        Kind::Instance => 5 + (w(2) & !(crate::clos::MUTABLE_INSTANCE as usize)) + usize::from(w(2) & crate::clos::MUTABLE_INSTANCE as usize != 0),
+        Kind::Instance => {
+            5 + (w(2) & !(crate::clos::MUTABLE_INSTANCE as usize)) + usize::from(w(2) & crate::clos::MUTABLE_INSTANCE as usize != 0)
+        }
         Kind::Weak => 2 + crate::weak::layout::WORDS,
         Kind::Handle => 2 + crate::conc::handle::WORDS,
         Kind::BigInt => 3 + (w(0) & !(1usize << 63)),
@@ -350,8 +346,7 @@ impl ObjectModel<Skein> for Skein {
     const GLOBAL_LOG_BIT_SPEC: VMGlobalLogBitSpec = VMGlobalLogBitSpec::side_first();
     const LOCAL_FORWARDING_POINTER_SPEC: VMLocalForwardingPointerSpec = VMLocalForwardingPointerSpec::in_header(0);
     const LOCAL_FORWARDING_BITS_SPEC: VMLocalForwardingBitsSpec = VMLocalForwardingBitsSpec::side_first();
-    const LOCAL_MARK_BIT_SPEC: VMLocalMarkBitSpec =
-        VMLocalMarkBitSpec::side_after(Self::LOCAL_FORWARDING_BITS_SPEC.as_spec());
+    const LOCAL_MARK_BIT_SPEC: VMLocalMarkBitSpec = VMLocalMarkBitSpec::side_after(Self::LOCAL_FORWARDING_BITS_SPEC.as_spec());
     const LOCAL_LOS_MARK_NURSERY_SPEC: VMLocalLOSMarkNurserySpec =
         VMLocalLOSMarkNurserySpec::side_after(Self::LOCAL_MARK_BIT_SPEC.as_spec());
     const OBJECT_REF_OFFSET_LOWER_BOUND: isize = 0;
@@ -415,7 +410,15 @@ pub(crate) fn scan(p: *mut u64, visit: &mut dyn FnMut(SkeinSlot)) {
                 visit(slot_at(p.add(2)));
             }
         }
-        Kind::String | Kind::Bytes | Kind::ByteArray | Kind::Float | Kind::Range | Kind::Code | Kind::EmptyList | Kind::Claim | Kind::BigInt => {}
+        Kind::String
+        | Kind::Bytes
+        | Kind::ByteArray
+        | Kind::Float
+        | Kind::Range
+        | Kind::Code
+        | Kind::EmptyList
+        | Kind::Claim
+        | Kind::BigInt => {}
         Kind::Ratio => fields(&[0, 1], visit),
         Kind::Stream => fields(&[1], visit),
         Kind::Reduced | Kind::Regex => fields(&[0], visit),
@@ -520,10 +523,7 @@ impl Scanning<Skein> for Skein {
         }
         factory.create_process_pinning_roots_work(nodes);
     }
-    fn process_weak_refs(
-        _: &mut mmtk::scheduler::GCWorker<Skein>,
-        _: impl mmtk::vm::ObjectTracerContext<Skein>,
-    ) -> bool {
+    fn process_weak_refs(_: &mut mmtk::scheduler::GCWorker<Skein>, _: impl mmtk::vm::ObjectTracerContext<Skein>) -> bool {
         crate::weak::process();
         false
     }
@@ -544,11 +544,7 @@ fn check_slot(p: *mut u64, s: SkeinSlot) {
         let w: u64 = unsafe { s.0.load() };
         let index = (s.0.as_usize() - p as usize) / 8;
         let kind = kind_at(p);
-        let extra = if kind == Kind::Fiber {
-            String::new()
-        } else {
-            String::new()
-        };
+        let extra = if kind == Kind::Fiber { String::new() } else { String::new() };
         panic!("gc-check: word {index} of a {kind:?} at {p:p} is {w:#x}, which is no object{extra}");
     }
 }
@@ -605,9 +601,7 @@ impl ActivePlan<Skein> for Skein {
     fn mutators<'a>() -> Box<dyn Iterator<Item = &'a mut MmMutator> + 'a> {
         let cells = MUTATORS.lock().unwrap().clone();
         // SAFETY: as in `mutator`; called with the world stopped.
-        Box::new(
-            cells.into_iter().map(|c| unsafe { &mut *((*(c as *const AtomicUsize)).load(Ordering::Acquire) as *mut MmMutator) }),
-        )
+        Box::new(cells.into_iter().map(|c| unsafe { &mut *((*(c as *const AtomicUsize)).load(Ordering::Acquire) as *mut MmMutator) }))
     }
     fn number_of_mutators() -> usize {
         MUTATORS.lock().unwrap().len()

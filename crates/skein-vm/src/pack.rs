@@ -214,8 +214,16 @@ pub(crate) fn pbkdf2(m: &mut Mutator, a: &[Value]) -> Result<Value> {
         "sha512" => ring::pbkdf2::PBKDF2_HMAC_SHA512,
         x => return Err(Error::new(format!("No PBKDF2 :{x} (:sha256, :sha384, :sha512 or :sha1)"))),
     };
-    let iters = if a[1].is_fixnum() && a[1].as_fixnum() > 0 { a[1].as_fixnum() as u32 } else { return Err(Error::new("pbkdf2: iterations must be a positive integer")) };
-    let n = if a[4].is_fixnum() && (1..=1024).contains(&a[4].as_fixnum()) { a[4].as_fixnum() as usize } else { return Err(Error::new("pbkdf2: a key of 1 to 1024 bytes")) };
+    let iters = if a[1].is_fixnum() && a[1].as_fixnum() > 0 {
+        a[1].as_fixnum() as u32
+    } else {
+        return Err(Error::new("pbkdf2: iterations must be a positive integer"));
+    };
+    let n = if a[4].is_fixnum() && (1..=1024).contains(&a[4].as_fixnum()) {
+        a[4].as_fixnum() as usize
+    } else {
+        return Err(Error::new("pbkdf2: a key of 1 to 1024 bytes"));
+    };
     let mut out = vec![0u8; n];
     ring::pbkdf2::derive(alg, std::num::NonZeroU32::new(iters).unwrap(), &data(a[2], "pbkdf2")?, &data(a[3], "pbkdf2")?, &mut out);
     Ok(bytes_new(m, &out))
@@ -224,7 +232,11 @@ pub(crate) fn pbkdf2(m: &mut Mutator, a: &[Value]) -> Result<Value> {
 /// `(%secure-random n)`: n bytes from the system's secure generator.
 pub(crate) fn secure_random(m: &mut Mutator, a: &[Value]) -> Result<Value> {
     use ring::rand::SecureRandom;
-    let n = if a[0].is_fixnum() && (0..=1 << 20).contains(&a[0].as_fixnum()) { a[0].as_fixnum() as usize } else { return Err(Error::new("secure-random-bytes: 0 to 1048576 bytes")) };
+    let n = if a[0].is_fixnum() && (0..=1 << 20).contains(&a[0].as_fixnum()) {
+        a[0].as_fixnum() as usize
+    } else {
+        return Err(Error::new("secure-random-bytes: 0 to 1048576 bytes"));
+    };
     let mut out = vec![0u8; n];
     ring::rand::SystemRandom::new().fill(&mut out).map_err(|_| Error::new("The system's secure random generator failed"))?;
     Ok(bytes_new(m, &out))

@@ -189,5 +189,9 @@ pub(crate) fn subseq(m: &mut Mutator, s: Value, bounds: &[(Ordering, bool, Value
 }
 
 pub(crate) fn check(s: Value, op: &str) -> Result<()> {
-    if s.is(Kind::Sorted) { Ok(()) } else { Err(Error::of("TypeError", format!("{op} expects a sorted map or set, got {}", s.type_name()))) }
+    if s.is(Kind::Sorted) {
+        Ok(())
+    } else {
+        Err(Error::of("TypeError", format!("{op} expects a sorted map or set, got {}", s.type_name())))
+    }
 }

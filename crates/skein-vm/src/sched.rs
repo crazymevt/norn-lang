@@ -1186,19 +1186,11 @@ fn run_one(vm: &mut Vm, f: Value) {
                 // park forever with the cancel flag set.
                 if f.fiber_cancel() != 0 {
                     let w = aget(f, fiber::PARK);
-                    if !w.is_nil()
-                        && w.word(waiter::FLAGS) & waiter::NO_CANCEL_WAKE == 0
-                        && try_claim(w.field(waiter::CLAIM))
-                    {
+                    if !w.is_nil() && w.word(waiter::FLAGS) & waiter::NO_CANCEL_WAKE == 0 && try_claim(w.field(waiter::CLAIM)) {
                         continue; // run_fiber sees the cancel and unwinds
                     }
                 }
-                match f.fiber_state().compare_exchange(
-                    fiber::RUNNING,
-                    fiber::PARKED,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
+                match f.fiber_state().compare_exchange(fiber::RUNNING, fiber::PARKED, Ordering::AcqRel, Ordering::Acquire) {
                     Ok(_) => break,
                     // Woken before we finished parking: carry on right away.
                     Err(_) => f.fiber_state().store(fiber::RUNNING, Ordering::Release),
@@ -1305,11 +1297,7 @@ fn carrier_loop(vm: &mut Vm) {
         // submit, resume_all), so a regular carrier sleeps until woken: an
         // idle process doesn't wake 10 times a second per carrier. A spare
         // wakes now and then, to see whether it should retire.
-        let g = if me < s.n {
-            s.idle_cv.wait(g).unwrap()
-        } else {
-            s.idle_cv.wait_timeout(g, Duration::from_millis(100)).unwrap().0
-        };
+        let g = if me < s.n { s.idle_cv.wait(g).unwrap() } else { s.idle_cv.wait_timeout(g, Duration::from_millis(100)).unwrap().0 };
         s.idle_count.fetch_sub(1, Ordering::AcqRel);
         drop(g);
         safepoint::leave_safe();
@@ -1399,46 +1387,47 @@ pub fn start() -> Result<&'static Skein, Error> {
 /// from source (`None`). Once per process: later calls return the runtime
 /// started first.
 pub fn start_with(image: Option<&std::path::Path>) -> Result<&'static Skein, Error> {
-    let skein = SKEIN.get_or_init(|| {
-        let n = carrier_count();
-        skein_rt::heap::init_heap();
-        let restore = match image {
-            Some(p) => match crate::image::load(p) {
-                Ok(r) => Some(r),
-                Err(e) => return Err(e),
-            },
-            None => None,
-        };
-        let _ = SCHED.set(Sched::new(n));
-        if let Some(r) = &restore {
-            sched().next_id.fetch_max(r.next_fiber_id, Ordering::Relaxed);
-        }
-        let (boot_tx, boot_rx) = mpsc::channel::<Result<(), String>>();
-        let mut restore = Some(restore);
-        for id in 0..n {
-            let boot = (id == 0).then(|| boot_tx.clone());
-            start_carrier(id, if id == 0 { restore.take().flatten() } else { None }, boot);
-        }
-        std::thread::Builder::new().name("skein-timers".into()).spawn(timer_main).expect("failed to start timer thread");
-        std::thread::Builder::new().name("skein-monitor".into()).spawn(monitor_main).expect("failed to start monitor thread");
-        crate::reactor::start();
-        crate::os::dump_on_sigquit();
-        crate::net::raise_fd_limit();
-        match boot_rx.recv() {
-            Ok(Ok(())) => {
-                // From here on the GC may run: register the roots that live
-                // outside the heap, then let MMTk collect.
-                skein_rt::heap::set_extra_roots(scheduler_roots);
-                skein_rt::heap::enable_collection();
-                Ok(Skein { pending: Mutex::new(HashMap::new()) })
+    let skein = SKEIN
+        .get_or_init(|| {
+            let n = carrier_count();
+            skein_rt::heap::init_heap();
+            let restore = match image {
+                Some(p) => match crate::image::load(p) {
+                    Ok(r) => Some(r),
+                    Err(e) => return Err(e),
+                },
+                None => None,
+            };
+            let _ = SCHED.set(Sched::new(n));
+            if let Some(r) = &restore {
+                sched().next_id.fetch_max(r.next_fiber_id, Ordering::Relaxed);
             }
-            Ok(Err(e)) => Err(format!("loading core.skn failed: {e}")),
-            // (restoring an image can't fail once it has loaded)
-            Err(_) => Err("boot carrier died".into()),
-        }
-    })
-    .as_ref()
-    .map_err(|e| Error::new(e.clone()))?;
+            let (boot_tx, boot_rx) = mpsc::channel::<Result<(), String>>();
+            let mut restore = Some(restore);
+            for id in 0..n {
+                let boot = (id == 0).then(|| boot_tx.clone());
+                start_carrier(id, if id == 0 { restore.take().flatten() } else { None }, boot);
+            }
+            std::thread::Builder::new().name("skein-timers".into()).spawn(timer_main).expect("failed to start timer thread");
+            std::thread::Builder::new().name("skein-monitor".into()).spawn(monitor_main).expect("failed to start monitor thread");
+            crate::reactor::start();
+            crate::os::dump_on_sigquit();
+            crate::net::raise_fd_limit();
+            match boot_rx.recv() {
+                Ok(Ok(())) => {
+                    // From here on the GC may run: register the roots that live
+                    // outside the heap, then let MMTk collect.
+                    skein_rt::heap::set_extra_roots(scheduler_roots);
+                    skein_rt::heap::enable_collection();
+                    Ok(Skein { pending: Mutex::new(HashMap::new()) })
+                }
+                Ok(Err(e)) => Err(format!("loading core.skn failed: {e}")),
+                // (restoring an image can't fail once it has loaded)
+                Err(_) => Err("boot carrier died".into()),
+            }
+        })
+        .as_ref()
+        .map_err(|e| Error::new(e.clone()))?;
     if image.is_some() {
         // Tell the image it has been restored (on-image-restore hooks).
         static RESTORED: std::sync::Once = std::sync::Once::new();

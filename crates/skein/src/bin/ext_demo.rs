@@ -7,10 +7,10 @@
 //! - the process's first thread, which posts events to a Skein channel
 //!   through a `Port` (as a UI event loop would).
 
+use skein_rt::Value;
 use skein_vm::ext::{Extension, Port, build, handle, with_native};
 use skein_vm::prims::PrimDef;
 use skein_vm::{Error, Result, Vm};
-use skein_rt::Value;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 

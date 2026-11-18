@@ -108,7 +108,9 @@ fn a_client_gets_what_it_asks_for() {
     let text = std::fs::read_to_string(&path).unwrap();
     let mut c = Client::start(&d);
     let init = c.request("initialize", r#"{"processId":null,"rootUri":null,"capabilities":{}}"#);
-    for cap in ["hoverProvider", "definitionProvider", "referencesProvider", "documentSymbolProvider", "documentFormattingProvider", "skein.eval"] {
+    for cap in
+        ["hoverProvider", "definitionProvider", "referencesProvider", "documentSymbolProvider", "documentFormattingProvider", "skein.eval"]
+    {
         assert!(init.contains(cap), "{cap}: {init}");
     }
     c.notify("initialized", "{}");
@@ -121,7 +123,10 @@ fn a_client_gets_what_it_asks_for() {
     let d1 = c.request("textDocument/definition", &at(10, 12));
     assert!(d1.contains("shapes.skn") && d1.contains(r#""line":2"#), "the defn's line, 0-based: {d1}");
     let r = c.request("textDocument/references", &at(2, 7));
-    assert!(r.contains(r#""start":{"character":11,"line":10}"#) || r.contains(r#""start":{"line":10,"character":11}"#), "where describe calls it: {r}");
+    assert!(
+        r.contains(r#""start":{"character":11,"line":10}"#) || r.contains(r#""start":{"line":10,"character":11}"#),
+        "where describe calls it: {r}"
+    );
     let comp = c.request("textDocument/completion", &at(10, 13));
     assert!(comp.contains(r#""label":"area""#), "{comp}");
     let syms = c.request("textDocument/documentSymbol", &format!(r#"{{"textDocument":{{"uri":"{uri}"}}}}"#));
@@ -129,19 +134,35 @@ fn a_client_gets_what_it_asks_for() {
 
     // A change with a mistake: diagnostics, pushed.
     let bad = format!("{text}\n(defn oops [x] (nope x))\n");
-    c.notify("textDocument/didChange", &format!(r#"{{"textDocument":{{"uri":"{uri}","version":2}},"contentChanges":[{{"text":{}}}]}}"#, json_string(&bad)));
+    c.notify(
+        "textDocument/didChange",
+        &format!(r#"{{"textDocument":{{"uri":"{uri}","version":2}},"contentChanges":[{{"text":{}}}]}}"#, json_string(&bad)),
+    );
     let _ = c.request("textDocument/documentSymbol", &format!(r#"{{"textDocument":{{"uri":"{uri}"}}}}"#));
     assert!(c.notes.iter().any(|n| n.contains("publishDiagnostics") && n.contains("unresolved symbol nope")), "{:?}", c.notes);
 
     // Formatting: the whole text, as skein fmt makes it.
-    c.notify("textDocument/didChange", &format!(r#"{{"textDocument":{{"uri":"{uri}","version":3}},"contentChanges":[{{"text":{}}}]}}"#, json_string("(ns geo.shapes)\n(defn  f [x]\n      (inc x))\n")));
-    let f = c.request("textDocument/formatting", &format!(r#"{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":2,"insertSpaces":true}}}}"#));
+    c.notify(
+        "textDocument/didChange",
+        &format!(
+            r#"{{"textDocument":{{"uri":"{uri}","version":3}},"contentChanges":[{{"text":{}}}]}}"#,
+            json_string("(ns geo.shapes)\n(defn  f [x]\n      (inc x))\n")
+        ),
+    );
+    let f = c.request(
+        "textDocument/formatting",
+        &format!(r#"{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":2,"insertSpaces":true}}}}"#),
+    );
     assert!(f.contains(r#"(defn f [x]\n  (inc x))\n"#), "{f}");
 
     // skein.eval: the top-level form at a position, evaluated; what it prints
     // goes to standard error, not into the protocol.
-    c.notify("textDocument/didChange", &format!(r#"{{"textDocument":{{"uri":"{uri}","version":4}},"contentChanges":[{{"text":{}}}]}}"#, json_string(&text)));
-    let e = c.request("workspace/executeCommand", &format!(r#"{{"command":"skein.eval","arguments":["{uri}",{{"line":11,"character":4}}]}}"#));
+    c.notify(
+        "textDocument/didChange",
+        &format!(r#"{{"textDocument":{{"uri":"{uri}","version":4}},"contentChanges":[{{"text":{}}}]}}"#, json_string(&text)),
+    );
+    let e =
+        c.request("workspace/executeCommand", &format!(r#"{{"command":"skein.eval","arguments":["{uri}",{{"line":11,"character":4}}]}}"#));
     assert!(e.contains("geo.shapes/describe"), "{e}");
     let e = c.request("workspace/executeCommand", r#"{"command":"skein.nothing","arguments":[]}"#);
     assert!(e.contains("-32601"), "{e}");
@@ -203,12 +224,7 @@ fn vscode_extension_uses_it() {
     }
     let ext = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../editors/vscode");
     assert!(ext.join("node_modules/vscode-languageclient").exists(), "npm install in editors/vscode first");
-    let o = Command::new("node")
-        .arg("test/run.js")
-        .env("SKEIN", env!("CARGO_BIN_EXE_skein"))
-        .current_dir(&ext)
-        .output()
-        .expect("node");
+    let o = Command::new("node").arg("test/run.js").env("SKEIN", env!("CARGO_BIN_EXE_skein")).current_dir(&ext).output().expect("node");
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success() && out.contains("\nok"), "--- out:\n{out}\n--- err:\n{}", String::from_utf8_lossy(&o.stderr));
 }

@@ -462,7 +462,14 @@ pub(crate) fn civil(nanos: i64, offset: i64) -> [i64; 9] {
 /// The instant (epoch nanoseconds) of a civil date-time at UTC offset `offset`.
 pub(crate) fn from_civil(f: [i64; 7], offset: i64) -> std::result::Result<i64, String> {
     let [y, m, d, h, mi, s, ns] = f;
-    if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) || !(0..24).contains(&h) || !(0..60).contains(&mi) || !(0..=60).contains(&s) || !(0..1_000_000_000).contains(&ns) {
+    if !(1..=12).contains(&m)
+        || d < 1
+        || d > days_in_month(y, m)
+        || !(0..24).contains(&h)
+        || !(0..60).contains(&mi)
+        || !(0..=60).contains(&s)
+        || !(0..1_000_000_000).contains(&ns)
+    {
         return Err(format!("Not a valid date-time: {y}-{m}-{d} {h}:{mi}:{s}.{ns:09}"));
     }
     let secs = days_from_civil(y, m, d) * 86_400 + h * 3600 + mi * 60 + s - offset;

@@ -14,11 +14,7 @@ fn lang_tests_pass() {
         return eprintln!("skipped: SKEIN_LANG_TESTS=1 runs it (about a minute)");
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let o = Command::new(env!("CARGO_BIN_EXE_skein"))
-        .arg("lang-tests/run.skn")
-        .current_dir(&root)
-        .output()
-        .expect("skein");
+    let o = Command::new(env!("CARGO_BIN_EXE_skein")).arg("lang-tests/run.skn").current_dir(&root).output().expect("skein");
     let out = String::from_utf8_lossy(&o.stdout);
     eprintln!("{out}");
     assert!(o.status.success(), "--- out:\n{out}\n--- err:\n{}", String::from_utf8_lossy(&o.stderr));

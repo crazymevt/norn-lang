@@ -73,9 +73,11 @@
 
 use crate::bytecode::*;
 use cranelift_codegen::control::ControlPlane;
-use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{AbiParam, Block, BlockArg, Function, InstBuilder, JumpTableData, MemFlagsData, Signature, UserFuncName, types};
+use cranelift_codegen::ir::{
+    AbiParam, Block, BlockArg, Function, InstBuilder, JumpTableData, MemFlagsData, Signature, UserFuncName, types,
+};
+use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::isa::OwnedTargetIsa;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -225,13 +227,46 @@ pub const POLL_FLAG: u64 = 1 << 62;
 pub const NPRIMS: usize = 40;
 /// The primitives with native fast paths, in `JitCtx::prims` order.
 pub const FAST_PRIMS: [&str; NPRIMS] = [
-    "+", "-", "<", ">", "<=", ">=", "==", "=", "inc", "dec", "zero?", // (fixnums; floats, M10 part 5.2)
-    "*", "/", // (M10 part 5.2)
-    "quot", "rem", "mod", "even?", "odd?", // (fixnums, M10 part 7.2)
-    "count", "nth", "first", "identical?", "nil?", "some?", "not", // (M10 part 4)
-    "string?", "keyword?", "symbol?", "float?", "vector?", "regex?", "bytes?", "char?", "boolean?", "integer?", // (contracts' checks)
-    "reduced?", "unreduced", // (reduce's loop, every item)
-    "seq", "next", "deref", // (a list's walk; an atom's value)
+    "+",
+    "-",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "==",
+    "=",
+    "inc",
+    "dec",
+    "zero?", // (fixnums; floats, M10 part 5.2)
+    "*",
+    "/", // (M10 part 5.2)
+    "quot",
+    "rem",
+    "mod",
+    "even?",
+    "odd?", // (fixnums, M10 part 7.2)
+    "count",
+    "nth",
+    "first",
+    "identical?",
+    "nil?",
+    "some?",
+    "not", // (M10 part 4)
+    "string?",
+    "keyword?",
+    "symbol?",
+    "float?",
+    "vector?",
+    "regex?",
+    "bytes?",
+    "char?",
+    "boolean?",
+    "integer?", // (contracts' checks)
+    "reduced?",
+    "unreduced", // (reduce's loop, every item)
+    "seq",
+    "next",
+    "deref", // (a list's walk; an atom's value)
 ];
 
 /// The trampoline: (native entry, regs, consts, ctx, pc) → pc, in the
@@ -476,7 +511,13 @@ fn compile_inner(proto: Value) -> Option<usize> {
     if std::env::var("SKEIN_JIT_TRACE_FLO").is_ok() {
         eprintln!("flo {}", skein_rt::print::pr_str(proto, true));
         for i in 0..n {
-            eprintln!("  {i:3} entry={} spec={} fin={:?} live={:?}", entry_pcs[i], ff.spec[i], ff.fin[i].iter().collect::<Vec<_>>(), live[i].iter().collect::<Vec<_>>());
+            eprintln!(
+                "  {i:3} entry={} spec={} fin={:?} live={:?}",
+                entry_pcs[i],
+                ff.spec[i],
+                ff.fin[i].iter().collect::<Vec<_>>(),
+                live[i].iter().collect::<Vec<_>>()
+            );
         }
     }
     let despec_ref = b.import_signature(helper(2));
@@ -698,12 +739,17 @@ fn compile_inner(proto: Value) -> Option<usize> {
             let obj = b.ins().icmp_imm_s(IntCC::Equal, tag, skein_rt::value::TAG_OBJ as i64);
             step(b, obj);
             let layout = b.ins().load(types::I64, mf, x, -(skein_rt::value::TAG_OBJ as i32));
-            let inst = b.ins().icmp_imm_s(IntCC::Equal, layout, &skein_rt::object::LAYOUTS[skein_rt::Kind::Instance as usize] as *const skein_rt::object::Layout as i64);
+            let inst = b.ins().icmp_imm_s(
+                IntCC::Equal,
+                layout,
+                &skein_rt::object::LAYOUTS[skein_rt::Kind::Instance as usize] as *const skein_rt::object::Layout as i64,
+            );
             step(b, inst);
             let class = b.ins().load(types::I64, mf, x, INST_CLASS);
             let same = b.ins().icmp_imm_s(IntCC::Equal, class, g.class.0 as i64);
             step(b, same);
-            let ep = b.ins().iconst(types::I64, g.gf.atomic_word(skein_rt::clos::generic::EPOCH) as *const std::sync::atomic::AtomicU64 as i64);
+            let ep =
+                b.ins().iconst(types::I64, g.gf.atomic_word(skein_rt::clos::generic::EPOCH) as *const std::sync::atomic::AtomicU64 as i64);
             let e = b.ins().atomic_load(types::I64, mf, ep);
             let same_e = b.ins().icmp_imm_s(IntCC::Equal, e, g.epoch as i64);
             step(b, same_e);
@@ -791,7 +837,11 @@ fn compile_inner(proto: Value) -> Option<usize> {
         let obj = b.ins().icmp_imm_s(IntCC::Equal, tag, skein_rt::value::TAG_OBJ as i64);
         step(b, obj);
         let layout = b.ins().load(types::I64, mf, f, -(skein_rt::value::TAG_OBJ as i32));
-        let is_clo = b.ins().icmp_imm_s(IntCC::Equal, layout, &skein_rt::object::LAYOUTS[skein_rt::Kind::Closure as usize] as *const skein_rt::object::Layout as i64);
+        let is_clo = b.ins().icmp_imm_s(
+            IntCC::Equal,
+            layout,
+            &skein_rt::object::LAYOUTS[skein_rt::Kind::Closure as usize] as *const skein_rt::object::Layout as i64,
+        );
         step(b, is_clo);
         // (its template's arities: the first with rb fixed parameters)
         let tmpl = b.ins().load(types::I64, mf, f, 2 * W - 1);
@@ -934,7 +984,9 @@ fn compile_inner(proto: Value) -> Option<usize> {
         let (fin, fout) = (&ff.fin[i], &ff.fout[i]);
         let (ain, aout) = (&ff.ain[i][..], &ff.aout[i][..]);
         // A register's value (a float's, boxed if it isn't yet).
-        let get = |b: &mut FunctionBuilder, r: i32| if fin.contains(r as usize) { materialize(b, r as usize, ain, fin) } else { b.use_var(vars[r as usize]) };
+        let get = |b: &mut FunctionBuilder, r: i32| {
+            if fin.contains(r as usize) { materialize(b, r as usize, ain, fin) } else { b.use_var(vars[r as usize]) }
+        };
         // Stop at this instruction, the frame already written back; or write
         // it back first (bail).
         let stop_at = |b: &mut FunctionBuilder, pc: usize| {
@@ -1064,8 +1116,11 @@ fn compile_inner(proto: Value) -> Option<usize> {
         };
         // A fast primitive's arguments: a float register's f64 for the
         // numeric ones (no box needed), else the value.
-        let numeric = named_prim[i].is_some_and(|k| matches!(FAST_PRIMS[k], "+" | "-" | "*" | "/" | "inc" | "dec" | "zero?" | "<" | ">" | "<=" | ">=" | "==" | "="));
-        let arg = |b: &mut FunctionBuilder, r: i32| if numeric && fin.contains(r as usize) { Arg::F(getf(b, r)) } else { Arg::T(get(b, r)) };
+        let numeric = named_prim[i].is_some_and(|k| {
+            matches!(FAST_PRIMS[k], "+" | "-" | "*" | "/" | "inc" | "dec" | "zero?" | "<" | ">" | "<=" | ">=" | "==" | "=")
+        });
+        let arg =
+            |b: &mut FunctionBuilder, r: i32| if numeric && fin.contains(r as usize) { Arg::F(getf(b, r)) } else { Arg::T(get(b, r)) };
         match o {
             MOVE => {
                 if fin.contains(rb as usize) {
@@ -1309,7 +1364,22 @@ fn compile_inner(proto: Value) -> Option<usize> {
                     let x = arg(&mut b, ra + 1);
                     let y = if rb >= 2 { arg(&mut b, ra + 2) } else { x };
                     let z = (rb == 3).then(|| arg(&mut b, ra + 3));
-                    fast_prims(&mut b, mf, ctx, f, x, y, z, rb, slow, named_prim[i], box_ref, &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1, fin), None, None);
+                    fast_prims(
+                        &mut b,
+                        mf,
+                        ctx,
+                        f,
+                        x,
+                        y,
+                        z,
+                        rb,
+                        slow,
+                        named_prim[i],
+                        box_ref,
+                        &|b: &mut FunctionBuilder, v| ret_value(b, v, ra, i + 1, fin),
+                        None,
+                        None,
+                    );
                     b.switch_to_block(slow);
                 }
                 spill(&mut b, fin, ain, fin);
@@ -1649,14 +1719,17 @@ fn fast_prims(
             Some(n) => n == k,
             None => std::env::var("SKEIN_JIT_CASCADE").is_ok() || matches!(FAST_PRIMS[k], "+" | "-" | "<" | "=" | "inc"),
         })
-        .filter(|&k| !unboxed || matches!(FAST_PRIMS[k], "+" | "-" | "*" | "/" | "inc" | "dec" | "zero?" | "<" | ">" | "<=" | ">=" | "==" | "="))
+        .filter(|&k| {
+            !unboxed || matches!(FAST_PRIMS[k], "+" | "-" | "*" | "/" | "inc" | "dec" | "zero?" | "<" | ">" | "<=" | ">=" | "==" | "=")
+        })
         .filter(|&k| rb != 3 || matches!(FAST_PRIMS[k], "+" | "-" | "*"))
         .filter(|&k| match FAST_PRIMS[k] {
             "+" | "-" | "*" if rb == 3 => true,
             "even?" | "odd?" => rb == 1,
-            "inc" | "dec" | "zero?" | "count" | "first" | "nil?" | "some?" | "not" | "string?" | "keyword?" | "symbol?"
-            | "float?" | "vector?" | "regex?" | "bytes?" | "char?" | "boolean?" | "integer?" | "reduced?" | "unreduced" | "seq"
-            | "next" | "deref" => rb == 1,
+            "inc" | "dec" | "zero?" | "count" | "first" | "nil?" | "some?" | "not" | "string?" | "keyword?" | "symbol?" | "float?"
+            | "vector?" | "regex?" | "bytes?" | "char?" | "boolean?" | "integer?" | "reduced?" | "unreduced" | "seq" | "next" | "deref" => {
+                rb == 1
+            }
             _ => rb == 2,
         })
         .collect();
@@ -2463,7 +2536,13 @@ fn flo_flow(ins: &[u32], consts: Value, named_prim: &[Option<usize>], entries: &
     let n = ins.len();
     let none = RegSet::default();
     if !on {
-        return FloFlow { fin: vec![none; n], fout: vec![none; n], spec: vec![false; n], ain: vec![vec![0; nregs]; n], aout: vec![vec![0; nregs]; n] };
+        return FloFlow {
+            fin: vec![none; n],
+            fout: vec![none; n],
+            spec: vec![false; n],
+            ain: vec![vec![0; nregs]; n],
+            aout: vec![vec![0; nregs]; n],
+        };
     }
     let mut all = RegSet::default();
     for r in 0..nregs {
@@ -2566,7 +2645,9 @@ fn flo_flow(ins: &[u32], consts: Value, named_prim: &[Option<usize>], entries: &
             match op(w) {
                 MOVE if fout[i].contains(ra) => l[ra] = l[b(w)],
                 LOADK | CALL if fout[i].contains(ra) => l[ra] = PRODUCED + i as u32,
-                MOVE | LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF | CLOSURE | CALL if ra < nregs => l[ra] = u32::MAX,
+                MOVE | LOADK | LOADI | LOADNIL | LOADTRUE | LOADFALSE | GETVAR | GETUP | SELF | CLOSURE | CALL if ra < nregs => {
+                    l[ra] = u32::MAX
+                }
                 _ => {}
             }
             aout[i] = l;
@@ -2868,8 +2949,12 @@ fn link_for(this: Value, ins: &[u32], consts: Value, i: usize, ra: usize, rb: us
     let k = (0..i).rev().find(|&k| a(ins[k]) == ra)?;
     if op(ins[k]) == SELF {
         let nregs = this.proto_nregs();
-        return (!this.proto_variadic() && this.proto_nfixed() == rb && nregs <= LINK_MAX_REGS)
-            .then_some(Link { f: None, proto: this, nregs, gf: None });
+        return (!this.proto_variadic() && this.proto_nfixed() == rb && nregs <= LINK_MAX_REGS).then_some(Link {
+            f: None,
+            proto: this,
+            nregs,
+            gf: None,
+        });
     }
     if op(ins[k]) != GETVAR {
         return None;

@@ -82,11 +82,7 @@ pub(crate) fn trim(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 }
 
 fn needle(v: Value, op: &str) -> Result<String> {
-    if v.is_char() {
-        Ok(v.as_char().to_string())
-    } else {
-        Ok(string(v, op)?.to_string())
-    }
+    if v.is_char() { Ok(v.as_char().to_string()) } else { Ok(string(v, op)?.to_string()) }
 }
 
 /// `(%str-index s needle from last?)`: the character index of the first
@@ -838,10 +834,12 @@ fn convert(conv: char, v: Value, spec: &Spec) -> Result<String> {
             match spec.prec {
                 Some(p) => {
                     let mut w = 0;
-                    t.graphemes(true).take_while(|g| {
-                        w += g.width();
-                        w <= p
-                    }).collect()
+                    t.graphemes(true)
+                        .take_while(|g| {
+                            w += g.width();
+                            w <= p
+                        })
+                        .collect()
                 }
                 None => t,
             }
@@ -883,7 +881,8 @@ fn convert(conv: char, v: Value, spec: &Spec) -> Result<String> {
                 'f' => {
                     let t = format!("{mag:.p$}");
                     if spec.group {
-                        let (i, frac) = t.split_once('.').map(|(i, f)| (i.to_string(), format!(".{f}"))).unwrap_or((t.clone(), String::new()));
+                        let (i, frac) =
+                            t.split_once('.').map(|(i, f)| (i.to_string(), format!(".{f}"))).unwrap_or((t.clone(), String::new()));
                         format!("{}{frac}", group3(&i))
                     } else {
                         t
@@ -894,7 +893,11 @@ fn convert(conv: char, v: Value, spec: &Spec) -> Result<String> {
                     // %g: the shorter of %f and %e, without trailing zeros.
                     let p = p.max(1);
                     let x = if mag == 0.0 { 0 } else { mag.log10().floor() as i32 };
-                    let t = if x < -4 || x >= p as i32 { exp_form(mag, p - 1) } else { format!("{mag:.*}", (p as i32 - 1 - x).max(0) as usize) };
+                    let t = if x < -4 || x >= p as i32 {
+                        exp_form(mag, p - 1)
+                    } else {
+                        format!("{mag:.*}", (p as i32 - 1 - x).max(0) as usize)
+                    };
                     trim_zeros(&t)
                 }
             };

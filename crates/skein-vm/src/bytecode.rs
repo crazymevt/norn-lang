@@ -29,8 +29,25 @@ pub const RETURN: u8 = 17; //   a       return R[a]
 pub const GUARD: u8 = 18; //    a bx    if R[a] is K[bx] (identical): skip the next instruction
 
 pub const OP_NAMES: &[&str] = &[
-    "MOVE", "LOADK", "LOADI", "LOADNIL", "LOADTRUE", "LOADFALSE", "GETVAR", "DEFVAR", "GETUP", "SELF", "CLOSURE",
-    "SETUP", "JMP", "JMPF", "LOOP", "CALL", "TAILCALL", "RETURN", "GUARD",
+    "MOVE",
+    "LOADK",
+    "LOADI",
+    "LOADNIL",
+    "LOADTRUE",
+    "LOADFALSE",
+    "GETVAR",
+    "DEFVAR",
+    "GETUP",
+    "SELF",
+    "CLOSURE",
+    "SETUP",
+    "JMP",
+    "JMPF",
+    "LOOP",
+    "CALL",
+    "TAILCALL",
+    "RETURN",
+    "GUARD",
 ];
 
 pub const SBX_BIAS: i32 = 32768;

@@ -311,7 +311,10 @@ pub fn run() {
         }
     }
 
-    if let Some(tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand" | "deps" | "package" | "new" | "run" | "dev" | "api-diff" | "lsp")) = args.first().map(String::as_str) {
+    if let Some(
+        tool @ ("test" | "fmt" | "lint" | "doc" | "check" | "expand" | "deps" | "package" | "new" | "run" | "dev" | "api-diff" | "lsp"),
+    ) = args.first().map(String::as_str)
+    {
         // `skein test …`, `skein fmt …`: the library's main returns the exit status.
         // (no location of its own: an error escaping main says where it
         // was raised, or nothing, not "<string>:1", this wrapper)
@@ -409,9 +412,8 @@ fn image_tool(args: &[String]) -> i32 {
         }
     };
     let result = match args {
-        [op, img] if op == "info" => in_image(img).and_then(|s| {
-            describe(format!("(do (require 'skein.image) (skein.image/info-text (read-string {})))", skein_string(&s)))
-        }),
+        [op, img] if op == "info" => in_image(img)
+            .and_then(|s| describe(format!("(do (require 'skein.image) (skein.image/info-text (read-string {})))", skein_string(&s)))),
         [op, a, b] if op == "diff" => match (in_image(a), in_image(b)) {
             (Ok(sa), Ok(sb)) => describe(format!(
                 "(do (require 'skein.image) (skein.image/diff-text (:namespaces (read-string {})) (:namespaces (read-string {}))))",

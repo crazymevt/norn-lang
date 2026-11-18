@@ -403,8 +403,8 @@ pub fn save(path: &Path, spec: &Save) -> Result<Saved, String> {
     let (base_path, base_sum) = match base {
         Some(c) => {
             let top = c.layers.last().unwrap();
-            let same_dir = top.path.parent().map(Path::to_path_buf)
-                == std::path::absolute(path).ok().and_then(|p| p.parent().map(Path::to_path_buf));
+            let same_dir =
+                top.path.parent().map(Path::to_path_buf) == std::path::absolute(path).ok().and_then(|p| p.parent().map(Path::to_path_buf));
             let name = if same_dir { PathBuf::from(top.path.file_name().unwrap()) } else { top.path.clone() };
             (name.to_string_lossy().into_owned(), top.sum)
         }
@@ -626,7 +626,8 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
         c.locs[id] = layer_no << 48 | at as u64;
     }
 
-    let roots = words[roots_at..].iter().map(|&w| if is_ref(w) { reloc(w).map(Value) } else { Ok(Value(w)) }).collect::<Result<Vec<_>, _>>()?;
+    let roots =
+        words[roots_at..].iter().map(|&w| if is_ref(w) { reloc(w).map(Value) } else { Ok(Value(w)) }).collect::<Result<Vec<_>, _>>()?;
     c.layers.push(Layer { path: path.to_path_buf(), sum: h[H_SUM], words });
     Ok(roots)
 }

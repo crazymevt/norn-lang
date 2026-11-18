@@ -107,4 +107,3 @@ fn a_project_puts_its_packages_on_the_path_and_builds_from_main() {
     skein(&d.join("app"), &["build", img.to_str().unwrap()]);
     assert_eq!(skein(&elsewhere, &["--image", img.to_str().unwrap(), "x"]), "hello from lib-a [x]");
 }
-

@@ -110,7 +110,8 @@ impl Shake {
         let mut s = Shake::default();
         if v.is(Kind::Vector) && v.vec_count() == 3 {
             v.vec_nth(2).vec_for_each(|pair| {
-                if pair.is(Kind::Vector) && pair.vec_count() == 2 && pair.vec_nth(0).is(Kind::Generic) && pair.vec_nth(1).is(Kind::Generic) {
+                if pair.is(Kind::Vector) && pair.vec_count() == 2 && pair.vec_nth(0).is(Kind::Generic) && pair.vec_nth(1).is(Kind::Generic)
+                {
                     s.generics.push((pair.vec_nth(0), pair.vec_nth(1)));
                 }
                 true
@@ -281,13 +282,7 @@ pub(crate) fn load(path: &Path) -> std::result::Result<Restore, String> {
         return Err(r.bad());
     }
     let (ihash, gensym, epoch, next_fiber_id) = (r.int()?, r.int()?, r.int()?, r.int()?);
-    let empties = [
-        r.of(Kind::EmptyList)?,
-        r.of(Kind::Vector)?,
-        r.of(Kind::Map)?,
-        r.of(Kind::Set)?,
-        r.of(Kind::Array)?,
-    ];
+    let empties = [r.of(Kind::EmptyList)?, r.of(Kind::Vector)?, r.of(Kind::Map)?, r.of(Kind::Set)?, r.of(Kind::Array)?];
     let nb = r.count()?;
     let builtins = (0..nb).map(|_| r.opt(Kind::Class)).collect::<std::result::Result<Vec<_>, _>>()?;
     let kinds = (0..5).map(|_| r.opt(Kind::Closure)).collect::<std::result::Result<Vec<_>, _>>()?;
@@ -326,13 +321,8 @@ pub(crate) fn load(path: &Path) -> std::result::Result<Restore, String> {
     skein_rt::runtime::init_from_image(Tables { symbols, keywords, namespaces, empties })?;
     skein_rt::clos::set_builtins(&builtins);
     if kinds.iter().all(|k| k.is(Kind::Closure)) {
-        let _ = FRAME_KINDS.set(FrameKinds {
-            catch: kinds[0],
-            unwind: kinds[1],
-            bind: kinds[2],
-            finish: kinds[3],
-            runtime_error: kinds[4],
-        });
+        let _ =
+            FRAME_KINDS.set(FrameKinds { catch: kinds[0], unwind: kinds[1], bind: kinds[2], finish: kinds[3], runtime_error: kinds[4] });
     }
     skein_rt::object::set_identity_hash_counter(ihash);
     crate::reader::set_gensym_counter(gensym);
@@ -351,9 +341,7 @@ pub(crate) fn load(path: &Path) -> std::result::Result<Restore, String> {
         }
         let ns = rt().find_or_create_ns(name);
         f.set_word(fiber::NS, ns as *const skein_rt::runtime::Namespace as u64);
-        if f.fiber_state().load(std::sync::atomic::Ordering::Acquire) == fiber::DONE
-            && f.field(fiber::ERROR) == Value::UNBOUND
-        {
+        if f.fiber_state().load(std::sync::atomic::Ordering::Acquire) == fiber::DONE && f.field(fiber::ERROR) == Value::UNBOUND {
             dead.push(f);
         }
     }
@@ -428,7 +416,8 @@ fn save_paused(path: &Path, saver: Value, entry: Value, keep: bool, layered: boo
             // the restored process won't have.
             let io_waiting = |f: Value| {
                 let w = crate::sched::aget(f, skein_rt::conc::fiber::PARK);
-                w.is(Kind::Waiter) && (crate::reactor::holds_waiter(w) || crate::blocking::holds_waiter(w) || crate::main_lane::holds_waiter(w))
+                w.is(Kind::Waiter)
+                    && (crate::reactor::holds_waiter(w) || crate::blocking::holds_waiter(w) || crate::main_lane::holds_waiter(w))
             };
             let dead = |f: Value| !keep || f == saver || io_waiting(f);
             shake.swap_generics();

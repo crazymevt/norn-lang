@@ -67,7 +67,14 @@ pub(crate) fn raise_fd_limit() {
         let want = {
             let mut cap: libc::c_int = 0;
             let mut len = std::mem::size_of::<libc::c_int>();
-            if libc::sysctlbyname(c"kern.maxfilesperproc".as_ptr(), &mut cap as *mut _ as *mut libc::c_void, &mut len, std::ptr::null_mut(), 0) == 0 {
+            if libc::sysctlbyname(
+                c"kern.maxfilesperproc".as_ptr(),
+                &mut cap as *mut _ as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            ) == 0
+            {
                 want.min(cap as libc::rlim_t)
             } else {
                 want
@@ -177,10 +184,28 @@ pub(crate) fn tcp_accept(vm: &mut Vm, h: Value) -> Result<Value> {
 /// The local or peer address of a socket, as "ip:port".
 pub(crate) fn address(vm: &mut Vm, h: Value, peer: bool) -> Result<Value> {
     let a = reactor::with_io(h, |io| match io {
-        Io::Tcp(s) => if peer { s.peer_addr() } else { s.local_addr() },
+        Io::Tcp(s) => {
+            if peer {
+                s.peer_addr()
+            } else {
+                s.local_addr()
+            }
+        }
         Io::TcpListener(l) if !peer => l.local_addr(),
-        Io::Udp(s) => if peer { s.peer_addr() } else { s.local_addr() },
-        Io::Tls(t) => if peer { t.sock.peer_addr() } else { t.sock.local_addr() },
+        Io::Udp(s) => {
+            if peer {
+                s.peer_addr()
+            } else {
+                s.local_addr()
+            }
+        }
+        Io::Tls(t) => {
+            if peer {
+                t.sock.peer_addr()
+            } else {
+                t.sock.local_addr()
+            }
+        }
         _ => Err(std::io::Error::other("not a socket")),
     })?
     .map_err(io_err)?;
@@ -314,7 +339,9 @@ impl Tls {
             // The handshake needs the peer's records before data can go.
             match self.fill() {
                 Ok(true) => {}
-                Ok(false) => return Err(Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "connection closed during the TLS handshake"))),
+                Ok(false) => {
+                    return Err(Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "connection closed during the TLS handshake")));
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Err(Ok(Wait::Read)),
                 Err(e) => return Err(Err(e)),
             }
@@ -344,7 +371,9 @@ impl Tls {
             }
             match self.fill() {
                 Ok(true) => {}
-                Ok(false) => return Err(Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "connection closed during the TLS handshake"))),
+                Ok(false) => {
+                    return Err(Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "connection closed during the TLS handshake")));
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Err(Ok(Wait::Read)),
                 Err(e) => return Err(Err(e)),
             }
@@ -419,7 +448,8 @@ pub(crate) fn tls_client(vm: &mut Vm, h: Value, server_name: &str, ca_pem: Optio
         .map_err(|e| Error::new(e.to_string()))?
         .with_root_certificates(roots)
         .with_no_client_auth();
-    let name = rustls::pki_types::ServerName::try_from(server_name.to_owned()).map_err(|e| Error::new(format!("Bad server name {server_name}: {e}")))?;
+    let name = rustls::pki_types::ServerName::try_from(server_name.to_owned())
+        .map_err(|e| Error::new(format!("Bad server name {server_name}: {e}")))?;
     let conn = rustls::ClientConnection::new(Arc::new(config), name).map_err(|e| Error::new(e.to_string()))?;
     wrap(vm, h, conn.into(), info)
 }

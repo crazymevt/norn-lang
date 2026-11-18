@@ -112,7 +112,13 @@ impl Frame {
             Kind::Float => {
                 let f = v.as_f64();
                 // -0.0 = 0.0, and every NaN = every NaN (design §3.4).
-                let f = if f == 0.0 { 0.0 } else if f.is_nan() { f64::NAN } else { f };
+                let f = if f == 0.0 {
+                    0.0
+                } else if f.is_nan() {
+                    f64::NAN
+                } else {
+                    f
+                };
                 Ok(mix64(f.to_bits() ^ 0xf10a7))
             }
             Kind::BigInt => Ok(crate::numbers::big_hash(v)),
@@ -222,7 +228,8 @@ impl Frame {
 }
 
 pub fn is_sequential(v: Value) -> bool {
-    v.is_cons() || (v.is_obj() && matches!(v.obj_kind(), Kind::Vector | Kind::VecSeq | Kind::Range | Kind::EmptyList | Kind::Stream | Kind::Queue))
+    v.is_cons()
+        || (v.is_obj() && matches!(v.obj_kind(), Kind::Vector | Kind::VecSeq | Kind::Range | Kind::EmptyList | Kind::Stream | Kind::Queue))
 }
 
 fn is_map_like(v: Value) -> bool {
@@ -378,13 +385,11 @@ fn equal_one(a: Value, b: Value, stack: &mut Vec<Pending>) -> bool {
         Kind::Set => a.set_count() == b.set_count() && a.set_for_each(|k| b.set_contains(k)),
         Kind::Instance => {
             let class = a.instance_class();
-            class == b.instance_class()
-                && crate::clos::policy_flags(class) & crate::clos::class::IDENTITY == 0
-                && {
-                    let (x, y) = (compared_slots(a), compared_slots(b));
-                    stack.extend(x.into_iter().zip(y).rev().map(|((_, p), (_, q))| Pending::Pair(p, q)));
-                    true
-                }
+            class == b.instance_class() && crate::clos::policy_flags(class) & crate::clos::class::IDENTITY == 0 && {
+                let (x, y) = (compared_slots(a), compared_slots(b));
+                stack.extend(x.into_iter().zip(y).rev().map(|((_, p), (_, q))| Pending::Pair(p, q)));
+                true
+            }
         }
         _ => false,
     }

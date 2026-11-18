@@ -219,11 +219,8 @@ fn damaged_images_are_refused() {
     let good = d.join("good.skimg");
     eval(None, &format!("(:objects (save-image \"{}\"))", good.display()));
     let bytes = std::fs::read(&good).unwrap();
-    let mut cases: Vec<(&str, Vec<u8>)> = vec![
-        ("truncated", bytes[..bytes.len() / 2].to_vec()),
-        ("text", b"not an image\n".to_vec()),
-        ("empty", Vec::new()),
-    ];
+    let mut cases: Vec<(&str, Vec<u8>)> =
+        vec![("truncated", bytes[..bytes.len() / 2].to_vec()), ("text", b"not an image\n".to_vec()), ("empty", Vec::new())];
     for at in [16, 100, bytes.len() / 3, bytes.len() - 9] {
         let mut b = bytes.clone();
         b[at] ^= 0x41;
@@ -348,7 +345,10 @@ fn sorted_collections_and_queues_survive_an_image() {
     let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("colls");
     let img = d.join("colls.skimg");
-    eval(None, &format!(r#"(do (def sm (sorted-map 3 :c 1 :a)) (def q (queue 1 2)) (def ss (sorted-set 5 4)) (save-image "{}"))"#, img.display()));
+    eval(
+        None,
+        &format!(r#"(do (def sm (sorted-map 3 :c 1 :a)) (def q (queue 1 2)) (def ss (sorted-set 5 4)) (save-image "{}"))"#, img.display()),
+    );
     assert_eq!(
         eval(Some(&img), "[(assoc sm 2 :b) (conj q 3) (conj ss 1) (= sm {1 :a 3 :c}) (pop q)]"),
         "[{1 :a, 2 :b, 3 :c} #queue [1 2 3] #{1 4 5} true #queue [2]]"
@@ -429,7 +429,8 @@ fn shake_sources(d: &std::path::Path) -> PathBuf {
 "#,
     )
     .unwrap();
-    std::fs::write(d.join("shk/evals.skn"), "(ns shk.evals)\n(defn main [& args] (println (eval (read-string (first args)))) 0)\n").unwrap();
+    std::fs::write(d.join("shk/evals.skn"), "(ns shk.evals)\n(defn main [& args] (println (eval (read-string (first args)))) 0)\n")
+        .unwrap();
     d.to_path_buf()
 }
 
@@ -438,7 +439,15 @@ fn a_shaken_image_leaves_out_what_its_entry_doesnt_reach() {
     let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = shake_sources(&scratch("shake"));
     let build = |img: &PathBuf, extra: &[&str]| {
-        let o = skein().arg("build").arg(img).arg(d.join("shk/util.skn")).arg(d.join("shk/app.skn")).args(["--entry", "shk.app/main"]).args(extra).output().unwrap();
+        let o = skein()
+            .arg("build")
+            .arg(img)
+            .arg(d.join("shk/util.skn"))
+            .arg(d.join("shk/app.skn"))
+            .args(["--entry", "shk.app/main"])
+            .args(extra)
+            .output()
+            .unwrap();
         assert!(o.status.success(), "skein build failed:\n{}", text(&o));
         text(&o)
     };

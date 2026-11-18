@@ -205,9 +205,7 @@ impl Compiler<'_> {
             Value::NIL => self.emit(abc(LOADNIL, dest, 0, 0)),
             Value::TRUE => self.emit(abc(LOADTRUE, dest, 0, 0)),
             Value::FALSE => self.emit(abc(LOADFALSE, dest, 0, 0)),
-            _ if v.is_fixnum() && (-32768..32768).contains(&v.as_fixnum()) => {
-                self.emit(asbx(LOADI, dest, v.as_fixnum() as i32))
-            }
+            _ if v.is_fixnum() && (-32768..32768).contains(&v.as_fixnum()) => self.emit(asbx(LOADI, dest, v.as_fixnum() as i32)),
             _ => {
                 let k = self.konst(v)?;
                 self.emit(abx(LOADK, dest, k))
@@ -248,9 +246,7 @@ impl Compiler<'_> {
     }
 
     fn is_lexical(&self, sym: Value) -> bool {
-        self.fns.iter().any(|f| {
-            f.self_name == sym || f.ar.locals.iter().any(|(s, _)| *s == sym) || f.upvals.iter().any(|(s, _)| *s == sym)
-        })
+        self.fns.iter().any(|f| f.self_name == sym || f.ar.locals.iter().any(|(s, _)| *s == sym) || f.upvals.iter().any(|(s, _)| *s == sym))
     }
 
     fn macro_var(&mut self, form: Value) -> Option<Value> {
@@ -307,11 +303,16 @@ impl Compiler<'_> {
             };
             let sym = rt().symbol(&mut self.vm.m, Some("skein.core"), ctor);
             let var = self.vm.resolve(sym).ok_or_else(|| Error::new(format!("skein.core/{ctor} is not defined")))?;
-            return self.compile_call_with(|c, r| {
-                let k = c.konst(var)?;
-                c.emit(abx(GETVAR, r, k));
-                Ok(())
-            }, &elems, dest, pos);
+            return self.compile_call_with(
+                |c, r| {
+                    let k = c.konst(var)?;
+                    c.emit(abx(GETVAR, r, k));
+                    Ok(())
+                },
+                &elems,
+                dest,
+                pos,
+            );
         }
         self.load_const(dest, form)?;
         self.finish(dest, pos);
@@ -335,10 +336,7 @@ impl Compiler<'_> {
             }
             None => {
                 let Some(var) = self.vm.resolve(sym) else {
-                    return err(format!(
-                        "Unable to resolve symbol: {} in this context",
-                        skein_rt::print::pr_str(sym, true)
-                    ));
+                    return err(format!("Unable to resolve symbol: {} in this context", skein_rt::print::pr_str(sym, true)));
                 };
                 if var.var_is_macro() {
                     return err(format!("Can't take the value of a macro: {}", skein_rt::print::pr_str(var, true)));
@@ -386,13 +384,7 @@ impl Compiler<'_> {
     }
 
     /// Emit a call: `load_fn` puts the callee in a register, then the args.
-    fn compile_call_with(
-        &mut self,
-        load_fn: impl FnOnce(&mut Self, u8) -> Result<()>,
-        args: &[Value],
-        dest: u8,
-        pos: Pos,
-    ) -> Result<()> {
+    fn compile_call_with(&mut self, load_fn: impl FnOnce(&mut Self, u8) -> Result<()>, args: &[Value], dest: u8, pos: Pos) -> Result<()> {
         if args.len() > 250 {
             return err("Too many arguments in one call (max 250)");
         }
@@ -682,7 +674,7 @@ impl Compiler<'_> {
                 }
                 let r = self.alloc()?;
                 self.ar().locals.push((ps[k], r));
-            self.ar().debug.push((ps[k], r));
+                self.ar().debug.push((ps[k], r));
                 regs.push(r);
                 if !variadic {
                     nfixed += 1;
