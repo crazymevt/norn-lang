@@ -29,6 +29,8 @@
 ;;;; - :macro-order — in a module, a call to a macro the module defines
 ;;;;   further down (loading the module stops there: a macro must be
 ;;;;   defined before its first use);
+;;;; - :duplicate-key — a map or set written with the same key twice: the
+;;;;   reader keeps the last one and says nothing;
 ;;;;
 ;;;; and in a module (a file starting with `ns`, M8 part 8.8):
 ;;;;
@@ -521,6 +523,40 @@
           (catch Error _ nil))
      (try (lint-text s path) (finally (in-ns (symbol (str here))))))))
 
+;; A map or set literal with a key written twice. The reader has dropped
+;; one by the time a form is read, so this walks the text's syntax tree
+;; (%read-cst). Keys are compared as written, and only single tokens: :a
+;; and :a, not 1 and 1.0 (different keys) or two calls that may differ.
+(defn- duplicate-keys
+  "[line key open] for each key written again in a map or set literal of s."
+  [s]
+  (let [found (atom [])
+        line (atom 1)
+        newlines (fn [text] (count (filter (fn [c] (= c \newline)) text)))
+        walk (fn walk [nodes]
+               (doseq [n nodes]
+                 (case (first n)
+                   :newline (swap! line inc)
+                   (:token :comment) (swap! line + (newlines (second n)))
+                   :prefix (walk (nth n 2))
+                   :coll (let [open (nth n 1)
+                               forms (remove (fn [c] (or (contains? #{:space :newline :comment} (first c))
+                                                         (and (= :prefix (first c)) (= "#_" (second c)))))
+                                             (nth n 3))
+                               keys (cond (= open "{") (keep-indexed (fn [i f] (when (even? i) f)) forms)
+                                          (= open "#{") forms)
+                               at (atom {})]
+                           ;; (children in order, so each key's line is known as it's met)
+                           (doseq [c (nth n 3)]
+                             (when (and (= :token (first c)) (some (fn [k] (identical? k c)) keys))
+                               (if (contains? @at (second c))
+                                 (swap! found conj [@line (second c) open])
+                                 (swap! at assoc (second c) @line)))
+                             (walk [c])))
+                   nil)))]
+    (walk (%read-cst s))
+    @found))
+
 (defn- lint-text [s path]
   (let [lines (try (top-level-lines s) (catch Error _ []))
         here (current-ns)
@@ -576,6 +612,10 @@
                     (when macro-def? (analyze {} form)))
                   :else (analyze {} form)))
               (recur (inc i)))))
+        (doseq [[line k open] (try (duplicate-keys s) (catch Error _ nil))]
+          (binding [*where* {:file path :line line}]
+            (warn :duplicate-key k " is written twice in this " (if (= open "{") "map" "set")
+                  ": the reader keeps the last and drops the other")))
         (when *module*
           (binding [*where* {:file path :line (first lines)}] (check-requires *module*)))
         (catch Error e (swap! *warnings* conj {:file path :line nil :kind :read :message (condition-message e)}))
