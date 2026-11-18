@@ -1,0 +1,53 @@
+;;;; M11's done-check: a map whose values are written over and over, with
+;;;; next to nothing else allocated between one write and the next. What's
+;;;; alive stays the same size; what the pages holding it come to is the
+;;;; collector's doing. Where objects stay where they were made, each
+;;;; value that outlives its neighbours keeps their block: 4× what's alive
+;;;; under Immix, 2× under mark-sweep (docs/plans/plan-m11.md).
+;;;;
+;;;;   skein bench/overwrite.skn                (200,000 keys, each written 20 times)
+;;;;   skein bench/overwrite.skn 50000 10       (keys, times)
+;;;;
+;;;; The last line is the numbers, as a map: the heap's pages over what's
+;;;; alive on them (:ratio) after a collection at the end, and the most
+;;;; the heap came to while writing (:peak-mb).
+
+(ns bench-overwrite
+  (:require [skein.math :as math]
+            [skein.sys :as sys]))
+
+(defn- value
+  "Key i's value at its nth writing: about 100 characters."
+  [i n]
+  (str "value " i " written " n " ........................................................................"))
+
+(defn- write-all
+  "m with every one of its keys written again, in an order that leaves
+  no two neighbours next to each other (a stride through them)."
+  [m keys n]
+  (loop [k 0 i 0 m m]
+    (if (< k keys)
+      (recur (inc k) (mod (+ i 7919) keys) (assoc m i (value i n)))
+      m)))
+
+(defn- mb [bytes] (math/round-to (/ bytes 1048576.0) 1))
+
+(defn- measure [keys times]
+  (let [t0 (nano-time)
+        m (loop [n 0 m {} peak 0]
+            (if (< n times)
+              (let [m (write-all m keys n)]
+                (recur (inc n) m (max peak (heap-bytes))))
+              [m peak]))
+        ms (/ (- (nano-time) t0) 1e6)
+        [m peak] m
+        ;; (the collection comes at this carrier's next poll: a loop has one)
+        _ (do (gc) (dotimes [_ 100] nil))
+        st (gc-stats)]
+    {:keys (count m) :times times :ms (math/round ms)
+     :live-mb (mb (:live-bytes st)) :heap-mb (mb (:heap-bytes st)) :peak-mb (mb peak)
+     :ratio (math/round-to (/ (:heap-bytes st) (double (:live-bytes st))) 2)
+     :gcs (:count st) :pause-ms (math/round-to (:pause-ms st) 1) :max-pause-ms (math/round-to (:max-pause-ms st) 1)}))
+
+(let [[keys times] (map parse-long (sys/program-args))]
+  (prn (measure (or keys 200000) (or times 20))))
