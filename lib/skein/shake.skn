@@ -19,7 +19,7 @@
     slot-value-using-class %gf-dispatch-custom %gf-miss %force-stream %read-tagged
     %set-slot-typed %with-typed *out* *inspecting* %image-entry %image-restored %run-entry
     %run-entry-with-args %has-entry? %image-summary %abort error throw signal invoke-debugger
-    StandardObject])
+    StandardObject *handlers*])
 
 (def ^:private evaluator-names
   "The runtime's ways in to evaluating code (its root tasks, the REPL's

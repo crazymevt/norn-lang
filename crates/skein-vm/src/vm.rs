@@ -54,6 +54,16 @@ pub enum ErrKind {
     /// can park), its value the call's. deref hands objects to
     /// `deref-object` this way (M9 part 9.14).
     Call(Value, Value),
+    /// A `throw-tag` of a value to a tag whose catch isn't on the stack of
+    /// the nested run it was thrown in: carried out of the run to the Rust
+    /// that started it, and thrown again where that returns to (a
+    /// handler-case outside a `print-object` method, a tag reader or a
+    /// macro's function catching what's signalled inside).
+    Throw(Value, Value),
+    /// A primitive's error that no handler inside its nested run took
+    /// (`%nested-raise`): the run fails with it, as a `Runtime` error for
+    /// whoever started the run.
+    Declined,
 }
 
 /// A Skein error as seen from Rust, with a Skein-level backtrace.
@@ -510,6 +520,10 @@ pub struct Vm {
     pub(crate) suspend: Option<Suspend>,
     /// Depth of nested (non-suspendable, GC-inhibited) runs.
     pub(crate) nested: u32,
+    /// For each run `apply` has under way: its depth and the handlers
+    /// (`*handlers*`) in force as it began. Handlers before those in the
+    /// list were established inside the run.
+    nested_base: Vec<(u32, Value)>,
     pub(crate) want_gc: bool,
     /// The running fiber's dynamic environment (map var → value, or nil).
     pub(crate) dyn_env: Value,
@@ -852,6 +866,7 @@ impl Vm {
             current: Value::NIL,
             suspend: None,
             nested: 0,
+            nested_base: Vec::new(),
             want_gc: false,
             dyn_env: Value::NIL,
             spare: Value::NIL,
@@ -1549,6 +1564,10 @@ impl Vm {
             }
             let Some((seg, fp)) = found else {
                 return Err(match target {
+                    // (carried out of a nested run: its catch may be outside)
+                    Target::Catch(tag) if self.nested > 0 => {
+                        Error { kind: ErrKind::Throw(tag, x), ..Error::new(format!("No catch for tag {}", pr_str(tag, true))) }
+                    }
                     Target::Catch(tag) => Error::new(format!("No catch for tag {}", pr_str(tag, true))),
                     _ => Error::new("That frame is not on this fiber's stack"),
                 });
@@ -1620,8 +1639,67 @@ impl Vm {
     /// whatever a handler or restart returns becomes the operation's value
     /// (`use-value`); a `retry` re-executes it. Everything else unwinds the
     /// fiber and ends it.
-    unsafe fn handle_error(&mut self, st: &mut St, e: Error, dest: Option<Option<usize>>) -> Result<Flow> {
+    unsafe fn handle_error(&mut self, st: &mut St, mut e: Error, dest: Option<Option<usize>>) -> Result<Flow> {
         let Some(fk) = FRAME_KINDS.get() else { return Err(self.fail(st, e)) };
+        // A throw carried out of a nested run: thrown again here, where
+        // the Rust that started the run was called from. With no catch on
+        // this stack either, it's carried on out of this run, or (in a
+        // fiber's own run) is the error a throw without a catch always was.
+        if let ErrKind::Throw(tag, x) = e.kind {
+            if st.seg.is_nil() || (self.nested == 0 && self.current.is_nil()) {
+                e.kind = ErrKind::Runtime;
+            } else {
+                let kw = rt().keyword(&mut self.m, None, "return");
+                // SAFETY: st describes a valid frame chain.
+                match unsafe { self.unwind(st, Target::Catch(tag), kw, x, Value::NIL) } {
+                    Ok(flow) => return Ok(flow),
+                    Err(e2) if matches!(e2.kind, ErrKind::Throw(..)) => {
+                        // SAFETY: st describes a valid frame chain.
+                        unsafe { self.nested_cleanups(st, fk) };
+                        return Err(e2);
+                    }
+                    Err(e2) => e = e2,
+                }
+            }
+        }
+        if e.kind == ErrKind::Declined {
+            e.kind = ErrKind::Runtime;
+            if self.nested > 0 && !st.seg.is_nil() {
+                // (its trace was made where it happened)
+                // SAFETY: st describes a valid frame chain.
+                unsafe { self.nested_cleanups(st, fk) };
+                return Err(e);
+            }
+        }
+        // A primitive's error in a nested run with handlers of its own (a
+        // `try` in a print-object method): signalled to those, in place of
+        // the failed operation as in a fiber's own run, so they can catch
+        // it or give a value. If none takes it the run fails with it
+        // (`%nested-raise`), and the handlers outside see it where the run
+        // was started from.
+        if self.nested > 0
+            && !st.seg.is_nil()
+            && e.kind == ErrKind::Runtime
+            && let (Some(d), Some(&(depth, base))) = (dest, self.nested_base.last())
+            && depth == self.nested
+            && self.handlers_now() != base
+        {
+            let mut lines = e.trace.clone();
+            // SAFETY: st describes a valid frame chain.
+            lines.extend(unsafe { self.backtrace(st) });
+            let lines: Vec<Value> = lines.iter().map(|t| str_new(&mut self.m, t)).collect();
+            let trace = vec_from_slice(&mut self.m, &lines);
+            let msg = str_new(&mut self.m, &e.msg);
+            let (cls, data, cond) = self.class_values(&e);
+            // SAFETY: st describes the current frame.
+            let r = unsafe { self.invoke(st, fk.runtime_error, &[msg, trace, cls, data, cond, base], d) };
+            return r.map_err(|e2| {
+                let e2 = self.fail(st, e2);
+                // SAFETY: st describes a valid frame chain.
+                unsafe { self.nested_cleanups(st, fk) };
+                e2
+            });
+        }
         if self.nested > 0 && !st.seg.is_nil() {
             let e = self.fail(st, e);
             // SAFETY: st describes a valid frame chain.
@@ -1687,9 +1765,9 @@ impl Vm {
         })
     }
 
-    /// A nested run failed. Its error goes back to the Rust that called it,
-    /// past the run's frames, which no condition handler or catch inside
-    /// it sees. Run the cleanups of their `%unwind-protect*` frames
+    /// A nested run failed (no handler inside it took the error), or a
+    /// throw is leaving it. The error goes back to the Rust that called
+    /// it, past the run's frames. Run the cleanups of their `%unwind-protect*` frames
     /// (`finally`, a library load's bookkeeping), innermost first, each in
     /// its own dynamic environment, as unwinding does. An error in one is
     /// dropped: the run's own is the one reported.
@@ -1736,14 +1814,35 @@ impl Vm {
         }
     }
 
+    /// `*handlers*` as it's bound now: the condition handlers in force.
+    fn handlers_now(&mut self) -> Value {
+        static HANDLERS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        let var = match HANDLERS.get() {
+            Some(&v) => v,
+            None => {
+                let sym = rt().symbol(&mut self.m, None, "*handlers*");
+                match self.core.lookup(sym) {
+                    Some(v) if v.is(Kind::Var) => *HANDLERS.get_or_init(|| v),
+                    _ => return Value::NIL, // (boot: before core.skn defines it)
+                }
+            }
+        };
+        match self.dyn_env.is(Kind::Map).then(|| self.dyn_env.map_get(var)).flatten() {
+            Some(v) => v,
+            None => var.var_root(),
+        }
+    }
+
     // ---- entry points ----
 
     /// Call any callable from Rust: a *nested* run on a fresh stack. It can't
     /// park or yield, and GC is inhibited until it returns.
     ///
-    /// A failure leaves its frames without running them on: their cleanups
-    /// run (`nested_cleanups`), but no `catch`, and no `binding` or `in-ns`
-    /// is undone. So the dynamic environment and the namespace are put back
+    /// A primitive's error is signalled to the handlers established inside
+    /// the run (`handle_error`); one that none of them takes fails the run,
+    /// for the handlers outside. A failure leaves the run's frames without
+    /// running them on: their cleanups run (`nested_cleanups`), but no
+    /// `binding` or `in-ns` is undone. So the dynamic environment and the namespace are put back
     /// as they were, or the caller would go on in the failed code's (with
     /// its handlers, whose catches are gone: a condition signalled then
     /// found one, couldn't throw to it, signalled that, and so on without
@@ -1751,7 +1850,10 @@ impl Vm {
     pub fn apply(&mut self, f: Value, args: &[Value]) -> Result<Value> {
         let (dyn_env, ns) = (self.dyn_env, self.ns);
         self.nested += 1;
+        let base = self.handlers_now();
+        self.nested_base.push((self.nested, base));
         let r = self.apply_inner(f, args);
+        self.nested_base.pop();
         self.nested -= 1;
         if r.is_err() {
             self.dyn_env = dyn_env;

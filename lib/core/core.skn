@@ -1584,12 +1584,12 @@
   every try). Internal."
   (atom nil))
 
-(defn signal
-  "Offer condition c to the active handlers, innermost first. A handler
-  declines by returning; while it runs, only the handlers outside it are active."
-  [c]
+(defn %signal-until
+  "signal, to the handlers inside those of base alone (a tail of
+  *handlers*; nil: every handler)."
+  [c base]
   (loop [hs *handlers*]
-    (when hs
+    (when (and hs (not (identical? hs base)))
       (let [h (first hs) more (next hs)]
         (when (and (%visible? (nth h 2)) (instance? (nth h 0) c))
           (if-let [f (nth h 1)]
@@ -1597,6 +1597,12 @@
             (throw-tag (nth h 3) [%caught (nth h 4) c])))
         (recur more))))
   nil)
+
+(defn signal
+  "Offer condition c to the active handlers, innermost first. A handler
+  declines by returning; while it runs, only the handlers outside it are active."
+  [c]
+  (%signal-until c nil))
 
 (defn- %make-condition [x args]
   (let [c (cond (instance? Condition x) x
@@ -1787,6 +1793,23 @@
                      k (if v (var-get v) RuntimeError)]
                 (apply make k :message msg :trace trace (mapcat identity data))))
           r (restart-case (error c)
+              (use-value [v] :report "Return a value from the failed operation instead" v)
+              (retry [] :report "Try the failed operation again (e.g. after defining or fixing something)"
+                     (%retry-marker)))]
+     r))
+
+  ;; In a run started from Rust (a print-object method, a tag reader): the
+  ;; handlers established inside the run, those before base in *handlers*,
+  ;; are offered the error. If none takes it the run fails with it, and the
+  ;; handlers outside see it where the run was started (vm.rs's
+  ;; handle_error).
+  ([msg trace cls data cond base]
+   (let* [c (if cond
+              cond
+              (let* [v (when cls (%resolve-in 'skein.core cls))
+                     k (if v (var-get v) RuntimeError)]
+                (apply make k :message msg :trace trace (mapcat identity data))))
+          r (restart-case (do (%signal-until c base) (%nested-raise msg trace cls data cond))
               (use-value [v] :report "Return a value from the failed operation instead" v)
               (retry [] :report "Try the failed operation again (e.g. after defining or fixing something)"
                      (%retry-marker)))]

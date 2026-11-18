@@ -166,3 +166,52 @@
 (is (thrown? Error (muffle-warning)) "no warning is being signalled")
 ;; Without *debugger* bound, an unhandled error ends the fiber.
 (is (= {:error "plain"} (settle (spawn-detached (error "plain")))))
+
+;;; Runs started from Rust (a print-object method, a tag's reader): a
+;;; primitive's error is signalled to the handlers inside the run (it went
+;;; past them: only the handlers outside saw it), and a throw to a catch
+;;; outside the run reaches it (it was "No catch for tag").
+(defclass Nested () ((how)))
+(def nested-log (atom []))
+(defmethod print-object ((n Nested))
+  (case (:how n)
+    :catch (try (nth [] 5) (catch IndexError e (str "caught " (:index e))))
+    :other (try (nth [] 5) (catch ArithmeticError e "wrong"))
+    :value (handler-bind [Error (fn [_] (invoke-restart 'use-value "used"))] (nth [] 5))
+    :seen (handler-bind [Error (fn [_] (swap! nested-log conj :inside))] (nth [] 5))
+    :finally (try (try (nth [] 5) (finally (swap! nested-log conj :cleanup))) (catch ArithmeticError e "wrong"))
+    :error (error "boom")
+    :throw (throw-tag :out "thrown")
+    :plain (nth [] 5)))
+(is (= "caught 5" (pr-str (Nested :how :catch))) "a catch inside the run")
+(is (= "[caught 5 caught 5]" (pr-str [(Nested :how :catch) (Nested :how :catch)])))
+(is (= "used" (pr-str (Nested :how :value))) "use-value, from a handler inside")
+(is (= [5 "Index out of bounds: 5"]
+       (try (pr-str (Nested :how :other)) (catch IndexError e [(:index e) (condition-message e)])))
+    "a catch inside for another class: the one outside, with the error's class and slots")
+(is (= :outside (try (pr-str (Nested :how :plain)) (catch IndexError e :outside))) "no handler inside")
+(reset! nested-log [])
+(is (= :outside (handler-bind [Error (fn [_] (swap! nested-log conj :outside))]
+                  (try (pr-str (Nested :how :seen)) (catch Error e :outside)))))
+(is (= [:inside] @nested-log) "each handler is offered it once (the catch is inside the outer handler-bind)")
+(reset! nested-log [])
+(is (= :outside (try (pr-str (Nested :how :finally)) (catch Error e :outside))))
+(is (= [:cleanup] @nested-log) "the run's cleanups run as it fails")
+(is (= "boom" (try (pr-str (Nested :how :error)) (catch Error e (condition-message e))))
+    "error inside, its catch outside the run")
+(is (= "thrown" (catch-tag :out (pr-str (Nested :how :throw)))) "a throw-tag out of the run")
+(is (= "thrown" (catch-tag :out (pr-str [1 [(Nested :how :throw)]]))))
+(is (= "No catch for tag :out" (try (pr-str (Nested :how :throw)) (catch Error e (condition-message e))))
+    "with no catch anywhere it's the error it always was")
+(is (= {:error "boom"} (settle (spawn-detached (pr-str (Nested :how :error))))) "unhandled: the fiber ends with it")
+(is (= {:error "Index out of bounds: 5"} (settle (spawn-detached (pr-str (Nested :how :plain))))))
+;; A tag's reader is such a run too. (What leaves it uncaught is a read
+;; error with its message: the reader's to raise.)
+(is (= [:caught "Index out of bounds: 7"]
+       (binding [*tag-readers* (assoc *tag-readers*
+                                      'nested/catch (fn [x] (try (nth [] x) (catch IndexError e :caught)))
+                                      'nested/plain (fn [x] (nth [] x)))]
+         [(read-string "#nested/catch 5")
+          (try (read-string "#nested/plain 7") (catch Error e (re-find #"Index out of bounds: \d" (condition-message e))))])))
+;; After all that the handlers and catches of this fiber still work.
+(is (= :caught (try (/ 1 0) (catch RuntimeError e :caught))))

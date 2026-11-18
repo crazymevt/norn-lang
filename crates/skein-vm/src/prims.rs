@@ -289,6 +289,7 @@ prims! {
     "%mark-dynamic!" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "%mark-dynamic!")?; a[0].var_set_flag(skein_rt::func::VAR_DYNBOUND); Ok(a[0]) };
     "%register-frame-kinds!" 5 Some(5) => register_frame_kinds;
     "%retry-marker" 0 Some(0) => |_, _| Ok(Value::RETRY);
+    "%nested-raise" 5 Some(5) => |vm, a| Err(nested_raise(vm, a));
     // (how: [trace condition]; the condition, if any, is kept by the fiber)
     "%die" 2 Some(2) => |vm, a| { let (trace, cond) = if a[1].is(Kind::Vector) && a[1].vec_count() == 2 { (a[1].vec_nth(0), a[1].vec_nth(1)) } else { (a[1], Value::NIL) }; let lines = to_vec(vm, trace).unwrap_or_default().iter().map(|&t| pr_str(t, false)).collect(); let mut e = Error::fatal(pr_str(a[0], false), lines); if !cond.is_nil() { e.class = Some(crate::vm::ErrClass::Value(cond)); } Err(e) };
     "%message" 0 VAR => |vm, a| Ok(str_new(&mut vm.m, &join(a, false)));
@@ -2182,6 +2183,29 @@ fn gf_cache_put(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 }
 
 // ---- conditions and the debugger ---------------------------------------------------
+
+/// `(%nested-raise msg trace cls data cond)`: the error `%runtime-error`
+/// was given, which no handler inside its nested run took: the run fails
+/// with it, for the handlers outside (vm.rs's `handle_error`).
+fn nested_raise(vm: &mut Vm, a: &[Value]) -> crate::vm::Error {
+    use crate::vm::{ErrClass, ErrKind, Error};
+    let msg = pr_str(a[0], false);
+    let mut trace = Vec::new();
+    if a[1].is(Kind::Vector) {
+        a[1].vec_for_each(|t| {
+            trace.push(pr_str(t, false));
+            true
+        });
+    }
+    let class = if !a[4].is_nil() {
+        Some(ErrClass::Value(a[4]))
+    } else if !a[2].is_nil() {
+        Some(ErrClass::Value(vec_from_slice(&mut vm.m, &[a[0], a[2], a[3]])))
+    } else {
+        None
+    };
+    Error { msg, trace, kind: ErrKind::Declined, class }
+}
 
 fn register_frame_kinds(_: &mut Vm, a: &[Value]) -> Result<Value> {
     for &f in a {
