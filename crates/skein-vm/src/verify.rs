@@ -111,7 +111,7 @@ pub fn proto(p: Value, nups: usize, from_image: bool) -> R {
         return Err("its code isn't code".into());
     }
     let locals = p.proto_locals();
-    if !(locals.is_nil() || locals.is(Kind::Array) && locals.arr_len() % 2 == 0 && locals.arr_slice().chunks(2).all(|l| l[1].is_fixnum())) {
+    if !(locals.is_nil() || locals.is(Kind::Array) && locals.arr_len().is_multiple_of(2) && locals.arr_slice().chunks(2).all(|l| l[1].is_fixnum())) {
         return Err("its debug locals aren't name/register pairs".into());
     }
     let n = code.code_len();

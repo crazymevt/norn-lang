@@ -619,9 +619,9 @@ fn float_bytes(vm: &mut Vm, args: &[Value]) -> Result<Value> {
 
 fn bytes_float(vm: &mut Vm, args: &[Value]) -> Result<Value> {
     expect(args[0], Kind::Bytes, "%bytes-float")?;
-    let value = match args[0].as_bytes() {
-        &[a, b, c, d] => f32::from_be_bytes([a, b, c, d]) as f64,
-        &[a, b, c, d, e, f, g, h] => f64::from_be_bytes([a, b, c, d, e, f, g, h]),
+    let value = match *args[0].as_bytes() {
+        [a, b, c, d] => f32::from_be_bytes([a, b, c, d]) as f64,
+        [a, b, c, d, e, f, g, h] => f64::from_be_bytes([a, b, c, d, e, f, g, h]),
         _ => return Err(Error::new("Float width must be 4 or 8 bytes")),
     };
     Ok(float_new(&mut vm.m, value))
@@ -1576,7 +1576,7 @@ fn nth(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 /// the module cache may hold.
 fn bind_map(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let pairs: Vec<Value> = if a.len() == 1 && a[0].is(Kind::Vector) { (0..a[0].vec_count()).map(|i| a[0].vec_nth(i)).collect() } else { a.to_vec() };
-    if pairs.len() % 2 != 0 {
+    if !pairs.len().is_multiple_of(2) {
         return Err(Error::new("%bind-map expects var/value pairs"));
     }
     let mut m = if vm.dyn_env.is_nil() { map_empty() } else { vm.dyn_env };
@@ -1589,7 +1589,8 @@ fn bind_map(vm: &mut Vm, a: &[Value]) -> Result<Value> {
 }
 
 /// `(get coll key default?)`.
-fn get_prim(vm: &mut Vm, a: &[Value]) -> Result<Value> { crate::owned::check(vm, a[0], false)?; if a[0].is(Kind::Transient) { return transient_get(vm, a); } if a[0].is(Kind::Sorted) { let r = if a[0].sorted_is_set() { crate::sorted::find(a[0].sorted_root(), a[1])?.map(|n| n.field(0)) } else { crate::sorted::get(a[0], a[1])? }; return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))); } Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) }
+fn get_prim(vm: &mut Vm, a: &[Value]) -> Result<Value> { crate::owned::check(vm, a[0], false)?; if a[0].is(Kind::Transient) { return transient_get(vm, a); }
+        if a[0].is(Kind::Sorted) { let r = if a[0].sorted_is_set() { crate::sorted::find(a[0].sorted_root(), a[1])?.map(|n| n.field(0)) } else { crate::sorted::get(a[0], a[1])? }; return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))); } Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL))) }
 
 /// `(%kw-get x key default?)`: what (get (%as-map x) key default) gives, a
 /// map destructuring's key, without the map: a seq of keyword arguments

@@ -382,12 +382,12 @@ impl<'a> Reader<'a> {
                 '(' => {
                     self.bump();
                     let xs = self.read_delimited(vm, ')')?;
-                    return Ok(Some(list_from(&mut vm.m, &xs)));
+                    Ok(Some(list_from(&mut vm.m, &xs)))
                 }
                 '[' => {
                     self.bump();
                     let xs = self.read_delimited(vm, ']')?;
-                    return Ok(Some(vec_from_slice(&mut vm.m, &xs)));
+                    Ok(Some(vec_from_slice(&mut vm.m, &xs)))
                 }
                 '{' => {
                     self.bump();
@@ -402,22 +402,22 @@ impl<'a> Reader<'a> {
                     if let Some(f) = self.frame() {
                         f.elems = Some(xs);
                     }
-                    return Ok(Some(map));
+                    Ok(Some(map))
                 }
                 '"' => {
                     self.bump();
-                    return self.read_string(vm).map(Some);
+                    self.read_string(vm).map(Some)
                 }
                 '\'' => {
                     self.bump();
-                    return self.wrap(vm, "quote").map(Some);
+                    self.wrap(vm, "quote").map(Some)
                 }
                 '`' => {
                     self.bump();
                     let form = self.read_required(vm)?;
                     let mut gensyms = HashMap::new();
                     self.rewritten();
-                    return syntax_quote(vm, form, &mut gensyms).map(Some).map_err(ReadError::Syntax);
+                    syntax_quote(vm, form, &mut gensyms).map(Some).map_err(ReadError::Syntax)
                 }
                 '~' => {
                     self.bump();
@@ -425,11 +425,11 @@ impl<'a> Reader<'a> {
                         self.bump();
                         return self.wrap(vm, "unquote-splicing").map(Some);
                     }
-                    return self.wrap(vm, "unquote").map(Some);
+                    self.wrap(vm, "unquote").map(Some)
                 }
                 '@' => {
                     self.bump();
-                    return self.wrap(vm, "deref").map(Some);
+                    self.wrap(vm, "deref").map(Some)
                 }
                 '^' => {
                     // Metadata is read and dropped (and its place with it);
@@ -443,7 +443,7 @@ impl<'a> Reader<'a> {
                         // kept for the next form at this depth (the frame
                         // for the ^ itself is dropped)
                         let m = meta_map(vm, m);
-                        let l = self.locs.as_mut().unwrap();
+                        let Some(l) = self.locs.as_mut() else { unreachable!() };
                         let depth = l.frames.len() - 1;
                         match l.meta.last_mut() {
                             Some((old, d)) if *d == depth => *old = merge_meta(vm, *old, m),
@@ -453,11 +453,11 @@ impl<'a> Reader<'a> {
                     if self.at_end() {
                         return Err(ReadError::Incomplete("EOF after metadata".into()));
                     }
-                    return Ok(None);
+                    Ok(None)
                 }
                 '\\' => {
                     self.bump();
-                    return self.read_char().map(Some);
+                    self.read_char().map(Some)
                 }
                 '#' => self.read_dispatch(vm),
                 _ => {
@@ -628,7 +628,7 @@ impl<'a> Reader<'a> {
                     }
                     let tag = match tok.split_once('/') {
                         Some((ns, name)) => rt().symbol(&mut vm.m, Some(ns), name),
-                        None => rt().symbol(&mut vm.m, None, &tok),
+                        None => rt().symbol(&mut vm.m, None, tok),
                     };
                     // ([true value], or [false message]: an error is the
                     // reader's to raise, not signalled from inside it)
