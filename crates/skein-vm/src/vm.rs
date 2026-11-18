@@ -260,10 +260,30 @@ impl From<String> for Error {
     }
 }
 
+/// The frames of a trace an error's report shows: the program's. Left out
+/// are the runtime's own (skein.core's `%…` functions: the frames of a
+/// `binding`, a `try`, a scope) and everything under `<toplevel>` or from
+/// the evaluator's first frame (what read and ran the form), which made a one-line mistake's
+/// report ten lines long. The trace itself (a condition's `:trace`, the
+/// debugger's frames) keeps them all, and `SKEIN_FULL_TRACE=1` shows them.
+pub fn shown_trace(trace: &[String]) -> Vec<&String> {
+    static FULL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *FULL.get_or_init(|| std::env::var("SKEIN_FULL_TRACE").is_ok_and(|v| !v.is_empty() && v != "0")) {
+        return trace.iter().collect();
+    }
+    // (where the evaluator's frames begin: after the form's own, or at the
+    // function that reads and runs a file's or the REPL's forms)
+    let evaluator = |t: &String| {
+        t.starts_with("skein.expander/eval-") || t.starts_with("skein.core/%repl-eval") || t == "skein.core/%eval-root" || t == "skein.core/load-file"
+    };
+    let end = trace.iter().position(|t| t == "<toplevel>").map(|i| i + 1).or_else(|| trace.iter().position(evaluator)).unwrap_or(trace.len());
+    trace[..end].iter().filter(|t| !t.starts_with("skein.core/%")).collect()
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.msg)?;
-        for t in &self.trace {
+        for t in shown_trace(&self.trace) {
             write!(f, "\n  at {t}")?;
         }
         Ok(())

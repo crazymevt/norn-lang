@@ -87,10 +87,6 @@ user=> (defn spin [] (recur))
 user=> (spin)
 Error: Interrupted
   at user/spin
-  at skein.core/%with-bindings*
-  at skein.core/%with-bindings*
-  at skein.core/%repl-eval/fn
-  at skein.core/%with-bindings*
 user=> (+ 1 1)
 2
 ```
@@ -411,10 +407,6 @@ Fiber 13 is waiting in the debugger: Divide by zero
 debug[13]> :a
 Error: Divide by zero
   at <toplevel>
-  at skein.core/%with-bindings*
-  at skein.core/%with-bindings*
-  at skein.core/%repl-eval/fn
-  at skein.core/%with-bindings*
 user=>
 ```
 

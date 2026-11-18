@@ -617,13 +617,12 @@ $ skein crash.skn
 before
 Error: crash.skn:3: Divide by zero
   at user/f
-  at skein.core/%with-bindings*
-  at skein.core/%with-bindings*
-  at skein.expander/eval-reader/fn/fn
-  at skein.core/%with-bindings*
-  at skein.core/%unwind-protect*
-  at skein.core/load-file
+  at <toplevel>
 ```
+
+The trace lists your program's frames. The runtime's own (the frames of a
+`binding` or a `try`, and the evaluator that ran the file) are left out;
+`SKEIN_FULL_TRACE=1` shows them too.
 
 At the REPL, or in an editor connected to Skein, the fiber stops where it
 is instead, with its whole stack intact, and waits. You can look at its
