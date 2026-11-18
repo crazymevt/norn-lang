@@ -117,6 +117,18 @@
 
 (defn- lint [text] (mapv (juxt :line :kind :message) (lint/lint-string text "lm.skn")))
 
+(deftest the-linter-follows-a-scripts-own-library-path
+  ;; (bench/stash.skn names lang-tests/stash/src before requiring from it)
+  (module! "onpath" "(ns mt.onpath)\n(defn hi [] :hi)\n")
+  (let [other (io/path dir "elsewhere")]
+    (io/mkdirs! (io/path other "ep"))
+    (io/write-text (io/path other "ep" "lib.skn") "(ns ep.lib)\n(defn there [] :there)\n")
+    (is (= [] (lint (str "(add-lib-path! " (pr-str other) ")\n(require '[ep.lib :as e])\n(e/there)\n")))
+        "a path written out: its libraries are found")
+    (is (= [:macro :unresolved]
+           (mapv second (lint "(def where (str \"some\" \"where\"))\n(add-lib-path! where)\n(require '[ep.nope :as n])\n(n/f)\n")))
+        "a path only the running script knows: nothing is said of it, only of the require that fails")))
+
 (deftest the-linter-knows-modules
   (is (= [] (lint "(ns lm)\n(defn f [] (g 1))\n(defn g [x] x)\n")) "forward references")
   (testing "unused requires (M8 part 8.8)"

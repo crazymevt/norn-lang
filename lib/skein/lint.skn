@@ -401,8 +401,12 @@
         (coll? form) (reduce (fn [acc x] (into acc (catch-bindings x))) #{} (if (map? form) (mapcat identity form) form))
         :else #{}))
 
+;; (add-lib-path!: a script that names where its libraries are, before it
+;; requires them, is linted with them found, when the path is one that can
+;; be worked out without running the script)
 (defn- evaluated-form? [form]
-  (and (seq? form) (contains? #{'ns 'in-ns 'require 'defmacro 'defsyntax 'define-syntax-class} (first form))))
+  (and (seq? form)
+       (contains? #{'ns 'in-ns 'require 'add-lib-path! 'defmacro 'defsyntax 'define-syntax-class} (first form))))
 
 (def ^:private definer-heads
   "Defining forms by head name, for the forward-reference prescan."
@@ -570,7 +574,9 @@
                       (try (handler-bind [Warning (fn [_] (muffle-warning))] (eval form))
                            (catch Error e
                              ;; (in a module the analysis below says why, with the name)
-                             (when-not macro-def?
+                             ;; (add-lib-path! of something only the running
+                             ;; program knows, a folder it made: left unsaid)
+                             (when-not (or macro-def? (= 'add-lib-path! (first form)))
                                (warn :macro "evaluating " (first form) ": " (condition-message e))))))
                     ;; (a macro's code is analyzed too: compile-time code)
                     (when macro-def? (analyze {} form)))
