@@ -231,6 +231,19 @@ impl Value {
         }
     }
 
+    /// Store a tagged value into payload word `i` of an object made just
+    /// now: no write barrier. Only for data (a kind that isn't
+    /// `stays_put`: those count as old from birth), and only before the
+    /// next safepoint, which within a primitive is always: a new object
+    /// is young, and a young collection looks through every young object
+    /// it reaches. (set_field's check, 40 times over for each node a map
+    /// copies, made assoc a fifth slower with generations.)
+    #[inline]
+    pub fn init_field(self, i: usize, v: Value) {
+        debug_assert!(!self.obj_kind().stays_put());
+        self.set_word(i, v.0);
+    }
+
     /// Atomic view of payload word `i` (vars, atoms).
     #[inline]
     pub fn atomic_word(self, i: usize) -> &'static AtomicU64 {

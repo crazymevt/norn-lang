@@ -37,10 +37,10 @@ pub fn sorted_new(m: &mut Mutator, count: usize, root: Value, set: bool) -> Valu
 
 pub fn node_new(m: &mut Mutator, key: Value, val: Value, left: Value, right: Value) -> Value {
     let n = alloc(m, Kind::SNode, 5);
-    n.set_field(N_KEY, key);
-    n.set_field(N_VAL, val);
-    n.set_field(N_LEFT, left);
-    n.set_field(N_RIGHT, right);
+    n.init_field(N_KEY, key);
+    n.init_field(N_VAL, val);
+    n.init_field(N_LEFT, left);
+    n.init_field(N_RIGHT, right);
     n.set_word(N_HEIGHT, 1 + height(left).max(height(right)));
     n
 }

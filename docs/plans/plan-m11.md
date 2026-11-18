@@ -471,8 +471,14 @@ carriers:
     the collection comes at that carrier's next poll, not before `(gc)`
     returns. A fiber that reads `(gc-stats)` at once, or sleeps and
     wakes on another carrier, sees the heap as it was.
-  - **Left**: register liveness (§4.5's imprecision); assoc on a 20-key
-    map; a run on Linux; generations by default.
+  - **assoc on a 20-key map** was the barrier's check, 40 times over:
+    each store into the node being copied asked whether that node was
+    old, and it was made a moment before. `Value::init_field` stores
+    with no barrier into data just made (`map.rs`, `colls.rs`'s sorted
+    nodes). At tier 1: 104 ns to 56 with generations, 85 to 75 in the
+    default build, which paid for part of the check.
+  - **Left**: register liveness (§4.5's imprecision); a run on Linux;
+    generations by default.
 
 ## Risks
 

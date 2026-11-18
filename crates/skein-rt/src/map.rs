@@ -44,21 +44,21 @@ fn val_at(n: Value, i: usize) -> Value {
 fn copy_node(m: &mut Mutator, n: Value) -> Value {
     let c = node_alloc(m, n.obj_kind(), n.word(0), npairs(n));
     for i in 0..2 * npairs(n) {
-        c.set_field(2 + i, n.field(2 + i));
+        c.init_field(2 + i, n.field(2 + i));
     }
     c
 }
 
 fn with_val(m: &mut Mutator, n: Value, i: usize, v: Value) -> Value {
     let c = copy_node(m, n);
-    c.set_field(3 + 2 * i, v);
+    c.init_field(3 + 2 * i, v);
     c
 }
 
 fn with_pair(m: &mut Mutator, n: Value, i: usize, k: Value, v: Value) -> Value {
     let c = copy_node(m, n);
-    c.set_field(2 + 2 * i, k);
-    c.set_field(3 + 2 * i, v);
+    c.init_field(2 + 2 * i, k);
+    c.init_field(3 + 2 * i, v);
     c
 }
 
@@ -69,11 +69,11 @@ fn insert_pair(m: &mut Mutator, n: Value, w0: u64, at: usize, k: Value, v: Value
     let mut j = 0;
     for i in 0..=np {
         if i == at {
-            c.set_field(2 + 2 * i, k);
-            c.set_field(3 + 2 * i, v);
+            c.init_field(2 + 2 * i, k);
+            c.init_field(3 + 2 * i, v);
         } else {
-            c.set_field(2 + 2 * i, key_at(n, j));
-            c.set_field(3 + 2 * i, val_at(n, j));
+            c.init_field(2 + 2 * i, key_at(n, j));
+            c.init_field(3 + 2 * i, val_at(n, j));
             j += 1;
         }
     }
@@ -87,8 +87,8 @@ fn remove_pair(m: &mut Mutator, n: Value, w0: u64, at: usize) -> Value {
     let mut j = 0;
     for i in 0..np {
         if i != at {
-            c.set_field(2 + 2 * j, key_at(n, i));
-            c.set_field(3 + 2 * j, val_at(n, i));
+            c.init_field(2 + 2 * j, key_at(n, i));
+            c.init_field(3 + 2 * j, val_at(n, i));
             j += 1;
         }
     }
@@ -135,8 +135,8 @@ fn node_assoc(m: &mut Mutator, node: Value, shift: u32, h: u64, key: Value, val:
         }
         // Different hash: lift the collision node into a bitmap node here.
         let wrapper = node_alloc(m, Kind::MapNode, bit_for(ch, shift), 1);
-        wrapper.set_field(2, Value::NODE);
-        wrapper.set_field(3, node);
+        wrapper.init_field(2, Value::NODE);
+        wrapper.init_field(3, node);
         return node_assoc(m, wrapper, shift, h, key, val, added);
     }
 
@@ -165,10 +165,10 @@ fn create_node(m: &mut Mutator, shift: u32, k1: Value, v1: Value, h2: u64, k2: V
     let h1 = hash(k1);
     if h1 == h2 {
         let c = node_alloc(m, Kind::CollisionNode, h1, 2);
-        c.set_field(2, k1);
-        c.set_field(3, v1);
-        c.set_field(4, k2);
-        c.set_field(5, v2);
+        c.init_field(2, k1);
+        c.init_field(3, v1);
+        c.init_field(4, k2);
+        c.init_field(5, v2);
         return c;
     }
     let empty = node_alloc(m, Kind::MapNode, 0, 0);
