@@ -27,8 +27,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub(crate) enum Io {
-    PipeIn(mio::unix::pipe::Receiver),
-    PipeOut(mio::unix::pipe::Sender),
+    PipeIn(crate::platform::PipeIn),
+    PipeOut(crate::platform::PipeOut),
     TcpListener(mio::net::TcpListener),
     Tcp(mio::net::TcpStream),
     Udp(mio::net::UdpSocket),

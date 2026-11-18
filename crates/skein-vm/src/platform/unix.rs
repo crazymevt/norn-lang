@@ -74,11 +74,87 @@ pub(crate) fn default_disposition(sig: i32) -> Result<bool> {
     Ok(old.sa_sigaction == libc::SIG_DFL)
 }
 
+// ---- listening for signals ------------------------------------------------------------------------
+
+/// Stops `on_signals`' thread when closed.
+pub(crate) struct SignalHandle(signal_hook::iterator::Handle);
+
+impl SignalHandle {
+    pub(crate) fn close(&self) {
+        self.0.close();
+    }
+}
+
+/// Call `each` with every one of the signals `nums` as it arrives, on a
+/// thread of its own called `thread`, until the handle is closed.
+pub(crate) fn on_signals(nums: &[i32], thread: &str, mut each: impl FnMut(i32) + Send + 'static) -> Result<SignalHandle> {
+    let mut signals = signal_hook::iterator::Signals::new(nums)?;
+    let handle = SignalHandle(signals.handle());
+    std::thread::Builder::new().name(thread.into()).spawn(move || {
+        for s in signals.forever() {
+            each(s);
+        }
+    })?;
+    Ok(handle)
+}
+
+/// From now on, when `sig` arrives and `unheard()` is true, do what the
+/// system would by default. (A signal that's listened for has a handler
+/// installed for good: with nobody listening any more it would be caught
+/// and dropped, and SIGTERM would no longer end the process.) `unheard`
+/// runs in a signal handler: it may only load atomics.
+pub(crate) fn default_when(sig: i32, unheard: impl Fn() -> bool + Send + Sync + 'static) -> Result<()> {
+    // SAFETY: the action only calls `unheard` and emulate_default_handler,
+    // both async-signal-safe.
+    unsafe {
+        signal_hook::low_level::register(sig, move || {
+            if unheard() {
+                let _ = signal_hook::low_level::emulate_default_handler(sig);
+            }
+        })
+    }?;
+    Ok(())
+}
+
+// ---- pipes ----------------------------------------------------------------------------------------
+
+/// The two ends of a pipe, as the reactor holds them: it needs each to be
+/// a `mio::event::Source`, and to read or write without blocking
+/// (`WouldBlock` when it can't yet).
+pub(crate) type PipeIn = mio::unix::pipe::Receiver;
+pub(crate) type PipeOut = mio::unix::pipe::Sender;
+
+/// A new pipe: where to write, and where that's read.
+pub(crate) fn pipe() -> Result<(PipeOut, PipeIn)> {
+    mio::unix::pipe::new()
+}
+
+/// A child's standard input, to write to.
+pub(crate) fn child_input(x: std::process::ChildStdin) -> Result<PipeOut> {
+    let tx = PipeOut::from(x);
+    tx.set_nonblocking(true)?;
+    Ok(tx)
+}
+
+/// A child's standard output, to read.
+pub(crate) fn child_output(x: std::process::ChildStdout) -> Result<PipeIn> {
+    let rx = PipeIn::from(x);
+    rx.set_nonblocking(true)?;
+    Ok(rx)
+}
+
+/// A child's standard error, to read.
+pub(crate) fn child_errors(x: std::process::ChildStderr) -> Result<PipeIn> {
+    let rx = PipeIn::from(x);
+    rx.set_nonblocking(true)?;
+    Ok(rx)
+}
+
 // ---- pseudo-terminals ---------------------------------------------------------------------------
 
 /// A new pseudo-terminal of `rows` by `cols`: its master (closed in a
 /// child) and its slave.
-pub(crate) fn open_pty(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd)> {
+fn open_pty(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd)> {
     let (mut master, mut slave): (libc::c_int, libc::c_int) = (-1, -1);
     let mut ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
     // SAFETY: openpty writes the two descriptors; the rest may be null.
@@ -97,7 +173,7 @@ pub(crate) fn open_pty(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd)> {
 /// (a pseudo-terminal's slave) as its controlling terminal, and the
 /// signals the runtime handles or ignores back at their defaults (an
 /// ignored one would stay ignored through exec, and ^C would do nothing).
-pub(crate) fn enter_terminal_session(c: &mut Command) {
+fn enter_terminal_session(c: &mut Command) {
     use std::os::unix::process::CommandExt;
     // SAFETY: between fork and exec only async-signal-safe calls.
     unsafe {
@@ -127,9 +203,37 @@ pub(crate) fn enter_terminal_session(c: &mut Command) {
     }
 }
 
+/// Why a child couldn't be started on a pseudo-terminal.
+pub(crate) enum PtyError {
+    /// No pseudo-terminal could be made.
+    Open(Error),
+    /// The program couldn't be started.
+    Spawn(Error),
+}
+
+/// Start `c` on a new pseudo-terminal of `rows` by `cols`: its standard
+/// input, output and error are the terminal, which it has as its
+/// controlling terminal (a session of its own). The child, and the two
+/// ends its parent keeps: what the terminal shows, and what's typed at it.
+pub(crate) fn spawn_on_pty(c: &mut Command, rows: u16, cols: u16) -> std::result::Result<(std::process::Child, PipeIn, PipeOut), PtyError> {
+    let (master, slave) = open_pty(rows, cols).map_err(PtyError::Open)?;
+    let ends = || -> Result<[OwnedFd; 3]> { Ok([slave.try_clone()?, slave.try_clone()?, slave.try_clone()?]) };
+    let [stdin, stdout, stderr] = ends().map_err(PtyError::Open)?;
+    c.stdin(stdin).stdout(stdout).stderr(stderr);
+    enter_terminal_session(c);
+    let child = c.spawn().map_err(PtyError::Spawn)?;
+    // (the parent's copies of the slave: the three the command holds, and ours)
+    c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    drop(slave);
+    let writer = master.try_clone().map_err(PtyError::Open)?;
+    let shown = PipeIn::from(master);
+    shown.set_nonblocking(true).map_err(PtyError::Open)?;
+    Ok((child, shown, PipeOut::from(writer)))
+}
+
 /// Tell the pseudo-terminal whose master is `master` its new size (its
 /// child gets SIGWINCH).
-pub(crate) fn set_window_size(master: &impl AsRawFd, rows: u16, cols: u16) -> Result<()> {
+pub(crate) fn set_window_size(master: &PipeOut, rows: u16, cols: u16) -> Result<()> {
     let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
     // SAFETY: TIOCSWINSZ on an open descriptor, with a winsize.
     if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) } != 0 {
