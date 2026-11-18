@@ -1182,6 +1182,14 @@ fn run_one(vm: &mut Vm, f: Value) {
                 break;
             }
             Ok(Exit::Yield) => {
+                // ((gc) yields to have its collection here: the fiber is
+                // saved and still this carrier's current one, so a root,
+                // and it isn't queued, where another carrier could take it,
+                // until the collection is over)
+                if std::mem::take(&mut vm.want_gc) {
+                    vm.drop_spare();
+                    safepoint::collect(&mut vm.m, true);
+                }
                 f.fiber_state().store(fiber::QUEUED, Ordering::Release);
                 requeue(f);
                 break;
@@ -1308,6 +1316,17 @@ fn carrier_loop(vm: &mut Vm) {
         }
         if s.external_len.load(Ordering::Acquire) > 0 && !s.paused.load(Ordering::SeqCst) {
             s.idle_count.fetch_sub(1, Ordering::AcqRel);
+            continue;
+        }
+        // The last carrier to go idle, with a full collection not far off
+        // (generations: half its budget spent): have it now, while nothing
+        // runs, and no request waits out its pause (M11 part 5). Then
+        // round again: there may be work, and after it there's none due.
+        if me < s.n && s.idle_count.load(Ordering::SeqCst) >= s.n && skein_rt::heap::idle_collection_due() {
+            s.idle_count.fetch_sub(1, Ordering::AcqRel);
+            drop(g);
+            vm.drop_spare();
+            safepoint::collect(&mut vm.m, true);
             continue;
         }
         vm.drop_spare();

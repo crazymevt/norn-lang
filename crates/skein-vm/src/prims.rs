@@ -237,7 +237,10 @@ prims! {
     // system
     "nano-time" 0 Some(0) => |_, _| { use std::sync::OnceLock; use std::time::Instant; static T0: OnceLock<Instant> = OnceLock::new(); Ok(Value::fix(T0.get_or_init(Instant::now).elapsed().as_nanos() as i64)) };
     "heap-bytes" 0 Some(0) => |_, _| Ok(Value::fix(skein_rt::heap::heap_bytes() as i64));
-    "gc" 0 Some(0) => |vm, _| { vm.want_gc = true; skein_rt::safepoint::bump_attention(); Ok(Value::NIL) };
+    // (a primitive can't collect: the fiber yields, and its carrier collects
+    // before it runs again (sched's run_one), so the collection is over when
+    // (gc) returns. Where a fiber can't yield, it's at the next poll.)
+    "gc" 0 Some(0) => |vm, _| { vm.want_gc = true; skein_rt::safepoint::bump_attention(); if vm.can_park() { vm.suspend = Some(crate::vm::Suspend::Yield); } Ok(Value::NIL) };
     "gc-count" 0 Some(0) => |_, _| Ok(Value::fix(skein_rt::heap::gc_count() as i64));
     "gc-stats" 0 Some(1) => gc_stats;
     // fibers, scopes, channels, atoms

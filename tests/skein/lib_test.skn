@@ -155,6 +155,11 @@
   (is (every? (fn [h] (and (integer? h) (pos? h))) before))
   (is (= (%identity-hash :k) (%identity-hash :k)))
   (is (= (%identity-hash 7) (%identity-hash 7)) "an immediate: its bits"))
+;; (gc) has collected when it returns: the count is up, with nothing between
+(let [before (gc-count)]
+  (gc)
+  (is (< before (gc-count))))
+
 ;; gc-stats: that collection, at least, and how long collections stopped
 ;; the program; :reset starts the total and the longest again.
 (let [st (gc-stats :reset)]

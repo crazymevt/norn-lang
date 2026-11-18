@@ -41,8 +41,7 @@
               [m peak]))
         ms (/ (- (nano-time) t0) 1e6)
         [m peak] m
-        ;; (the collection comes at this carrier's next poll: a loop has one)
-        _ (do (gc) (dotimes [_ 100] nil))
+        _ (gc)
         st (gc-stats)]
     {:keys (count m) :times times :ms (math/round ms)
      :live-mb (mb (:live-bytes st)) :heap-mb (mb (:heap-bytes st)) :peak-mb (mb peak)
