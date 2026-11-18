@@ -326,7 +326,8 @@ values rather than boxes.
   GB): that is the fragmentation itself, M11's to fix. `SKEIN_GC_LOG=1`
   prints a line for each collection (its pause, the pages in use before
   and after, the live bytes, the next limit; `=2` adds each space), and
-  `(gc-stats)` gives the pauses to a program. `SKEIN_GC_PLAN=marksweep`
+  `(gc-stats)` gives a program the pauses, the pages in use and the bytes
+  live on them. `SKEIN_GC_PLAN=marksweep`
   runs MMTk's free-list plan instead, to compare. MMTk's dynamic
   size (MemBalancer, still there as `SKEIN_HEAP_GROWTH=balancer`) sized
   the room above live data by how fast collections trace against how fast

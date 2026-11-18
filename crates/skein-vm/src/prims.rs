@@ -2258,6 +2258,8 @@ fn gc_stats(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         ms(vm, last),
         k(vm, "heap-bytes"),
         Value::fix(skein_rt::heap::heap_bytes() as i64),
+        k(vm, "live-bytes"),
+        Value::fix(skein_rt::heap::live_bytes() as i64),
     ];
     hash_map(vm, &kvs)
 }

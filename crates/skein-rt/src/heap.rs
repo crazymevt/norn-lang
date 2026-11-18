@@ -73,6 +73,7 @@ static GC_LOG: AtomicUsize = AtomicUsize::new(0);
 static PAGES_BEFORE: AtomicUsize = AtomicUsize::new(0);
 static PAGES_AFTER: AtomicUsize = AtomicUsize::new(0);
 static PAGES_LIVE: AtomicUsize = AtomicUsize::new(0);
+static PAGES_LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static PAGES_LIMIT: AtomicUsize = AtomicUsize::new(0);
 
 fn mmtk() -> &'static MMTK<Skein> {
@@ -153,6 +154,7 @@ fn grow_heap(mmtk: &'static MMTK<Skein>) {
     HEAP_LIMIT_PAGES.store(want.clamp(min, max), Ordering::Relaxed);
     PAGES_AFTER.store(in_use, Ordering::Relaxed);
     PAGES_LIVE.store(live, Ordering::Relaxed);
+    PAGES_LIVE_BYTES.store(live_bytes, Ordering::Relaxed);
     PAGES_LIMIT.store(want.clamp(min, max), Ordering::Relaxed);
 }
 
@@ -240,6 +242,13 @@ pub fn heap_bytes() -> usize {
 /// Number of completed collections.
 pub fn gc_count() -> u64 {
     GC_COUNT.load(Ordering::Relaxed)
+}
+
+/// The bytes of the objects the last collection found alive (0 before the
+/// first): what the heap's growth goes by, and beside `heap_bytes` how
+/// much of the heap is holes.
+pub fn live_bytes() -> usize {
+    PAGES_LIVE_BYTES.load(Ordering::Relaxed)
 }
 
 /// The collections' pauses in nanoseconds, (total, longest, last), since
