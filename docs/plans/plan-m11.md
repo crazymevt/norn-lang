@@ -498,8 +498,20 @@ carriers:
     over 20 ms where 20 did. There are 20 full collections where there
     were 13: coming at half the budget, they come more often. A program
     that's never idle is as it was.
-  - **Left**: register liveness (§4.5's imprecision); generations by
-    default. (Linux: a quick look in a container passed, both
+  - **Generations are the default** (decision 11): a build moves
+    objects unless it's built with the `non-moving` feature, and its
+    plan is StickyImmix unless `SKEIN_GC_PLAN` says otherwise (`immix`:
+    no generations). CI runs every suite again with collections forced
+    on each push; the nightly's `collector` job runs the stress modes,
+    a small nursery, Immix with everything moved, the build with the
+    heap checked, and the non-moving build. The FFI was looked at
+    first: skein-sdl3's tests and asteroids, and the rogue demo on
+    skein-raylib (its check and its smoke test), pass in each mode, and
+    each game ran in a window through 250 collections; `ffi_test.skn`
+    has a collection during a callback, on the calling carrier and in
+    a fiber serving one.
+  - **Left**: register liveness (§4.5's imprecision): to do, or to
+    move to todo.md and close M11 without (not decided). (Linux: a quick look in a container passed, both
     builds; CI's nightly `moving` job is the whole of it.)
 
 ## Risks
@@ -558,3 +570,5 @@ carriers:
     release has a generational plan that marks concurrently. Meanwhile,
     in part 5: a full collection taken early when the program is idle,
     and the budget for what's old said to be the setting it is.
+11. **Generations are the default now** (2026-11-18), not after some
+    nights of the nightly's job: nobody but the user runs Skein yet.

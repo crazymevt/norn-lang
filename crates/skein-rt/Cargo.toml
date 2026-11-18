@@ -13,11 +13,12 @@ num-integer = "0.1"
 num-traits = "0.2"
 
 [features]
-default = ["non-moving"]
+default = []
 # The collector never moves an object (MMTk's immix_non_moving): how Skein
-# has been built since M1. Without it (cargo build --no-default-features,
-# M11 part 2) Immix defragments: data may be moved at a collection, and
-# only what Kind::stays_put names, and what the roots name, stays.
+# was built from M1 to M11, and not the default since (cargo build -p skein
+# --features non-moving). Without it data may be moved at a collection:
+# only what Kind::stays_put names, and what the roots name, stays; and
+# the plan is generational (heap.rs init_heap).
 non-moving = ["mmtk/immix_non_moving"]
 # Heap checks, for hunting corruption: every pointer the GC follows (and
 # every root) must be a live object, or the GC panics naming the object

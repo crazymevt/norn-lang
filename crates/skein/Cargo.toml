@@ -26,6 +26,6 @@ ctrlc = "3"
 rustyline = "15"
 
 [features]
-default = ["non-moving"]
+default = []
 # (skein-rt's: the collector never moves an object)
 non-moving = ["skein-rt/non-moving", "skein-vm/non-moving"]

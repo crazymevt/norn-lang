@@ -337,8 +337,17 @@ values rather than boxes.
   collections and 560 ms a run; now 4 and 124 ms, peak RSS 137 → 233 MB).
   Small programs stay within the minimum (`skein -e nil`: 79 MB either
   way).
-- **Next (M11, [plan-m11.md](../plans/plan-m11.md), decided 2026-11-18):
-  objects may move.** Generational `StickyImmix` with its nursery copied,
+- **M11 ([plan-m11.md](../plans/plan-m11.md), decided 2026-11-18; the
+  default since that day): objects may move.** The default build's plan
+  is MMTk's `StickyImmix` with the young copied: young collections as a
+  256 MB nursery fills (`SKEIN_GC_NURSERY`), a full one when what's old
+  has grown by as much as is live (`SKEIN_HEAP_GROWTH`) or, sooner, when
+  the program is idle (`SKEIN_GC_IDLE=0` for never). On stash the heap
+  is 2.2× what's alive where it was 30×, young collections stop the
+  program 4–7 ms and full ones 33–56. `SKEIN_GC_PLAN=immix` is Immix
+  with no generations; a build with the `non-moving` feature (`cargo
+  build -p skein --features non-moving`) is the collector of M1 to M10,
+  and CI's nightly keeps it working. How it was decided: generational `StickyImmix` with its nursery copied,
   so that what survives is gathered out from among the garbage, reached
   through Immix with defragmentation. (It was to be
   `sticky_immix_non_moving_nursery`: that shortens pauses and leaves the

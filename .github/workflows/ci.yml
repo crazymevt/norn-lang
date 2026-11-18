@@ -1,5 +1,6 @@
 # Every push to main and every pull request: build, the Rust tests (with
-# 37 Skein suites at both tiers), every Skein suite, the lang-tests at three
+# 37 Skein suites at both tiers), every Skein suite (and again with
+# collections forced), the lang-tests at three
 # tiers against their recorded outputs, and skein check. On macOS arm64 and
 # Linux arm64 and x86-64. One job also checks the Rust's formatting and
 # shows clippy's warnings; macOS runs the book's examples.
@@ -39,7 +40,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: macOS file limits
         if: runner.os == 'macOS'
@@ -82,6 +83,16 @@ jobs:
         # (after a failure too: every failure in one run)
         if: ${{ !cancelled() }}
         run: target/release/skein test tests/skein
+
+      - name: Every Skein suite, a collection forced every 50th poll
+        # (M11: the collector moves objects and has generations; a stale
+        # pointer or a store with no write barrier shows here, and seldom
+        # in an ordinary run. After a failure too.)
+        if: ${{ !cancelled() }}
+        run: target/release/skein test tests/skein
+        env:
+          SKEIN_TIER: "0"
+          SKEIN_GC_STRESS: "50"
 
       - name: lang-tests
         # (after a failure too: every failure in one run)
