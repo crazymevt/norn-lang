@@ -128,8 +128,12 @@
 ;; An error a fiber's cleanup raises while it's cancelled isn't quiet.
 (is (= {:error "in cleanup"}
        (settle (spawn-detached (with-scope [s]
-                                 (let [f (spawn s (try (sleep 10000) (finally (error "in cleanup"))))]
-                                   (sleep 5)
+                                 ;; (cancelled only once it's inside its try: a fiber
+                                 ;; cancelled before it starts has no cleanup to run)
+                                 (let [started (chan)
+                                       f (spawn s (try (put! started true) (sleep 10000)
+                                                       (finally (error "in cleanup"))))]
+                                   (take! started)
                                    (cancel! f)
                                    :ok))))))
 ;; Cancelling a fiber that waits in the debugger takes it off the list.
