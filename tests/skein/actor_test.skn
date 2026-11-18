@@ -30,7 +30,7 @@
     (is (= 6 (a/ask c [:get])))
     (is (= [[:add :x]] @(:mailbox c)))
     (a/send c [:stop])
-    (is (= :normal (a/await-exit c 1000)))
+    (is (= :normal (a/await-exit c 10000)))
     (is (not (a/alive? c)))
     (is (= [:stop] (a/send c [:stop])) "a message to a process that has ended is dropped")))
 
@@ -65,7 +65,7 @@
 (deftest a-crash-is-its-exit-reason
   (let [c (a/spawn-process counter 0)]
     (a/send c [:crash])
-    (let [r (a/await-exit c 1000)]
+    (let [r (a/await-exit c 10000)]
       (is (= "ArithmeticError" (class-name-of r)) "the very condition")
       (is (instance? Error r)))))
 
@@ -75,16 +75,16 @@
           b (a/spawn-process (fn [] (a/link! a) (a/receive _ :never)))]
       (eventually (fn [] (contains? @(:links a) b)))
       (a/send a [:crash])
-      (is (= "ArithmeticError" (class-name-of (a/await-exit b 1000))))))
+      (is (= "ArithmeticError" (class-name-of (a/await-exit b 10000))))))
   (testing "a normal end doesn't"
     (let [a (a/spawn-process counter 0)
           b (a/spawn-process (fn [] (a/link! a) (a/receive :go :went)))]
       (eventually (fn [] (contains? @(:links a) b)))
       (a/send a [:stop])
-      (a/await-exit a 1000)
+      (a/await-exit a 10000)
       (is (a/alive? b))
       (a/send b :go)
-      (is (= :normal (a/await-exit b 1000)))))
+      (is (= :normal (a/await-exit b 10000)))))
   (testing "trapping exits: a message instead"
     (is (= [:EXIT :boom]
            (a/run-in-process
@@ -102,11 +102,11 @@
     (let [p (a/spawn-process (fn [] (a/trap-exits!) (a/receive [:EXIT _ r] r)))]
       (eventually (fn [] @(:trapping p)))
       (a/exit! p :please)
-      (is (= :normal (a/await-exit p 1000)) "it took the message and returned"))
+      (is (= :normal (a/await-exit p 10000)) "it took the message and returned"))
     (let [p (a/spawn-process (fn [] (a/trap-exits!) (a/receive :never nil)))]
       (eventually (fn [] @(:trapping p)))
       (a/exit! p :kill)
-      (is (= :killed (a/await-exit p 1000))))))
+      (is (= :killed (a/await-exit p 10000))))))
 
 (deftest monitors
   (is (= [:DOWN true :normal]
@@ -186,12 +186,15 @@
     (a/stop-supervisor! sup)))
 
 (deftest too-many-restarts
-  (let [sup (a/supervisor {:max-restarts 2 :max-ms 10000} [(a/child :fragile counter 0)])]
+  ;; (the waits are 10 s and the window a minute: with a collection forced
+  ;; every 50th poll on a CI runner, a crashed process took over 1 s to
+  ;; end, the next crash went to the same one, and the three never came)
+  (let [sup (a/supervisor {:max-restarts 2 :max-ms 60000} [(a/child :fragile counter 0)])]
     (dotimes [_ 3]
       (let [p (eventually (fn [] (a/whereis :fragile)))]
         (a/send p [:crash])
-        (a/await-exit p 1000)))
-    (is (= :too-many-restarts (a/await-exit sup 1000)))
+        (a/await-exit p 10000)))
+    (is (= :too-many-restarts (a/await-exit sup 10000)))
     (is (nil? (a/whereis :fragile)))))
 
 ;; (a supervisor's children can change while it runs: pulse finding)
@@ -216,7 +219,7 @@
     (testing "stopping one"
       (let [b (a/whereis :dyn-b)]
         (is (true? (a/stop-child! sup :dyn-b)))
-        (is (= :shutdown (a/await-exit b 1000)))
+        (is (= :shutdown (a/await-exit b 10000)))
         (is (= [:dyn-a] (mapv first (a/which-children sup))) "and it isn't restarted")
         (is (false? (a/stop-child! sup :dyn-b)) "one it hasn't")))
     (a/stop-supervisor! sup)))
