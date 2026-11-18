@@ -5,6 +5,7 @@
 (ns prof-test
   (:require [skein.prof :as prof]
             [skein.string :as str]
+            [skein.sys :as sys]
             [skein.test :refer [deftest is testing]]))
 
 ;; (a profile samples every carrier: beside other files, on a machine with
@@ -17,12 +18,17 @@
   (let [end (+ (nano-time) (* ms 1000000))]
     (loop [n 0] (if (< (nano-time) end) (recur (inc n)) n))))
 
+;; With a collection forced every few polls (SKEIN_GC_STRESS, the nightly
+;; run) the program is stopped most of the time, and a sample is taken only
+;; while it runs: a few samples in 150 ms, where there are 300 without.
+(def stressed? (contains? (sys/env) "SKEIN_GC_STRESS"))
+
 (defn deep [n ms] (if (zero? n) (spin ms) (inc (deep (dec n) ms))))
 
 (deftest sampling
   (let [{:keys [value profile]} (prof/sample (fn [] (spin 150) :done) :interval-us 500)]
     (is (= :done value))
-    (is (< 10 (:samples profile)) "about two a ms per busy carrier, fewer when the machine is busy")
+    (is (< (if stressed? 0 10) (:samples profile)) "about two a ms per busy carrier, fewer when the machine is busy")
     (is (= 500 (:interval-us profile)))
     (is (some (fn [[s _]] (= "prof-test/spin" (peek s))) (:stacks profile)) "spin was running")
     (is (not-any? (fn [[s _]] (and (some #{"skein.prof/sample"} s) (not= ["skein.prof/sample"] s))) (:stacks profile))
