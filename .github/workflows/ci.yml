@@ -1,7 +1,8 @@
 # Every push to main and every pull request: build, the Rust tests (with
 # 37 Skein suites at both tiers), every Skein suite, the lang-tests at three
 # tiers against their recorded outputs, and skein check. On macOS arm64 and
-# Linux arm64 and x86-64.
+# Linux arm64 and x86-64. One job also checks the Rust's formatting and
+# shows clippy's warnings; macOS runs the book's examples.
 name: CI
 
 on:
@@ -52,11 +53,25 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-0 zsh
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Rust formatting
+        # (rustfmt.toml's style; on one job: it's the same everywhere)
+        if: ${{ runner.os == 'Linux' && runner.arch == 'X64' }}
+        run: cargo fmt --all -- --check
+
       - name: Build
         run: cargo build --locked --release
+
+      - name: Clippy
+        # (to be read, not to fail the run: its lints change with each Rust
+        # release, which would turn main red with no change here)
+        if: ${{ !cancelled() && runner.os == 'Linux' && runner.arch == 'X64' }}
+        continue-on-error: true
+        run: cargo clippy --locked --release --workspace --all-targets
 
       - name: Rust tests
         # (after a failure too: every failure in one run)
