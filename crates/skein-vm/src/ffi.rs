@@ -835,7 +835,7 @@ fn result(m: &mut Mutator, ret: (CType, bool), r: u64, outs: Vec<Vec<u8>>) -> st
                 Value::NIL
             } else {
                 // SAFETY: the function promised a NUL-terminated string.
-                let s = unsafe { std::ffi::CStr::from_ptr(r as *const libc::c_char) };
+                let s = unsafe { std::ffi::CStr::from_ptr(r as *const std::ffi::c_char) };
                 str_new(m, &s.to_string_lossy())
             }
         }
@@ -921,8 +921,8 @@ pub(crate) fn call(vm: &mut Vm, h: Value, args: &[Value]) -> Result<Value> {
         // On the main thread, a string result is copied before the next
         // call runs: C libraries often return text in a static buffer.
         // SAFETY: the function promised a NUL-terminated string.
-        let text =
-            (main && ret.1 && r != 0).then(|| unsafe { std::ffi::CStr::from_ptr(r as *const libc::c_char) }.to_string_lossy().into_owned());
+        let text = (main && ret.1 && r != 0)
+            .then(|| unsafe { std::ffi::CStr::from_ptr(r as *const std::ffi::c_char) }.to_string_lossy().into_owned());
         let outs = std::mem::take(&mut prep.outs);
         Box::new(move |m: &mut Mutator| {
             drop(prep);
@@ -987,7 +987,7 @@ pub(crate) fn mem_free(a: &[Value]) -> Result<Value> {
     if !a[0].is_nil() {
         let p = address(a[0], "free!")?;
         // SAFETY: the caller promises p came from %mem-alloc and is freed once.
-        unsafe { libc::free(p as *mut libc::c_void) };
+        unsafe { libc::free(p as *mut std::ffi::c_void) };
     }
     Ok(Value::NIL)
 }
@@ -1036,7 +1036,7 @@ pub(crate) fn mem_string(m: &mut Mutator, a: &[Value]) -> Result<Value> {
     }
     let p = address(a[0], "string-at")?;
     // SAFETY: the caller promises a NUL-terminated string.
-    let s = unsafe { std::ffi::CStr::from_ptr(p as *const libc::c_char) };
+    let s = unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) };
     Ok(str_new(m, &s.to_string_lossy()))
 }
 

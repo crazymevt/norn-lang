@@ -325,18 +325,6 @@ struct CodeArena {
 static ARENA: Mutex<CodeArena> = Mutex::new(CodeArena { cur: 0, end: 0 });
 const ARENA_CHUNK: usize = 16 << 20;
 
-#[cfg(target_os = "macos")]
-unsafe extern "C" {
-    fn sys_icache_invalidate(start: *mut libc::c_void, len: libc::size_t);
-}
-
-// (arm64 keeps instruction and data caches apart: code just written must
-// be flushed from one to the other before it runs, or stale bytes run)
-#[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
-unsafe extern "C" {
-    fn __clear_cache(start: *mut libc::c_char, end: *mut libc::c_char);
-}
-
 /// Copy machine code into executable memory (MAP_JIT on macOS: runtime.md
 /// §7.4). Never freed: protos are rarely collected, and code is small.
 pub(crate) fn install_code(bytes: &[u8]) -> Option<usize> {
@@ -344,35 +332,14 @@ pub(crate) fn install_code(bytes: &[u8]) -> Option<usize> {
     let mut a = ARENA.lock().unwrap();
     if a.end - a.cur < len {
         let size = ARENA_CHUNK.max(len);
-        // SAFETY: a fresh anonymous mapping.
-        let p = unsafe {
-            #[cfg(target_os = "macos")]
-            let flags = libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_JIT;
-            #[cfg(not(target_os = "macos"))]
-            let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
-            libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC, flags, -1, 0)
-        };
-        if p == libc::MAP_FAILED {
-            return None;
-        }
-        a.cur = p as usize;
-        a.end = p as usize + size;
+        let p = crate::platform::code_alloc(size)?;
+        a.cur = p;
+        a.end = p + size;
     }
     let at = a.cur;
     a.cur += len;
-    // SAFETY: [at, at+len) is ours; on macOS this thread toggles W^X around the copy.
-    unsafe {
-        #[cfg(target_os = "macos")]
-        libc::pthread_jit_write_protect_np(0);
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, bytes.len());
-        #[cfg(target_os = "macos")]
-        {
-            libc::pthread_jit_write_protect_np(1);
-            sys_icache_invalidate(at as *mut libc::c_void, len);
-        }
-        #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
-        __clear_cache(at as *mut libc::c_char, (at + len) as *mut libc::c_char);
-    }
+    // SAFETY: [at, at+len) is ours, and not yet run.
+    unsafe { crate::platform::code_write(at, bytes, len) };
     Some(at)
 }
 

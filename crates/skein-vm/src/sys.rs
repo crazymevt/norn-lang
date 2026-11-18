@@ -5,6 +5,7 @@
 //! disk or network file system never stalls a carrier. Paths are strings.
 
 use crate::blocking::{self, Finish};
+use crate::platform;
 use crate::reactor::{self, Io};
 use crate::vm::{Error, FailData, Failure, Result, Vm};
 use skein_rt::map::{map_assoc, map_empty};
@@ -487,41 +488,6 @@ pub(crate) fn program_args(m: &mut Mutator) -> Value {
     strings(m, PROGRAM_ARGS.get().map(Vec::as_slice).unwrap_or(&[]))
 }
 
-fn hostname() -> Option<String> {
-    let mut buf = [0u8; 256];
-    // SAFETY: buf is writable for its length.
-    let r = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
-    if r != 0 {
-        return None;
-    }
-    let n = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    Some(String::from_utf8_lossy(&buf[..n]).into_owned())
-}
-
-fn total_memory() -> Option<u64> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut v: u64 = 0;
-        let mut len = std::mem::size_of::<u64>();
-        // SAFETY: v and len describe a valid buffer for hw.memsize.
-        let r = unsafe {
-            libc::sysctlbyname(c"hw.memsize".as_ptr(), &mut v as *mut u64 as *mut libc::c_void, &mut len, std::ptr::null_mut(), 0)
-        };
-        (r == 0).then_some(v)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: sysinfo fills the struct.
-        let mut si: libc::sysinfo = unsafe { std::mem::zeroed() };
-        let r = unsafe { libc::sysinfo(&mut si) };
-        (r == 0).then_some(si.totalram as u64 * si.mem_unit as u64)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        None
-    }
-}
-
 /// Everything skein.sys reports about the machine and the process.
 pub(crate) fn system(m: &mut Mutator) -> Value {
     let os = kw(
@@ -537,14 +503,13 @@ pub(crate) fn system(m: &mut Mutator) -> Value {
     let arch = kw(m, std::env::consts::ARCH);
     let endian = kw(m, if cfg!(target_endian = "little") { "little" } else { "big" });
     let cores = Value::fix(std::thread::available_parallelism().map_or(1, |n| n.get()) as i64);
-    // SAFETY: sysconf has no preconditions.
-    let page = Value::fix(unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as i64);
-    let mem = total_memory().map_or(Value::NIL, |n| Value::fix(n as i64));
+    let page = Value::fix(platform::page_size() as i64);
+    let mem = platform::total_memory().map_or(Value::NIL, |n| Value::fix(n as i64));
     let pid = Value::fix(std::process::id() as i64);
     let tmp = str_new(m, &std::env::temp_dir().to_string_lossy());
     let home = getenv(m, "HOME");
     let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).map_or(Value::NIL, |u| str_new(m, &u));
-    let host = hostname().map_or(Value::NIL, |h| str_new(m, &h));
+    let host = platform::hostname().map_or(Value::NIL, |h| str_new(m, &h));
     let cwd = std::env::current_dir().map_or(Value::NIL, |d| str_new(m, &d.to_string_lossy()));
     let version = str_new(m, env!("CARGO_PKG_VERSION"));
     let build = str_new(m, &format!("{:016x}", crate::image::build_id()));
@@ -619,45 +584,25 @@ pub(crate) fn glob_base(pattern: &str) -> String {
 
 // ---- the host terminal ------------------------------------------------------------------------
 
-/// Terminal settings saved by `tty_raw`, restored by `tty_restore` or, for
-/// any still raw, when the process exits.
-static SAVED_TERMIOS: std::sync::Mutex<Vec<(libc::c_int, libc::termios)>> = std::sync::Mutex::new(Vec::new());
-
-fn tty_fd(v: Value) -> Result<libc::c_int> {
+fn tty_fd(v: Value) -> Result<i32> {
     match v.is_fixnum().then(|| v.as_fixnum()) {
-        Some(fd @ 0..=2) => Ok(fd as libc::c_int),
+        Some(fd @ 0..=2) => Ok(fd as i32),
         _ => Err(Error::new("A terminal is standard input (0), output (1) or error (2)")),
     }
 }
 
 /// Is descriptor `fd` (0–2) a terminal?
 pub(crate) fn is_tty(fd: Value) -> Result<Value> {
-    let fd = tty_fd(fd)?;
-    // SAFETY: isatty only inspects the descriptor.
-    Ok(Value::bool(unsafe { libc::isatty(fd) } == 1))
+    Ok(Value::bool(platform::is_terminal(tty_fd(fd)?)))
 }
 
 /// `[rows cols]` of the terminal on `fd`, or nil when it isn't one (or
 /// doesn't say).
 pub(crate) fn tty_size(m: &mut Mutator, fd: Value) -> Result<Value> {
-    let fd = tty_fd(fd)?;
-    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
-    // SAFETY: TIOCGWINSZ writes a winsize.
-    let r = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ as _, &mut ws) };
-    Ok(if r == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
-        vec_from_slice(m, &[Value::fix(ws.ws_row as i64), Value::fix(ws.ws_col as i64)])
-    } else {
-        Value::NIL
+    Ok(match platform::terminal_size(tty_fd(fd)?) {
+        Some((rows, cols)) => vec_from_slice(m, &[Value::fix(rows as i64), Value::fix(cols as i64)]),
+        None => Value::NIL,
     })
-}
-
-extern "C" fn restore_terminals() {
-    if let Ok(saved) = SAVED_TERMIOS.lock() {
-        for (fd, t) in saved.iter().rev() {
-            // SAFETY: tcsetattr with settings tcgetattr gave for this descriptor.
-            unsafe { libc::tcsetattr(*fd, libc::TCSANOW, t) };
-        }
-    }
 }
 
 /// Put the terminal on `fd` in raw mode: bytes as typed, no echo, no line
@@ -665,46 +610,12 @@ extern "C" fn restore_terminals() {
 /// so a newline still returns the cursor. True if this changed it, false
 /// if it was already raw (from an earlier call).
 pub(crate) fn tty_raw(fd: Value) -> Result<Value> {
-    static AT_EXIT: std::sync::Once = std::sync::Once::new();
-    let fd = tty_fd(fd)?;
-    let mut saved = SAVED_TERMIOS.lock().unwrap();
-    if saved.iter().any(|(f, _)| *f == fd) {
-        return Ok(Value::FALSE);
-    }
-    // SAFETY: termios is plain data; tcgetattr fills it.
-    let mut orig: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(fd, &mut orig) } != 0 {
-        return Err(Error::new(format!("Can't use raw mode: {}", std::io::Error::last_os_error())));
-    }
-    let mut raw = orig;
-    // SAFETY: cfmakeraw edits the struct it's given.
-    unsafe { libc::cfmakeraw(&mut raw) };
-    raw.c_oflag |= libc::OPOST | libc::ONLCR;
-    raw.c_cc[libc::VMIN] = 1;
-    raw.c_cc[libc::VTIME] = 0;
-    // SAFETY: tcsetattr with a filled-in termios.
-    if unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &raw) } != 0 {
-        return Err(Error::new(format!("Can't use raw mode: {}", std::io::Error::last_os_error())));
-    }
-    saved.push((fd, orig));
-    // SAFETY: registers a function with no captured state.
-    AT_EXIT.call_once(|| unsafe {
-        libc::atexit(restore_terminals);
-    });
-    Ok(Value::TRUE)
+    platform::terminal_raw(tty_fd(fd)?).map(Value::bool).map_err(|e| Error::new(format!("Can't use raw mode: {e}")))
 }
 
 /// Undo `tty_raw` on `fd`: true if it was raw.
 pub(crate) fn tty_restore(fd: Value) -> Result<Value> {
-    let fd = tty_fd(fd)?;
-    let mut saved = SAVED_TERMIOS.lock().unwrap();
-    let Some(i) = saved.iter().position(|(f, _)| *f == fd) else { return Ok(Value::FALSE) };
-    let (_, t) = saved.remove(i);
-    // SAFETY: tcsetattr with settings tcgetattr gave for this descriptor.
-    if unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &t) } != 0 {
-        return Err(Error::new(format!("Can't restore the terminal: {}", std::io::Error::last_os_error())));
-    }
-    Ok(Value::TRUE)
+    platform::terminal_restore(tty_fd(fd)?).map(Value::bool).map_err(|e| Error::new(format!("Can't restore the terminal: {e}")))
 }
 
 /// Up to `max` bytes from `fd` as they arrive, waiting at most `timeout_ms`
@@ -714,36 +625,10 @@ pub(crate) fn tty_restore(fd: Value) -> Result<Value> {
 pub(crate) fn tty_read(vm: &mut Vm, fd: Value, max: i64, timeout_ms: i64) -> Result<Value> {
     let fd = tty_fd(fd)?;
     let max = max.clamp(1, 65536) as usize;
-    let timeout = timeout_ms.clamp(-1, i32::MAX as i64) as libc::c_int;
+    let timeout = timeout_ms.clamp(-1, i32::MAX as i64) as i32;
     pooled(
         vm,
-        move || loop {
-            let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-            // SAFETY: poll on one pollfd.
-            let r = unsafe { libc::poll(&mut p, 1, timeout) };
-            if r < 0 {
-                let e = std::io::Error::last_os_error();
-                if e.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(format!("Can't read the terminal: {e}").into());
-            }
-            if r == 0 {
-                return Ok(Some(Vec::new()));
-            }
-            let mut buf = vec![0u8; max];
-            // SAFETY: read into a buffer of max bytes.
-            let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), max) };
-            if n < 0 {
-                let e = std::io::Error::last_os_error();
-                if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock) {
-                    continue;
-                }
-                return Err(format!("Can't read the terminal: {e}").into());
-            }
-            buf.truncate(n as usize);
-            return Ok((n > 0).then_some(buf));
-        },
+        move || platform::terminal_read(fd, max, timeout).map_err(|e| format!("Can't read the terminal: {e}").into()),
         |m, b: Option<Vec<u8>>| b.map_or(Value::NIL, |b| bytes_new(m, &b)),
     )
 }
