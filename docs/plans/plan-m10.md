@@ -807,7 +807,9 @@ Status, above.
   cache looks for a missing entry, not catching it. Tests: cache_test's
   a-module-first-loaded-by-a-tag-reader, module_test's
   a-load-that-fails-in-a-tag-reader (both hung before). Left as it was:
-  inside a nested run, a primitive's error still skips `catch` (todo).
+  inside a nested run, a primitive's error still skips `catch` (todo). **Done
+  since (2026-11-17, todo):** it's signalled to the handlers inside the
+  run.
 - **The profiler's timer threads: fixed (2026-11-17).** A profile's timer
   thread ran while any profile was active; one whose profile stopped and
   another started within its sleep went on too, so every later profile
