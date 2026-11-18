@@ -495,7 +495,7 @@ code points, `subs` takes a slice by position, and `get` or `nth` returns
 a single character.
 
 ```clojure
-(= "skein" (str "no" "rn")) ; => true
+(= "skein" (str "ske" "in")) ; => true
 (count "naïve") ; => 5
 (subs "hello" 1 3) ; => "el"
 (get "hello" 1) ; => \e
@@ -536,7 +536,7 @@ A character is a single Unicode code point, written with a backslash:
 (first "abc") ; => \a
 (int \a) ; => 97
 (char 97) ; => \a
-(str \n \o \r \n) ; => "skein"
+(str \s \k \e \i \n) ; => "skein"
 (= \space (first " x")) ; => true
 ```
 

@@ -182,7 +182,7 @@ ranges, since it only reads items by position.
 
 ```clojure
 (let [[x [y z]] [1 [2 3]]] (+ x y z)) ; => 6
-(let [[first-char] "skein"] first-char) ; => \n
+(let [[first-char] "skein"] first-char) ; => \s
 ```
 
 ### Map patterns
