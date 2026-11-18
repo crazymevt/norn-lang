@@ -150,6 +150,8 @@ and it exits 1 when it finds anything. The kinds include:
   arities takes.
 - `unused-require` and `missing-require`: a require nothing uses, or a full
   name from a namespace the module doesn't require.
+- `duplicate-key`: a map or set written with the same key twice, as in
+  `{:a 1 :a 2}`. The reader keeps the last and says nothing.
 - `deprecated` and `private`: a use of a definition marked deprecated, or of
   another module's private var.
 - `shadowed`: a module named as one that comes with Skein, such as a
