@@ -1,0 +1,251 @@
+;;;; stash under load: a workload for the collector and the scheduler
+;;;; (M11), which the other benchmarks don't give. lang-tests/stash, a
+;;;; key-value server, holds a large heap that stays (strings, hashes and
+;;;; sorted sets, a gigabyte or so by default) while clients over TCP read
+;;;; and write it: garbage on top of live data, and shared state under
+;;;; every carrier. Client and server are in one process.
+;;;;
+;;;;   skein bench/stash.skn                    (1, 2, 4 and every carrier, then a table)
+;;;;   skein bench/stash.skn --record           (and record it: bench/stash-baseline.edn)
+;;;;   skein bench/stash.skn --carriers 1,10    (just those)
+;;;;   skein bench/stash.skn --scale 0.1        (a tenth of the keys: a quick look)
+;;;;   skein bench/stash.skn --seconds 10 --clients 100
+;;;;
+;;;; What it reports, for each number of carriers:
+;;;;
+;;;;   load      seconds to put the keys in (in the process, on every carrier)
+;;;;   heap      the heap once they're in, and its peak during the run (MB)
+;;;;   ops/s     requests a second over the run, all clients together
+;;;;   p50 p99 p99.9 max   a request's time from sent to answered
+;;;;   GCs       collections during the run
+;;;;
+;;;; A collection stops every carrier, so its pauses are the tail: p99.9 and
+;;;; max are what M11's generational and concurrent collection should bring
+;;;; down, and heap what defragmentation should. Each client asks and waits
+;;;; (no pipelining), so a request's time is one round trip.
+;;;;
+;;;; The mix (of each client's requests): 70% GET, 10% SET of a new value
+;;;; (the old one is garbage), 5% SET of a key that expires in 200 ms, 5%
+;;;; HGETALL, 4% HSET, 3% ZADD, 2% ZRANGE of the top ten, 1% INCR. Keys and
+;;;; choices come from seeded generators: the same requests every run.
+;;;;
+;;;; It isn't one of bench/compare.skn's suites: it takes a minute or two,
+;;;; and its numbers are a machine's, to compare before and after a change
+;;;; on that machine.
+
+(ns bench-stash
+  (:require [skein.edn :as edn]
+            [skein.io :as io]
+            [skein.math :as math]
+            [skein.process :as proc]
+            [skein.random :as random]
+            [skein.string :as str]
+            [skein.sys :as sys]))
+
+;; (stash is a project of its own: its modules, from the checkout this is
+;; run in, as the other benchmarks are)
+(add-lib-path! (io/path (sys/cwd) "lang-tests" "stash" "src"))
+(require '[stash.client :as client] '[stash.server :as server] '[stash.store :as store])
+
+(def baseline-file "bench/stash-baseline.edn")
+
+;; ---- the data -------------------------------------------------------------------------------
+
+(def sizes
+  "What a store holds at --scale 1: about a gigabyte of heap."
+  {:strings 400000 ; key:N → 100 characters
+   :hashes 40000 ; user:N → eight fields
+   :boards 80 ; board:N → a sorted set of 2,000 members
+   :members 2000})
+
+(defn- scaled [scale]
+  (let [n (fn [k] (max 1 (long (* scale (get sizes k)))))]
+    {:strings (n :strings) :hashes (n :hashes) :boards (n :boards) :members (:members sizes)}))
+
+(def ^:private filler (apply str (repeat 10 "0123456789")))
+
+(defn- value-for "A value of 100 characters that says which key and which write it was." [i n]
+  (let [head (str i ":" n ":")]
+    (str head (subs filler (count head)))))
+
+(defn- load!
+  "Fill store st with sizes' keys, in parallel: a fiber for each slice of each kind."
+  [st {:keys [strings hashes boards members]}]
+  (let [slices 20
+        in-slices (fn [n f]
+                    (mapv (fn [s] (future (loop [i s] (when (< i n) (f i) (recur (+ i slices))))))
+                          (range slices)))
+        work (concat
+              (in-slices strings (fn [i] (store/run st "SET" [(str "key:" i) (value-for i 0)])))
+              (in-slices hashes (fn [i] (store/run st "HSET" [(str "user:" i)
+                                                              "name" (str "user number " i) "email" (str "user" i "@example.com")
+                                                              "city" (str "city " (mod i 500)) "plan" (if (even? i) "free" "paid")
+                                                              "logins" (str (mod i 1000)) "score" (str (* i 7))
+                                                              "joined" (str "2026-" (inc (mod i 12)) "-" (inc (mod i 28)))
+                                                              "bio" (value-for i 0)])))
+              (in-slices boards (fn [b] (store/run st "ZADD" (into [(str "board:" b)]
+                                                                   (mapcat (fn [m] [(str (mod (* (inc m) 7919) 100003)) (str "player:" m)])
+                                                                           (range members)))))))]
+    (doseq [f work] @f)
+    (store/dbsize st)))
+
+;; ---- how long requests took -----------------------------------------------------------------
+;;
+;; A histogram, not every time: millions of numbers kept would be a heap of
+;; the benchmark's own. Eight buckets to each doubling (9% wide), from a
+;; nanosecond to 18 minutes.
+
+(def ^:private buckets 320)
+
+(defn- bucket [ns] (min (dec buckets) (max 0 (long (* 8 (math/log2 (max 1 ns)))))))
+(defn- bucket-top "The longest time bucket i holds, in ns." [i] (math/pow 2 (/ (inc i) 8.0)))
+
+(defn- percentile
+  "The time (ns) that fraction p of the n requests counted in hist took at most."
+  [hist n p]
+  (let [want (* p n)]
+    (loop [i 0 seen 0]
+      (let [seen (+ seen (nth hist i))]
+        (if (or (>= seen want) (= i (dec buckets))) (bucket-top i) (recur (inc i) seen))))))
+
+;; ---- a client -------------------------------------------------------------------------------
+
+(defn- request
+  "The next request of a client: its words. k counts the client's writes."
+  [g {:keys [strings hashes boards members]} id k]
+  (let [r (random/int g 100)]
+    (cond (< r 70) ["GET" (str "key:" (random/int g strings))]
+          (< r 80) (let [i (random/int g strings)] ["SET" (str "key:" i) (value-for i k)])
+          (< r 85) ["SET" (str "tmp:" id ":" k) (value-for id k) "PX" "200"]
+          (< r 90) ["HGETALL" (str "user:" (random/int g hashes))]
+          (< r 94) ["HSET" (str "user:" (random/int g hashes)) "logins" (str k)]
+          (< r 97) ["ZADD" (str "board:" (random/int g boards)) (str (random/int g 100003)) (str "player:" (random/int g members))]
+          (< r 99) ["ZRANGE" (str "board:" (random/int g boards)) "-10" "-1" "WITHSCORES"]
+          :else ["INCR" (str "counter:" (mod id 16))])))
+
+(defn- run-client!
+  "A client: requests, one after the other, until the time deadline (ns):
+  {:n :hist :max :errors}."
+  [port sizes id deadline]
+  (let [c (client/connect! "127.0.0.1" port)
+        g (random/generator (+ 1000 id))]
+    (loop [k 0 hist (vec (repeat buckets 0)) worst 0 errors 0]
+      (let [t0 (nano-time)]
+        (if (>= t0 deadline)
+          (do (client/close! c) {:n k :hist hist :max worst :errors errors})
+          (let [reply (apply client/call! c (request g sizes id k))
+                took (- (nano-time) t0)
+                b (bucket took)]
+            (recur (inc k) (assoc hist b (inc (nth hist b))) (max worst took)
+                   (if (instance? stash.resp/Failure reply) (inc errors) errors))))))))
+
+;; ---- one run, in this process ---------------------------------------------------------------
+
+(defn- mb [bytes] (math/round-to (/ bytes 1048576.0) 1))
+
+(defn- measure
+  "Load a store, serve it, and run the clients against it: the numbers."
+  [{:keys [scale clients seconds]}]
+  (let [sizes (scaled scale)
+        s (server/start! "127.0.0.1" 0)
+        t0 (nano-time)
+        keys (load! (:store s) sizes)
+        load-ms (/ (- (nano-time) t0) 1e6)
+        _ (gc)
+        heap-loaded (heap-bytes)
+        peak (atom heap-loaded)
+        sampler (spawn-detached (loop [] (sleep 20) (swap! peak max (heap-bytes)) (recur)))
+        gcs0 (gc-count)
+        start (nano-time)
+        deadline (+ start (* seconds 1000000000))
+        results (mapv deref (mapv (fn [id] (future (run-client! (:port s) sizes id deadline))) (range clients)))
+        elapsed (/ (- (nano-time) start) 1e9)
+        gcs (- (gc-count) gcs0)
+        n (reduce + 0 (map :n results))
+        hist (reduce (fn [a h] (mapv + a h)) (map :hist results))
+        us (fn [p] (math/round-to (/ (percentile hist n p) 1000.0) 1))]
+    (cancel! sampler)
+    ((:stop s))
+    {:carriers (or (parse-long (str (sys/getenv "SKEIN_THREADS"))) (:cores (sys/info))) :keys keys :clients clients :seconds (math/round-to elapsed 2)
+     :load-s (math/round-to (/ load-ms 1000.0) 2)
+     :heap-mb (mb heap-loaded) :peak-mb (mb @peak)
+     :ops n :ops-per-s (math/round (/ n elapsed))
+     :p50-us (us 0.5) :p99-us (us 0.99) :p999-us (us 0.999)
+     :max-ms (math/round-to (/ (reduce max 0 (map :max results)) 1e6) 2)
+     :gcs gcs :errors (reduce + 0 (map :errors results))}))
+
+;; ---- every number of carriers, each in a process of its own ---------------------------------
+
+(defn- run-with
+  "The numbers with n carriers: this script again, in a process started with SKEIN_THREADS=n."
+  [n opts]
+  (let [r (proc/sh (:executable (sys/info)) "bench/stash.skn" "--child"
+                   "--scale" (str (:scale opts)) "--clients" (str (:clients opts)) "--seconds" (str (:seconds opts))
+                   :env {"SKEIN_THREADS" (str n)})]
+    (when-not (zero? (:exit r))
+      (throw (ex-info (str "bench/stash.skn failed with " n " carriers: " (str/trim (:err r))) {})))
+    (edn/read-string (last (remove str/blank? (str/split-lines (:out r)))))))
+
+(def ^:private columns
+  [[:carriers "carriers" 8] [:load-s "load s" 7] [:heap-mb "heap MB" 8] [:peak-mb "peak MB" 8] [:ops-per-s "ops/s" 8]
+   [:p50-us "p50 µs" 8] [:p99-us "p99 µs" 8] [:p999-us "p99.9 µs" 9] [:max-ms "max ms" 8] [:gcs "GCs" 5]])
+
+(defn- row [cells] (str/join "  " (map (fn [[_ _ w] c] (str/pad-left (str c) w)) columns cells)))
+
+(defn- print-table [results baseline]
+  (println (row (map second columns)))
+  (doseq [r results]
+    (println (row (map (fn [[k]] (get r k)) columns)))
+    (when-let [b (get baseline (:carriers r))]
+      ;; (against the baseline: more requests a second is better, a shorter tail is better)
+      (println (row (map (fn [[k]]
+                           (let [now (get r k) was (get b k)]
+                             (cond (= k :carriers) "was"
+                                   (and (number? now) (number? was) (pos? was) (not= now was))
+                                   (str (if (> now was) "+" "") (math/round (* 100.0 (/ (- now was) was))) "%")
+                                   :else "")))
+                         columns))))))
+
+(defn- parse-args [args]
+  (loop [args (seq args) o {:scale 1.0 :clients 50 :seconds 20 :carriers nil}]
+    (if-not args
+      o
+      (let [a (first args) v (second args)]
+        (case a
+          "--child" (recur (next args) (assoc o :child true))
+          "--record" (recur (next args) (assoc o :record true))
+          "--scale" (recur (nnext args) (assoc o :scale (parse-double v)))
+          "--clients" (recur (nnext args) (assoc o :clients (parse-long v)))
+          "--seconds" (recur (nnext args) (assoc o :seconds (parse-long v)))
+          "--carriers" (recur (nnext args) (assoc o :carriers (mapv parse-long (str/split v #","))))
+          (throw (ex-info (str "bench/stash.skn: unknown option " a) {})))))))
+
+(defn -main [& args]
+  (let [o (parse-args args)]
+    (if (:child o)
+      (prn (measure o))
+      (let [cores (:cores (sys/info))
+            carriers (or (:carriers o) (vec (distinct (filter (fn [n] (<= n cores)) [1 2 4 cores]))))
+            baseline (when (io/exists? baseline-file) (:results (edn/read-string (io/read-text baseline-file))))
+            same? (and baseline (= (select-keys o [:scale :clients :seconds])
+                                   (select-keys (:options (edn/read-string (io/read-text baseline-file))) [:scale :clients :seconds])))
+            _ (println (str "stash under load: scale " (:scale o) ", " (:clients o) " clients, " (:seconds o) " s each run"))
+            results (mapv (fn [n] (let [r (run-with n o)] (println (str "  " n " carriers: " (:ops-per-s r) " ops/s")) r)) carriers)]
+        (println)
+        (print-table results (when (and same? (not (:record o))) baseline))
+        (when (and baseline (not same?) (not (:record o)))
+          (println "\n(the baseline was recorded with other options: not compared)"))
+        (when-let [bad (seq (filter (fn [r] (pos? (:errors r))) results))]
+          (println (str "\n" (reduce + (map :errors bad)) " requests were answered with an error")))
+        (when (:record o)
+          (io/write-text baseline-file
+                         (str ";; bench/stash.skn --record: stash under load, for M11 to be measured against.\n"
+                              (edn/write-string {:machine (select-keys (sys/info) [:arch :os :cores])
+                                                 :skein (str/trim (:out (proc/sh "git" "rev-parse" "--short" "HEAD")))
+                                                 :options (select-keys o [:scale :clients :seconds])
+                                                 :results (into (sorted-map) (map (fn [r] [(:carriers r) r]) results))}
+                                                :pretty true)
+                              "\n"))
+          (println (str "\nrecorded in " baseline-file)))))))
+
+(apply -main (sys/program-args))
