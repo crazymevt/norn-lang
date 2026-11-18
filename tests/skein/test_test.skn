@@ -161,5 +161,11 @@
   (is (str/includes? xml "&lt;load&gt;")))
 (is (= 1 (t/main (io/path dir "plain_test.skn") "--serial")))
 (is (= 0 (t/main (io/path dir "fixture_test.skn"))))
+;; --help says how, and an option it doesn't know is an error (it was taken
+;; for a path: "Can't walk --help").
+(let [help (with-out-str (is (= 0 (t/main "--help"))))]
+  (is (str/starts-with? help "Usage: skein test"))
+  (is (str/includes? help "--only REGEX")))
+(is (str/starts-with? (with-out-str (is (= 2 (t/main "--bogus")))) "skein test: unknown option --bogus"))
 
 (io/delete! dir :recursive true)

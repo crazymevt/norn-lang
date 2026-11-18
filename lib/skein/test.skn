@@ -380,6 +380,18 @@
   (doseq [d (distinct (keep (fn [p] (if (io/directory? p) p (io/parent p))) paths))]
     (add-lib-path! (str (io/absolute d)))))
 
+(def ^:private usage
+  (str "Usage: skein test [options] [paths…]\n\n"
+       "Runs test files: the paths given (files or folders), or every *_test.skn\n"
+       "under tests/. Exits 1 if anything failed.\n\n"
+       "  --only REGEX   run the tests whose names match\n"
+       "  --serial       one file at a time, not in parallel\n"
+       "  --tap          results as TAP\n"
+       "  --junit FILE   write the results as JUnit XML\n"
+       "  --coverage     report which lines ran\n"
+       "  --lcov FILE    write the coverage as an lcov tracefile (implies --coverage)\n"
+       "  --help         show this"))
+
 (defn main
   "`skein test [options] [paths…]`: run test files (default: every
   *_test.skn under tests/). Options: --only REGEX (test names), --serial,
@@ -397,6 +409,8 @@
             (= a "--junit") (recur (nnext args) (assoc opts :junit (second args)))
             (= a "--coverage") (recur (next args) (assoc opts :coverage true))
             (= a "--lcov") (recur (nnext args) (assoc opts :coverage true :lcov (second args)))
+            (or (= a "--help") (= a "-h")) (do (println usage) 0)
+            (str/starts-with? a "--") (do (println (str "skein test: unknown option " a "\n\n" usage)) 2)
             :else (recur (next args) (update opts :paths conj a)))
       (do
         ;; (skein test --coverage turns it on before anything loads; from
