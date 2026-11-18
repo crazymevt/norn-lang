@@ -147,7 +147,8 @@
 ;; gc-stats: that collection, at least, and how long collections stopped
 ;; the program; :reset starts the total and the longest again.
 (let [st (gc-stats :reset)]
-  (is (= #{:count :pause-ms :max-pause-ms :last-pause-ms :heap-bytes} (set (keys st))))
+  (is (= #{:count :pause-ms :max-pause-ms :last-pause-ms :heap-bytes :live-bytes} (set (keys st))))
+  (is (< 0 (:live-bytes st) (:heap-bytes st)) "what's alive is less than the pages holding it")
   (is (= (:count st) (gc-count)))
   (is (pos? (:count st)))
   (is (and (pos? (:last-pause-ms st)) (<= (:last-pause-ms st) (:max-pause-ms st) (:pause-ms st))))

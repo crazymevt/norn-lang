@@ -818,10 +818,12 @@
 (primitive gc-count "How many garbage collections have run." [])
 
 (primitive gc-stats
-  "{:count :pause-ms :max-pause-ms :last-pause-ms :heap-bytes}: how many
-  collections have run, how long they stopped the program in all, the
-  longest and the last (milliseconds, from the stop being asked for to the
-  program going on), and the heap now. (gc-stats :reset) gives the same and
+  "{:count :pause-ms :max-pause-ms :last-pause-ms :heap-bytes :live-bytes}:
+  how many collections have run, how long they stopped the program in all,
+  the longest and the last (milliseconds, from the stop being asked for to
+  the program going on), the heap now (the pages in use), and the bytes of
+  the objects the last collection found alive: the heap is larger by the
+  holes between them, and what's been allocated since. (gc-stats :reset) gives the same and
   starts :pause-ms and :max-pause-ms again from zero, to measure a stretch
   of a program: :count goes on (see gc-count)."
   [] [reset])

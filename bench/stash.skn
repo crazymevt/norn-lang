@@ -15,6 +15,8 @@
 ;;;;
 ;;;;   load      seconds to put the keys in (in the process, on every carrier)
 ;;;;   heap      the heap once they're in, and its peak during the run (MB)
+;;;;   end, live the heap as the run ends (the pages in use), and the bytes
+;;;;             of the objects on them: the rest is holes
 ;;;;   ops/s     requests a second over the run, all clients together
 ;;;;   p50 p99 p99.9 max   a request's time from sent to answered
 ;;;;   GCs       collections during the run, how long they stopped the
@@ -162,6 +164,10 @@
         results (mapv deref (mapv (fn [id] (future (run-client! (:port s) sizes id deadline))) (range clients)))
         elapsed (/ (- (nano-time) start) 1e9)
         pauses (gc-stats)
+        ;; (after one more collection: the pages the store is left on, and
+        ;; the bytes of the objects on them)
+        _ (do (gc) (sleep 300))
+        end (gc-stats)
         gcs (- (:count pauses) gcs0)
         n (reduce + 0 (map :n results))
         hist (reduce (fn [a h] (mapv + a h)) (map :hist results))
@@ -170,7 +176,7 @@
     ((:stop s))
     {:carriers (or (parse-long (str (sys/getenv "SKEIN_THREADS"))) (:cores (sys/info))) :keys keys :clients clients :seconds (math/round-to elapsed 2)
      :load-s (math/round-to (/ load-ms 1000.0) 2)
-     :heap-mb (mb heap-loaded) :peak-mb (mb @peak)
+     :heap-mb (mb heap-loaded) :peak-mb (mb @peak) :end-mb (mb (:heap-bytes end)) :live-mb (mb (:live-bytes end))
      :ops n :ops-per-s (math/round (/ n elapsed))
      :p50-us (us 0.5) :p99-us (us 0.99) :p999-us (us 0.999)
      :max-ms (math/round-to (/ (reduce max 0 (map :max results)) 1e6) 2)
@@ -190,7 +196,7 @@
     (edn/read-string (last (remove str/blank? (str/split-lines (:out r)))))))
 
 (def ^:private columns
-  [[:carriers "carriers" 8] [:load-s "load s" 7] [:heap-mb "heap MB" 8] [:peak-mb "peak MB" 8] [:ops-per-s "ops/s" 8]
+  [[:carriers "carriers" 8] [:load-s "load s" 7] [:heap-mb "heap MB" 8] [:peak-mb "peak MB" 8] [:end-mb "end MB" 7] [:live-mb "live MB" 8] [:ops-per-s "ops/s" 8]
    [:p50-us "p50 µs" 8] [:p99-us "p99 µs" 8] [:p999-us "p99.9 µs" 9] [:max-ms "max ms" 8] [:gcs "GCs" 4] [:pause-ms "paused ms" 10] [:max-pause-ms "longest ms" 11]])
 
 (defn- row [cells] (str/join "  " (map (fn [[_ _ w] c] (str/pad-left (str c) w)) columns cells)))
