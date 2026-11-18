@@ -59,6 +59,8 @@ impl VMBinding for Skein {
 static MMTK_INSTANCE: OnceLock<&'static MMTK<Skein>> = OnceLock::new();
 static LOS_THRESHOLD: AtomicUsize = AtomicUsize::new(usize::MAX);
 static GC_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Objects collections have moved (0 in a build that never moves any).
+static MOVED: AtomicU64 = AtomicU64::new(0);
 /// How long collections have stopped the world, in nanoseconds: in all,
 /// the longest, and the last (gc-stats). A pause is from the stop being
 /// asked for to the carriers being let go again: what a program waits.
@@ -195,6 +197,30 @@ pub fn init_heap() {
         b.options.plan.set(plan);
         // (the live bytes each collection finds: what the heap's growth goes by)
         b.options.count_live_bytes_in_gc.set(true);
+        // (SKEIN_GC_MOVE=stress, in a build that moves objects: every
+        // collection defragments, and every block is one to move objects
+        // out of, so that a pointer kept where the collector can't rewrite
+        // it goes wrong at once and not one run in a thousand)
+        if moves_objects() {
+            match std::env::var("SKEIN_GC_MOVE").as_deref() {
+                Ok("stress") => {
+                    b.options.immix_always_defrag.set(true);
+                    b.options.immix_defrag_every_block.set(true);
+                    b.options.immix_defrag_headroom_percent.set(50);
+                }
+                // (every collection defragments, choosing its blocks as MMTk
+                // does: the sparsest first, as far as the headroom goes)
+                Ok("always") => {
+                    b.options.immix_always_defrag.set(true);
+                }
+                _ => {}
+            }
+            // (SKEIN_GC_HEADROOM: the percent of the heap kept to move
+            // objects into; MMTk's own is 2)
+            if let Some(p) = std::env::var("SKEIN_GC_HEADROOM").ok().and_then(|p| p.parse::<usize>().ok()).filter(|p| *p <= 50) {
+                b.options.immix_defrag_headroom_percent.set(p);
+            }
+        }
         let max = env_bytes("SKEIN_HEAP_MAX").unwrap_or(8 << 30);
         let min = env_bytes("SKEIN_HEAP_MIN").unwrap_or(64 << 20).min(max);
         let growth = std::env::var("SKEIN_HEAP_GROWTH").ok();
@@ -237,6 +263,17 @@ pub fn enable_collection() {
 /// Bytes currently in use by the heap.
 pub fn heap_bytes() -> usize {
     MMTK_INSTANCE.get().map(|m| memory_manager::used_bytes(m)).unwrap_or(0)
+}
+
+/// Does this build's collector move objects? (Not with the `non-moving`
+/// feature, the default.)
+pub fn moves_objects() -> bool {
+    !cfg!(feature = "non-moving")
+}
+
+/// How many objects collections have moved so far.
+pub fn moved_objects() -> u64 {
+    MOVED.load(Ordering::Relaxed)
 }
 
 /// Number of completed collections.
@@ -452,14 +489,31 @@ impl ObjectModel<Skein> for Skein {
         VMLocalLOSMarkNurserySpec::side_after(Self::LOCAL_MARK_BIT_SPEC.as_spec());
     const OBJECT_REF_OFFSET_LOWER_BOUND: isize = 0;
 
-    fn copy(_: ObjectReference, _: CopySemantics, _: &mut GCWorkerCopyContext<Skein>) -> ObjectReference {
-        unreachable!("Skein uses a non-moving plan")
+    /// Move an object (M11): its words as they are, header and all, to
+    /// where the collector makes room. The identity hash is in the header
+    /// and goes with it. MMTk then writes where it went over the old
+    /// copy's first word (the forwarding pointer), so whoever still held
+    /// the old address would read that as a layout: no reference may
+    /// outlive a collection but through a slot the collector rewrites.
+    fn copy(from: ObjectReference, semantics: CopySemantics, context: &mut GCWorkerCopyContext<Skein>) -> ObjectReference {
+        let bytes = Self::get_current_size(from);
+        let to = context.alloc_copy(from, bytes, 8, 0, semantics);
+        assert!(!to.is_zero(), "the collector found no room to move {bytes} bytes to");
+        // SAFETY: `to` is fresh room for `bytes` bytes, and `from` an object of that size.
+        let moved = unsafe {
+            std::ptr::copy_nonoverlapping::<u8>(from.to_raw_address().to_ptr(), to.to_mut_ptr(), bytes);
+            ObjectReference::from_raw_address_unchecked(to)
+        };
+        context.post_copy(moved, bytes, semantics);
+        MOVED.fetch_add(1, Ordering::Relaxed);
+        moved
     }
     fn copy_to(_: ObjectReference, _: ObjectReference, _: Address) -> Address {
-        unreachable!("Skein uses a non-moving plan")
+        unreachable!("only a compacting plan copies in place, and Skein has none")
     }
-    fn get_reference_when_copied_to(_: ObjectReference, _: Address) -> ObjectReference {
-        unreachable!("Skein uses a non-moving plan")
+    fn get_reference_when_copied_to(_: ObjectReference, to: Address) -> ObjectReference {
+        // SAFETY: an object's reference is its first word's address.
+        unsafe { ObjectReference::from_raw_address_unchecked(to) }
     }
     fn get_current_size(object: ObjectReference) -> usize {
         object_words(object.to_raw_address().to_ptr()) * 8
@@ -699,6 +753,10 @@ impl Collection<Skein> for Skein {
         let GCThreadContext::Worker(worker) = ctx;
         std::thread::Builder::new()
             .name("skein-gc".into())
+            // (a worker that moves objects takes memory for them, and MMTk
+            // maps it with a table on its stack: Rust's 2 MB overflowed.
+            // Only the pages touched are committed.)
+            .stack_size(16 << 20)
             .spawn(move || {
                 // MMTk wants a distinct, non-null handle per worker. Ours
                 // carry nothing: the address of a per-thread byte will do.

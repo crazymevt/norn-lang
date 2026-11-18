@@ -6,13 +6,19 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-mmtk = { version = "0.33.0", default-features = false, features = ["immix_non_moving"] }
+mmtk = { version = "0.33.0", default-features = false }
 num-bigint = "0.4"
 num-rational = { version = "0.4", default-features = false, features = ["num-bigint-std"] }
 num-integer = "0.1"
 num-traits = "0.2"
 
 [features]
+default = ["non-moving"]
+# The collector never moves an object (MMTk's immix_non_moving): how Skein
+# has been built since M1. Without it (cargo build --no-default-features,
+# M11 part 2) Immix defragments: data may be moved at a collection, and
+# only what Kind::stays_put names, and what the roots name, stays.
+non-moving = ["mmtk/immix_non_moving"]
 # Heap checks, for hunting corruption: every pointer the GC follows (and
 # every root) must be a live object, or the GC panics naming the object
 # and field that held it. Slow.

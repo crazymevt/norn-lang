@@ -221,6 +221,11 @@ impl Sched {
         self.native_keep.lock().unwrap().values().flatten().for_each(|&v| f(v));
         crate::jit::for_each_linked(f);
         crate::jit::for_each_queued(f);
+        // (the functions unwinding knows by their addresses, kept in a
+        // static: as roots they stay where they are, M11)
+        if let Some(k) = crate::vm::FRAME_KINDS.get() {
+            [k.catch, k.unwind, k.bind, k.finish, k.runtime_error].into_iter().for_each(&mut *f);
+        }
         crate::reactor::for_each_root(f);
         for c in &self.currents {
             let v = Value(c.load(Ordering::Acquire));

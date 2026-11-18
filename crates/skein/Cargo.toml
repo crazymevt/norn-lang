@@ -20,7 +20,12 @@ name = "skein-ext-demo"
 path = "src/bin/ext_demo.rs"
 
 [dependencies]
-skein-rt = { path = "../skein-rt" }
-skein-vm = { path = "../skein-vm" }
+skein-rt = { path = "../skein-rt", default-features = false }
+skein-vm = { path = "../skein-vm", default-features = false }
 ctrlc = "3"
 rustyline = "15"
+
+[features]
+default = ["non-moving"]
+# (skein-rt's: the collector never moves an object)
+non-moving = ["skein-rt/non-moving", "skein-vm/non-moving"]
