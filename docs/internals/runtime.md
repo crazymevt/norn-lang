@@ -311,10 +311,23 @@ values rather than boxes.
   (`skein-rt/src/heap.rs`): parallel (one GC worker per core), stop-the-world,
   and objects never move, so the interpreter's cached code and frame pointers
   stay valid across a GC. The heap is 64 MB to 8 GB by default
-  (`SKEIN_HEAP_MIN`, `SKEIN_HEAP_MAX`); after each collection it may grow to
-  what's live times 1 + `SKEIN_HEAP_GROWTH` percent (100 by default: a
-  collection when the heap has doubled, as Go's `GOGC=100`), a trigger of
-  our own (`ProportionalTrigger`, MMTk's delegated trigger). MMTk's dynamic
+  (`SKEIN_HEAP_MIN`, `SKEIN_HEAP_MAX`); after each collection it may grow by
+  what's live times `SKEIN_HEAP_GROWTH` percent (100 by default: a
+  collection when the program has taken as much new memory as it had live
+  data, as Go's `GOGC=100`), a trigger of our own (`ProportionalTrigger`,
+  MMTk's delegated trigger). **What's live is the bytes of live objects
+  (since 2026-11-18), not the pages in use after the collection**: objects
+  don't move, so a page is in use while anything on it lives, and sized by
+  pages the heap fed itself (more room spread a store's survivors over more
+  pages, which counted as more live data). stash's benchmark, 200 MB of
+  live data on 1.3 GB of pages after loading, reached `SKEIN_HEAP_MAX` in
+  40 s with pauses of half a second; sized by live bytes it holds 4.5 GB
+  after 150 s, its longest pause 133 ms. It still rises (towards about 7
+  GB): that is the fragmentation itself, M11's to fix. `SKEIN_GC_LOG=1`
+  prints a line for each collection (its pause, the pages in use before
+  and after, the live bytes, the next limit; `=2` adds each space), and
+  `(gc-stats)` gives the pauses to a program. `SKEIN_GC_PLAN=marksweep`
+  runs MMTk's free-list plan instead, to compare. MMTk's dynamic
   size (MemBalancer, still there as `SKEIN_HEAP_GROWTH=balancer`) sized
   the room above live data by how fast collections trace against how fast
   the program allocates: Skein traces fast and allocates a lot, so it left
