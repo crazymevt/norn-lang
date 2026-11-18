@@ -1888,6 +1888,17 @@
              :restarts (mapv %describe-restart (:restarts e))}))
         @%debugging))
 
+(defn- %parked-frames
+  "The frames of the fiber of debugger entry e. A fiber says it's in the
+  debugger and then parks (%debug-park): an editor quick to ask found it
+  still running, and %frames refused. So wait for it, a moment."
+  [e]
+  (loop [n 0]
+    (when (and (not (%fiber-parked? (:fiber e))) (< n 5000))
+      (sleep 1)
+      (recur (inc n))))
+  (%frames (:fiber e)))
+
 (defn backtrace
   "Frames of fiber id (waiting in the debugger), top first:
   {:fn name :locals {sym value} :internal? bool}, and :inlined true for a
@@ -1899,7 +1910,7 @@
                 ns (when (symbol? n) (namespace n))]
             {:fn n :locals (:locals fr) :inlined (true? (:inlined fr))
              :internal? (if (and ns (or (= ns "skein.core") (= "skein.core/" (subs ns 0 (min (count ns) (count "skein.core/")))))) true false)}))
-        (%frames (:fiber (%debug-entry id)))))
+        (%parked-frames (%debug-entry id))))
 
 (defn debug-restart
   "Resume fiber id by invoking its restart number i with args."
@@ -1914,7 +1925,7 @@
   goes on from that call.)"
   [id i]
   (let [e (%debug-entry id)
-        fid (:id (nth (%frames (:fiber e)) i))]
+        fid (:id (nth (%parked-frames e) i))]
     (put! (:chan e) [:frame (nth fid 0) (nth fid 1) (nth fid 2 nil)])
     :ok))
 
@@ -1929,7 +1940,7 @@
 (defn eval-in-frame
   "Evaluate form with frame i's locals of fiber id bound."
   [id i form]
-  (let [fr (nth (%frames (:fiber (%debug-entry id))) i)
+  (let [fr (nth (%parked-frames (%debug-entry id)) i)
         bs (reduce-kv (fn [acc k v] (conj (conj acc k) (list 'quote v))) [] (:locals fr))]
     (binding [*inspecting* true]
       (eval (list 'let* bs form)))))
