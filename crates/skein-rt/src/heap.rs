@@ -66,6 +66,14 @@ static PAUSE_TOTAL: AtomicU64 = AtomicU64::new(0);
 static PAUSE_MAX: AtomicU64 = AtomicU64::new(0);
 static PAUSE_LAST: AtomicU64 = AtomicU64::new(0);
 static PAUSE_BEGAN: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// SKEIN_GC_LOG=1: a line on standard error for each collection (as Go's
+/// gctrace): how long it stopped the program, the heap before and after,
+/// and how far the heap may grow before the next.
+static GC_LOG: AtomicUsize = AtomicUsize::new(0);
+static PAGES_BEFORE: AtomicUsize = AtomicUsize::new(0);
+static PAGES_AFTER: AtomicUsize = AtomicUsize::new(0);
+static PAGES_LIVE: AtomicUsize = AtomicUsize::new(0);
+static PAGES_LIMIT: AtomicUsize = AtomicUsize::new(0);
 
 fn mmtk() -> &'static MMTK<Skein> {
     MMTK_INSTANCE.get().expect("heap not initialised")
@@ -84,53 +92,91 @@ fn env_bytes(name: &str) -> Option<usize> {
 
 // ---- when to collect ------------------------------------------------------------------
 //
-// After each collection the heap may grow to what's live times (1 +
-// SKEIN_HEAP_GROWTH percent), 100 by default: a collection when the heap has
-// doubled, as Go's GOGC=100; within SKEIN_HEAP_MIN (64 MB) and SKEIN_HEAP_MAX
-// (8 GB). MMTk's own dynamic size (MemBalancer, SKEIN_HEAP_GROWTH=balancer)
-// sizes the room above live data by how fast collections trace against how
-// fast the program allocates; Skein traces fast and allocates a lot, so it
-// left a few MB above live data, and a program with 65 MB live collected
-// every few MB it allocated: linting a 34 KB file took about 100
-// collections and 550 ms, against 12 or so and 150 ms now.
+// After each collection the heap may grow by what's live times
+// SKEIN_HEAP_GROWTH percent, 100 by default: a collection when the program
+// has taken as much new memory as it had live data, as Go's GOGC=100;
+// within SKEIN_HEAP_MIN (64 MB) and SKEIN_HEAP_MAX (8 GB).
+//
+// "What's live" is the bytes of the objects the collection found alive,
+// not the pages the heap holds after it. The collector doesn't move
+// objects, so a page stays in use while any object on it lives, and a
+// program that keeps one new object in every few KB it allocates (a store
+// taking writes) leaves a little live data on a great many pages. Sized by
+// pages, as it was until 2026-11-18, the heap fed itself: more room before
+// the next collection spread the survivors over more pages, which counted
+// as more live data, which made more room. stash's benchmark, with 1.3 GB
+// in use after loading, held 7 GB after 40 s and stopped only at
+// SKEIN_HEAP_MAX, its pauses at half a second. Sized by live bytes, the
+// room is the same each time, and what's free on the pages in use (their
+// holes cost no new pages) is filled before new pages are taken.
+//
+// MMTk's own dynamic size (MemBalancer, SKEIN_HEAP_GROWTH=balancer) sizes
+// the room above live data by how fast collections trace against how fast
+// the program allocates; Skein traces fast and allocates a lot, so it left
+// a few MB above live data, and a program with 65 MB live collected every
+// few MB it allocated: linting a 34 KB file took about 100 collections and
+// 550 ms, against 12 or so and 150 ms now.
 
 static HEAP_MIN_PAGES: AtomicUsize = AtomicUsize::new(0);
 static HEAP_MAX_PAGES: AtomicUsize = AtomicUsize::new(0);
 static HEAP_GROWTH: AtomicUsize = AtomicUsize::new(100);
+/// The heap's size now, in pages: a collection when it's full. Set as a
+/// collection ends (`grow_heap`).
+static HEAP_LIMIT_PAGES: AtomicUsize = AtomicUsize::new(0);
+/// Pages that allocations waiting on this collection need.
+static PENDING_PAGES: AtomicUsize = AtomicUsize::new(0);
 
-struct ProportionalTrigger {
-    /// The heap's size now, in pages: a collection when it's full.
-    current: AtomicUsize,
-    /// Pages that allocations waiting on this collection need.
-    pending: AtomicUsize,
+struct ProportionalTrigger;
+
+/// A collection has ended: how large the heap may get before the next.
+/// The pages in use now, and room for as much again as is live (times the
+/// growth percent). Called from `resume_mutators`, by when MMTk has counted
+/// the live bytes (it hasn't yet in the trigger's own `on_gc_end`).
+fn grow_heap(mmtk: &'static MMTK<Skein>) {
+    let in_use = mmtk.get_plan().get_reserved_pages();
+    let spaces = memory_manager::live_bytes_in_last_gc(mmtk);
+    let live_bytes: usize = spaces.values().map(|s| s.live_bytes).sum();
+    if GC_LOG.load(Ordering::Relaxed) > 1 {
+        // (SKEIN_GC_LOG=2: each space's pages in use and the bytes live on them)
+        let mut names: Vec<_> = spaces.iter().collect();
+        names.sort_by_key(|(n, _)| **n);
+        for (name, st) in names {
+            eprintln!("  {name}: {} MB in use, {} MB live", (st.used_pages << LOG_BYTES_IN_PAGE) >> 20, st.live_bytes >> 20);
+        }
+    }
+    // (never more than the pages in use: the count is of objects, without
+    // what's lost between them)
+    let live = (live_bytes >> LOG_BYTES_IN_PAGE).min(in_use);
+    let growth = HEAP_GROWTH.load(Ordering::Relaxed);
+    let want = in_use + live / 100 * growth + PENDING_PAGES.swap(0, Ordering::SeqCst);
+    let (min, max) = (HEAP_MIN_PAGES.load(Ordering::Relaxed), HEAP_MAX_PAGES.load(Ordering::Relaxed));
+    HEAP_LIMIT_PAGES.store(want.clamp(min, max), Ordering::Relaxed);
+    PAGES_AFTER.store(in_use, Ordering::Relaxed);
+    PAGES_LIVE.store(live, Ordering::Relaxed);
+    PAGES_LIMIT.store(want.clamp(min, max), Ordering::Relaxed);
 }
 
 impl GCTriggerPolicy<Skein> for ProportionalTrigger {
     fn on_pending_allocation(&self, pages: usize) {
-        self.pending.fetch_add(pages, Ordering::SeqCst);
+        PENDING_PAGES.fetch_add(pages, Ordering::SeqCst);
     }
-    fn on_gc_end(&self, mmtk: &'static MMTK<Skein>) {
-        // (what's live, with the plan's reserve for collecting)
-        let live = mmtk.get_plan().get_reserved_pages();
-        let growth = HEAP_GROWTH.load(Ordering::Relaxed);
-        let want = live + live / 100 * growth + self.pending.swap(0, Ordering::SeqCst);
-        let (min, max) = (HEAP_MIN_PAGES.load(Ordering::Relaxed), HEAP_MAX_PAGES.load(Ordering::Relaxed));
-        self.current.store(want.clamp(min, max), Ordering::Relaxed);
+    fn on_gc_end(&self, _: &'static MMTK<Skein>) {
+        // (the size is set in resume_mutators: grow_heap)
     }
     fn is_gc_required(&self, space_full: bool, space: Option<SpaceStats<Skein>>, plan: &dyn Plan<VM = Skein>) -> bool {
         plan.collection_required(space_full, space)
     }
     fn is_heap_full(&self, plan: &dyn Plan<VM = Skein>) -> bool {
-        plan.get_reserved_pages() > self.current.load(Ordering::Relaxed)
+        plan.get_reserved_pages() > HEAP_LIMIT_PAGES.load(Ordering::Relaxed)
     }
     fn get_current_heap_size_in_pages(&self) -> usize {
-        self.current.load(Ordering::Relaxed)
+        HEAP_LIMIT_PAGES.load(Ordering::Relaxed)
     }
     fn get_max_heap_size_in_pages(&self) -> usize {
         HEAP_MAX_PAGES.load(Ordering::Relaxed)
     }
     fn can_heap_size_grow(&self) -> bool {
-        self.current.load(Ordering::Relaxed) < HEAP_MAX_PAGES.load(Ordering::Relaxed)
+        HEAP_LIMIT_PAGES.load(Ordering::Relaxed) < HEAP_MAX_PAGES.load(Ordering::Relaxed)
     }
 }
 
@@ -139,10 +185,23 @@ impl GCTriggerPolicy<Skein> for ProportionalTrigger {
 pub fn init_heap() {
     let m = *MMTK_INSTANCE.get_or_init(|| {
         let mut b = MMTKBuilder::new();
-        b.options.plan.set(PlanSelector::Immix);
+        // (SKEIN_GC_PLAN=marksweep: MMTk's free-list plan, to compare; see M11)
+        let plan = match std::env::var("SKEIN_GC_PLAN").as_deref() {
+            Ok("marksweep") => PlanSelector::MarkSweep,
+            _ => PlanSelector::Immix,
+        };
+        b.options.plan.set(plan);
+        // (the live bytes each collection finds: what the heap's growth goes by)
+        b.options.count_live_bytes_in_gc.set(true);
         let max = env_bytes("SKEIN_HEAP_MAX").unwrap_or(8 << 30);
         let min = env_bytes("SKEIN_HEAP_MIN").unwrap_or(64 << 20).min(max);
         let growth = std::env::var("SKEIN_HEAP_GROWTH").ok();
+        if let Ok(v) = std::env::var("SKEIN_GC_LOG")
+            && !v.is_empty()
+            && v != "0"
+        {
+            GC_LOG.store(if v == "2" { 2 } else { 1 }, Ordering::Relaxed);
+        }
         if growth.as_deref() == Some("balancer") {
             b.options.gc_trigger.set(GCTriggerSelector::DynamicHeapSize(min, max));
         } else {
@@ -573,6 +632,7 @@ fn check_slot(p: *mut u64, s: SkeinSlot) {
 impl Collection<Skein> for Skein {
     fn stop_all_mutators<F: FnMut(&'static mut MmMutator)>(_: VMWorkerThread, mut visitor: F) {
         *PAUSE_BEGAN.lock().unwrap() = Some(std::time::Instant::now());
+        PAGES_BEFORE.store(mmtk().get_plan().get_reserved_pages(), Ordering::Relaxed);
         crate::safepoint::stop_world();
         for m in Skein::mutators() {
             visitor(m);
@@ -580,15 +640,31 @@ impl Collection<Skein> for Skein {
     }
     fn create_gc_trigger() -> Box<dyn GCTriggerPolicy<Skein>> {
         let min = HEAP_MIN_PAGES.load(Ordering::Relaxed);
-        Box::new(ProportionalTrigger { current: AtomicUsize::new(min), pending: AtomicUsize::new(0) })
+        HEAP_LIMIT_PAGES.store(min, Ordering::Relaxed);
+        Box::new(ProportionalTrigger)
     }
     fn resume_mutators(_: VMWorkerThread) {
         GC_COUNT.fetch_add(1, Ordering::Relaxed);
+        if HEAP_MAX_PAGES.load(Ordering::Relaxed) != 0 {
+            grow_heap(mmtk());
+        }
         if let Some(began) = PAUSE_BEGAN.lock().unwrap().take() {
             let ns = began.elapsed().as_nanos() as u64;
             PAUSE_TOTAL.fetch_add(ns, Ordering::Relaxed);
             PAUSE_MAX.fetch_max(ns, Ordering::Relaxed);
             PAUSE_LAST.store(ns, Ordering::Relaxed);
+            if GC_LOG.load(Ordering::Relaxed) != 0 {
+                let mb = |pages: &AtomicUsize| (pages.load(Ordering::Relaxed) << LOG_BYTES_IN_PAGE) as f64 / 1048576.0;
+                eprintln!(
+                    "gc {}: {:.1} ms, {:.0} MB -> {:.0} MB ({:.0} MB live), next at {:.0} MB",
+                    GC_COUNT.load(Ordering::Relaxed),
+                    ns as f64 / 1e6,
+                    mb(&PAGES_BEFORE),
+                    mb(&PAGES_AFTER),
+                    mb(&PAGES_LIVE),
+                    mb(&PAGES_LIMIT)
+                );
+            }
         }
         crate::safepoint::resume_world();
     }
