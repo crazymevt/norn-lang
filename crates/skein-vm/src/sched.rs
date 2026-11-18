@@ -54,6 +54,7 @@ use std::time::{Duration, Instant};
 /// store-then-load handshake on PARK/JOINING and CANCEL (see `cancel`).
 pub(crate) fn aset(obj: Value, field: usize, v: Value) {
     obj.atomic_word(field).store(v.0, Ordering::SeqCst);
+    skein_rt::heap::barrier(obj);
 }
 
 pub(crate) fn aget(obj: Value, field: usize) -> Value {

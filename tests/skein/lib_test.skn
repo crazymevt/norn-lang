@@ -158,7 +158,7 @@
 ;; gc-stats: that collection, at least, and how long collections stopped
 ;; the program; :reset starts the total and the longest again.
 (let [st (gc-stats :reset)]
-  (is (= #{:count :pause-ms :max-pause-ms :last-pause-ms :heap-bytes :live-bytes :moved} (set (keys st))))
+  (is (= #{:count :pause-ms :max-pause-ms :last-pause-ms :heap-bytes :live-bytes :moved :remembered} (set (keys st))))
   (is (not (neg? (:moved st))) "0 in a build whose collector never moves an object")
   (is (< 0 (:live-bytes st) (:heap-bytes st)) "what's alive is less than the pages holding it")
   (is (= (:count st) (gc-count)))

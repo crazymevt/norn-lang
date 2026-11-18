@@ -219,9 +219,16 @@ impl Value {
         Value(self.word(i))
     }
 
+    /// Store value v in payload word i. Every store of a reference into
+    /// an object goes through here or says so itself (`heap::barrier`):
+    /// a young collection has to hear of an old object that comes to
+    /// point at a new one (M11).
     #[inline]
     pub fn set_field(self, i: usize, v: Value) {
-        self.set_word(i, v.0)
+        self.set_word(i, v.0);
+        if v.is_obj() || v.is_cons() {
+            crate::heap::barrier(self);
+        }
     }
 
     /// Atomic view of payload word `i` (vars, atoms).

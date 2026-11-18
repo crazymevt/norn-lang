@@ -157,6 +157,6 @@ pub fn stress_enabled() -> bool {
 }
 
 /// Collect now, from a safepoint. The caller has saved its stack.
-pub fn collect(m: &mut crate::heap::Mutator) {
-    crate::heap::collect(m);
+pub fn collect(m: &mut crate::heap::Mutator, whole: bool) {
+    crate::heap::collect(m, whole);
 }

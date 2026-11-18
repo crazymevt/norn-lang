@@ -59,7 +59,8 @@ impl Value {
     /// Publish a new root (release): every core sees it on its next read.
     #[inline]
     pub fn var_set_root(self, v: Value) {
-        self.atomic_word(2).store(v.0, Ordering::Release)
+        self.atomic_word(2).store(v.0, Ordering::Release);
+        crate::heap::barrier(self);
     }
 
     pub fn var_flags(self) -> u64 {

@@ -263,12 +263,17 @@ impl Value {
     }
     #[inline]
     pub fn atom_set(self, v: Value) {
-        self.atomic_word(0).store(v.0, Ordering::Release)
+        self.atomic_word(0).store(v.0, Ordering::Release);
+        crate::heap::barrier(self);
     }
     /// Identity compare-and-set.
     #[inline]
     pub fn atom_cas(self, old: Value, new: Value) -> bool {
-        self.atomic_word(0).compare_exchange(old.0, new.0, Ordering::AcqRel, Ordering::Acquire).is_ok()
+        let done = self.atomic_word(0).compare_exchange(old.0, new.0, Ordering::AcqRel, Ordering::Acquire).is_ok();
+        if done {
+            crate::heap::barrier(self);
+        }
+        done
     }
 }
 

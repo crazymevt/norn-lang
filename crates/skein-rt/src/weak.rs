@@ -46,6 +46,11 @@ fn object(v: Value) -> Option<ObjectReference> {
 }
 
 fn reachable(v: Value) -> bool {
+    // (a young collection hasn't looked through the non-moving space: an
+    // object there is alive, and its mark is the last full collection's)
+    if crate::heap::in_young_collection() && crate::heap::in_nonmoving_space(v) {
+        return true;
+    }
     object(v).is_some_and(|r| r.is_reachable())
 }
 

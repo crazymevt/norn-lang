@@ -310,6 +310,61 @@ carriers:
     timing under a collection every 50th poll, the test plan-m10.md
     already lists as one that depends on the machine.
 
+- **Part 3: the write barrier, and the generational plan behind a switch
+  (2026-11-18). Its done-check is met:** on the generational plan in a
+  build that moves objects, every suite passes with the heap walked
+  after every collection (nothing found), and at tier 0, tier 1 and
+  with everything compiled, a collection forced every 50th poll; the
+  lang-tests and 300,000 fibers' ping-pong too. Part 2's own mode still
+  passes, and the default build is as it was (every suite, `skein
+  check`, the lang-tests, `cargo test`).
+  - **The barrier** is MMTk's own (`heap::barrier`): an old object carries
+    a bit, and the first store into it since the last collection clears
+    the bit and puts the object in the storing thread's list. It is in
+    `Value::set_field`, after each of the twelve atomic stores, and where
+    an object old from the start is filled by a raw copy (a proto's
+    constants; the image loader). It's off unless the plan has
+    generations: one load and a branch.
+  - **Which mutator** (the thing plan-m11 said to settle): a thread's
+    own, found through a thread-local set when it makes its `Mutator`;
+    for a thread that stores into the heap without one, a shared one
+    behind a lock. No thread needs to know which it is.
+  - **A fiber's stack** has no barrier on its frames. The collector looks
+    through frames as part of their *fiber* (a segment scanned by itself
+    is only its link to the next), so it's the fiber that's remembered:
+    as `run_fiber` takes it up, and again after each stop for a
+    collection (`reload`), since a collection forgets what it was told.
+    (Remembering the segment, the first try, lost a frame's values at
+    the next young collection.)
+  - **The switch:** `SKEIN_GC_PLAN=sticky` is StickyImmix. In a build
+    that moves objects its young survivors are copied, which is plan A.
+  - **What MMTk 0.33 doesn't do, found by losing the whole heap at the
+    first collection:** with generations, objects in the non-moving
+    space count as old from the start (a young collection doesn't look
+    through that space), so each must carry the bit from birth or no
+    store into it is ever noticed. MMTk sets it for its immortal and
+    large-object spaces and not for an Immix space used as the
+    non-moving one. `alloc_words_in` sets it.
+  - **Asking for a collection:** `(gc)` means all of the heap
+    (`force_full_heap_collection`), or a cleanup waiting on an old
+    object never ran; the stress mode asks for an ordinary one, which
+    is usually young, the kind a missed barrier shows in. (MMTk refuses
+    an "internal" request outright unless a plan is concurrent.)
+  - **Weak references in a young collection:** the non-moving space
+    isn't looked through, so an object there is alive whatever its mark
+    says (`weak.rs` `reachable`): a weak reference made since the last
+    full collection was otherwise dropped, and a referent there cleared
+    while alive.
+  - **The check** (part 3's done-check): a build with `gc-check` walks
+    everything reachable after every collection and stops at the first
+    reference to something that isn't an object, naming the kind that
+    holds it, the word, and whether the holder was remembered
+    (`verify_heap`). `(gc-stats)` has `:remembered`.
+  - **A cost to come back to:** every object made in the non-moving
+    space is remembered at its first store, so each new fiber, waiter
+    and claim goes through the barrier's slow path once. 17,000 objects
+    are remembered by the time skein.core has loaded.
+
 ## Risks
 
 - **A value in a Rust local across a safepoint.** Today it's harmless if

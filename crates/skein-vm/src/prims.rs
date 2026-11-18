@@ -2190,6 +2190,7 @@ fn gf_set(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         return Err(Error::new("%gf-set! can only change :dispatch, :combination, :meta or :class"));
     }
     a[0].atomic_word(f).store(a[2].0, std::sync::atomic::Ordering::Release);
+    skein_rt::heap::barrier(a[0]);
     // Cached effective methods were built under the old options.
     let methods = a[0].field(METHODS);
     let state = a[0].gf_state();
@@ -2267,6 +2268,8 @@ fn gc_stats(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         Value::fix(skein_rt::heap::live_bytes() as i64),
         k(vm, "moved"),
         Value::fix(skein_rt::heap::moved_objects() as i64),
+        k(vm, "remembered"),
+        Value::fix(skein_rt::heap::remembered_objects() as i64),
     ];
     hash_map(vm, &kvs)
 }

@@ -142,6 +142,8 @@ impl Shake {
                 let theirs = stand_in.atomic_word(f).swap(mine, AcqRel);
                 gf.atomic_word(f).store(theirs, std::sync::atomic::Ordering::Release);
             }
+            skein_rt::heap::barrier(gf);
+            skein_rt::heap::barrier(stand_in);
         }
     }
 }
