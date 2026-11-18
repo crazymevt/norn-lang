@@ -337,10 +337,16 @@ values rather than boxes.
   collections and 560 ms a run; now 4 and 124 ms, peak RSS 137 → 233 MB).
   Small programs stay within the minimum (`skein -e nil`: 79 MB either
   way).
-- **Next: generational `StickyImmix`** with `sticky_immix_non_moving_nursery`.
-  It needs write barriers on stores into possibly-old objects (var roots,
-  atoms, fiber, channel and scope fields; §4.4). Stack frames don't need
-  them, because frames are scanned through their fiber at every GC.
+- **Next (M11, [plan-m11.md](../plans/plan-m11.md), decided 2026-11-18):
+  objects may move.** Generational `StickyImmix` with its nursery copied,
+  so that what survives is gathered out from among the garbage, reached
+  through Immix with defragmentation. (It was to be
+  `sticky_immix_non_moving_nursery`: that shortens pauses and leaves the
+  heap at thirty times its live data.) It needs write barriers on stores
+  into possibly-old objects (var roots, atoms, fiber, channel and scope
+  fields; §4.4), and the runtime's own objects kept where they are. Stack
+  frames don't need barriers, because frames are scanned through their
+  fiber at every GC.
 - **Later: concurrent collection**, as MMTk's concurrent plans mature or
   through our own plan. **[open]**
 - **One MMTk mutator per carrier thread**, not per fiber. Fibers allocate from
@@ -1579,7 +1585,7 @@ each part needs from the runtime:
 | M9a ✅ | Before sealing (plan-m9.md): `skein.uri` and `skein.http` (HTTP/1.1 client and server), condition classes for the runtime's errors (raised from Rust with their data), `delay`, `future`, promises and `ex-info`, `match` (pattern matching on data, in core), checked type signatures and `declare`, contracts with blame at module boundaries, the full MOP (`print-object`, `initialize-instance`, `define-method-combination`, protocol sugar, slot readers as generic functions), processes/supervisors, the `skein.stm` library, the full FFI (callbacks from C, struct layouts, typed signatures, unsafe modules), SQLite on it, pseudo-terminals in `skein.process`, a binary format for Skein values, and as needed `skein.uuid`, `skein.csv`, TOML, compression, `skein.zip`, `skein.crypto`, `skein.schedule`, `skein.data` (structural diff); Studio's API workbench, terminal and Databases panels as their libraries land | Studio's API workbench, terminal and Databases view run on them; the new libraries' public functions have checked signatures; a contract violation across modules blames the right side; a supervisor restarts a crashed process while the debugger holds the crash; tier 0 and tier 1 agree on every suite |
 | M9b ✅ | After sealing: tree shaking for images (`:shake`, using sealing to prove code unused), and tooling that doesn't shape core: a sampling profiler, source-drift tracking (design §5.1), `skein lsp` (a Language Server Protocol adapter over the editor protocol), `skein new` (project scaffolding), and code coverage if M7 didn't get it | — |
 | M10 ✅ | The optimising compiler: the IR (design §8.3), inlining, direct linking of calls through vars, guarded, with recompilation when one is redefined (moved from M8, 2026-11-16; every var, not only sealed modules', since part 3), type inference from M9's signatures, unboxing, escape analysis; tier 1's full calling convention (push-frame and `return_call`), inline caches, and native compilation of every `defn` | Measured wins on `bench/` with tier 0 and tier 1 still agreeing on every suite |
-| M11 | GC maturity: generational collection (write barriers), opportunistic defragmentation (the M1 fragmentation finding), concurrent collection; deadlock detection for fibers nothing can wake (open question 4: a deadlock event, and the fiber kept in the debugger with a `Deadlock` condition); complex numbers as a library type | Bounded pause times and heap overhead under the M1 stress workloads |
+| M11 | A collector that gathers what lives ([plan-m11.md](../plans/plan-m11.md); **revised 2026-11-18**, the user): objects may move; generational collection with its nursery copied (write barriers), reached through Immix with defragmentation; the runtime's own objects kept in place. Concurrent collection is decided after its numbers; deadlock detection and complex numbers moved to todo.md | On `bench/stash.skn` at 10 carriers: pages in use level at 3× the live bytes or less (they were about 23× and rising), the longest pause under 20 ms (148), under 2% of the time paused (7.7%), requests a second held; every suite passing with objects moved at every collection |
 | M12 | Platforms and distribution: Linux first, then Windows (JIT memory, signals), CI on all three, release builds and installers, `skein` shipped with a base image (bootstrap step 6); WASM as a second target (design §9, open) | Every suite passes on macOS, Linux and Windows; `skein` starts from its bundled image |
 
 ### 12.1 M0 status (2026-11-13)
@@ -1965,4 +1971,5 @@ tests (they now wait for what they check, or watch their own handles).
 4. ~~**Parked fibers nothing can wake**~~ — decided: both. When the GC
    finds a parked fiber nothing can reach, it posts a deadlock event (as Go
    does) and moves the fiber into the debugger's list with a `Deadlock`
-   condition instead of freeing it. Built in M11, on M6's finalizers.
+   condition instead of freeing it. To be built on M6's finalizers (it was
+   M11's; in todo.md since 2026-11-18).
