@@ -14,7 +14,7 @@ meaning. Spaces, newlines, and commas separate forms.
 | `"line\n"`, `\a`, `\newline` | A string and two character literals. |
 | `item`, `app/item` | Unqualified and namespace-qualified symbols. |
 | `:item`, `:app/item`, `::item`, `::s/item` | Keywords. The double colon qualifies the keyword with the current namespace, or with the namespace an alias stands for: after `(require '[skein.string :as s])`, `::s/item` reads as `:skein.string/item`. An unknown alias is a read error. |
-| `(f x)`, `[x y]`, `{:x x}`, `#{x y}` | A list, vector, map, and set. |
+| `(f x)`, `[x y]`, `{:x x}`, `#{x y}` | A list, vector, map, and set. A map written with the same key twice, or a set with the same item twice, is a read error (`hash-map` and `set` take repeats: the last value of a key stays). |
 | `'form`, `@ref`, `#'name` | Reader shorthand for `(quote form)`, `(deref ref)`, and `(var name)`. |
 | `` `form ``, `~x`, `~@xs` | Syntax quote, unquote, and unquote-splicing in a template. |
 | `#(+ % 1)`, `#(vector %1 %2 %&)` | Anonymous function literals. `%` is the first argument and `%&` collects rest arguments. |

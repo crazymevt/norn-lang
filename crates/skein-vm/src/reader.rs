@@ -397,6 +397,12 @@ impl<'a> Reader<'a> {
                     }
                     let mut map = map_empty();
                     for kv in xs.chunks(2) {
+                        // (a key written twice is a mistake: one of its
+                        // values would be dropped with nothing said. As in
+                        // Clojure and EDN.)
+                        if map.map_get(kv[0]).is_some() {
+                            return Err(ReadError::Syntax(format!("Duplicate key in a map literal: {}", skein_rt::print::pr_str(kv[0], true))));
+                        }
                         map = map_assoc(&mut vm.m, map, kv[0], kv[1]);
                     }
                     if let Some(f) = self.frame() {
@@ -513,6 +519,9 @@ impl<'a> Reader<'a> {
                 let xs = self.read_delimited(vm, '}')?;
                 let mut s = set_empty();
                 for &x in &xs {
+                    if s.set_contains(x) {
+                        return Err(ReadError::Syntax(format!("Duplicate item in a set literal: {}", skein_rt::print::pr_str(x, true))));
+                    }
                     s = set_conj(&mut vm.m, s, x);
                 }
                 if let Some(f) = self.frame() {
