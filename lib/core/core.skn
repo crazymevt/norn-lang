@@ -963,8 +963,15 @@
   are owned by the fiber that made them, compare by identity, and have
   their :mutable true slots changed with set-slot! and update-slot!
   (design §4.2)."
-  [cname supers slots & options]
-  (let [qname (symbol (name (current-ns)) (name cname))
+  [cname & more]
+  (let [supers (first more)
+        slots (second more)
+        options (nnext more)
+        lists? (fn [x] (or (seq? x) (vector? x) (and (coll? x) (empty? x) (not (map? x)))))
+        _ (when-not (and (symbol? cname) (next more) (lists? supers) (lists? slots))
+            (error (str "defclass: expected (defclass name (supers…) (slots…) options…), got "
+                        (pr-str (cons 'defclass (cons cname more))))))
+        qname (symbol (name (current-ns)) (name cname))
         specs (mapv %slot-spec slots)
         opts (reduce (fn [m o] (if (seq? o) (assoc m (first o) (if (next o) (second o) true)) m)) {} options)
         supers (if (seq supers) (vec supers) ['skein.core/StandardObject])

@@ -2,7 +2,7 @@
 ;;;; Run by crates/skein-vm/tests/skein_suites.rs, or `skein tests/skein/clos_test.skn`.
 
 (ns clos-test
-  (:require [skein.test :refer [is]]))
+  (:require [skein.test :refer [is]] [skein.string :as str]))
 
 (defn error-of [thunk] (:error (settle (spawn-detached (thunk)))))
 
@@ -356,3 +356,13 @@
 (defmethod collection-seq ((f faulty)) (error "broken collection"))
 (is (= "broken collection" (try (count (faulty)) (catch Error e (condition-message e)))))
 (is (= :index-error (try (nth (counted :n 1) 4) (catch IndexError _ :index-error))))
+;; a defclass that isn't one says what one looks like (it was "Wrong number
+;; of args (2) passed to: #<fn skein.core/defclass>")
+(let [m (fn [form] (try (macroexpand form) nil (catch Error e (condition-message e))))]
+  (is (str/starts-with? (m '(defclass shape [x]))
+                        "defclass: expected (defclass name (supers…) (slots…) options…), got (defclass shape [x])"))
+  (is (str/starts-with? (m '(defclass shape (x y))) "defclass: expected"))
+  (is (str/starts-with? (m '(defclass shape)) "defclass: expected"))
+  (is (str/starts-with? (m '(defclass "shape" () ())) "defclass: expected"))
+  (is (nil? (m '(defclass shape () ()))))
+  (is (nil? (m '(defclass shape [] [x] (:doc "vectors do too"))))))
