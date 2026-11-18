@@ -95,10 +95,65 @@ pub fn set_identity_hash_counter(n: u64) {
     NEXT_IDENTITY_HASH.fetch_max(n, Ordering::Relaxed);
 }
 
-/// Allocate an object with `payload_words` words after the header.
+impl Kind {
+    /// Is an object of this kind one the collector must leave where it is?
+    /// (M11, plan-m11.md: *data moves, the runtime's own objects don't*.)
+    ///
+    /// These are what the interpreter and compiled code hold addresses of
+    /// (stack segments, code, protos; classes, generic functions and
+    /// keywords, which tier 1 writes into its code), what Rust keeps by
+    /// address in tables of its own (symbols, vars, handles, weak
+    /// references), and the objects fibers meet at (fibers, channels and
+    /// their waiters, scopes, atoms). They're few beside a program's data,
+    /// and mostly long-lived. Everything else may be moved: strings,
+    /// numbers, collections and their nodes, instances, closures.
+    ///
+    /// An `Array` is data, except a proto's constants, which the
+    /// interpreter reads through a pointer (`alloc_staying`).
+    pub fn stays_put(self) -> bool {
+        matches!(
+            self,
+            Kind::Symbol
+                | Kind::Keyword
+                | Kind::Var
+                | Kind::Code
+                | Kind::Proto
+                | Kind::FnTemplate
+                | Kind::Primitive
+                | Kind::Segment
+                | Kind::Fiber
+                | Kind::Chan
+                | Kind::Waiter
+                | Kind::Claim
+                | Kind::Scope
+                | Kind::Atom
+                | Kind::Reader
+                | Kind::Class
+                | Kind::Generic
+                | Kind::Weak
+                | Kind::Handle
+                | Kind::Regex
+        )
+    }
+}
+
+/// Allocate an object with `payload_words` words after the header, where
+/// its kind belongs (`Kind::stays_put`).
 #[inline]
 pub fn alloc(m: &mut Mutator, kind: Kind, payload_words: usize) -> Value {
-    let p = m.alloc_words(HEADER_WORDS + payload_words);
+    alloc_in(m, kind, payload_words, kind.stays_put())
+}
+
+/// `alloc`, for an object that must stay where it is though its kind is
+/// one that may move: an array the interpreter reads through a pointer.
+#[inline]
+pub fn alloc_staying(m: &mut Mutator, kind: Kind, payload_words: usize) -> Value {
+    alloc_in(m, kind, payload_words, true)
+}
+
+#[inline]
+fn alloc_in(m: &mut Mutator, kind: Kind, payload_words: usize, stays: bool) -> Value {
+    let p = m.alloc_words_in(HEADER_WORDS + payload_words, stays);
     // SAFETY: p points to at least HEADER_WORDS fresh words.
     unsafe {
         p.write(&LAYOUTS[kind as usize] as *const Layout as u64);

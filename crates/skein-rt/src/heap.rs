@@ -304,8 +304,22 @@ impl Mutator {
     /// collects (runtime.md §4.3). Contents are uninitialised.
     #[inline]
     pub fn alloc_words(&mut self, words: usize) -> *mut u64 {
+        self.alloc_words_in(words, false)
+    }
+
+    /// `alloc_words`, in the space whose objects the collector never moves
+    /// if `stays` (M11, plan-m11.md: data may move, the runtime's own
+    /// objects don't). A large object doesn't move wherever it's asked for.
+    #[inline]
+    pub fn alloc_words_in(&mut self, words: usize, stays: bool) -> *mut u64 {
         let bytes = words * 8;
-        let sem = if bytes > LOS_THRESHOLD.load(Ordering::Relaxed) { AllocationSemantics::Los } else { AllocationSemantics::Default };
+        let sem = if bytes > LOS_THRESHOLD.load(Ordering::Relaxed) {
+            AllocationSemantics::Los
+        } else if stays {
+            AllocationSemantics::NonMoving
+        } else {
+            AllocationSemantics::Default
+        };
         let a = memory_manager::alloc_with_options(&mut self.mm, bytes, 8, 0, sem, ALLOC_OPTIONS);
         if a.is_zero() {
             panic!("out of memory allocating {bytes} bytes");
