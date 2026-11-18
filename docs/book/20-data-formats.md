@@ -251,7 +251,7 @@ database, `:pretty true` lays the value out over lines, as `skein.pprint`
 does:
 
 ```clojure
-(println (edn/write-string (sorted-map :name "ada" :langs ["skein" "c"]) :pretty true :width 20))
+(println (edn/write-string (sorted-map :name "ada" :langs ["skein" "c"]) :pretty true :width 24))
 ; prints: {:langs ["skein" "c"],
 ; prints:  :name "ada"}
 ```
@@ -505,10 +505,10 @@ conversions you need at the edges of a program: hex and Base64 for putting
 bytes into text, and fixed-width integers and floats for binary layouts.
 
 ```clojure
-(b/hex (bytes "Skein")) ; => "4e6f726e"
-(b/unhex "4e6f726e") ; => #bytes "4e6f726e"
-(b/base64 (bytes "Skein")) ; => "Tm9ybg=="
-(bytes->string (b/unbase64 "Tm9ybg==")) ; => "Skein"
+(b/hex (bytes "Skein")) ; => "536b65696e"
+(b/unhex "536b65696e") ; => #bytes "536b65696e"
+(b/base64 (bytes "Skein")) ; => "U2tlaW4="
+(bytes->string (b/unbase64 "U2tlaW4=")) ; => "Skein"
 ```
 
 `(base64 b :url)` uses the URL-safe alphabet without padding, the form used

@@ -77,3 +77,9 @@ jobs:
         # (after a failure too: every failure in one run)
         if: ${{ !cancelled() }}
         run: target/release/skein check
+
+      - name: The book's examples
+        # (on macOS, where they've been run: the rename left seven of them
+        # wrong with nothing to say so)
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: python3 docs/book/check.py --skein target/release/skein
