@@ -810,14 +810,9 @@
 ;; (a module named as one of Skein's own is never loaded: ledger finding)
 (is (= [:shadowed] (mapv :kind (lint/lint-string "(ns skein.csv)\n(defn f [] 1)\n" "csv.skn"))))
 (is (= [] (lint/lint-string (first (%find-lib "skein.csv")) "lib/skein/csv.skn")) "the library itself isn't")
-;; A key written twice in a map or set: the reader keeps the last, silently.
-(is (= [[4 :duplicate-key ":a is written twice in this map: the reader keeps the last and drops the other"]
-        [5 :duplicate-key "1 is written twice in this set: the reader keeps the last and drops the other"]
-        [9 :duplicate-key ":z is written twice in this map: the reader keeps the last and drops the other"]]
-       (mapv (juxt :line :kind :message)
-             (lint/lint-string (str "(ns lint-dup)\n(def m {:a 1\n        :b 2 ; a comment\n        :a 3})\n(def s #{1 2 1})\n"
-                                    "(def text \"two\nlines\")\n(def ok {:a {:a 1} :b #{:a} 1 1 #_:b :c 2 :d '(:a :a)})\n"
-                                    "(def inner {:k {:z 1 :z 2}})\n")))))
+;; A key written twice in a map or set is a read error, which lint reports.
+(is (= [[:read "dup.skn:3: Duplicate key in a map literal: :a"]]
+       (mapv (juxt :kind :message) (lint/lint-string "(ns lint-dup)\n(def m {:a 1\n        :a 3})\n" "dup.skn"))))
 ;; (skein.* is Skein's: its library and first-party packages')
 (is (= [:reserved] (mapv :kind (lint/lint-string "(ns skein.mine)\n(defn f [] 1)\n" "src/skein/mine.skn"))))
 (is (= [] (lint/lint-string "(ns skein.ui.widgets)\n(defn f [] 1)\n" "lib/skein/ui/widgets.skn")) "a first-party package's")
