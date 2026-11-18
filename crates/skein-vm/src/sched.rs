@@ -126,6 +126,14 @@ pub struct Sched {
     idle: Mutex<()>,
     idle_cv: Condvar,
     idle_count: AtomicUsize,
+    /// Carriers looking for work a little longer before they sleep
+    /// (`spin_for_work`). While there's one, making a fiber runnable wakes
+    /// nobody: the spinner finds it.
+    spinning: AtomicUsize,
+    /// Fibers in the run queues (the carriers' and the global one), counted
+    /// before each is pushed: zero means there's nothing to look for, with
+    /// no queue's lock taken.
+    queued: AtomicUsize,
     timers: Mutex<Timers>,
     timer_cv: Condvar,
     external: Mutex<VecDeque<Job>>,
@@ -168,6 +176,8 @@ impl Sched {
             idle: Mutex::new(()),
             idle_cv: Condvar::new(),
             idle_count: AtomicUsize::new(0),
+            spinning: AtomicUsize::new(0),
+            queued: AtomicUsize::new(0),
             timers: Mutex::new(Timers { heap: BinaryHeap::new(), entries: HashMap::new(), seq: 0 }),
             timer_cv: Condvar::new(),
             external: Mutex::new(VecDeque::new()),
@@ -189,7 +199,12 @@ impl Sched {
     }
 
     fn wake_idle(&self) {
-        if self.idle_count.load(Ordering::Acquire) > 0 {
+        // (a spinner sees the new work, or goes to sleep through the idle
+        // path's last look under the lock, after it stops counting as one)
+        if self.spinning.load(Ordering::SeqCst) > 0 {
+            return;
+        }
+        if self.idle_count.load(Ordering::SeqCst) > 0 {
             let _g = self.idle.lock().unwrap();
             self.idle_cv.notify_one();
         }
@@ -220,6 +235,7 @@ impl Sched {
 pub fn schedule(f: Value) {
     let s = sched();
     let me = CARRIER.with(|c| c.get());
+    s.queued.fetch_add(1, Ordering::SeqCst);
     if me < s.slots {
         s.locals[me].lock().unwrap().push_back(f);
     } else {
@@ -233,6 +249,7 @@ pub fn schedule(f: Value) {
 /// woken from outside the carriers (timers, other threads).
 fn requeue(f: Value) {
     let s = sched();
+    s.queued.fetch_add(1, Ordering::SeqCst);
     s.injector.lock().unwrap().push_back(f);
     s.wake_idle();
 }
@@ -243,6 +260,19 @@ thread_local! {
 
 fn next_fiber(me: usize) -> Option<Value> {
     let s = sched();
+    // (the count is raised before a push, so zero is nothing queued; and
+    // whoever pushes next wakes a sleeper or leaves it to a spinner)
+    if s.queued.load(Ordering::SeqCst) == 0 {
+        return None;
+    }
+    let f = take_fiber(s, me);
+    if f.is_some() {
+        s.queued.fetch_sub(1, Ordering::SeqCst);
+    }
+    f
+}
+
+fn take_fiber(s: &Sched, me: usize) -> Option<Value> {
     // Every 61st pick, look at the global queue first (as Go does), so local
     // work can never starve it.
     let tick = PICKS.with(|p| {
@@ -1180,6 +1210,51 @@ fn run_one(vm: &mut Vm, f: Value) {
     s.currents[vm.carrier].store(Value::NIL.0, Ordering::Release);
 }
 
+/// How long a carrier with nothing to run keeps looking before it sleeps.
+const SPIN: Duration = Duration::from_micros(50);
+
+/// Out of work: look for more for a moment before sleeping, as one of a
+/// few spinners. A fiber that wakes another (a `put!` to a parked taker)
+/// then wakes no thread, which cost it a system call each time while any
+/// carrier slept: a fan-out through channels ran 20 times slower on ten
+/// carriers than on one. The fiber found is returned inside a unit of
+/// work (`begin_work`).
+fn spin_for_work(s: &Sched, me: usize) -> Option<Value> {
+    if s.n < 2 || me >= s.n / 2 {
+        return None;
+    }
+    if s.spinning.fetch_add(1, Ordering::SeqCst) >= s.n / 2 {
+        s.spinning.fetch_sub(1, Ordering::SeqCst);
+        return None;
+    }
+    let deadline = Instant::now() + SPIN;
+    let mut found = None;
+    loop {
+        // (a collection, an image save or an outside job: the idle path's)
+        if safepoint::stop_requested() || s.external_len.load(Ordering::Acquire) > 0 || !begin_work(s) {
+            break;
+        }
+        if let Some(f) = next_fiber(me) {
+            found = Some(f);
+            break;
+        }
+        end_work(s);
+        for _ in 0..32 {
+            std::hint::spin_loop();
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+    s.spinning.fetch_sub(1, Ordering::SeqCst);
+    if found.is_some() && s.queued.load(Ordering::SeqCst) > 0 {
+        // (no longer watching, and what else became runnable meanwhile
+        // woke nobody: another carrier takes it)
+        s.wake_idle();
+    }
+    found
+}
+
 fn carrier_loop(vm: &mut Vm) {
     let s = sched();
     let me = vm.carrier;
@@ -1195,10 +1270,15 @@ fn carrier_loop(vm: &mut Vm) {
                 continue;
             }
         }
+        if let Some(f) = spin_for_work(s, me) {
+            run_one(vm, f);
+            end_work(s);
+            continue;
+        }
         // Idle. Count ourselves idle *before* the final check, under the
         // lock, so a concurrent `schedule` can't miss us.
         let g = s.idle.lock().unwrap();
-        s.idle_count.fetch_add(1, Ordering::AcqRel);
+        s.idle_count.fetch_add(1, Ordering::SeqCst);
         let found = if begin_work(s) {
             let f = next_fiber(me);
             if f.is_none() {
