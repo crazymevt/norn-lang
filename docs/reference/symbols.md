@@ -73,7 +73,7 @@ beginning with `%` are runtime internals.
 
 ## G
 
-- `gc` · `gc-count` · `generic-methods` · `generic?` · `GenericFunction` · `gensym`
+- `gc` · `gc-count` · `gc-stats` · `generic-methods` · `generic?` · `GenericFunction` · `gensym`
 - [`get`](collections.md#lookup-and-update) · [`get-in`](collections.md#lookup-and-update) · `group-by`
 
 ## H
