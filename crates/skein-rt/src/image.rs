@@ -552,12 +552,28 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
         Ok((kind, n))
     };
 
-    // 1. Allocate the new objects.
+    // 1. Allocate the new objects, each where its kind belongs: what the
+    // collector must leave in place apart from what it may move
+    // (`Kind::stays_put`). A proto's constants are an Array like any
+    // other, so the protos are looked through first for theirs.
     let first = c.objs.len();
+    let mut staying = HashSet::new();
     let mut off = 0;
     for _ in 0..new {
         let (kind, n) = size_at(off)?;
-        let p = m.alloc_words(n);
+        if kind == Kind::Proto
+            && let Some(&w) = area.get(off + 2 + crate::func::PROTO_CONSTS)
+            && w & TAG_MASK == TAG_OBJ
+            && (w >> 3) as usize >= first
+        {
+            staying.insert((w >> 3) as usize - first);
+        }
+        off += n;
+    }
+    let mut off = 0;
+    for i in 0..new {
+        let (kind, n) = size_at(off)?;
+        let p = m.alloc_words_in(n, kind.stays_put() || staying.contains(&i));
         let tag = if kind == Kind::Cons { TAG_CONS } else { TAG_OBJ };
         c.objs.push(Value(p as u64 | tag));
         c.locs.push(layer_no << 48 | (area_at + off) as u64);

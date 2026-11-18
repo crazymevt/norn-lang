@@ -174,6 +174,37 @@ carriers:
   in the moving stress mode;
 - `bench/compare.skn`: nothing slower.
 
+## Status
+
+- **Part 1: built (2026-11-18), on today's plan.**
+  - `Kind::stays_put` (`skein-rt/src/object.rs`) is the rule in one
+    place: symbols, keywords, vars, code, protos, closure templates,
+    primitives, stack segments, fibers, channels, waiters, claims,
+    scopes, atoms, readers, classes, generic functions, weak references,
+    handles and regexes are allocated with MMTk's `NonMoving` semantics
+    (`Mutator::alloc_words_in`); everything else as before. The collector
+    log shows the second space (`SKEIN_GC_LOG=2`: `nonmoving`).
+  - A proto's constants are an `Array`, which is data, but the
+    interpreter reads them through a pointer it keeps (`St.consts`):
+    `proto_new` takes its own copy where the collector leaves it
+    (`array_staying`).
+  - The image loader allocates each object where its kind belongs, and
+    looks through the protos first for their constants.
+  - `%identity-hash` is the header's hash, not the address. A cons has no
+    header and still gives its address: the compiler's constant index and
+    the expander's tables look up with `identical?`, so after a move they
+    miss at worst (a constant not shared).
+  - A weak reference follows its referent to where a collection moved it
+    (`weak.rs`: the collector doesn't trace a referent, so it doesn't
+    rewrite it).
+  - **Not yet non-moving, to settle in part 2:** closures (tier 1 writes
+    a linked closure's address into code, but those are roots already,
+    and so pinned); the arrays a class or a generic function's dispatch
+    cache holds (reached through slots, not through kept pointers).
+  - **A cost to watch:** waiters and claims are made at every park, and
+    now share a space with the long-lived. If that space fragments as the
+    whole heap did, they move back to the data side.
+
 ## Risks
 
 - **A value in a Rust local across a safepoint.** Today it's harmless if

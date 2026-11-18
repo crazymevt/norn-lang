@@ -40,12 +40,20 @@ fn is_ref(v: Value) -> bool {
     v.is_obj() || v.is_cons()
 }
 
-fn reachable(v: Value) -> bool {
+fn object(v: Value) -> Option<ObjectReference> {
     // SAFETY: v is a tagged pointer to an MMTk object.
-    match ObjectReference::from_raw_address(unsafe { Address::from_usize(v.ptr() as usize) }) {
-        Some(r) => r.is_reachable(),
-        None => false,
-    }
+    ObjectReference::from_raw_address(unsafe { Address::from_usize(v.ptr() as usize) })
+}
+
+fn reachable(v: Value) -> bool {
+    object(v).is_some_and(|r| r.is_reachable())
+}
+
+/// Where the collection moved live object v to, if it did (never, until
+/// objects move: M11), with v's tag.
+fn moved(v: Value) -> Option<Value> {
+    let to = object(v)?.get_forwarded_object()?;
+    Some(Value(to.to_raw_address().as_usize() as u64 | (v.0 & crate::value::TAG_MASK)))
 }
 
 /// A weak reference to `referent`, with an optional cleanup to run once the
@@ -103,6 +111,11 @@ pub fn process() {
             return false;
         }
         if reachable(r) {
+            // (the collector doesn't trace a referent, so it doesn't
+            // rewrite it either: follow it to where it went)
+            if let Some(to) = moved(r) {
+                w.set_field(layout::REFERENT, to);
+            }
             return true;
         }
         w.set_field(layout::REFERENT, Value::NIL);

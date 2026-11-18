@@ -24,6 +24,20 @@ pub fn array_from(m: &mut Mutator, xs: &[Value]) -> Value {
     a
 }
 
+/// A copy of array `src` that the collector leaves where it is: a proto's
+/// constants, which the interpreter and compiled code read through a
+/// pointer (`Kind::stays_put`).
+pub fn array_staying(m: &mut Mutator, src: Value) -> Value {
+    let n = src.arr_len();
+    let a = crate::object::alloc_staying(m, Kind::Array, 1 + n);
+    a.set_word(0, n as u64);
+    // SAFETY: both arrays hold n words after their length words.
+    unsafe {
+        std::ptr::copy_nonoverlapping(src.payload_ptr().add(1), a.payload_ptr().add(1), n);
+    }
+    a
+}
+
 /// Copy of `src` with length `len` (truncating, or padding with nil).
 pub fn array_resized(m: &mut Mutator, src: Value, len: usize) -> Value {
     let a = array_new(m, len, Value::NIL);

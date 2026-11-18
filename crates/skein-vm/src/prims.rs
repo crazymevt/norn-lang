@@ -212,7 +212,12 @@ prims! {
         if !a[0].is_symbol() { return Err(Error::of("TypeError", format!("resolve expects a symbol, got {}", pr_str(a[0], true)))); }
         Ok(vm.resolve(a[0]).unwrap_or(Value::NIL)) };
     "%resolve-in" 2 Some(2) => |vm, a| { expect(a[0], Kind::Symbol, "%resolve-in")?; expect(a[1], Kind::Symbol, "%resolve-in")?; let core = vm.core; Ok(rt().find_ns(a[0]).and_then(|ns| rt().resolve(&mut vm.m, ns, core, a[1])).unwrap_or(Value::NIL)) };
-    "%identity-hash" 1 Some(1) => |_, a| Ok(Value::fix(((a[0].0 >> 3) & 0x3fff_ffff_ffff_ffff) as i64));
+    // (an object's own, from its header: it stays the same if the object is
+    // moved. A cons has no header and gives its address, as an immediate
+    // gives its bits: after a move it may differ, so what's kept by it is
+    // looked up with identical? and missed at worst, as the compiler's
+    // constant index and the expander's tables are)
+    "%identity-hash" 1 Some(1) => |_, a| Ok(Value::fix(((a[0].identity_hash() >> 1) & 0x3fff_ffff_ffff_ffff) as i64));
     "%uninterned-symbol" 1 Some(1) => |vm, a| { let n = text(a[0]); Ok(rt().symbol_uninterned(&mut vm.m, &n)) };
     "var-get" 1 Some(1) => |_, a| { expect(a[0], Kind::Var, "var-get")?; Ok(a[0].var_root()) };
     "%set-root!" 2 Some(2) => |_, a| { expect(a[0], Kind::Var, "%set-root!")?; a[0].var_set_root(a[1]); Ok(a[1]) };

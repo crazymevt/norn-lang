@@ -144,6 +144,17 @@
 (def leaked nil)
 (gc)
 (is (= :cleaned (first (alts! [leak-cleaned (timeout 5000)]))))
+;; %identity-hash is an object's own, kept in its header: the same after a
+;; collection (M11: objects may be moved), and another's is another.
+(let [a (atom 1) b (atom 1) v [1 2 3] s (str "a" "b")
+      before (mapv %identity-hash [a b v s])]
+  (gc)
+  (sleep 50)
+  (is (= before (mapv %identity-hash [a b v s])))
+  (is (= 4 (count (set before))) "each its own")
+  (is (every? (fn [h] (and (integer? h) (pos? h))) before))
+  (is (= (%identity-hash :k) (%identity-hash :k)))
+  (is (= (%identity-hash 7) (%identity-hash 7)) "an immediate: its bits"))
 ;; gc-stats: that collection, at least, and how long collections stopped
 ;; the program; :reset starts the total and the longest again.
 (let [st (gc-stats :reset)]

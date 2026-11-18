@@ -120,13 +120,20 @@ pub struct ProtoInfo {
     pub locals: Value,
 }
 
+/// The field of a proto that holds its constants (an Array).
+pub const PROTO_CONSTS: usize = 4;
+
 pub fn proto_new(m: &mut Mutator, p: ProtoInfo) -> Value {
+    // (its own copy of the constants, where the collector leaves it: the
+    // interpreter keeps a pointer to them while the proto's code runs)
+    let consts = if p.consts.is(Kind::Array) { crate::array::array_staying(m, p.consts) } else { p.consts };
+    let p = ProtoInfo { consts, ..p };
     let v = alloc(m, Kind::Proto, 8);
     v.set_field(0, p.name);
     v.set_word(1, p.nfixed as u64);
     v.set_word(2, p.variadic as u64);
     v.set_word(3, p.nregs as u64);
-    v.set_field(4, p.consts);
+    v.set_field(PROTO_CONSTS, p.consts);
     v.set_field(5, p.code);
     v.set_field(6, p.locals);
     v.set_word(7, 0);
