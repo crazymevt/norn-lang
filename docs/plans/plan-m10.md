@@ -830,7 +830,11 @@ Status, above.
 - errors_test's refused connection to port 1 (another error than
   "refused" when the other suites use many sockets).
 - http_test's stale pooled connection (a 100 ms idle timeout racing the
-  load).
+  load). **Given room (2026-11-18):** the server's idle timer closes a
+  connection whose request hasn't reached it within the timeout, the new
+  one the client opens too when the machine is slow enough; the timeout
+  is 500 ms now and the wait 1.5 s. Not seen in 24 full runs, three at a
+  time, before the change either: nor were the others listed here.
 - actor_test's supervisor strategies and module_test's cyclic loads
   (both timing: `eventually`, sleeps and timeouts), once at tier 0 in part
   6.4's full run; passing alone and in two full runs after. **Timing
