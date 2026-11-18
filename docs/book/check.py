@@ -43,6 +43,11 @@ PRELUDE = r'''
   (println (str "FAIL " loc))
   (doseq [l lines] (println (str "  " l))))
 
+(defn- book-at
+  "Note the form about to run, for a run that never ends (check.py's timeout says which)."
+  [loc]
+  (spit ".book-at" loc))
+
 (defn- book-run [thunk]
   ;; Serious conditions only: a signal or warning that no one handles
   ;; returns normally, as it would in a program.
@@ -56,6 +61,7 @@ PRELUDE = r'''
 
 (defn book-value [loc thunk src]
   (swap! book-checks inc)
+  (book-at loc)
   (let [r (book-run thunk)]
     (if (contains? r :err)
       (book-fail loc (str "expected: " src) (str "raised:   " (book-describe (:err r))))
@@ -67,6 +73,7 @@ PRELUDE = r'''
 
 (defn book-raises [loc thunk cls]
   (swap! book-checks inc)
+  (book-at loc)
   (let [r (book-run-any thunk)]
     (cond
       (contains? r :ok)
@@ -76,6 +83,7 @@ PRELUDE = r'''
 
 (defn book-prints [loc thunk expected]
   (swap! book-checks inc)
+  (book-at loc)
   (let [out (atom nil)
         r (book-run (fn [] (reset! out (with-out-str (thunk)))))]
     (cond
@@ -305,8 +313,21 @@ def run(skein, path, keep):
             p = subprocess.run([skein, spath], cwd=workdir, capture_output=True,
                                text=True, timeout=180,
                                env={**os.environ, "SKEIN_UI_HEADLESS": "1"})
-        except subprocess.TimeoutExpired:
-            return False, "TIMEOUT after 180 s"
+        except subprocess.TimeoutExpired as e:
+            # Which form it was at, and what it had printed: a run that
+            # never ends says nothing else.
+            at = "before its first checked form"
+            try:
+                with open(os.path.join(workdir, ".book-at"), encoding="utf-8") as f:
+                    at = "at or after the form at " + f.read().strip()
+            except OSError:
+                pass
+            said = ""
+            for part in (e.stdout, e.stderr):
+                if part:
+                    said += part if isinstance(part, str) else part.decode("utf-8", "replace")
+            tail = "\n".join("      " + l for l in said.strip().split("\n")[-15:]) if said.strip() else "      (nothing printed)"
+            return False, f"TIMEOUT after 180 s, {at}\n{tail}"
     out = p.stdout + p.stderr
     # Point script line numbers back at the chapter.
     lines = script.split("\n")
