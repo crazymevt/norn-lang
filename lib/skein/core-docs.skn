@@ -818,9 +818,11 @@
 (primitive gc-count "How many garbage collections have run." [])
 
 (primitive jit-stats
-  "{:tier :compiled :rejected :code-bytes :linked :relinked :despecialised
-  :pending}: whether the JIT is on (1 or 0), how many functions it has
-  compiled and turned down, their code's size, how many of their calls it
+  "{:tier :compiled :rejected :panicked :code-bytes :linked :relinked
+  :despecialised :pending}: whether the JIT is on (1 or 0), how many
+  functions it has compiled and turned down, how many it failed on (a bug
+  in it: they run interpreted, and the first is reported on standard
+  error), their code's size, how many of their calls it
   linked to the function called (a call through a var, or of the function
   itself), how many functions it compiled again because a var they call
   had been redefined or because what it assumed of a float didn't hold,
