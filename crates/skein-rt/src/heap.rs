@@ -59,6 +59,13 @@ impl VMBinding for Skein {
 static MMTK_INSTANCE: OnceLock<&'static MMTK<Skein>> = OnceLock::new();
 static LOS_THRESHOLD: AtomicUsize = AtomicUsize::new(usize::MAX);
 static GC_COUNT: AtomicU64 = AtomicU64::new(0);
+/// How long collections have stopped the world, in nanoseconds: in all,
+/// the longest, and the last (gc-stats). A pause is from the stop being
+/// asked for to the carriers being let go again: what a program waits.
+static PAUSE_TOTAL: AtomicU64 = AtomicU64::new(0);
+static PAUSE_MAX: AtomicU64 = AtomicU64::new(0);
+static PAUSE_LAST: AtomicU64 = AtomicU64::new(0);
+static PAUSE_BEGAN: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 fn mmtk() -> &'static MMTK<Skein> {
     MMTK_INSTANCE.get().expect("heap not initialised")
@@ -174,6 +181,18 @@ pub fn heap_bytes() -> usize {
 /// Number of completed collections.
 pub fn gc_count() -> u64 {
     GC_COUNT.load(Ordering::Relaxed)
+}
+
+/// The collections' pauses in nanoseconds, (total, longest, last), since
+/// the start or the last reset. With `reset`, the total and the longest
+/// start again from here.
+pub fn gc_pauses(reset: bool) -> (u64, u64, u64) {
+    let last = PAUSE_LAST.load(Ordering::Relaxed);
+    if reset {
+        (PAUSE_TOTAL.swap(0, Ordering::Relaxed), PAUSE_MAX.swap(0, Ordering::Relaxed), last)
+    } else {
+        (PAUSE_TOTAL.load(Ordering::Relaxed), PAUSE_MAX.load(Ordering::Relaxed), last)
+    }
 }
 
 // ---- mutators -------------------------------------------------------------------------
@@ -553,6 +572,7 @@ fn check_slot(p: *mut u64, s: SkeinSlot) {
 
 impl Collection<Skein> for Skein {
     fn stop_all_mutators<F: FnMut(&'static mut MmMutator)>(_: VMWorkerThread, mut visitor: F) {
+        *PAUSE_BEGAN.lock().unwrap() = Some(std::time::Instant::now());
         crate::safepoint::stop_world();
         for m in Skein::mutators() {
             visitor(m);
@@ -564,6 +584,12 @@ impl Collection<Skein> for Skein {
     }
     fn resume_mutators(_: VMWorkerThread) {
         GC_COUNT.fetch_add(1, Ordering::Relaxed);
+        if let Some(began) = PAUSE_BEGAN.lock().unwrap().take() {
+            let ns = began.elapsed().as_nanos() as u64;
+            PAUSE_TOTAL.fetch_add(ns, Ordering::Relaxed);
+            PAUSE_MAX.fetch_max(ns, Ordering::Relaxed);
+            PAUSE_LAST.store(ns, Ordering::Relaxed);
+        }
         crate::safepoint::resume_world();
     }
     fn block_for_gc(_: VMMutatorThread) {

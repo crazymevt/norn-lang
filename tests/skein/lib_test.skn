@@ -144,6 +144,18 @@
 (def leaked nil)
 (gc)
 (is (= :cleaned (first (alts! [leak-cleaned (timeout 5000)]))))
+;; gc-stats: that collection, at least, and how long collections stopped
+;; the program; :reset starts the total and the longest again.
+(let [st (gc-stats :reset)]
+  (is (= #{:count :pause-ms :max-pause-ms :last-pause-ms :heap-bytes} (set (keys st))))
+  (is (= (:count st) (gc-count)))
+  (is (pos? (:count st)))
+  (is (and (pos? (:last-pause-ms st)) (<= (:last-pause-ms st) (:max-pause-ms st) (:pause-ms st))))
+  (is (pos? (:heap-bytes st)))
+  (let [after (gc-stats)]
+    ;; (a collection may run between the two: then it's all there is of both)
+    (is (<= (:max-pause-ms after) (:pause-ms after)))
+    (is (or (zero? (:pause-ms after)) (> (:count after) (:count st))))))
 
 ;;; ---- skein.fs: watching ----
 (def w (fs/watch dir :recursive true))

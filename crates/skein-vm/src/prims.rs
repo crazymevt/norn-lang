@@ -234,6 +234,7 @@ prims! {
     "heap-bytes" 0 Some(0) => |_, _| Ok(Value::fix(skein_rt::heap::heap_bytes() as i64));
     "gc" 0 Some(0) => |vm, _| { vm.want_gc = true; skein_rt::safepoint::bump_attention(); Ok(Value::NIL) };
     "gc-count" 0 Some(0) => |_, _| Ok(Value::fix(skein_rt::heap::gc_count() as i64));
+    "gc-stats" 0 Some(1) => gc_stats;
     // fibers, scopes, channels, atoms
     "%spawn" 1 Some(1) => |vm, a| Ok(crate::sched::spawn(vm, a[0], Value::NIL));
     "%scope" 0 Some(0) => |vm, _| Ok(skein_rt::conc::scope_new(&mut vm.m));
@@ -2237,6 +2238,28 @@ fn nested_raise(vm: &mut Vm, a: &[Value]) -> crate::vm::Error {
         None
     };
     Error { msg, trace, kind: ErrKind::Declined, class }
+}
+
+/// `(gc-stats)`, `(gc-stats :reset)`: the collections so far and how long
+/// they stopped the program, in milliseconds.
+fn gc_stats(vm: &mut Vm, a: &[Value]) -> Result<Value> {
+    let reset = a.first().is_some_and(|v| !v.is_nil() && *v != Value::FALSE);
+    let (total, longest, last) = skein_rt::heap::gc_pauses(reset);
+    let ms = |vm: &mut Vm, ns: u64| float_new(&mut vm.m, ns as f64 / 1e6);
+    let k = |vm: &mut Vm, n: &str| rt().keyword(&mut vm.m, None, n);
+    let kvs = [
+        k(vm, "count"),
+        Value::fix(skein_rt::heap::gc_count() as i64),
+        k(vm, "pause-ms"),
+        ms(vm, total),
+        k(vm, "max-pause-ms"),
+        ms(vm, longest),
+        k(vm, "last-pause-ms"),
+        ms(vm, last),
+        k(vm, "heap-bytes"),
+        Value::fix(skein_rt::heap::heap_bytes() as i64),
+    ];
+    hash_map(vm, &kvs)
 }
 
 fn register_frame_kinds(_: &mut Vm, a: &[Value]) -> Result<Value> {
