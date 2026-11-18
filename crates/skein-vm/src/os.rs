@@ -1,6 +1,7 @@
 //! Child processes, time, signals and fiber dumps: the primitives behind
 //! skein.process, skein.time and skein.signal, and `(fiber-dump)`.
 
+use crate::platform;
 use crate::reactor::{self, Io};
 use crate::sched;
 use crate::vm::{Error, Result, Vm};
@@ -115,23 +116,7 @@ pub(crate) fn start(vm: &mut Vm, s: Spawn) -> Result<Value> {
 /// session). `{:process h :pid n :in h :out h :err nil}`: :in writes to the
 /// terminal (the keyboard), :out reads it (the screen); both the master's.
 pub(crate) fn pty_start(vm: &mut Vm, s: Spawn, rows: u16, cols: u16) -> Result<Value> {
-    use std::os::fd::{FromRawFd, OwnedFd};
-    use std::os::unix::process::CommandExt;
-    let (mut master, mut slave): (libc::c_int, libc::c_int) = (-1, -1);
-    let mut ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
-    // SAFETY: openpty writes the two descriptors; the rest may be null.
-    let r = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) };
-    if r != 0 {
-        return Err(Error::new(format!("Can't open a pseudo-terminal: {}", std::io::Error::last_os_error())));
-    }
-    // SAFETY: both are open descriptors we now own.
-    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-    let cloexec = |fd: &OwnedFd| {
-        use std::os::fd::AsRawFd;
-        // SAFETY: fcntl on an open descriptor.
-        unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
-    };
-    cloexec(&master);
+    let (master, slave) = platform::open_pty(rows, cols).map_err(|e| Error::new(format!("Can't open a pseudo-terminal: {e}")))?;
     let io_err = |e: std::io::Error| Error::new(e.to_string());
     let mut c = std::process::Command::new(&s.cmd);
     c.args(&s.args)
@@ -145,36 +130,8 @@ pub(crate) fn pty_start(vm: &mut Vm, s: Spawn, rows: u16, cols: u16) -> Result<V
         c.env_clear();
     }
     c.envs(s.env.iter().map(|(k, v)| (k, v)));
-    // SAFETY: between fork and exec only async-signal-safe calls: the
-    // signals the runtime handles or ignores back to their defaults (an
-    // ignored one would stay ignored through exec, and ^C would do
-    // nothing), a new session, and the terminal (stdin) as its
-    // controlling terminal.
-    unsafe {
-        c.pre_exec(|| {
-            for sig in [
-                libc::SIGINT,
-                libc::SIGQUIT,
-                libc::SIGTSTP,
-                libc::SIGTTIN,
-                libc::SIGTTOU,
-                libc::SIGHUP,
-                libc::SIGTERM,
-                libc::SIGPIPE,
-                libc::SIGCHLD,
-                libc::SIGWINCH,
-                libc::SIGALRM,
-                libc::SIGUSR1,
-                libc::SIGUSR2,
-            ] {
-                libc::signal(sig, libc::SIG_DFL);
-            }
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    // (a session of its own, with the terminal as its controlling terminal)
+    platform::enter_terminal_session(&mut c);
     let child = c.spawn().map_err(|e| spawn_err(&s, &e))?;
     drop(c); // (the parent's copies of the slave)
     drop(slave);
@@ -196,17 +153,12 @@ pub(crate) fn pty_start(vm: &mut Vm, s: Spawn, rows: u16, cols: u16) -> Result<V
 /// `(%pty-resize h rows cols)`: tell the terminal (h, its :in) its new size
 /// (the child gets SIGWINCH).
 pub(crate) fn pty_resize(h: Value, rows: u16, cols: u16) -> Result<Value> {
-    use std::os::fd::AsRawFd;
-    let fd = reactor::with_io(h, |io| match io {
-        Io::PipeOut(w) => Some(w.as_raw_fd()),
+    reactor::with_io(h, |io| match io {
+        Io::PipeOut(w) => Some(platform::set_window_size(w, rows, cols)),
         _ => None,
     })?
-    .ok_or_else(|| Error::of("TypeError", "resize expects a terminal's :in"))?;
-    let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
-    // SAFETY: TIOCSWINSZ on an open descriptor, with a winsize.
-    if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ as _, &ws) } != 0 {
-        return Err(Error::new(format!("Can't resize the terminal: {}", std::io::Error::last_os_error())));
-    }
+    .ok_or_else(|| Error::of("TypeError", "resize expects a terminal's :in"))?
+    .map_err(|e| Error::new(format!("Can't resize the terminal: {e}")))?;
     Ok(Value::NIL)
 }
 
@@ -215,7 +167,6 @@ pub(crate) fn pty_resize(h: Value, rows: u16, cols: u16) -> Result<Value> {
 pub(crate) fn wait(vm: &mut Vm, h: Value) -> Result<Value> {
     let e = reactor::entry_of(h, "process")?;
     crate::blocking::run(vm, move || {
-        use std::os::unix::process::ExitStatusExt;
         let r = {
             let mut io = e.io.lock().unwrap();
             match io.as_mut() {
@@ -228,7 +179,7 @@ pub(crate) fn wait(vm: &mut Vm, h: Value) -> Result<Value> {
             let code = st.code().map_or(Value::NIL, |c| Value::fix(c as i64));
             // (by name: the numbers differ between systems; a number only for
             // one without a name)
-            let sig = st.signal().map_or(Value::NIL, |s| match signal_name(s) {
+            let sig = platform::exit_signal(&st).map_or(Value::NIL, |s| match signal_name(s) {
                 Some(n) => kw(m, n),
                 None => Value::fix(s as i64),
             });
@@ -242,42 +193,15 @@ pub(crate) fn kill(vm: &mut Vm, h: Value, sig: i32) -> Result<Value> {
     reactor::entry_of(h, "process")?;
     let k = kw(&mut vm.m, "pid");
     let pid = crate::prims::get(h.field(skein_rt::conc::handle::INFO), k).map_or(0, |v| v.as_fixnum());
-    // SAFETY: kill has no memory preconditions.
-    let r = unsafe { libc::kill(pid as libc::pid_t, sig) };
-    if r == 0 { Ok(Value::NIL) } else { Err(Error::new(format!("kill failed: {}", std::io::Error::last_os_error()))) }
+    platform::kill(pid, sig).map(|()| Value::NIL).map_err(|e| Error::new(format!("kill failed: {e}")))
 }
 
-/// The signals Skein names, both ways (a keyword's name, its number).
-const SIGNALS: &[(&str, i32)] = &[
-    ("int", libc::SIGINT),
-    ("term", libc::SIGTERM),
-    ("hup", libc::SIGHUP),
-    ("kill", libc::SIGKILL),
-    ("quit", libc::SIGQUIT),
-    ("usr1", libc::SIGUSR1),
-    ("usr2", libc::SIGUSR2),
-    ("winch", libc::SIGWINCH),
-    ("pipe", libc::SIGPIPE),
-    ("alrm", libc::SIGALRM),
-    ("cont", libc::SIGCONT),
-    ("stop", libc::SIGSTOP),
-    ("tstp", libc::SIGTSTP),
-    ("ttin", libc::SIGTTIN),
-    ("ttou", libc::SIGTTOU),
-    ("abrt", libc::SIGABRT),
-    ("segv", libc::SIGSEGV),
-    ("bus", libc::SIGBUS),
-    ("fpe", libc::SIGFPE),
-    ("ill", libc::SIGILL),
-    ("trap", libc::SIGTRAP),
-];
-
 pub(crate) fn signal_number(name: &str) -> Option<i32> {
-    SIGNALS.iter().find(|(k, _)| *k == name).map(|(_, n)| *n)
+    platform::SIGNALS.iter().find(|(k, _)| *k == name).map(|(_, n)| *n)
 }
 
 fn signal_name(n: i32) -> Option<&'static str> {
-    SIGNALS.iter().find(|(_, v)| *v == n).map(|(k, _)| *k)
+    platform::SIGNALS.iter().find(|(_, v)| *v == n).map(|(k, _)| *k)
 }
 
 // ---- signals --------------------------------------------------------------------------------------
@@ -301,8 +225,7 @@ impl Drop for Listening {
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Signal numbers are below this on every Unix Skein runs on.
-const MAX_SIGNAL: usize = 65;
+use platform::MAX_SIGNAL;
 
 /// How many skein.signal listeners each signal has.
 static LISTENERS: [AtomicUsize; MAX_SIGNAL] = [const { AtomicUsize::new(0) }; MAX_SIGNAL];
@@ -316,7 +239,7 @@ pub(crate) fn listeners(n: i32) -> usize {
 /// leaves ^C to the program, as its own (a clean shutdown, say), rather than
 /// interrupting the evaluation too.
 pub fn listening_for_interrupt() -> bool {
-    LISTENERS[libc::SIGINT as usize].load(Ordering::SeqCst) > 0
+    LISTENERS[platform::SIGINT as usize].load(Ordering::SeqCst) > 0
 }
 
 /// The signals whose disposition has been looked at (see `keep_default`).
@@ -335,12 +258,7 @@ fn keep_default(sig: i32) -> Result<()> {
     if prepared[sig as usize] {
         return Ok(());
     }
-    // SAFETY: a null new action only reads the current one into `old`.
-    let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
-    if unsafe { libc::sigaction(sig, std::ptr::null(), &mut old) } != 0 {
-        return Err(Error::new(format!("Can't listen for signals: {}", std::io::Error::last_os_error())));
-    }
-    if old.sa_sigaction == libc::SIG_DFL {
+    if platform::default_disposition(sig).map_err(|e| Error::new(format!("Can't listen for signals: {e}")))? {
         // SAFETY: the action only loads an atomic and calls
         // emulate_default_handler, both async-signal-safe.
         unsafe {
@@ -364,7 +282,7 @@ pub(crate) fn listen(vm: &mut Vm, names: &[String]) -> Result<Value> {
         match signal_number(n) {
             // (these stop or end the process, or mean it went wrong: they
             // can't be caught, or the runtime keeps them)
-            Some(libc::SIGKILL | libc::SIGSTOP | libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGFPE | libc::SIGTRAP) => {
+            Some(x) if !platform::catchable(x) => {
                 return Err(Error::new(format!(":{n} can't be listened for")));
             }
             Some(x) => nums.push(x),
@@ -406,11 +324,7 @@ pub(crate) fn now_nanos() -> i64 {
 /// This machine's UTC offset in seconds at `epoch_secs` (time zone rules,
 /// daylight saving included).
 pub(crate) fn local_offset(epoch_secs: i64) -> i64 {
-    let t = epoch_secs as libc::time_t;
-    // SAFETY: localtime_r fills tm from t.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let ok = unsafe { !libc::localtime_r(&t, &mut tm).is_null() };
-    if ok { tm.tm_gmtoff } else { 0 }
+    platform::local_offset(epoch_secs)
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date (H. Hinnant).
@@ -656,7 +570,7 @@ pub(crate) fn fiber_dump(vm: &mut Vm) -> Result<Value> {
 
 /// Print a fiber dump to standard error on SIGQUIT (Ctrl-\), as the JVM does.
 pub(crate) fn dump_on_sigquit() {
-    let Ok(mut s) = signal_hook::iterator::Signals::new([libc::SIGQUIT]) else { return };
+    let Ok(mut s) = signal_hook::iterator::Signals::new([platform::SIGQUIT]) else { return };
     let _ = std::thread::Builder::new().name("skein-sigquit".into()).spawn(move || {
         for _ in s.forever() {
             eprint!("{}", dump_text());

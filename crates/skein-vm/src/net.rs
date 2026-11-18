@@ -55,36 +55,7 @@ fn parse_addr(s: &str) -> Result<SocketAddr> {
 /// Raise the open-file limit to the most the OS allows, as Go does: one
 /// process may hold many thousands of sockets.
 pub(crate) fn raise_fd_limit() {
-    // SAFETY: getrlimit/setrlimit only read and write the struct.
-    unsafe {
-        let mut r: libc::rlimit = std::mem::zeroed();
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) != 0 {
-            return;
-        }
-        let want = r.rlim_max;
-        // macOS refuses RLIM_INFINITY; its real cap is kern.maxfilesperproc.
-        #[cfg(target_os = "macos")]
-        let want = {
-            let mut cap: libc::c_int = 0;
-            let mut len = std::mem::size_of::<libc::c_int>();
-            if libc::sysctlbyname(
-                c"kern.maxfilesperproc".as_ptr(),
-                &mut cap as *mut _ as *mut libc::c_void,
-                &mut len,
-                std::ptr::null_mut(),
-                0,
-            ) == 0
-            {
-                want.min(cap as libc::rlim_t)
-            } else {
-                want
-            }
-        };
-        if want > r.rlim_cur {
-            r.rlim_cur = want;
-            libc::setrlimit(libc::RLIMIT_NOFILE, &r);
-        }
-    }
+    crate::platform::raise_file_limit();
 }
 
 // ---- names --------------------------------------------------------------------------------

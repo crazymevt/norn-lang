@@ -501,7 +501,7 @@ prims! {
     "%process-kill" 2 Some(2) => |vm, a| { let n = signal_arg(a[1])?; crate::os::kill(vm, a[0], n) };
     "%signal-listen" 1 Some(1) => |vm, a| { let names: Vec<String> = seq::SeqIter::new(a[0]).map(|it| it.map(|k| if k.is_keyword() { k.sym_name().to_owned() } else { text(k) }).collect()).unwrap_or_default(); crate::os::listen(vm, &names) };
     "%signal-listeners" 1 Some(1) => |_, a| { let n = signal_arg(a[0])?; Ok(Value::fix(crate::os::listeners(n) as i64)) };
-    "%raise-signal" 1 Some(1) => |_, a| { let n = signal_arg(a[0])?; unsafe { libc::raise(n) }; Ok(Value::NIL) };
+    "%raise-signal" 1 Some(1) => |_, a| { let n = signal_arg(a[0])?; crate::platform::raise(n); Ok(Value::NIL) };
     "%now-nanos" 0 Some(0) => |_, _| Ok(Value::fix(crate::os::now_nanos()));
     "%local-offset" 1 Some(1) => |_, a| Ok(Value::fix(crate::os::local_offset(int(a[0], "%local-offset")?)));
     "%civil" 2 Some(2) => |vm, a| { let c = crate::os::civil(int(a[0], "civil")?, int(a[1], "civil")?); let vs: Vec<Value> = c.iter().map(|&x| Value::fix(x)).collect(); Ok(vec_from_slice(&mut vm.m, &vs)) };
@@ -1280,7 +1280,7 @@ fn io_read(vm: &mut Vm, h: Value, n: i64) -> Result<Value> {
     match r {
         R::Plain(Ok(0)) => Ok(Value::NIL),
         // (a pseudo-terminal whose child has gone: the end of its output)
-        R::Plain(Err(e)) if e.raw_os_error() == Some(libc::EIO) => Ok(Value::NIL),
+        R::Plain(Err(e)) if crate::platform::is_pty_closed(&e) => Ok(Value::NIL),
         R::Plain(Ok(k)) => Ok(skein_rt::string::bytes_new(&mut vm.m, &buf[..k])),
         R::Plain(Err(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => Ok(again(vm)),
         R::Plain(Err(e)) => Err(Error::io(format!("read failed: {e}"), &e)),
