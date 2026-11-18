@@ -13,7 +13,7 @@ name (see [the rename](docs/plans/plan-rename-skein.md)).
 - Language design: [docs/internals/design.md](docs/internals/design.md)
 - Runtime architecture and milestones: [docs/internals/runtime.md](docs/internals/runtime.md)
 
-**Status: M7** — a bytecode interpreter running millions of fibers on a
+**Status: M10 done** (the optimising compiler; M11, GC maturity, is next) — a bytecode interpreter running millions of fibers on a
 work-stealing scheduler (one carrier per core), with channels, `alts!`,
 atoms, structured concurrency scopes and a parallel MMTk garbage collector;
 plus CLOS-style classes and generic functions (multiple dispatch, method

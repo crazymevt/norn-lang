@@ -1117,6 +1117,11 @@ reused, and a later delta can recognise them by address.
   (without it about 2,000 protos queue at start-up, compiled over the
   next 1.5 s). `jit-stats`' `:pending` counts what's queued or being
   compiled: tests that need code compiled wait for it to be 0.
+- A compile that panics (a bug in tier 1, or a platform it doesn't work
+  on) leaves its function interpreted. The first is reported on standard
+  error and each is counted (`jit-stats`' `:panicked`); tiers.rs's
+  `tier1_compiles_here` checks that a hot function compiles and none
+  fails, since every suite passes without tier 1 too.
 - Code goes into `MAP_JIT` memory (§7.4) and is never freed.
 - No relocations: constants and runtime addresses arrive through the
   arguments.

@@ -29,6 +29,30 @@ fn tier0_and_tier1_agree_on_every_suite() {
     }
 }
 
+/// Tier 1 compiles on this platform: a hot function gets native code, and
+/// no compile fails. (A compile that panics leaves its function
+/// interpreted, so every suite still passes: on x86-64 Linux tier 1
+/// compiled nothing for a while, and only the benchmarks showed it.)
+#[test]
+fn tier1_compiles_here() {
+    let code = r#"
+(defn hot [n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (* i 2))) acc)))
+(dotimes [_ 50] (hot 1000))
+(loop [k 0] (when (and (pos? (:pending (jit-stats))) (< k 20000)) (sleep 1) (recur (inc k))))
+(let [s (jit-stats)] (prn [(:tier s) (pos? (:compiled s)) (:panicked s) (hot 10)]))
+"#;
+    let out = Command::new(env!("CARGO_BIN_EXE_skein"))
+        .args(["-e", code])
+        .env("SKEIN_TIER", "1")
+        .env("SKEIN_JIT_THRESHOLD", "1")
+        .output()
+        .expect("run skein");
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "{stderr}");
+    assert_eq!(stdout.lines().next().unwrap_or(""), "[1 true 0 90]", "tier 1 isn't compiling: {stdout}\n{stderr}");
+    assert!(!stderr.contains("couldn't compile"), "{stderr}");
+}
+
 /// M7 done-check: arithmetic that promotes past 62 bits (to bignums and
 /// ratios) gives the same results at tier 0 and tier 1.
 #[test]

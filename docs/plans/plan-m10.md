@@ -702,7 +702,8 @@ Status, above.
 - **Values in registers.** Tier 1 keeps registers in the heap frame, so
   every instruction loads and stores; checks and arithmetic pay for it.
   Unboxed floats and SSA values are part 5's. Mandelbrot is still about
-  117× SBCL (floats boxed, float arithmetic through primitive calls).
+  117× SBCL (floats boxed, float arithmetic through primitive calls). (Written
+  before part 5: at M10's close it's 14× SBCL, as Status says.)
 
 **Smaller gaps:**
 

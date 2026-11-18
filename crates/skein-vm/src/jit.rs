@@ -241,6 +241,11 @@ pub type Trampoline = unsafe extern "C" fn(usize, *mut Value, *const Value, *mut
 pub static COMPILED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub static REJECTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub static CODE_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Compiles that panicked (jit-stats' `:panicked`): a bug in tier 1, or a
+/// platform it doesn't work on. The function goes on interpreted, so
+/// nothing else shows it: on x86-64 Linux every compile panicked once, and
+/// tier 1 ran as tier 0 until someone looked at the numbers.
+pub static PANICKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// Call sites compiled linked, and protos compiled again after a linked
 /// call's guard failed (jit-stats).
 pub static LINKED_SITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -2769,7 +2774,20 @@ fn compile_thread() {
             continue;
         };
         let proto = Value(p);
-        let entry = std::panic::catch_unwind(|| compile(proto)).ok().flatten().unwrap_or(1);
+        let entry = match std::panic::catch_unwind(|| compile(proto)) {
+            Ok(e) => e.unwrap_or(1),
+            Err(_) => {
+                // (said once: every compile may fail the same way)
+                if PANICKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                    let name = proto.proto_name();
+                    let name = if name.is_nil() { "a function".to_owned() } else { skein_rt::print::pr_str(name, true) };
+                    eprintln!(
+                        "skein: tier 1 couldn't compile {name} (a bug in Skein: please report it). It runs interpreted, as will any other that fails; (jit-stats) counts them as :panicked."
+                    );
+                }
+                1
+            }
+        };
         // (installed while it's still queued, whatever its count; if it
         // has been compiled meanwhile, or set back to count again, this
         // code isn't used)
