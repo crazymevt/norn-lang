@@ -1,0 +1,10 @@
+# What the tour left, read back from its snapshot (the clock starts again at 0).
+KEYS *
+GET greeting
+GET visits
+HGETALL user:1
+LRANGE queue 0 -1
+ZRANGE board 0 -1 WITHSCORES
+TTL keep
+@advance 42000
+KEYS *

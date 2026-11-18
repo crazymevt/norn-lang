@@ -75,7 +75,7 @@ method applies, the call signals an error.
 (defmethod combine ((x String) (y String)) (str x y))
 (defmethod combine ((x (eql :label)) y) (str "Label " y))
 
-[(combine 2 3) (combine "no" "rn") (combine :label 4)] ; => [5 "skein" "Label 4"]
+[(combine 2 3) (combine "ske" "in") (combine :label 4)] ; => [5 "skein" "Label 4"]
 ```
 
 For value dispatch, give `defgeneric` the option `(:dispatch f)`. It uses

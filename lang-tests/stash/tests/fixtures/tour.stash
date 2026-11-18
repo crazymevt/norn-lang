@@ -1,0 +1,109 @@
+# A tour of stash: every kind of value, and what goes wrong.
+
+# Strings and counters
+SET greeting "hello, world"
+GET greeting
+APPEND greeting "!"
+STRLEN greeting
+GET nothing
+SET visits 41
+INCR visits
+INCRBY visits 100
+DECR visits
+INCR greeting
+SET once 1 NX
+SET once 2 NX
+SET never 1 XX
+MSET a 1 b 2 c 3
+MGET a b missing c
+GETDEL a
+EXISTS a b c
+
+# Expiry: the script's clock only moves when it's told to
+SET session "ada" EX 30
+TTL session
+PTTL session
+@advance 29999
+GET session
+@advance 1
+GET session
+TTL session
+SET keep "me" PX 500
+PERSIST keep
+@advance 1000
+TTL keep
+EXPIRE keep 10
+EXPIRE missing 10
+SET short "lived" PX 10
+SET also "short" PX 10
+@advance 10
+DBSIZE
+
+# Hashes
+HSET user:1 name "Ada" lang "skein" logins 1
+HSET user:1 lang "lisp" city "London"
+HGET user:1 name
+HGETALL user:1
+HKEYS user:1
+HINCRBY user:1 logins 5
+HINCRBY user:1 name 1
+HEXISTS user:1 city
+HDEL user:1 city nope
+HLEN user:1
+HGET user:2 name
+
+# Lists
+RPUSH queue first second third
+LPUSH queue zeroth
+LRANGE queue 0 -1
+LRANGE queue 1 2
+LRANGE queue -2 -1
+LRANGE queue 5 9
+LPOP queue
+RPOP queue
+LLEN queue
+RPOP empty
+
+# Sorted sets
+ZADD board 310 ada 120 bob 205.5 cy
+ZADD board 400 bob 50 dee
+ZRANGE board 0 -1
+ZRANGE board 0 1 WITHSCORES
+ZRANGE board -1 -1 WITHSCORES
+ZRANK board ada
+ZRANK board nobody
+ZSCORE board cy
+ZINCRBY board 100.5 dee
+ZRANGEBYSCORE board 200 +inf
+ZRANGEBYSCORE board (150.5 310 WITHSCORES
+ZRANGEBYSCORE board -inf (150.5
+ZREM board ada nobody
+ZCARD board
+ZADD board high eve
+
+# Keys
+TYPE greeting
+TYPE user:1
+TYPE queue
+TYPE board
+TYPE nothing
+KEYS *
+KEYS user:*
+KEYS ?
+KEYS [bc]
+DEL b c nothing
+LPUSH greeting x
+GET user:1
+
+# What a command can't do
+FROBNICATE now
+GET
+SET lonely
+SET k v EX soon
+SET k v EX 0
+SET k v NX XX
+ZADD board 1
+ECHO "quotes, \"escaped\", and a\ttab"
+PING
+PING "is anyone there?"
+INFO

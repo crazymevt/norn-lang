@@ -1,0 +1,240 @@
+# A tour of stash: every kind of value, and what goes wrong.
+
+# Strings and counters
+> SET greeting "hello, world"
+OK
+> GET greeting
+"hello, world"
+> APPEND greeting "!"
+(integer) 13
+> STRLEN greeting
+(integer) 13
+> GET nothing
+(nil)
+> SET visits 41
+OK
+> INCR visits
+(integer) 42
+> INCRBY visits 100
+(integer) 142
+> DECR visits
+(integer) 141
+> INCR greeting
+(error) ERR value is not an integer or out of range
+> SET once 1 NX
+OK
+> SET once 2 NX
+(nil)
+> SET never 1 XX
+(nil)
+> MSET a 1 b 2 c 3
+OK
+> MGET a b missing c
+1) "1"
+2) "2"
+3) (nil)
+4) "3"
+> GETDEL a
+"1"
+> EXISTS a b c
+(integer) 2
+
+# Expiry: the script's clock only moves when it's told to
+> SET session "ada" EX 30
+OK
+> TTL session
+(integer) 30
+> PTTL session
+(integer) 30000
+@ 29999 ms later (0 expired)
+> GET session
+"ada"
+@ 1 ms later (1 expired)
+> GET session
+(nil)
+> TTL session
+(integer) -2
+> SET keep "me" PX 500
+OK
+> PERSIST keep
+(integer) 1
+@ 1000 ms later (0 expired)
+> TTL keep
+(integer) -1
+> EXPIRE keep 10
+(integer) 1
+> EXPIRE missing 10
+(integer) 0
+> SET short "lived" PX 10
+OK
+> SET also "short" PX 10
+OK
+@ 10 ms later (2 expired)
+> DBSIZE
+(integer) 6
+
+# Hashes
+> HSET user:1 name "Ada" lang "skein" logins 1
+(integer) 3
+> HSET user:1 lang "lisp" city "London"
+(integer) 1
+> HGET user:1 name
+"Ada"
+> HGETALL user:1
+1) "city"
+2) "London"
+3) "lang"
+4) "lisp"
+5) "logins"
+6) "1"
+7) "name"
+8) "Ada"
+> HKEYS user:1
+1) "city"
+2) "lang"
+3) "logins"
+4) "name"
+> HINCRBY user:1 logins 5
+(integer) 6
+> HINCRBY user:1 name 1
+(error) ERR hash value is not an integer
+> HEXISTS user:1 city
+(integer) 1
+> HDEL user:1 city nope
+(integer) 1
+> HLEN user:1
+(integer) 3
+> HGET user:2 name
+(nil)
+
+# Lists
+> RPUSH queue first second third
+(integer) 3
+> LPUSH queue zeroth
+(integer) 4
+> LRANGE queue 0 -1
+1) "zeroth"
+2) "first"
+3) "second"
+4) "third"
+> LRANGE queue 1 2
+1) "first"
+2) "second"
+> LRANGE queue -2 -1
+1) "second"
+2) "third"
+> LRANGE queue 5 9
+(empty array)
+> LPOP queue
+"zeroth"
+> RPOP queue
+"third"
+> LLEN queue
+(integer) 2
+> RPOP empty
+(nil)
+
+# Sorted sets
+> ZADD board 310 ada 120 bob 205.5 cy
+(integer) 3
+> ZADD board 400 bob 50 dee
+(integer) 1
+> ZRANGE board 0 -1
+1) "dee"
+2) "cy"
+3) "ada"
+4) "bob"
+> ZRANGE board 0 1 WITHSCORES
+1) "dee"
+2) "50"
+3) "cy"
+4) "205.5"
+> ZRANGE board -1 -1 WITHSCORES
+1) "bob"
+2) "400"
+> ZRANK board ada
+(integer) 2
+> ZRANK board nobody
+(nil)
+> ZSCORE board cy
+"205.5"
+> ZINCRBY board 100.5 dee
+"150.5"
+> ZRANGEBYSCORE board 200 +inf
+1) "cy"
+2) "ada"
+3) "bob"
+> ZRANGEBYSCORE board (150.5 310 WITHSCORES
+1) "cy"
+2) "205.5"
+3) "ada"
+4) "310"
+> ZRANGEBYSCORE board -inf (150.5
+(empty array)
+> ZREM board ada nobody
+(integer) 1
+> ZCARD board
+(integer) 3
+> ZADD board high eve
+(error) ERR value is not a valid float
+
+# Keys
+> TYPE greeting
+string
+> TYPE user:1
+hash
+> TYPE queue
+list
+> TYPE board
+zset
+> TYPE nothing
+none
+> KEYS *
+1) "b"
+2) "board"
+3) "c"
+4) "greeting"
+5) "keep"
+6) "once"
+7) "queue"
+8) "user:1"
+9) "visits"
+> KEYS user:*
+1) "user:1"
+> KEYS ?
+1) "b"
+2) "c"
+> KEYS [bc]
+1) "b"
+2) "c"
+> DEL b c nothing
+(integer) 2
+> LPUSH greeting x
+(error) WRONGTYPE Operation against a key holding the wrong kind of value
+> GET user:1
+(error) WRONGTYPE Operation against a key holding the wrong kind of value
+
+# What a command can't do
+> FROBNICATE now
+(error) ERR unknown command 'FROBNICATE'
+> GET
+(error) ERR wrong number of arguments for 'get' command
+> SET lonely
+(error) ERR wrong number of arguments for 'set' command
+> SET k v EX soon
+(error) ERR value is not an integer or out of range
+> SET k v EX 0
+(error) ERR invalid expire time in 'set' command
+> SET k v NX XX
+(error) ERR syntax error
+> ZADD board 1
+(error) ERR wrong number of arguments for 'zadd' command
+> ECHO "quotes, \"escaped\", and a\ttab"
+"quotes, \"escaped\", and a\ttab"
+> PING
+PONG
+> PING "is anyone there?"
+"is anyone there?"
+> INFO
+"keys:7\r\ncommands:86\r\nexpired:3\r\n"
+# saved 7 keys to tour.bin

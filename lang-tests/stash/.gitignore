@@ -1,0 +1,4 @@
+/.skein/
+/dist/
+*.skimg
+.DS_Store

@@ -1,0 +1,128 @@
+(ns stash.main
+  "stash's command line: serve a store, run a script of commands against
+  one, or send a command to a server."
+  (:require [skein.cli :as cli]
+            [skein.io :as io]
+            [skein.signal :as signal]
+            [skein.string :as str]
+            [stash.client :as client]
+            [stash.resp :as resp]
+            [stash.server :as server]
+            [stash.store :as store]))
+
+;; ---- a reply, as text for a person -----------------------------------------------------------
+
+(defgeneric show (reply)
+  (:doc "Reply as lines of text, the way redis-cli prints one."))
+
+(defmethod show ((x Null)) ["(nil)"])
+(defmethod show ((x Integer)) [(str "(integer) " x)])
+(defmethod show ((x String)) [(pr-str x)])
+(defmethod show ((x resp/Simple)) [(:text x)])
+(defmethod show ((x resp/Failure)) [(str "(error) " (:text x))])
+
+(defmethod show ((x Vector))
+  (if (empty? x)
+    ["(empty array)"]
+    (let [width (count (str (count x)))]
+      (vec (mapcat (fn [i item]
+                     (let [label (str (str/pad-left (str (inc i)) width) ") ")
+                           [head & more] (show item)]
+                       ;; (an item of several lines, an array inside: the rest under its first)
+                       (cons (str label head) (map (fn [l] (str (apply str (repeat (count label) " ")) l)) more))))
+                   (range) x)))))
+
+;; ---- scripts ---------------------------------------------------------------------------------
+
+(defn words
+  "A script line as words: split at spaces, but for what's between double
+  quotes, where \\\" \\\\ \\n \\r and \\t are those characters. An error for
+  a quote left open."
+  [line]
+  (loop [cs (seq line) word nil out [] quoted false]
+    (let [c (first cs)]
+      (cond (nil? c) (cond quoted (error (str "A quote is left open in: " line))
+                           word (conj out (apply str word))
+                           :else out)
+            quoted (cond (= c \") (recur (next cs) word out false)
+                         (and (= c \\) (next cs))
+                         (let [e (second cs)]
+                           (recur (nnext cs) (conj word (case e \n \newline \r \return \t \tab e)) out true))
+                         :else (recur (next cs) (conj word c) out true))
+            (= c \") (recur (next cs) (or word []) out true)
+            (contains? #{\space \tab} c) (recur (next cs) nil (if word (conj out (apply str word)) out) false)
+            :else (recur (next cs) (conj (or word []) c) out false)))))
+
+(defn run-script!
+  "Run the lines of a script against store, whose clock is the atom now
+  (milliseconds): each command is printed after \"> \", then its reply. A
+  line starting with # is printed as it is, and @advance N moves the clock
+  N ms on (clearing expired keys away, as a server's sweeper does)."
+  [store now lines]
+  (doseq [line lines]
+    (let [line (str/trim line)]
+      (cond (str/blank? line) (println)
+            (str/starts-with? line "#") (println line)
+            (str/starts-with? line "@advance")
+            (let [ms (parse-long (str (second (str/split line #"\s+"))))]
+              (when-not (and ms (not (neg? ms))) (error (str "@advance takes a number of milliseconds: " line)))
+              (swap! now + ms)
+              (println (str "@ " ms " ms later (" (store/expire-due! store) " expired)")))
+            :else
+            (let [ws (words line)]
+              (println (str "> " line))
+              (doseq [l (show (store/execute store (first ws) (rest ws)))] (println l)))))))
+
+(defn- run [{:keys [options args]}]
+  (let [now (atom 0)
+        st (store/new-store :clock (fn [] @now))]
+    (when (:load options)
+      (println (str "# loaded " (server/load! st (:load options)) " keys from " (io/file-name (:load options)))))
+    (run-script! st now (io/lines (:script args)))
+    (when (:save options)
+      (println (str "# saved " (server/save! st (:save options)) " keys to " (io/file-name (:save options)))))
+    0))
+
+;; ---- serving, and talking to a server --------------------------------------------------------
+
+(defn- serve [{:keys [options]}]
+  (let [s (server/start! (:host options) (:port options) :snapshot (:snapshot options) :max-clients (:max-clients options))
+        sigs (signal/listen :int :term)]
+    (println (str "stash: listening on " (:host options) ":" (:port s)
+                  (when (:snapshot options) (str ", " (store/dbsize (:store s)) " keys, snapshots in " (:snapshot options)))))
+    (<! (:signals sigs))
+    ((:stop s))
+    (signal/stop! sigs)
+    0))
+
+(defn- send [{:keys [args]}]
+  (let [c (client/connect! (:host args) (:port args))
+        _ (apply client/send! c (:words args))
+        r (client/reply c)]
+    (client/close! c)
+    (doseq [l (show r)] (println l))
+    (if (instance? resp/Failure r) 1 0)))
+
+(def spec
+  {:name "stash"
+   :summary "A key-value server: strings, hashes, lists and sorted sets, over the Redis protocol."
+   :version "0.1.0"
+   :commands [{:name "serve" :summary "Serve a store"
+               :options [{:name :host :value "HOST" :default "127.0.0.1"}
+                         {:name :port :short \p :type :int :default 6379}
+                         {:name :snapshot :value "FILE" :doc "Load this file if it's there; SAVE and stopping write it"}
+                         {:name :max-clients :type :int :default 10000}]
+               :run serve}
+              {:name "run" :summary "Run a script of commands against a new store, printing each reply"
+               :options [{:name :load :value "FILE" :doc "Start from this snapshot"}
+                         {:name :save :value "FILE" :doc "Write a snapshot when the script ends"}]
+               :args [{:name :script}]
+               :run run}
+              {:name "send" :summary "Send one command to a server and print its reply"
+               :args [{:name :host} {:name :port :type :int} {:name :words :variadic true}]
+               :run send}]})
+
+(defn main
+  "stash's entry point: its command-line arguments in, its exit status out."
+  [& args]
+  (cli/run spec (vec args)))

@@ -1,0 +1,310 @@
+(ns stash-test
+  (:require [skein.io :as io]
+            [skein.log :as log]
+            [skein.string :as str]
+            [skein.sys :as sys]
+            [skein.test :refer [deftest is testing use-fixtures]]
+            [stash.client :as c]
+            [stash.main :as main]
+            [stash.resp :as resp]
+            [stash.server :as server]
+            [stash.store :as store]))
+
+(use-fixtures :each (fn [run] (binding [log/*level* (if (sys/getenv "STASH_LOG") :info :error)] (run))))
+
+(defmacro with-server
+  "(with-server [s options…] body…): body with s a stash server started on a
+  free port with options, stopped after."
+  [[s & opts] & body]
+  `(let [~s (server/start! "127.0.0.1" 0 ~@opts)]
+     (try ~@body (finally ((:stop ~s))))))
+
+(defn- connect [s] (c/connect! "127.0.0.1" (:port s)))
+
+(defn- eventually
+  "(f) once it's true, trying for at most 20 s (nil if it never is: a
+  passing test never waits that long)."
+  [f]
+  (loop [n 0]
+    (or (f) (when (< n 2000) (sleep 10) (recur (inc n))))))
+
+(defn- failure
+  "A Failure reply's text (nil for any other reply)."
+  [r]
+  (when (instance? resp/Failure r) (:text r)))
+
+;; ---- the store, with a clock the test moves --------------------------------------------------
+
+(defn- store-at
+  "[store now run]: a store whose clock is the atom now, and (run word…) running a command on it."
+  []
+  (let [now (atom 0)
+        st (store/new-store :clock (fn [] @now))]
+    [st now (fn [& words] (let [r (store/execute st (first words) (rest words))]
+                            (if (instance? resp/Simple r) (:text r) r)))]))
+
+(deftest values-of-each-kind
+  (let [[_ _ run] (store-at)]
+    (testing "strings"
+      (is (= "OK" (run "SET" "k" "v")))
+      (is (= "v" (run "GET" "k")))
+      (is (= [nil 3 "3"] [(run "GET" "n") (run "INCRBY" "n" "3") (run "GET" "n")]))
+      (is (= 7 (run "APPEND" "word" "héllo!")) "a length is in bytes")
+      (is (= 9223372036854775807 (run "INCRBY" "big" "9223372036854775807")))
+      (is (= "ERR increment or decrement would overflow" (failure (run "INCR" "big")))))
+    (testing "hashes"
+      (is (= [2 1 0] [(run "HSET" "h" "a" "1" "b" "2") (run "HSET" "h" "a" "9" "c" "3") (run "HSET" "h" "a" "9")]))
+      (is (= ["a" "9" "b" "2" "c" "3"] (run "HGETALL" "h")))
+      (is (= [3 0 nil] [(run "HDEL" "h" "a" "b" "c") (run "EXISTS" "h") (run "HGET" "h" "a")]) "an emptied hash is gone"))
+    (testing "lists"
+      (is (= 4 (do (run "RPUSH" "l" "b" "c") (run "LPUSH" "l" "a" "z"))))
+      (is (= ["z" "a" "b" "c"] (run "LRANGE" "l" "0" "-1")))
+      (is (= ["z" "c" ["a" "b"]] [(run "LPOP" "l") (run "RPOP" "l") (run "LRANGE" "l" "-100" "100")])))
+    (testing "sorted sets: by score, then by member"
+      (is (= 4 (run "ZADD" "z" "2" "b" "1" "a" "2" "aa" "-1.5" "neg")))
+      (is (= ["neg" "-1.5" "a" "1" "aa" "2" "b" "2"] (run "ZRANGE" "z" "0" "-1" "WITHSCORES")))
+      (is (= 0 (run "ZADD" "z" "10" "a")) "a member already there is moved, not added")
+      (is (= ["neg" "aa" "b" "a"] (run "ZRANGE" "z" "0" "-1")))
+      (is (= [3 "10" nil] [(run "ZRANK" "z" "a") (run "ZSCORE" "z" "a") (run "ZSCORE" "z" "nobody")]))
+      (is (= ["aa" "b"] (run "ZRANGEBYSCORE" "z" "(-1.5" "(10")))
+      (is (= ["inf" ["neg" "aa" "b" "a" "top"]] [(run "ZINCRBY" "z" "inf" "top") (run "ZRANGEBYSCORE" "z" "-inf" "inf")])))
+    (testing "a value of one kind isn't another"
+      (doseq [[cmd & args] [["GET" "h2"] ["INCR" "h2"] ["LPUSH" "h2" "x"] ["ZADD" "h2" "1" "m"] ["APPEND" "h2" "x"]]]
+        (run "HSET" "h2" "f" "v")
+        (is (str/starts-with? (failure (apply run cmd args)) "WRONGTYPE") cmd))
+      (is (= "hash" (run "TYPE" "h2")) "and it's left as it was"))))
+
+(deftest keys-expire
+  (let [[st now run] (store-at)]
+    (run "SET" "a" "1" "PX" "100")
+    (run "SET" "b" "2" "EX" "1")
+    (run "SET" "c" "3")
+    (is (= [100 1000 -1 -2] (mapv (fn [k] (run "PTTL" k)) ["a" "b" "c" "d"])))
+    (reset! now 100)
+    (is (= [nil "2" 2 ["b" "c"]] [(run "GET" "a") (run "GET" "b") (run "DBSIZE") (run "KEYS" "*")])
+        "gone to whoever asks, the moment it expires")
+    (is (= 1 (store/expire-due! st)) "and then cleared away")
+    (is (= 0 (store/expire-due! st)))
+    (testing "a new value has a new life; other changes keep the old one"
+      (run "SET" "b" "again")
+      (is (= -1 (run "PTTL" "b")))
+      (run "SET" "n" "1" "PX" "50")
+      (run "INCR" "n")
+      (is (= 50 (run "PTTL" "n")))
+      (reset! now 149)
+      (is (= "2" (run "GET" "n")))
+      (reset! now 150)
+      (is (= 1 (run "INCR" "n")) "expired: it starts again, with no expiry")
+      (is (= -1 (run "PTTL" "n"))))
+    (testing "expire, persist, and expiring at once"
+      (is (= [1 0 1] [(run "EXPIRE" "c" "10") (run "EXPIRE" "nope" "10") (run "PERSIST" "c")]))
+      (is (= [0 1 0] [(run "PERSIST" "c") (run "PEXPIRE" "c" "0") (run "EXISTS" "c")])))
+    (testing "the store's own account of it"
+      (is (every? (fn [shard] (empty? (:ttl @shard))) (:shards st)) "no expiry is left behind")
+      (is (= 1 (:expired @(:stats st)))))))
+
+(deftest a-snapshot-is-the-store
+  (let [[st now run] (store-at)]
+    (run "SET" "s" "text")
+    (run "SET" "soon" "gone" "PX" "10")
+    (run "SET" "later" "here" "PX" "1000")
+    (run "HSET" "h" "f" "v")
+    (run "RPUSH" "l" "a" "b")
+    (run "ZADD" "z" "1.5" "m" "2" "n")
+    (let [snap (store/snapshot st)
+          path (io/temp-file :prefix "stash-test" :suffix ".bin")]
+      (is (= ["h" "l" "later" "s" "soon" "z"] (mapv first (:entries snap))) "sorted by key")
+      (is (= 6 (server/save! st path)))
+      (reset! now 10)
+      (let [other (store/new-store :clock (fn [] @now) :shards 3)]
+        (is (= 5 (server/load! other path)) "but for what has expired since")
+        (is (= (store/snapshot st) (store/snapshot other)) "whatever the shards")
+        (is (= ["m" "1.5" "n" "2"] (store/run other "ZRANGE" ["z" "0" "-1" "WITHSCORES"])))
+        (is (= 990 (store/run other "PTTL" ["later"]))))
+      (io/delete! path)
+      (is (thrown? Error (store/restore! st {:version 2 :entries []}))))))
+
+;; ---- the protocol ----------------------------------------------------------------------------
+
+(defn- reading [text] (io/line-reader (io/bytes-stream text)))
+
+(deftest commands-on-the-wire
+  (let [r (reading (str (resp/encode-command ["SET" "key" "two\r\nlines" 42])
+                        "PING\r\n"
+                        "  GET   key  \r\n"
+                        "\r\n*0\r\n"
+                        (resp/encode-command ["ECHO" ""])))]
+    (is (= [["SET" "key" "two\r\nlines" "42"] ["PING"] ["GET" "key"] ["ECHO" ""] nil]
+           (vec (repeatedly 5 (fn [] (resp/read-command r)))))))
+  (testing "what isn't RESP"
+    (doseq [text ["*2\r\n$3\r\nGET\r\n:5\r\n" "*x\r\n" "*1\r\n$-5\r\n" "*1\r\n$3\r\nGETxx" "*1\r\n$99999999999\r\n"]]
+      (is (thrown? resp/ProtocolError (resp/read-command (reading text))) text))))
+
+(deftest replies-on-the-wire
+  (let [reply [1 "bulk" nil resp/ok (resp/Failure :text "ERR no") ["nested" [-7 ""]] []]]
+    (is (= "*7\r\n:1\r\n$4\r\nbulk\r\n$-1\r\n+OK\r\n-ERR no\r\n*2\r\n$6\r\nnested\r\n*2\r\n:-7\r\n$0\r\n\r\n*0\r\n" (resp/encode reply)))
+    (is (= reply (resp/read-reply (reading (resp/encode reply)))))
+    (is (= "$6\r\nhéllo\r\n" (resp/encode "héllo")) "a length is in bytes")))
+
+(deftest script-lines
+  (is (= ["SET" "k" "two words" "" "a\"b\\c\n"] (main/words "SET k  \"two words\" \"\" \"a\\\"b\\\\c\\n\"")))
+  (is (= [] (main/words "   ")))
+  (is (thrown? Error (main/words "SET k \"open")))
+  (let [now (atom 0)
+        st (store/new-store :clock (fn [] @now))]
+    (is (= (str "# a comment\n> SET k v PX 5\nOK\n> LRANGE l 0 -1\n(empty array)\n"
+                "@ 5 ms later (1 expired)\n> GET k\n(nil)\n"
+                "> RPUSH l a \"b c\"\n(integer) 2\n> LRANGE l 0 -1\n1) \"a\"\n2) \"b c\"\n> NOPE\n(error) ERR unknown command 'NOPE'\n")
+           (with-out-str
+             (main/run-script! st now ["# a comment" "SET k v PX 5" "LRANGE l 0 -1" "@advance 5" "GET k"
+                                       "RPUSH l a \"b c\"" "LRANGE l 0 -1" "NOPE"]))))))
+
+(deftest a-reply-as-text
+  (is (= [" 1) \"a\"" " 2) 1) (integer) 1" "    2) (nil)" " 3) (empty array)" " 4) OK" " 5) x" " 6) x" " 7) x" " 8) x" " 9) x" "10) x"]
+         (main/show (into ["a" [1 nil] [] resp/ok] (repeat 6 (resp/Simple :text "x")))))))
+
+;; ---- the server ------------------------------------------------------------------------------
+
+(deftest talking-to-a-server
+  (with-server [s]
+    (let [a (connect s)]
+      (is (= ["PONG" "OK" "v" 1 nil] [(c/call! a "PING") (c/call! a "SET" "k" "v") (c/call! a "GET" "k") (c/call! a "DEL" "k") (c/call! a "GET" "k")]))
+      (is (= "ERR unknown command 'NOPE'" (failure (c/call! a "NOPE"))))
+      (testing "a megabyte, and text that looks like the protocol"
+        (let [big (apply str (repeat 100000 "0123456789"))]
+          (is (= "OK" (c/call! a "SET" "big" big)))
+          (is (= 1000000 (c/call! a "STRLEN" "big")))
+          (is (= big (c/call! a "GET" "big"))))
+        (c/call! a "SET" "odd" "+OK\r\n$-1\r\n")
+        (is (= "+OK\r\n$-1\r\n" (c/call! a "GET" "odd"))))
+      (testing "many commands before any reply is read"
+        (dotimes [i 500] (c/send! a "RPUSH" "pipe" i))
+        (is (= (vec (range 1 501)) (vec (repeatedly 500 (fn [] (c/reply a))))) "each answered, in order")
+        (is (= (mapv str (range 500)) (c/call! a "LRANGE" "pipe" "0" "-1"))))
+      (testing "typed by hand"
+        (io/write (:sock a) "SET  hand  typed\r\nGET hand\r\n")
+        (is (= [resp/ok "typed"] [(c/reply a) (c/reply a)])))
+      (testing "quit"
+        (is (= ["OK" nil] [(c/call! a "QUIT") (c/reply a)]) "the server closes the connection")))
+    (testing "what isn't the protocol ends the connection, and only it"
+      (let [bad (connect s) good (connect s)]
+        (io/write (:sock bad) "*1\r\n:1\r\n")
+        (is (str/starts-with? (failure (c/reply bad)) "ERR Protocol error"))
+        (is (nil? (c/reply bad)))
+        (is (= "PONG" (c/call! good "PING")))
+        (c/close! good)))
+    (is (eventually (fn [] (empty? @(:connections s)))) "every connection is let go of")))
+
+(deftest many-clients-at-once
+  ;; (each adds to a counter they share and to one of its own: an INCR is
+  ;; one swap! of its shard, so none is lost)
+  (with-server [s]
+    (let [clients 200
+          each 50
+          ;; (connected one after another: two hundred connecting in one
+          ;; instant can be more than the listener's backlog holds, on a
+          ;; busy machine, and the ones past it are refused)
+          conns (mapv (fn [_] (connect s)) (range clients))
+          done (mapv (fn [i]
+                       (future
+                         (let [cl (nth conns i)]
+                           (dotimes [_ each]
+                             (c/send! cl "INCR" "shared")
+                             (c/send! cl "INCR" (str "own:" i))
+                             (c/send! cl "ZINCRBY" "board" 1 (str "c" (mod i 10))))
+                           (let [replies (vec (repeatedly (* 3 each) (fn [] (c/reply cl))))]
+                             (c/close! cl)
+                             (nth replies (- (* 3 each) 2))))))
+                     (range clients))
+          own (mapv (fn [f] (deref f 60000 :timed-out)) done)
+          a (connect s)]
+      (is (= (repeat clients each) own) "each client's own counter")
+      (is (= (str (* clients each)) (c/call! a "GET" "shared")))
+      (is (= (vec (mapcat (fn [i] [(str "c" i) (str (* 20 each))]) (range 10))) (c/call! a "ZRANGE" "board" "0" "-1" "WITHSCORES")))
+      (is (= (+ clients 2) (c/call! a "DBSIZE")))
+      (c/close! a))))
+
+(deftest publishing
+  (with-server [s]
+    (let [ada (connect s) bob (connect s) pub (connect s)]
+      (is (= [["subscribe" "news" 1] ["subscribe" "sport" 2]] [(c/call! ada "SUBSCRIBE" "news" "sport") (c/reply ada)]))
+      (is (= ["subscribe" "news" 1] (c/call! bob "SUBSCRIBE" "news")))
+      (is (= [2 1 0] [(c/call! pub "PUBLISH" "news" "hello") (c/call! pub "PUBLISH" "sport" "goal") (c/call! pub "PUBLISH" "weather" "rain")]))
+      (is (= [["message" "news" "hello"] ["message" "sport" "goal"]] [(c/reply ada) (c/reply ada)]))
+      (is (= ["message" "news" "hello"] (c/reply bob)))
+      (testing "a subscriber still has the store"
+        (is (= "OK" (c/call! bob "SET" "k" "v"))))
+      (testing "leaving one channel, then the rest"
+        (is (= ["unsubscribe" "news" 1] (c/call! ada "UNSUBSCRIBE" "news")))
+        (is (= 1 (c/call! pub "PUBLISH" "news" "again")))
+        (is (= ["unsubscribe" "sport" 0] (c/call! ada "UNSUBSCRIBE")))
+        (is (= ["unsubscribe" nil 0] (c/call! ada "UNSUBSCRIBE")) "with nothing to leave"))
+      (testing "a subscriber that goes is forgotten"
+        (c/close! bob)
+        (is (eventually (fn [] (empty? @(:subscribers s)))))
+        (is (= 0 (c/call! pub "PUBLISH" "news" "anyone?"))))
+      (c/close! ada)
+      (c/close! pub))))
+
+(deftest a-subscriber-too-slow-is-let-go
+  ;; (it never reads: once its socket and its outbox are full, the next
+  ;; message it can't take lets it go, and the publisher carries on)
+  (with-server [s]
+    (let [slow (connect s) pub (connect s)
+          message (apply str (repeat 8192 "x"))]
+      (is (= ["subscribe" "flood" 1] (c/call! slow "SUBSCRIBE" "flood")))
+      (is (eventually (fn [] (zero? (c/call! pub "PUBLISH" "flood" message)))) "published until nobody's listening")
+      (is (eventually (fn [] (empty? @(:subscribers s)))) "and it's forgotten once its connection has ended")
+      (is (= "PONG" (c/call! pub "PING")) "the publisher was never held up")
+      (c/close! slow)
+      (c/close! pub))))
+
+(deftest the-sweeper-clears-expired-keys
+  (with-server [s :sweep-ms 10]
+    (let [a (connect s)]
+      (dotimes [i 50] (c/call! a "SET" (str "k" i) "v" "PX" "30"))
+      (c/call! a "SET" "stays" "v")
+      (is (eventually (fn [] (= 50 (:expired @(:stats (:store s)))))) "without anyone asking for them")
+      (is (= [1 ["stays"]] [(c/call! a "DBSIZE") (c/call! a "KEYS" "*")]))
+      (c/close! a))))
+
+(deftest a-server-keeps-its-snapshot
+  (io/with-temp-directory [dir]
+    (let [path (io/path dir "stash.bin")]
+      (with-server [s :snapshot path]
+        (let [a (connect s)]
+          (c/call! a "SET" "s" "text")
+          (c/call! a "HSET" "h" "f" "v")
+          (c/call! a "ZADD" "z" "2" "b" "1" "a")
+          (is (not (io/exists? path)))
+          (is (= "OK" (c/call! a "SAVE")))
+          (is (io/exists? path))
+          (c/call! a "RPUSH" "l" "after" "the" "save")
+          (c/close! a)))
+      (testing "stopping saved what came after SAVE too"
+        (with-server [s :snapshot path]
+          (let [a (connect s)]
+            (is (= ["h" "l" "s" "z"] (c/call! a "KEYS" "*")))
+            (is (= ["text" "v" ["a" "b"] ["after" "the" "save"]]
+                   [(c/call! a "GET" "s") (c/call! a "HGET" "h" "f") (c/call! a "ZRANGE" "z" "0" "-1") (c/call! a "LRANGE" "l" "0" "-1")]))
+            (c/close! a)))))
+    (testing "without a file there's nothing to save to"
+      (with-server [s]
+        (let [a (connect s)]
+          (is (str/starts-with? (failure (c/call! a "SAVE")) "ERR this server has no snapshot file"))
+          (c/close! a))))))
+
+(deftest a-full-server-says-so
+  (with-server [s :max-clients 2]
+    (let [a (connect s) b (connect s)]
+      (is (= ["PONG" "PONG"] [(c/call! a "PING") (c/call! b "PING")]))
+      (let [third (connect s)]
+        (is (= "ERR max number of clients reached" (failure (c/reply third))))
+        (c/close! third))
+      (c/close! a)
+      (testing "a place freed is taken"
+        (is (eventually (fn [] (let [d (connect s)
+                                     r (c/call! d "PING")]
+                                 (c/close! d)
+                                 (= "PONG" r))))))
+      (c/close! b))))
