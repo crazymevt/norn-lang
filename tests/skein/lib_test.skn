@@ -260,6 +260,17 @@
     (is (str/includes? (:err r) "deep\n  at user/bt-outer"))
     (is (not (str/includes? (:err r) "%finish-unwind")))))
 
+;; The report's trace is the program's frames: not the runtime's own (a
+;; binding's, a try's) or the evaluator's, which SKEIN_FULL_TRACE=1 shows.
+(when skein-exe
+  (let [code "(do (defn tr-inner [x] (/ x 0)) (defn tr-outer [x] (inc (binding [*out* *out*] (tr-inner x)))) (tr-outer 1))"
+        r (proc/sh skein-exe "-e" code)
+        full (proc/sh skein-exe "-e" code :env {"SKEIN_FULL_TRACE" "1"})]
+    (is (= "Error: <string>:1: Divide by zero\n  at user/tr-inner\n  at user/tr-outer/fn\n  at user/tr-outer\n"
+           (:err r)))
+    (is (str/includes? (:err full) "  at skein.core/%with-bindings*\n"))
+    (is (str/includes? (:err full) "  at skein.expander/eval-"))))
+
 ;; Ctrl-C is a program's own while it listens for :int: the skein command
 ;; doesn't interrupt the evaluation as well (pulse finding). Without a
 ;; listener it does.
