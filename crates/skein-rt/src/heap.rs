@@ -128,6 +128,16 @@ static HEAP_GROWTH: AtomicUsize = AtomicUsize::new(100);
 static HEAP_LIMIT_PAGES: AtomicUsize = AtomicUsize::new(0);
 /// Pages that allocations waiting on this collection need.
 static PENDING_PAGES: AtomicUsize = AtomicUsize::new(0);
+/// With generations: the nursery's size in pages (0: no generations), and
+/// how far what's in use may grow before a full collection (`grow_heap`).
+/// SKEIN_GC_LOG=2: where the last pause went. Nanoseconds to stop the
+/// carriers, to list the roots (and how many), and in the weak references.
+static PHASE_STOP: AtomicU64 = AtomicU64::new(0);
+static PHASE_ROOTS: AtomicU64 = AtomicU64::new(0);
+static PHASE_ROOT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static PHASE_WEAK: AtomicU64 = AtomicU64::new(0);
+static NURSERY_PAGES: AtomicUsize = AtomicUsize::new(0);
+static MATURE_LIMIT_PAGES: AtomicUsize = AtomicUsize::new(0);
 
 struct ProportionalTrigger;
 
@@ -137,6 +147,33 @@ struct ProportionalTrigger;
 /// the live bytes (it hasn't yet in the trigger's own `on_gc_end`).
 fn grow_heap(mmtk: &'static MMTK<Skein>) {
     let in_use = mmtk.get_plan().get_reserved_pages();
+    // With generations (M11 part 4) there are two sizes. Young collections
+    // come as the nursery fills (SKEIN_GC_NURSERY), so the heap's limit
+    // only has to leave a nursery's room above what's in use: set after
+    // every collection. What grows from one young collection to the next
+    // is what they promote and what dies old, and that has a budget, set
+    // by each full collection as the heap's size always was (what's in use
+    // and as much again as is live): once it's spent, the next collection
+    // is a full one. (With one limit for both, the heap sat just under it
+    // and a young collection ran every few MB.)
+    let nursery = NURSERY_PAGES.load(Ordering::Relaxed);
+    let young = mmtk.get_plan().generational().is_some_and(|g| g.is_current_gc_nursery());
+    if nursery != 0 && young && MATURE_LIMIT_PAGES.load(Ordering::Relaxed) != 0 {
+        // (The full collection comes straight after this young one, not a
+        // nursery later: a full collection marks what's young where it
+        // lies, and a nursery of new objects each left alone on its block
+        // is the fragmentation over again, now among the old.)
+        let spent = in_use >= MATURE_LIMIT_PAGES.load(Ordering::Relaxed);
+        if spent && let Some(g) = mmtk.get_plan().generational() {
+            g.force_full_heap_collection();
+        }
+        let room = if spent { 256 } else { nursery + nursery / 4 };
+        let limit = (in_use + room).min(HEAP_MAX_PAGES.load(Ordering::Relaxed));
+        HEAP_LIMIT_PAGES.store(limit, Ordering::Relaxed);
+        PAGES_AFTER.store(in_use, Ordering::Relaxed);
+        PAGES_LIMIT.store(limit, Ordering::Relaxed);
+        return;
+    }
     let spaces = memory_manager::live_bytes_in_last_gc(mmtk);
     let live_bytes: usize = spaces.values().map(|s| s.live_bytes).sum();
     if GC_LOG.load(Ordering::Relaxed) > 1 {
@@ -153,6 +190,18 @@ fn grow_heap(mmtk: &'static MMTK<Skein>) {
     let growth = HEAP_GROWTH.load(Ordering::Relaxed);
     let want = in_use + live / 100 * growth + PENDING_PAGES.swap(0, Ordering::SeqCst);
     let (min, max) = (HEAP_MIN_PAGES.load(Ordering::Relaxed), HEAP_MAX_PAGES.load(Ordering::Relaxed));
+    if nursery != 0 {
+        // (a full collection, with generations: the budget for what's
+        // old, and a nursery's room for what's new)
+        MATURE_LIMIT_PAGES.store(want.clamp(min, max), Ordering::Relaxed);
+        let limit = (in_use + nursery + nursery / 4).clamp(min, max);
+        HEAP_LIMIT_PAGES.store(limit, Ordering::Relaxed);
+        PAGES_AFTER.store(in_use, Ordering::Relaxed);
+        PAGES_LIVE.store(live, Ordering::Relaxed);
+        PAGES_LIVE_BYTES.store(live_bytes, Ordering::Relaxed);
+        PAGES_LIMIT.store(want.clamp(min, max), Ordering::Relaxed);
+        return;
+    }
     HEAP_LIMIT_PAGES.store(want.clamp(min, max), Ordering::Relaxed);
     PAGES_AFTER.store(in_use, Ordering::Relaxed);
     PAGES_LIVE.store(live, Ordering::Relaxed);
@@ -196,6 +245,15 @@ pub fn init_heap() {
             // that moves objects; it needs the write barrier)
             Ok("sticky") => {
                 BARRIER.store(true, Ordering::Relaxed);
+                // The nursery: how much may be allocated before a young
+                // collection (SKEIN_GC_NURSERY, 256 MB), and the least room
+                // under the heap's limit that leaves the next collection a
+                // young one (2 MB). MMTk's own is a quarter of the heap for
+                // the least, which the heap's growth never leaves free: all
+                // but a few collections were full ones.
+                let max = env_bytes("SKEIN_GC_NURSERY").unwrap_or(256 << 20).max(4 << 20);
+                NURSERY_PAGES.store(max >> LOG_BYTES_IN_PAGE, Ordering::Relaxed);
+                b.options.nursery.set(mmtk::util::options::NurserySize::Bounded { min: 2 << 20, max });
                 PlanSelector::StickyImmix
             }
             _ => PlanSelector::Immix,
@@ -780,6 +838,7 @@ impl Scanning<Skein> for Skein {
         // heap, and the running fibers are reported as VM roots.
     }
     fn scan_vm_specific_roots(_: VMWorkerThread, mut factory: impl RootsWorkFactory<SkeinSlot>) {
+        let began = std::time::Instant::now();
         let mut nodes = Vec::new();
         let mut add = |v: Value| {
             if let Some(r) = to_ref(v) {
@@ -795,10 +854,14 @@ impl Scanning<Skein> for Skein {
         if let Some(f) = EXTRA_ROOTS.get() {
             f(&mut add);
         }
+        PHASE_ROOT_COUNT.store(nodes.len(), Ordering::Relaxed);
         factory.create_process_pinning_roots_work(nodes);
+        PHASE_ROOTS.store(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     fn process_weak_refs(_: &mut mmtk::scheduler::GCWorker<Skein>, _: impl mmtk::vm::ObjectTracerContext<Skein>) -> bool {
+        let began = std::time::Instant::now();
         crate::weak::process();
+        PHASE_WEAK.store(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
         false
     }
     fn supports_return_barrier() -> bool {
@@ -883,7 +946,9 @@ impl Collection<Skein> for Skein {
     fn stop_all_mutators<F: FnMut(&'static mut MmMutator)>(_: VMWorkerThread, mut visitor: F) {
         *PAUSE_BEGAN.lock().unwrap() = Some(std::time::Instant::now());
         PAGES_BEFORE.store(mmtk().get_plan().get_reserved_pages(), Ordering::Relaxed);
+        let began = std::time::Instant::now();
         crate::safepoint::stop_world();
+        PHASE_STOP.store(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
         for m in Skein::mutators() {
             visitor(m);
         }
@@ -908,14 +973,30 @@ impl Collection<Skein> for Skein {
             if GC_LOG.load(Ordering::Relaxed) != 0 {
                 let mb = |pages: &AtomicUsize| (pages.load(Ordering::Relaxed) << LOG_BYTES_IN_PAGE) as f64 / 1048576.0;
                 eprintln!(
-                    "gc {}: {:.1} ms, {:.0} MB -> {:.0} MB ({:.0} MB live), next at {:.0} MB",
+                    "gc {}{}: {:.1} ms, {:.0} MB -> {:.0} MB ({:.0} MB live), next at {:.0} MB",
                     GC_COUNT.load(Ordering::Relaxed),
+                    // (with generations: was it a young collection or a full one?)
+                    match mmtk().get_plan().generational() {
+                        Some(g) if g.is_current_gc_nursery() => " young",
+                        Some(_) => " full",
+                        None => "",
+                    },
                     ns as f64 / 1e6,
                     mb(&PAGES_BEFORE),
                     mb(&PAGES_AFTER),
                     mb(&PAGES_LIVE),
                     mb(&PAGES_LIMIT)
                 );
+                if GC_LOG.load(Ordering::Relaxed) > 1 {
+                    let ms = |ns: &AtomicU64| ns.load(Ordering::Relaxed) as f64 / 1e6;
+                    eprintln!(
+                        "  stopping {:.2} ms, {} roots {:.2} ms, weak references {:.2} ms",
+                        ms(&PHASE_STOP),
+                        PHASE_ROOT_COUNT.load(Ordering::Relaxed),
+                        ms(&PHASE_ROOTS),
+                        ms(&PHASE_WEAK)
+                    );
+                }
             }
         }
         crate::safepoint::resume_world();

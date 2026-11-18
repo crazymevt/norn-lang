@@ -365,6 +365,67 @@ carriers:
     and claim goes through the barrier's slow path once. 17,000 objects
     are remembered by the time skein.core has loaded.
 
+- **Part 4: measured (2026-11-18). Two of the done-check's four numbers
+  hold; the two about pauses don't.** Generations are still asked for
+  (`SKEIN_GC_PLAN=sticky`, in a build that moves objects), not the
+  default.
+  - **What was wrong first.** 40 of 46 collections were full ones:
+    MMTk's nursery is a quarter of the heap at the least, and a heap
+    grown by what's live never leaves a quarter free. The nursery is now
+    a fixed size (`SKEIN_GC_NURSERY`, 256 MB; `NurserySize::Bounded`).
+  - **Two sizes, not one** (`grow_heap`). After every collection the
+    heap's limit is what's in use and a nursery's room over it, so young
+    collections come as the nursery fills. What's in use after young
+    collections has a budget, set by each full collection as the heap's
+    size always was (what's in use and as much again as is live); the
+    young collection that spends it is followed at once by a full one.
+    At once, not a nursery later: a full collection marks what's young
+    where it lies, and a nursery of new objects each alone on its block
+    is the fragmentation again.
+  - **The numbers** (`bench/stash.skn`, 10 carriers, 50 clients, 197 MB
+    live, a 256 MB nursery; 150 s for the heap, 40 s for the rest):
+
+    | | wanted | generations | before (Immix, objects moved) |
+    |---|---|---|---|
+    | pages in use after a full collection | level, ≤ 3× live | level from 60 s at 430–440 MB, 2.2× | 1.8 GB at the end, peak 2.7 GB |
+    | the longest pause | < 20 ms | full collections 33–56 ms; young ones 4–7 ms | 160 ms |
+    | time paused | < 2% | 3.3–3.7% | 6% |
+    | requests a second | held | 65,900 beside 60,800 in the same sitting | |
+
+    The highest the heap gets between collections is 775–815 MB (4×): a
+    nursery on top of what's old. With a 64 MB nursery the peak is
+    615 MB and the time paused 5.8%; with 512 MB, 1.1 GB and 2.5%.
+    With 1, 2 and 4 carriers: 22,800, 38,000 and 45,600 requests a
+    second, the longest pause 29, 35 and 46 ms.
+  - **Young collections** take about 2 ms and 1 ms more for each 100 MB
+    of nursery (2.3 ms at 64 MB, 4.3 at 256, 7 at 512), whatever
+    survives. `SKEIN_GC_LOG=2` now says where a pause went: stopping
+    the carriers 0.1 ms, listing 16,000 roots 0.1 ms, weak references
+    0.01 ms. The rest is MMTk's own work, not looked into yet (its
+    `work_packet_stats`). The slow young collections (20–100 ms) are
+    all while the keys are loaded, when everything new survives and is
+    copied.
+  - **Full collections** grow with what's old: 33 ms at 330 MB in use,
+    55 ms at 440 MB. They come every 4 s. Nothing here shortens them:
+    this is the question decision 4 put off.
+  - **Tried and taken back: waiters, claims and atoms as data** (young,
+    and moved). Every suite on the moving build crashed, a blocking
+    thread in `try_claim` with a claim that had moved; with them where
+    they were, the numbers are the same. Decision 3 stands.
+  - **Checked**: the moving build with generations under
+    `SKEIN_GC_STRESS=50` at tier 0, tier 1 and everything compiled,
+    with a 4 MB nursery, lang-tests, and the heap walked after every
+    collection (`gc-check`); `SKEIN_GC_MOVE=stress` without
+    generations; the default build's suites at both tiers and
+    `cargo test`. On macOS only: the branch has not run on Linux.
+    `.github/workflows/nightly.yml` has a `moving` job for these modes
+    (not yet run).
+  - **The nursery is 256 MB by default** (the user, 2026-11-18): over
+    64 MB it's a third less time paused for 180 MB more at the peak.
+  - **Open**: full collections' pauses; what
+    MMTk does in a young collection's fixed 2 ms; making generations
+    the default.
+
 ## Risks
 
 - **A value in a Rust local across a safepoint.** Today it's harmless if

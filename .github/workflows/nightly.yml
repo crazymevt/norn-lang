@@ -68,3 +68,108 @@ jobs:
         run: target/release/skein test tests/skein
         env:
           SKEIN_GC_STRESS: "50"
+
+  # M11: the build whose collector moves objects (no `non-moving` feature),
+  # under the modes that show a stale pointer or a missed write barrier.
+  # Each is rare in an ordinary run and each is a crash or a wrong answer
+  # far from its cause, so these run every night, on both systems.
+  moving:
+    name: Moving collector, ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-15
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      SKEIN: target/moving/release/skein
+      SKEIN_CHECKED: target/moving-check/release/skein
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: macOS file limits
+        if: runner.os == 'macOS'
+        run: sudo sysctl -w kern.maxfiles=122880 kern.maxfilesperproc=61440
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-0 zsh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: moving
+          workspaces: |
+            . -> target/moving
+            . -> target/moving-check
+
+      - name: Build
+        run: cargo build --locked --release --no-default-features --target-dir target/moving
+
+      - name: Build with the heap check
+        run: cargo build --locked --release --no-default-features --features skein-rt/gc-check --target-dir target/moving-check
+
+      # Every collection moves whatever it may: a pointer kept across a
+      # safepoint is stale at the next one.
+      - name: Everything moved at each collection, tier 0
+        if: ${{ !cancelled() }}
+        run: $SKEIN test tests/skein
+        env:
+          SKEIN_TIER: "0"
+          SKEIN_GC_MOVE: stress
+          SKEIN_GC_STRESS: "50"
+
+      # Generations: young collections trace only what the write barrier
+      # recorded, so a store without one loses an object.
+      - name: Generations, tier 0
+        if: ${{ !cancelled() }}
+        run: $SKEIN test tests/skein
+        env:
+          SKEIN_TIER: "0"
+          SKEIN_GC_PLAN: sticky
+          SKEIN_GC_STRESS: "50"
+
+      - name: Generations, tier 1
+        if: ${{ !cancelled() }}
+        run: $SKEIN test tests/skein
+        env:
+          SKEIN_GC_PLAN: sticky
+          SKEIN_GC_STRESS: "50"
+
+      - name: Generations, everything compiled from its first call
+        if: ${{ !cancelled() }}
+        run: $SKEIN test tests/skein
+        env:
+          SKEIN_TIER: "1"
+          SKEIN_JIT_THRESHOLD: "1"
+          SKEIN_JIT_SYNC: "1"
+          SKEIN_GC_PLAN: sticky
+          SKEIN_GC_STRESS: "50"
+
+      - name: Generations, a small nursery
+        if: ${{ !cancelled() }}
+        run: $SKEIN test tests/skein
+        env:
+          SKEIN_GC_PLAN: sticky
+          SKEIN_GC_NURSERY: 4m
+
+      - name: Generations, the programs
+        if: ${{ !cancelled() }}
+        run: $SKEIN lang-tests/run.skn
+        env:
+          SKEIN_GC_PLAN: sticky
+
+      # The heap walked after every collection: a bad reference is reported
+      # at the collection that made it, with the object that holds it.
+      - name: Generations, the heap checked after every collection
+        if: ${{ !cancelled() }}
+        run: $SKEIN_CHECKED test tests/skein
+        env:
+          SKEIN_TIER: "0"
+          SKEIN_GC_PLAN: sticky
+          SKEIN_GC_STRESS: "200"

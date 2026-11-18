@@ -161,7 +161,7 @@
   (is (= #{:count :pause-ms :max-pause-ms :last-pause-ms :heap-bytes :live-bytes :moved :remembered} (set (keys st))))
   (is (not (neg? (:moved st))) "0 in a build whose collector never moves an object")
   (is (< 0 (:live-bytes st) (:heap-bytes st)) "what's alive is less than the pages holding it")
-  (is (= (:count st) (gc-count)))
+  (is (<= (:count st) (gc-count)) "(a collection may come between the two)")
   (is (pos? (:count st)))
   (is (and (pos? (:last-pause-ms st)) (<= (:last-pause-ms st) (:max-pause-ms st) (:pause-ms st))))
   (is (pos? (:heap-bytes st)))
