@@ -1,0 +1,523 @@
+(ns stash.store
+  "The store: keys to values, with the commands that read and change them.
+
+  A value is a string, a hash (fields to strings), a list or a sorted set
+  (members ordered by score); a key may expire. The keys are spread over
+  shards, each an atom of {:data {key [value expires]} :ttl #{[expires key]}}:
+  a command on one key is one swap! of its shard, so it happens all at once
+  and commands on other shards don't wait for it. A command on several keys
+  (MSET, DEL) is one swap! a key.
+
+  An expired key is gone to whoever asks from the moment it expires (its
+  entry is passed over), and expire-due! clears such entries away: the
+  sorted :ttl says which, without a look at every key.
+
+  The clock is the store's own (:clock, milliseconds), so a test or a
+  script can move time itself."
+  (:require [skein.string :as str]
+            [skein.time :as time]
+            [stash.resp :as resp]))
+
+;; ---- what can go wrong, and the kinds of value -----------------------------------------------
+
+(defclass CommandError (Error)
+  ()
+  (:doc "A command that can't be done: its message is the reply, starting with its kind (ERR…)."))
+
+(defclass WrongType (CommandError)
+  ()
+  (:doc "A command for one kind of value, given a key that holds another."))
+
+(defclass Hash ()
+  ((fields :initform {}))
+  (:doc "A hash value: fields to strings."))
+
+(defclass Items ()
+  ((items :initform []))
+  (:doc "A list value: strings, head first."))
+
+(defclass ZSet ()
+  ((scores :initform {}) (order :initform (sorted-set)))
+  (:doc "A sorted set value: each member's score, and [score member] pairs in order."))
+
+(def value-classes "The classes a snapshot's values may be instances of." [Hash Items ZSet])
+
+(defgeneric kind (value)
+  (:doc "What TYPE says of a value."))
+
+(defmethod kind ((v String)) "string")
+(defmethod kind ((v Hash)) "hash")
+(defmethod kind ((v Items)) "list")
+(defmethod kind ((v ZSet)) "zset")
+
+(defn- fail [& msg] (error CommandError :message (apply str msg)))
+
+(defn- of-kind
+  "Value v as an instance of class (nil stays nil): WrongType if it's another kind."
+  [class v]
+  (cond (nil? v) nil
+        (instance? class v) v
+        :else (error WrongType :message "WRONGTYPE Operation against a key holding the wrong kind of value")))
+
+;; ---- the store, its shards, and one key's change ---------------------------------------------
+
+(defn wall-clock "The time now, in milliseconds since the epoch." [] (time/epoch-ms (time/now)))
+
+(def ^:private empty-shard {:data {} :ttl (sorted-set)})
+
+(defn new-store
+  "A store with nothing in it. Options: :shards (16), and :clock, a
+  function giving the time in milliseconds (the wall clock's)."
+  [& {:keys [shards clock] :or {shards 16}}]
+  {:shards (vec (repeatedly shards (fn [] (atom empty-shard))))
+   :clock (or clock wall-clock)
+   :stats (atom {:commands 0 :expired 0})})
+
+(defn- shard-of [store key] (nth (:shards store) (mod (hash key) (count (:shards store)))))
+
+(defn- live
+  "Key's entry [value expires] in shard state s, unless it has expired."
+  [s key now]
+  (when-let [e (get (:data s) key)]
+    (let [x (nth e 1)]
+      (when (or (nil? x) (> x now)) e))))
+
+(defn- without [s key]
+  (if-let [e (get (:data s) key)]
+    {:data (dissoc (:data s) key) :ttl (if (nth e 1) (disj (:ttl s) [(nth e 1) key]) (:ttl s))}
+    s))
+
+(defn- holding [s key value expires]
+  (let [s (without s key)]
+    {:data (assoc (:data s) key [value expires]) :ttl (if expires (conj (:ttl s) [expires key]) (:ttl s))}))
+
+(defn- look "Key's value now, or nil." [store key]
+  (when-let [e (live @(shard-of store key) key ((:clock store)))] (nth e 0)))
+
+(defn- change!
+  "Change key all at once: (f value expires) is called with what key holds
+  (nil, nil: nothing) and answers [value' reply], or [value' reply
+  expires'] to set when it expires (nil: never). A value' of nil deletes
+  the key. The reply. (f may run more than once: it only computes.)"
+  [store key f]
+  (let [now ((:clock store))
+        reply (volatile! nil)]
+    (swap! (shard-of store key)
+           (fn [s]
+             (let [e (live s key now)
+                   r (f (when e (nth e 0)) (when e (nth e 1)))
+                   v (nth r 0)
+                   expires (if (= 3 (count r)) (nth r 2) (when e (nth e 1)))]
+               (vreset! reply (nth r 1))
+               (cond (nil? v) (without s key)
+                     (and e (identical? v (nth e 0)) (= expires (nth e 1))) s
+                     :else (holding s key v expires)))))
+    @reply))
+
+;; ---- commands --------------------------------------------------------------------------------
+
+(def ^:private commands "Command name (upper case) → {:min :more :run}." (atom {}))
+
+(defmacro ^:private defcommand
+  "(defcommand NAME [store arg… & more] body…): a command. It's given the
+  store and its arguments (strings), and its value is its reply. Fewer
+  arguments than it names, or more when it takes no & more, is an error
+  before it runs."
+  [name params & body]
+  (let [args (rest params)
+        fixed (count (take-while (fn [p] (not= p '&)) args))
+        more? (boolean (some (fn [p] (= p '&)) args))]
+    `(swap! commands assoc ~(str name) {:min ~fixed :more ~more? :run (fn ~params ~@body)})))
+
+(defn command-names "Every command the store knows, sorted." [] (vec (sort (keys @commands))))
+
+(defn run
+  "Run command name (any case) with args on store: its reply. A
+  CommandError if there's no such command, the arguments are too few or
+  too many, or it can't be done."
+  [store name args]
+  (let [c (get @commands (str/upper-case name))
+        n (count args)]
+    (cond (nil? c) (fail "ERR unknown command '" name "'")
+          (or (< n (:min c)) (and (not (:more c)) (> n (:min c))))
+          (fail "ERR wrong number of arguments for '" (str/lower-case name) "' command")
+          :else (do (swap! (:stats store) update :commands inc)
+                    (apply (:run c) store args)))))
+
+(defn execute
+  "run, with an error as its reply (a Failure) rather than signalled."
+  [store name args]
+  (try (run store name args)
+       (catch CommandError e (resp/Failure :text (condition-message e)))))
+
+;; ---- arguments -------------------------------------------------------------------------------
+
+(def ^:private most 9223372036854775807)
+(def ^:private least -9223372036854775808)
+
+(defn- int-arg [s]
+  (let [n (parse-long s)]
+    (if (and n (<= least n most)) n (fail "ERR value is not an integer or out of range"))))
+
+(defn- float-arg [s]
+  (let [x (parse-double s)]
+    ;; (NaN is neither below zero nor not)
+    (if (and x (or (< x 0) (>= x 0))) (double x) (fail "ERR value is not a valid float"))))
+
+(defn- score-text
+  "A score as Redis writes it: 3, not 3.0."
+  [x]
+  (cond (= x ##Inf) "inf"
+        (= x ##-Inf) "-inf"
+        (and (< (abs x) 1e15) (== x (long x))) (str (long x))
+        :else (str x)))
+
+(defn- span
+  "The half-open range of indexes [from to) that START and STOP (inclusive,
+  negative ones counted from the end) take of n items."
+  [start stop n]
+  (let [at (fn [i] (if (neg? i) (+ n i) i))
+        from (max 0 (at (int-arg start)))
+        to (min n (inc (at (int-arg stop))))]
+    (if (< from to) [from to] [0 0])))
+
+(defn- glob->regex
+  "A KEYS pattern as a regex: * any run of characters, ? any one, [abc] one of those."
+  [pattern]
+  (re-pattern (apply str (map (fn [c]
+                                (cond (= c \*) ".*"
+                                      (= c \?) "."
+                                      (contains? #{\[ \] \-} c) (str c)
+                                      (re-matches #"[A-Za-z0-9_:]" (str c)) (str c)
+                                      :else (str "\\" c)))
+                              pattern))))
+
+;; ---- strings ---------------------------------------------------------------------------------
+
+(defcommand GET [store key] (of-kind String (look store key)))
+
+(defn- set-options
+  "SET's options after the value: {:px ms :nx true :xx true}."
+  [opts]
+  (loop [opts (seq opts) out {}]
+    (if-not opts
+      (if (and (:nx out) (:xx out)) (fail "ERR syntax error") out)
+      (let [o (str/upper-case (first opts))]
+        (cond (= o "NX") (recur (next opts) (assoc out :nx true))
+              (= o "XX") (recur (next opts) (assoc out :xx true))
+              (and (contains? #{"EX" "PX"} o) (next opts))
+              (let [n (int-arg (second opts))]
+                (when-not (pos? n) (fail "ERR invalid expire time in 'set' command"))
+                (recur (nnext opts) (assoc out :px (if (= o "EX") (* 1000 n) n))))
+              :else (fail "ERR syntax error"))))))
+
+(defcommand SET [store key value & opts]
+  (let [o (set-options opts)
+        now ((:clock store))]
+    (change! store key
+             (fn [old _]
+               (cond (and (:nx o) old) [old nil]
+                     (and (:xx o) (nil? old)) [nil nil]
+                     ;; (a new value has a new life: its own expiry, or none)
+                     :else [value resp/ok (when (:px o) (+ now (:px o)))])))))
+
+(defcommand SETNX [store key value]
+  (change! store key (fn [old _] (if old [old 0] [value 1 nil]))))
+
+(defcommand GETDEL [store key]
+  (change! store key (fn [old _] [nil (of-kind String old)])))
+
+(defcommand APPEND [store key value]
+  (change! store key (fn [old _] (let [s (str (of-kind String old) value)] [s (count (bytes s))]))))
+
+(defcommand STRLEN [store key] (count (bytes (or (of-kind String (look store key)) ""))))
+
+(defn- add!
+  "Add n to the integer key holds (0 if nothing): the sum."
+  [store key n]
+  (change! store key
+           (fn [old _]
+             (let [sum (+ (if old (int-arg (of-kind String old)) 0) n)]
+               (when-not (<= least sum most) (fail "ERR increment or decrement would overflow"))
+               [(str sum) sum]))))
+
+(defcommand INCR [store key] (add! store key 1))
+(defcommand DECR [store key] (add! store key -1))
+(defcommand INCRBY [store key n] (add! store key (int-arg n)))
+(defcommand DECRBY [store key n] (add! store key (- (int-arg n))))
+
+(defcommand MGET [store key & keys]
+  (mapv (fn [k] (let [v (look store k)] (when (string? v) v))) (cons key keys)))
+
+(defcommand MSET [store key value & more]
+  (when (odd? (count more)) (fail "ERR wrong number of arguments for 'mset' command"))
+  (doseq [[k v] (partition 2 (concat [key value] more))]
+    (change! store k (fn [_ _] [v nil nil])))
+  resp/ok)
+
+;; ---- keys ------------------------------------------------------------------------------------
+
+(defcommand DEL [store key & keys]
+  (reduce + 0 (map (fn [k] (change! store k (fn [old _] [nil (if old 1 0)]))) (cons key keys))))
+
+(defcommand EXISTS [store key & keys]
+  (count (filter (fn [k] (some? (look store k))) (cons key keys))))
+
+(defcommand TYPE [store key]
+  (resp/Simple :text (if-let [v (look store key)] (kind v) "none")))
+
+(defn- expire!
+  "Key expires ms from now (at once, if that isn't after now): 1, or 0 if there's no such key."
+  [store key ms]
+  (let [now ((:clock store))]
+    (change! store key (fn [old _] (cond (nil? old) [nil 0]
+                                         (pos? ms) [old 1 (+ now ms)]
+                                         :else [nil 1])))))
+
+(defcommand EXPIRE [store key seconds] (expire! store key (* 1000 (int-arg seconds))))
+(defcommand PEXPIRE [store key ms] (expire! store key (int-arg ms)))
+
+(defcommand PERSIST [store key]
+  (change! store key (fn [old expires] (if (and old expires) [old 1 nil] [old 0]))))
+
+(defn- left
+  "Milliseconds until key expires: -1 if it never does, -2 if there's no such key."
+  [store key]
+  (let [now ((:clock store))
+        e (live @(shard-of store key) key now)]
+    (cond (nil? e) -2
+          (nil? (nth e 1)) -1
+          :else (- (nth e 1) now))))
+
+(defcommand PTTL [store key] (left store key))
+(defcommand TTL [store key] (let [ms (left store key)] (if (neg? ms) ms (quot (+ ms 500) 1000))))
+
+(defn- live-keys [store]
+  (let [now ((:clock store))]
+    (mapcat (fn [shard] (let [s @shard] (filter (fn [k] (live s k now)) (keys (:data s))))) (:shards store))))
+
+(defn dbsize "How many keys the store holds now." [store] (count (live-keys store)))
+
+(defcommand KEYS [store pattern]
+  (let [re (glob->regex pattern)]
+    (vec (sort (filter (fn [k] (re-matches re k)) (live-keys store))))))
+
+(defcommand DBSIZE [store] (dbsize store))
+
+(defcommand FLUSHALL [store]
+  (doseq [shard (:shards store)] (reset! shard empty-shard))
+  resp/ok)
+
+;; ---- hashes ----------------------------------------------------------------------------------
+
+(defn- hash-of [store key] (or (of-kind Hash (look store key)) (Hash)))
+
+(defcommand HSET [store key field value & more]
+  (when (odd? (count more)) (fail "ERR wrong number of arguments for 'hset' command"))
+  (let [pairs (partition 2 (concat [field value] more))]
+    (change! store key
+             (fn [old _]
+               (let [fields (:fields (or (of-kind Hash old) (Hash)))
+                     added (count (remove (fn [f] (contains? fields f)) (distinct (map first pairs))))]
+                 [(Hash :fields (into fields (map vec pairs))) added])))))
+
+(defcommand HGET [store key field] (get (:fields (hash-of store key)) field))
+
+(defcommand HDEL [store key field & more]
+  (change! store key
+           (fn [old _]
+             (let [fields (:fields (or (of-kind Hash old) (Hash)))
+                   gone (filter (fn [f] (contains? fields f)) (distinct (cons field more)))
+                   left (apply dissoc fields gone)]
+               [(when (seq left) (Hash :fields left)) (count gone)]))))
+
+(defcommand HGETALL [store key]
+  (vec (mapcat identity (sort-by first (:fields (hash-of store key))))))
+
+(defcommand HKEYS [store key] (vec (sort (keys (:fields (hash-of store key))))))
+(defcommand HVALS [store key] (mapv second (sort-by first (:fields (hash-of store key)))))
+(defcommand HLEN [store key] (count (:fields (hash-of store key))))
+(defcommand HEXISTS [store key field] (if (contains? (:fields (hash-of store key)) field) 1 0))
+
+(defcommand HINCRBY [store key field n]
+  (let [n (int-arg n)]
+    (change! store key
+             (fn [old _]
+               (let [fields (:fields (or (of-kind Hash old) (Hash)))
+                     cur (get fields field)
+                     sum (+ (if cur (or (parse-long cur) (fail "ERR hash value is not an integer")) 0) n)]
+                 (when-not (<= least sum most) (fail "ERR increment or decrement would overflow"))
+                 [(Hash :fields (assoc fields field (str sum))) sum])))))
+
+;; ---- lists -----------------------------------------------------------------------------------
+
+(defn- items-of [store key] (:items (or (of-kind Items (look store key)) (Items))))
+
+(defn- push!
+  "Add values to key's list, each at the head (or each at the tail): its length after."
+  [store key values head?]
+  (change! store key
+           (fn [old _]
+             (let [items (:items (or (of-kind Items old) (Items)))
+                   items (if head? (into (vec (reverse values)) items) (into items values))]
+               [(Items :items items) (count items)]))))
+
+(defcommand LPUSH [store key value & more] (push! store key (cons value more) true))
+(defcommand RPUSH [store key value & more] (push! store key (cons value more) false))
+
+(defn- take-end!
+  "Take the item at the head (or the tail) of key's list: it, or nil. A list left empty is gone."
+  [store key head?]
+  (change! store key
+           (fn [old _]
+             (let [items (:items (or (of-kind Items old) (Items)))]
+               (if (empty? items)
+                 [nil nil]
+                 (let [left (if head? (subvec items 1) (pop items))]
+                   [(when (seq left) (Items :items left)) (if head? (first items) (peek items))]))))))
+
+(defcommand LPOP [store key] (take-end! store key true))
+(defcommand RPOP [store key] (take-end! store key false))
+(defcommand LLEN [store key] (count (items-of store key)))
+
+(defcommand LRANGE [store key start stop]
+  (let [items (items-of store key)
+        [from to] (span start stop (count items))]
+    (subvec items from to)))
+
+;; ---- sorted sets -----------------------------------------------------------------------------
+
+(defn- zset-of [store key] (or (of-kind ZSet (look store key)) (ZSet)))
+
+(defn- scored
+  "Sorted set z with member at score (in place of the score it had)."
+  [z member score]
+  (let [old (get (:scores z) member)
+        order (if old (disj (:order z) [old member]) (:order z))]
+    (ZSet :scores (assoc (:scores z) member score) :order (conj order [score member]))))
+
+(defn- pairs-reply
+  "[score member] pairs as a reply: the members, each followed by its score if scores? is true."
+  [pairs scores?]
+  (if scores?
+    (vec (mapcat (fn [[s m]] [m (score-text s)]) pairs))
+    (mapv second pairs)))
+
+(defn- with-scores? [opts]
+  (cond (empty? opts) false
+        (and (= 1 (count opts)) (= "WITHSCORES" (str/upper-case (first opts)))) true
+        :else (fail "ERR syntax error")))
+
+(defcommand ZADD [store key score member & more]
+  (when (odd? (count more)) (fail "ERR syntax error"))
+  (let [pairs (mapv (fn [[s m]] [(float-arg s) m]) (partition 2 (concat [score member] more)))]
+    (change! store key
+             (fn [old _]
+               (let [z (or (of-kind ZSet old) (ZSet))
+                     z' (reduce (fn [z [s m]] (scored z m s)) z pairs)]
+                 [z' (- (count (:scores z')) (count (:scores z)))])))))
+
+(defcommand ZINCRBY [store key n member]
+  (let [n (float-arg n)]
+    (change! store key
+             (fn [old _]
+               (let [z (or (of-kind ZSet old) (ZSet))
+                     score (+ (get (:scores z) member 0.0) n)]
+                 [(scored z member score) (score-text score)])))))
+
+(defcommand ZREM [store key member & more]
+  (change! store key
+           (fn [old _]
+             (let [z (or (of-kind ZSet old) (ZSet))
+                   gone (filter (fn [m] (contains? (:scores z) m)) (distinct (cons member more)))
+                   z' (reduce (fn [z m] (ZSet :scores (dissoc (:scores z) m) :order (disj (:order z) [(get (:scores z) m) m])))
+                              z gone)]
+               [(when (seq (:scores z')) z') (count gone)]))))
+
+(defcommand ZSCORE [store key member]
+  (when-let [s (get (:scores (zset-of store key)) member)] (score-text s)))
+
+(defcommand ZCARD [store key] (count (:scores (zset-of store key))))
+
+(defcommand ZRANK [store key member]
+  (let [z (zset-of store key)]
+    (when-let [s (get (:scores z) member)]
+      (count (subseq (:order z) < [s member])))))
+
+(defcommand ZRANGE [store key start stop & opts]
+  (let [scores? (with-scores? opts)
+        order (vec (:order (zset-of store key)))
+        [from to] (span start stop (count order))]
+    (pairs-reply (subvec order from to) scores?)))
+
+(defn- bound
+  "A score bound as ZRANGEBYSCORE takes it: [score exclusive?] of 5, (5, -inf or +inf."
+  [s]
+  (if (str/starts-with? s "(") [(float-arg (subs s 1)) true] [(float-arg s) false]))
+
+(defcommand ZRANGEBYSCORE [store key low high & opts]
+  (let [scores? (with-scores? opts)
+        [lo lo-open?] (bound low)
+        [hi hi-open?] (bound high)
+        ;; (the order starts at the first pair of score lo: \"\" is before every member)
+        from (subseq (:order (zset-of store key)) >= [lo ""])]
+    (pairs-reply (take-while (fn [[s _]] (if hi-open? (< s hi) (<= s hi)))
+                             (if lo-open? (drop-while (fn [[s _]] (= s lo)) from) from))
+                 scores?)))
+
+;; ---- the store itself ------------------------------------------------------------------------
+
+(defcommand PING [store & message]
+  (cond (empty? message) (resp/Simple :text "PONG")
+        (= 1 (count message)) (first message)
+        :else (fail "ERR wrong number of arguments for 'ping' command")))
+
+(defcommand ECHO [store message] message)
+
+(defcommand INFO [store]
+  (let [stats @(:stats store)]
+    (str "keys:" (dbsize store) "\r\ncommands:" (:commands stats) "\r\nexpired:" (:expired stats) "\r\n")))
+
+(defn expire-due!
+  "Clear away the entries of keys that have expired: how many."
+  [store]
+  (let [now ((:clock store))
+        gone (reduce + 0
+                     (map (fn [shard]
+                            (let [due (fn [s] (take-while (fn [[x _]] (<= x now)) (:ttl s)))]
+                              ;; (a look first: most shards have nothing due, and needn't change)
+                              (if (empty? (due @shard))
+                                0
+                                (let [n (volatile! 0)]
+                                  (swap! shard (fn [s] (let [ks (mapv second (due s))]
+                                                         (vreset! n (count ks))
+                                                         (reduce without s ks))))
+                                  @n))))
+                          (:shards store)))]
+    (when (pos? gone) (swap! (:stats store) update :expired + gone))
+    gone))
+
+(defn snapshot
+  "Everything the store holds now, as data: {:version 1 :entries [[key
+  value expires]…]}, sorted by key (so two stores holding the same are the
+  same snapshot)."
+  [store]
+  (let [now ((:clock store))]
+    {:version 1
+     :entries (vec (sort-by first
+                            (mapcat (fn [shard]
+                                      (let [s @shard]
+                                        (keep (fn [[k e]] (when (live s k now) [k (nth e 0) (nth e 1)])) (:data s))))
+                                    (:shards store))))}))
+
+(defn restore!
+  "Put a snapshot's entries into store (over what's there under the same
+  keys), but for those that have expired since: how many it put."
+  [store snap]
+  (when-not (and (map? snap) (= 1 (:version snap)) (vector? (:entries snap)))
+    (error "That isn't a stash snapshot (or it's a version this stash doesn't read)"))
+  (let [now ((:clock store))
+        fresh (filter (fn [[_ _ expires]] (or (nil? expires) (> expires now))) (:entries snap))]
+    (doseq [[k v expires] fresh]
+      (swap! (shard-of store k) holding k v expires))
+    (count fresh)))

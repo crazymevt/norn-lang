@@ -55,7 +55,7 @@ cargo build --release
 ./target/release/skein check                 # fmt --check, lint, test, doc examples
 ./target/release/skein doc skein.string       # what a library offers
 cargo test                                  # Rust + Skein test suites
-./target/release/skein lang-tests/run.skn   # five real programs at every tier (lang-tests/README.md)
+./target/release/skein lang-tests/run.skn   # six real programs at every tier (lang-tests/README.md)
 ./target/release/skein bench/compare.skn    # the benchmarks against bench/baseline.edn
 cargo run -p jit-spike --release            # tier-1 platform checks
 ./target/release/skein -e '(do (load-file "bench/pingpong.skn") (ping-pong 500000 10))'
@@ -82,7 +82,7 @@ lib/core         skein.core, written in Skein
 lib/compiler     the Skein compiler, written in Skein
 lib/skein         the standard libraries (skein.io, skein.net, …)
 tests/skein       Skein test suites
-lang-tests/      five programs written as users would, checking each change to Skein
+lang-tests/      six programs written as users would, checking each change to Skein
 bench/           benchmarks
 spikes/          throwaway platform experiments
 docs/            user documentation, language reference, and design documents

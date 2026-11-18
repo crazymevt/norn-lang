@@ -1,4 +1,4 @@
-//! The lang-tests (lang-tests/: five programs written as Skein's users write
+//! The lang-tests (lang-tests/: six programs written as Skein's users write
 //! them) as a check on this build: each project's tests at tier 0, tier 1
 //! and with everything compiled from its first call, the programs' outputs
 //! on fixed inputs against their recording, and the standard library's

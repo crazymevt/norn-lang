@@ -1,4 +1,4 @@
-;;;; The lang-tests as a check on Skein itself: five programs written the way
+;;;; The lang-tests as a check on Skein itself: six programs written the way
 ;;;; Skein's users write them (README.md), run with this checkout's skein.
 ;;;;
 ;;;;   skein lang-tests/run.skn                  ; everything
@@ -39,7 +39,7 @@
 (def checkout (io/parent root))
 (def expected (io/path root "expected"))
 
-(def projects ["chat" "ledger" "loglens" "pulse" "quire"])
+(def projects ["chat" "ledger" "loglens" "pulse" "quire" "stash"])
 
 (def modes
   [{:name "tier 0" :env {"SKEIN_TIER" "0"}}

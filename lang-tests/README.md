@@ -18,6 +18,11 @@ with it (`git log lang-tests/quire`).
   STM, `skein.sync`.
 - **loglens**: a log analyzer. Gzip'd JSON Lines as a stream, named regex
   groups, relations, diffs, percentiles, `skein.bin`, CBOR, `skein.bench`.
+- **stash**: a key-value server speaking the Redis protocol. Sharded
+  atoms, classes and generic functions for its kinds of value, sorted
+  sets, expiry, publish and subscribe, pipelining, snapshots. Written
+  after the others (2026-11-18), for what they left out: a heap that
+  stays, and many carriers working on shared state.
 
 ## A check on Skein itself
 
@@ -37,7 +42,8 @@ SKEIN_LANG_TESTS=1 cargo test --release -p skein --test lang_tests
   (`SKEIN_JIT_THRESHOLD=1 SKEIN_JIT_SYNC=1`).
 - **Outputs:** the programs on fixed inputs (`outputs.edn`): loglens's
   reports on a generated log, ledger's imports and reports, and quire's
-  build of its sample site. What each prints, and the files it writes,
+  build of its sample site, stash's replies to a script of commands and
+  the snapshot it saves. What each prints, and the files it writes,
   must be the same in all three modes and as recorded in `expected/`. A
   miscompile shows up as a different output even where no test checks
   that value. A path of the temporary folder is written `$TMP`, so the
@@ -57,4 +63,6 @@ first time (skein caches what it fetches). A project whose `skein.lock`
 names a local folder that isn't there is skipped, and the runner says so.
 
 chat and pulse have no fixed outputs: they're servers, whose output
-depends on the network and the clock. Their tests cover them.
+depends on the network and the clock. Their tests cover them. stash is a
+server too, but can run a script against a store whose clock only the
+script moves.

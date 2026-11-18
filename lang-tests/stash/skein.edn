@@ -1,0 +1,5 @@
+{:name stash
+ :version "0.1.0"
+ :paths ["src"]
+ :main stash.main/main
+ :package {:targets [:cli]}}

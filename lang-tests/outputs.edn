@@ -6,7 +6,8 @@
 ;; (standard output, $TMP's path written as $TMP) and the files :files
 ;; names (globs in $TMP) must be the same in every mode, and as recorded
 ;; in expected/<project>/. chat and pulse have none: they're servers,
-;; whose output is the network's and the clock's.
+;; whose output is the network's and the clock's. (stash is one too, but
+;; runs a script of commands against a store whose clock the script moves.)
 {loglens
  [{:name "gen" :args ["gen" "$TMP/day.ndjson.gz" "--lines" "20000" "--seed" "7"] :files ["day.ndjson.gz"]}
   {:name "report"
@@ -35,4 +36,8 @@
    :args ["--dir" "$TMP/site" "build" "--out" "$TMP/out" "--drafts" "--zip"] :exit 1
    :files ["out/**"]}
   {:name "build-again" :args ["--dir" "$TMP/site" "build" "--out" "$TMP/out" "--drafts" "--zip"] :exit 1
-   :files ["out/**"]}]}
+   :files ["out/**"]}]
+
+ stash
+ [{:name "tour" :args ["run" "tests/fixtures/tour.stash" "--save" "$TMP/tour.bin"] :files ["tour.bin"]}
+  {:name "reload" :args ["run" "tests/fixtures/reload.stash" "--load" "$TMP/tour.bin"]}]}

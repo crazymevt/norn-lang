@@ -1,0 +1,101 @@
+(ns stash.resp
+  "The wire protocol: RESP, as Redis clients speak it, so any of them can
+  talk to stash. A command is an array of bulk strings,
+
+    *3\\r\\n$3\\r\\nSET\\r\\n$1\\r\\nk\\r\\n$5\\r\\nhello\\r\\n
+
+  or, typed by hand, a line of words. A reply is a simple string (+OK), an
+  error (-ERR …), an integer (:5), a bulk string ($5 and its bytes; $-1 is
+  nil) or an array of replies. Values are text: bytes that aren't UTF-8
+  are read as the replacement character."
+  (:require [skein.io :as io]
+            [skein.string :as str]))
+
+(defclass ProtocolError (Error)
+  ()
+  (:doc "What arrived isn't RESP: the connection it came on is closed."))
+
+(defclass Simple ()
+  ((text :required true))
+  (:doc "A reply sent as a simple string, such as OK or PONG."))
+
+(defclass Failure ()
+  ((text :required true))
+  (:doc "A reply that is an error: its text starts with its kind (ERR, WRONGTYPE)."))
+
+(def ok "The reply to a command that just did it." (Simple :text "OK"))
+
+(def max-bulk "The longest bulk string a command may carry, in bytes." (* 16 1024 1024))
+(def max-args "The most arguments a command may have." 100000)
+
+(defn- bad [& msg] (error ProtocolError :message (apply str "Protocol error: " msg)))
+
+(defn- length
+  "The count in a header line after its first character: an integer from lo to hi."
+  [line lo hi]
+  (let [n (parse-long (subs line 1))]
+    (when-not (and n (<= lo n hi)) (bad "invalid length " (pr-str (subs line 1))))
+    n))
+
+(defn- read-bulk
+  "A bulk string's n bytes from reader r and the line ending after them, as text."
+  [r n]
+  (let [b (if (zero? n) (bytes "") (io/read-exactly r n))
+        end (io/read-exactly r 2)]
+    (when-not (and b end (= "\r\n" (bytes->string end true))) (bad "a bulk string without its line ending"))
+    (bytes->string b true)))
+
+(defn read-command
+  "The next command from line reader r, a vector of strings (its name
+  first): nil at the end of input. A blank line is no command: the one after."
+  [r]
+  (loop []
+    (when-let [line (io/read-line r)]
+      (cond (str/blank? line) (recur)
+
+            (str/starts-with? line "*")
+            (let [n (length line 0 max-args)]
+              (if (zero? n)
+                (recur)
+                (loop [i 0 out []]
+                  (if (= i n)
+                    out
+                    (let [header (io/read-line r)]
+                      (when-not (and header (str/starts-with? header "$")) (bad "expected '$', got " (pr-str header)))
+                      (recur (inc i) (conj out (read-bulk r (length header 0 max-bulk)))))))))
+
+            ;; (typed by hand, or sent by a simple client: words on a line)
+            :else (vec (str/split (str/trim line) #"\s+"))))))
+
+(defgeneric encode (reply)
+  (:doc "Reply as RESP text: nil, an integer, a string, a Simple, a Failure, or a vector of replies."))
+
+(defmethod encode ((x Null)) "$-1\r\n")
+(defmethod encode ((x Integer)) (str ":" x "\r\n"))
+(defmethod encode ((x String)) (str "$" (count (bytes x)) "\r\n" x "\r\n"))
+(defmethod encode ((x Simple)) (str "+" (:text x) "\r\n"))
+(defmethod encode ((x Failure)) (str "-" (:text x) "\r\n"))
+(defmethod encode ((x Vector)) (apply str "*" (count x) "\r\n" (map encode x)))
+
+(defn encode-command
+  "A command (its name and arguments, anything str takes) as RESP text."
+  [words]
+  (encode (mapv str words)))
+
+(defn read-reply
+  "The next reply from line reader r, as a client sees it: nil, an integer,
+  a string, a vector of replies, a Simple or a Failure. nil at the end of
+  input too: a client that needs to tell asks for something else."
+  [r]
+  (when-let [line (io/read-line r)]
+    (when (str/blank? line) (bad "an empty reply"))
+    (let [rest (subs line 1)]
+      (case (first line)
+        \+ (Simple :text rest)
+        \- (Failure :text rest)
+        \: (or (parse-long rest) (bad "invalid integer " (pr-str rest)))
+        \$ (let [n (length line -1 max-bulk)] (when-not (neg? n) (read-bulk r n)))
+        \* (let [n (length line -1 max-args)]
+             (when-not (neg? n)
+               (loop [i 0 out []] (if (= i n) out (recur (inc i) (conj out (read-reply r)))))))
+        (bad "a reply starting with " (pr-str (first line)))))))

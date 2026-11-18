@@ -1,0 +1,41 @@
+# loaded 7 keys from tour.bin
+# What the tour left, read back from its snapshot (the clock starts again at 0).
+> KEYS *
+1) "board"
+2) "greeting"
+3) "keep"
+4) "once"
+5) "queue"
+6) "user:1"
+7) "visits"
+> GET greeting
+"hello, world!"
+> GET visits
+"141"
+> HGETALL user:1
+1) "lang"
+2) "lisp"
+3) "logins"
+4) "6"
+5) "name"
+6) "Ada"
+> LRANGE queue 0 -1
+1) "first"
+2) "second"
+> ZRANGE board 0 -1 WITHSCORES
+1) "dee"
+2) "150.5"
+3) "cy"
+4) "205.5"
+5) "bob"
+6) "400"
+> TTL keep
+(integer) 41
+@ 42000 ms later (1 expired)
+> KEYS *
+1) "board"
+2) "greeting"
+3) "once"
+4) "queue"
+5) "user:1"
+6) "visits"

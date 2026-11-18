@@ -1,0 +1,194 @@
+(ns stash.server
+  "The server: stash's store over TCP, speaking RESP.
+
+  Each connection has a fiber reading its commands and one writing its
+  outbox, a bounded channel. Replies go through the outbox in the order
+  their commands came, so a client may send many commands before reading
+  (pipelining), and the writer sends what has gathered in one write. What
+  others publish to a channel the connection subscribed to goes through the
+  same outbox; a subscriber too slow to take it (its outbox full) is let
+  go rather than holding up whoever publishes.
+
+  Besides the store's commands (stash.store) a connection has SUBSCRIBE,
+  UNSUBSCRIBE and PUBLISH, SAVE (write the snapshot file), COMMAND (for
+  clients that ask what there is: nothing is said) and QUIT.
+
+  A fiber clears expired keys away ten times a second. With :snapshot, the
+  file is loaded when the server starts, if it's there, and written by
+  SAVE and when the server stops."
+  (:require [skein.bin :as bin]
+            [skein.io :as io]
+            [skein.log :as log]
+            [skein.net :as net]
+            [skein.string :as str]
+            [skein.sync :as sync]
+            [stash.resp :as resp]
+            [stash.store :as store]))
+
+(def outbox-size "Replies and messages a connection may have waiting before it's too slow." 1024)
+
+;; ---- snapshots -------------------------------------------------------------------------------
+
+(defn save!
+  "Write store's snapshot to path, all at once (a reader sees the old file
+  or the new one): how many keys it holds."
+  [store path]
+  (let [snap (store/snapshot store)]
+    (io/write-atomic! path (bin/encode snap))
+    (count (:entries snap))))
+
+(defn load!
+  "Read path's snapshot into store: how many keys it put."
+  [store path]
+  (store/restore! store (bin/decode (io/read-bytes path) :classes store/value-classes)))
+
+;; ---- publishing ------------------------------------------------------------------------------
+
+(defn- subscribe!
+  "Connection id (its outbox) hears channel from now on."
+  [server channel id outbox]
+  (swap! (:subscribers server) assoc-in [channel id] outbox))
+
+(defn- unsubscribe! [server channel id]
+  (swap! (:subscribers server)
+         (fn [subs] (let [left (dissoc (get subs channel) id)]
+                      (if (seq left) (assoc subs channel left) (dissoc subs channel))))))
+
+(defn- publish!
+  "Send message to channel's subscribers: how many took it. One whose
+  outbox is full is let go."
+  [server channel message]
+  (let [line (resp/encode ["message" channel message])]
+    (count (filter (fn [[id outbox]]
+                     (or (offer! outbox line)
+                         (do (when-let [kick (get @(:connections server) id)]
+                               (log/info "letting go of a subscriber too slow to keep up" :connection id)
+                               (kick))
+                             false)))
+                   (get @(:subscribers server) channel)))))
+
+;; ---- a connection ----------------------------------------------------------------------------
+
+(defn- respond
+  "Handle command words from connection conn ({:id :outbox :channels}):
+  [conn' reply…], the connection as it is after and what to say."
+  [server conn words]
+  (let [{:keys [id outbox channels]} conn
+        name (str/upper-case (first words))
+        args (rest words)
+        wrong (fn [] [conn (resp/Failure :text (str "ERR wrong number of arguments for '" (str/lower-case name) "' command"))])]
+    (case name
+      "SUBSCRIBE"
+      (if (empty? args)
+        (wrong)
+        (loop [args args channels channels replies []]
+          (if-let [ch (first args)]
+            (do (subscribe! server ch id outbox)
+                (let [channels (conj channels ch)]
+                  (recur (next args) channels (conj replies ["subscribe" ch (count channels)]))))
+            (into [(assoc conn :channels channels)] replies))))
+
+      "UNSUBSCRIBE"
+      (loop [args (if (seq args) args (sort channels)) channels channels replies []]
+        (if-let [ch (first args)]
+          (do (unsubscribe! server ch id)
+              (let [channels (disj channels ch)]
+                (recur (next args) channels (conj replies ["unsubscribe" ch (count channels)]))))
+          ;; (with nothing to leave, Redis still answers once)
+          (into [(assoc conn :channels channels)] (if (seq replies) replies [["unsubscribe" nil 0]]))))
+
+      "PUBLISH"
+      (if (= 2 (count args)) [conn (publish! server (first args) (second args))] (wrong))
+
+      "SAVE"
+      (cond (seq args) (wrong)
+            (nil? (:snapshot server)) [conn (resp/Failure :text "ERR this server has no snapshot file (start it with --snapshot)")]
+            :else (do (save! (:store server) (:snapshot server)) [conn resp/ok]))
+
+      "COMMAND" [conn []]
+
+      "QUIT" [(assoc conn :quit true) resp/ok]
+
+      [conn (store/execute (:store server) name args)])))
+
+(defn- serve-connection!
+  "Talk to the client on socket sock until it quits or goes."
+  [server sock]
+  (let [id (swap! (:ids server) inc)
+        outbox (chan outbox-size)
+        writer (spawn-detached
+                 (loop []
+                   (when-let [one (take! outbox)]
+                     ;; (and whatever else has gathered: one write for a pipeline's replies)
+                     (let [text (loop [parts [one]] (if-let [more (poll! outbox)] (recur (conj parts more)) (apply str parts)))]
+                       (when (try (io/write sock text) true (catch Error _ nil))
+                         (recur)))))
+                 (try (io/close sock) (catch Error _ nil)))
+        kick (fn [] (close! outbox) (try (io/close sock) (catch Error _ nil)))
+        r (io/line-reader sock)]
+    (swap! (:connections server) assoc id kick)
+    (try
+      (loop [conn {:id id :outbox outbox :channels #{}}]
+        (let [words (try (resp/read-command r)
+                         (catch resp/ProtocolError e
+                           (put! outbox (resp/encode (resp/Failure :text (str "ERR " (condition-message e)))))
+                           nil)
+                         ;; (the connection broke, or was closed under us)
+                         (catch Error _ nil))]
+          (if (and words (not (closed? outbox)))
+            (let [[conn & replies] (respond server conn words)]
+              (doseq [reply replies] (put! outbox (resp/encode reply)))
+              (if (:quit conn)
+                (doseq [ch (:channels conn)] (unsubscribe! server ch id))
+                (recur conn)))
+            (doseq [ch (:channels conn)] (unsubscribe! server ch id)))))
+      (finally
+        (swap! (:connections server) dissoc id)
+        (close! outbox)
+        (await writer)))))
+
+;; ---- the server ------------------------------------------------------------------------------
+
+(defn start!
+  "Serve a store on host:port (0: any free port): {:port :store :stop}, and
+  the rest of the server's state. Options: :snapshot (a file: loaded now if
+  it's there, written by SAVE and by :stop), :max-clients (10000; others
+  are told it's full), :clock (the store's, milliseconds: the wall
+  clock's), :shards (the store's: 16), :sweep-ms (how often expired keys
+  are cleared away: 100)."
+  [host port & {:keys [snapshot max-clients clock shards sweep-ms] :or {max-clients 10000 shards 16 sweep-ms 100}}]
+  (let [st (store/new-store :clock clock :shards shards)
+        _ (when (and snapshot (io/exists? snapshot))
+            ;; (loaded first: a log line's arguments aren't evaluated when its level is off)
+            (let [n (load! st snapshot)]
+              (log/info "loaded the snapshot" :file snapshot :keys n)))
+        listener (net/listen host port)
+        slots (sync/semaphore max-clients)
+        running (atom true)
+        server {:store st :snapshot snapshot :ids (atom 0) :connections (atom {}) :subscribers (atom {})}
+        sweeper (spawn-detached (loop [] (sleep sweep-ms) (store/expire-due! st) (recur)))
+        accepting
+        (spawn-detached
+          (loop []
+            (when @running
+              (when-let [sock (try (net/accept listener)
+                                   (catch Error e (when @running (log/warn "accept failed" :error (condition-message e))) nil))]
+                (if (sync/try-acquire! slots)
+                  (spawn-detached
+                    (try (serve-connection! server sock)
+                         (catch Error e (log/warn "a connection failed" :error (condition-message e)))
+                         (finally (sync/release! slots))))
+                  (try (io/write sock (resp/encode (resp/Failure :text "ERR max number of clients reached")))
+                       (io/close sock)
+                       (catch Error _ nil)))
+                (recur)))))]
+    (assoc server
+           :port (net/port (net/local-address listener))
+           :stop (fn []
+                   (when (compare-and-set! running true false)
+                     (try (io/close listener) (catch Error _ nil))
+                     (cancel! accepting)
+                     (cancel! sweeper)
+                     (doseq [[_ kick] @(:connections server)] (kick))
+                     (when snapshot (save! st snapshot))
+                     nil)))))

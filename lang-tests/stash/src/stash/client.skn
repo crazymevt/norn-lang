@@ -1,0 +1,40 @@
+(ns stash.client
+  "A client for stash (or any server that speaks RESP): send a command,
+  read its reply. One fiber at a time may use a connection."
+  (:refer-core :exclude [close!])
+  (:require [skein.io :as io]
+            [skein.net :as net]
+            [stash.resp :as resp]))
+
+(defn connect!
+  "Connect to host:port: a connection, for call!, send!, reply and close!."
+  [host port]
+  (let [sock (net/connect host port)]
+    {:sock sock :reader (io/line-reader sock)}))
+
+(defn send!
+  "Send command words (its name and arguments) without waiting for the
+  reply: read it with reply. Several sends, then as many replies, is a
+  pipeline."
+  [c & words]
+  (io/write (:sock c) (resp/encode-command words))
+  nil)
+
+(defn reply
+  "The next reply the server sent: nil, an integer, a string, a vector of
+  replies, a Simple (OK, PONG) or a Failure. nil at the end of the
+  connection too."
+  [c]
+  (resp/read-reply (:reader c)))
+
+(defn call!
+  "Send command words and read its reply, with a Simple as its text: so
+  \"OK\", 5, \"a value\", [\"a\" \"b\"], nil, or a Failure."
+  [c & words]
+  (apply send! c words)
+  (let [r (reply c)]
+    (if (instance? resp/Simple r) (:text r) r)))
+
+(defn close! "Close the connection." [c]
+  (try (io/close (:sock c)) (catch Error _ nil))
+  nil)
