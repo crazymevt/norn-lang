@@ -88,12 +88,26 @@ Skein's roots are values held in Rust (run queues, timers, the reactor,
 linked closures), handed to MMTk as pinning roots (`heap.rs`,
 `scan_vm_specific_roots`); B would need each of those to become a slot.
 
-*Read from MMTk's source, not yet tried:* that StickyImmix copies nursery
-survivors unless `sticky_immix_non_moving_nursery` is set
-(`prefer_copy_on_nursery_gc`), that Immix honours pinned objects with the
-`object_pinning` feature, and that every plan has a non-moving space
-reached with `AllocationSemantics::NonMoving`. Part 2 checks all three
-before anything is built on them.
+*Read from MMTk's source:* that StickyImmix copies nursery survivors
+unless `sticky_immix_non_moving_nursery` is set
+(`prefer_copy_on_nursery_gc`), that Immix leaves in place what a pinning
+root names, and that every plan has a non-moving space reached with
+`AllocationSemantics::NonMoving`. **Checked in parts 1 and 2 (2026-11-18):**
+the non-moving space is in use, and with Immix moving everything it can
+at every collection the suites pass, the roots' objects where they were.
+StickyImmix itself is still only read: its constraints name the object
+barrier and a log bit (the binding has the bit's spec), and a young
+object reached through a pinning root is traced without moving.
+
+**A thing part 3 has to settle:** MMTk's barrier is a call on the
+*mutator* (`object_reference_write_post`), and `set_field` has none in
+hand. Its quick check (is the object written to one the collector
+remembers?) needs no mutator, only the bit; the slow path, taken once an
+object until the next collection, does. Carriers have a mutator each.
+Threads that store into heap objects without being carriers (the timer
+thread delivering to a waiter, the reactor, the blocking pool, the main
+lane) need one too, or a shared list of their own that the binding hands
+to a young collection.
 
 ## What assumes an object stays put
 
@@ -146,6 +160,33 @@ immutable objects are finished before anyone else can see them.
 - **Tier 1** writes registers into heap frames (no barrier) and calls out
   for everything else, so the barrier is in Rust, not in generated code,
   to begin with.
+
+**Where the stores are (looked through 2026-11-18).** Fewer places than
+the 240 calls suggest, because nearly every store goes through one
+function:
+
+- **`Value::set_field`** (`object.rs`), which `arr_set` and the rest
+  call. A barrier inside it covers every store there is, the first ones
+  into a new object too. The check for those is one bit read (is the
+  object one the collector remembers?), so the safe way is the cheap one
+  to begin with; a constructor on a hot path can be given a store without
+  the check afterwards, each one a measured choice.
+- **Twelve atomic stores of a value**, which don't go through it: a var's
+  root (`func.rs:62`), an atom's `reset!` and compare-and-set
+  (`conc.rs:266`, `271`), a class's and a generic function's fields and
+  state (`clos.rs:131`, `393`, `512`, `513`, `637`), `%set-slot-typed`
+  (`prims.rs:2192`), a fiber's field set from another thread
+  (`sched.rs:56`), and an image's stand-ins (`image.rs:142`, `143`).
+- **Raw writes** (`copy_nonoverlapping`, `ptr::write`) are all in
+  constructors, into an object nobody else has yet: none needs one.
+- **Stack frames** are written by the interpreter and by compiled code
+  with no barrier, and a segment is an old object like any other once it
+  has survived a collection. So a fiber's stack has to be given to a
+  young collection whenever the fiber has run since the last one: one
+  call as a fiber is taken up to run (`sched.rs` `run_one`), which
+  remembers its segments. A fiber parked since before the last
+  collection is then left alone, which is also what the million parked
+  fibers of the M1 workload need.
 
 ## Parts
 
@@ -204,6 +245,70 @@ carriers:
   - **A cost to watch:** waiters and claims are made at every park, and
     now share a space with the long-lived. If that space fragments as the
     whole heap did, they move back to the data side.
+
+- **Part 2: objects move, behind a build switch (2026-11-18).**
+  - **The switch.** The crates' default feature `non-moving` is MMTk's
+    `immix_non_moving`: today's collector, unchanged. `cargo build
+    --no-default-features` builds one that moves data
+    (`heap::moves_objects`). Two builds, because MMTk fixes it when it's
+    compiled.
+  - **Copying** (`heap.rs`, `ObjectModel::copy`): an object's words as
+    they are, header and identity hash with them; MMTk leaves the new
+    address over the old copy's first word.
+  - **A stress mode**, `SKEIN_GC_MOVE=stress`: every collection
+    defragments and every block is one to move objects out of. With
+    `SKEIN_GC_STRESS` a pointer kept where the collector can't rewrite it
+    fails within the suite it's in. `(gc-stats)` has `:moved`.
+  - **What moving found**, each fixed:
+    - the five functions unwinding knows by address (`FRAME_KINDS`, a
+      static) weren't roots: once one moved, an error called whatever was
+      at its old address. They're roots now, and so stay put;
+    - the carrier's own copy of the running fiber's dynamic environment
+      (`Vm.dyn_env`) was stale after a collection: `save` puts it in the
+      fiber before a stop, and `reload` now reads it back after one, at a
+      poll and on the way back from native code (a C call, and a callback
+      from C). The second was found only with every suite running at
+      once, from macOS's crash reports: both crashes were a dynamic
+      variable's lookup;
+    - a collector thread that moves objects maps memory for them, deeper
+      than Rust's 2 MB stack: 16 MB.
+  - **Passing with objects moved at every collection** (and one forced
+    every 50th poll): every suite at tier 0, three runs, and once more in
+    a build with the heap's checks on (`gc-check`: every pointer the
+    collector follows must be a live object); and `cargo test`'s whole
+    workspace, the image tests among them, on the moving build. **Part
+    2's done-check is met** but for the one timing test below.
+  - **Measured**, `bench/stash.skn`, 10 carriers, 40 s, 195 MB live:
+    moving everything at every collection the heap ends at 211 MB
+    (1.1× its live data, where it was 14×) and peaks at 345: the
+    fragmentation is gone. And requests fall from 77,000 a second to
+    27,000, with 27 s of the 40 paused: every collection copies all that
+    lives. That is what a young generation is for (part 4).
+  - **MMTk's own choice of when to defragment does nothing here**, and
+    why (read from `policy/immix/defrag.rs`): a collection defragments
+    only in an emergency, on a second attempt, when asked for by the
+    program, or when the holes in used blocks weren't all refilled before
+    it. Skein over-commits (so no emergencies), and small objects refill
+    the holes first, so none of those holds. `immix_always_defrag`
+    (`SKEIN_GC_MOVE=always`) makes every collection one; it then moves
+    out of the blocks with the most holes first, as far as its to-space
+    goes, which is the headroom (`SKEIN_GC_HEADROOM`, 2% of the heap)
+    plus the holes of blocks it isn't emptying. A block with fewer than
+    two holes is never emptied (`MIN_SPILL_THRESHOLD`), and a block with
+    one survivor has one or two. **Measured: nowhere.** With every
+    collection defragmenting, at 2% headroom or 10%, stash's heap climbs
+    as it does with nothing moved (2.8 GB at 40 s). Immix's
+    defragmentation is for blocks riddled with holes; a store's blocks
+    are nearly empty ones with a survivor each. So C, moving without
+    generations, has no setting between "moves nothing that matters" and
+    "copies everything": it was the way to A, as planned, and isn't a
+    place to stop.
+  - **Also passing** on the moving build under the stress mode: every
+    suite with everything compiled from its first call, the lang-tests,
+    and 300,000 fibers' ping-pong. At tier 1 as it starts, one check
+    fails in both runs, prof_test's count of samples: the profiler's
+    timing under a collection every 50th poll, the test plan-m10.md
+    already lists as one that depends on the machine.
 
 ## Risks
 

@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-skein-rt = { path = "../skein-rt" }
+skein-rt = { path = "../skein-rt", default-features = false }
 cranelift-codegen = "0.137.1"
 cranelift-frontend = "0.137.1"
 cranelift-native = "0.137.1"
@@ -27,3 +27,8 @@ flate2 = "1"
 ring = "0.17"
 unicode-segmentation = "1"
 unicode-width = "0.2"
+
+[features]
+default = ["non-moving"]
+# (skein-rt's: the collector never moves an object)
+non-moving = ["skein-rt/non-moving"]

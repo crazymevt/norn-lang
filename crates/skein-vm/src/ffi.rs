@@ -1201,6 +1201,7 @@ fn run_callback(id: u64, args: *const u64) -> u64 {
         // thread, which is inside native_region: nothing else uses the Vm.
         let vm = unsafe { &mut *vm };
         crate::sched::leave_native(vm.carrier);
+        vm.reload_after_native();
         let r = (|| -> Result<u64> {
             let mut argv = Vec::with_capacity(raw.len());
             for (&w, &t) in raw.iter().zip(&wts) {

@@ -1149,6 +1149,17 @@ impl Vm {
         }
     }
 
+    /// After a stop for a collection: what this carrier holds in Rust of the
+    /// running fiber, read again from where `save` put it. A collection may
+    /// have moved it (M11), and rewrote the fiber's fields, not ours. The
+    /// stack segment itself stays where it is (`Kind::stays_put`), so the
+    /// frame pointers in `st` hold.
+    fn reload(&mut self, st: &St) {
+        if !st.seg.is_nil() && !self.current.is_nil() && self.nested == 0 {
+            self.dyn_env = self.current.field(fiber::DYN);
+        }
+    }
+
     /// The safepoint poll at function entry (`entry`) and loop back-edges:
     /// one decrement and one load on the fast path.
     #[inline]
@@ -1178,6 +1189,7 @@ impl Vm {
                 } else {
                     safepoint::block_for_stop();
                 }
+                self.reload(st);
             }
             crate::sched::process_external(self);
         }
@@ -2072,7 +2084,19 @@ impl Vm {
         if let Some(k) = key {
             crate::sched::unroot_many(k);
         }
+        self.reload_after_native();
         r
+    }
+
+    /// Back from native code, where a collection may have run and moved
+    /// what `save` put in the fiber: read it again, as after a stop at a
+    /// poll. (Also for a callback from C, which runs Skein in the middle
+    /// of a native region.)
+    pub(crate) fn reload_after_native(&mut self) {
+        if !self.cur_st.is_null() {
+            // SAFETY: cur_st points at the live state of the enclosing run.
+            unsafe { self.reload(&*self.cur_st) };
+        }
     }
 
     unsafe fn run_inner(&mut self, st: &mut St) -> Result<Exit> {
