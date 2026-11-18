@@ -241,6 +241,8 @@ prims! {
     // before it runs again (sched's run_one), so the collection is over when
     // (gc) returns. Where a fiber can't yield, it's at the next poll.)
     "gc" 0 Some(0) => |vm, _| { vm.want_gc = true; skein_rt::safepoint::bump_attention(); if vm.can_park() { vm.suspend = Some(crate::vm::Suspend::Yield); } Ok(Value::NIL) };
+    // (is the fiber parked? What %frames needs: see core.skn's %parked-frames)
+    "%fiber-parked?" 1 Some(1) => |_, a| { expect(a[0], Kind::Fiber, "%fiber-parked?")?; Ok(Value::bool(a[0].fiber_state().load(std::sync::atomic::Ordering::Acquire) == skein_rt::conc::fiber::PARKED)) };
     "gc-count" 0 Some(0) => |_, _| Ok(Value::fix(skein_rt::heap::gc_count() as i64));
     "gc-stats" 0 Some(1) => gc_stats;
     // fibers, scopes, channels, atoms
