@@ -124,10 +124,13 @@
   (is (= 2 (count @connections)) "Connection: close, then a new one"))
 
 (deftest a-stale-pooled-connection-is-replaced
-  (let [short (http/serve handler :idle-timeout 100)
+  ;; (the timeout is long enough that the second request, on its new
+  ;; connection, arrives within it on a loaded machine: at 100 ms the server
+  ;; now and then closed that one too, before the request reached it)
+  (let [short (http/serve handler :idle-timeout 500)
         u (str "http://127.0.0.1:" (:port short) "/hello")]
     (is (= 200 (:status (http/get u))))
-    (sleep 400) ; (the server has closed the pooled connection meanwhile)
+    (sleep 1500) ; (the server has closed the pooled connection meanwhile)
     (is (= 200 (:status (http/get u))) "a GET is sent again on a new connection")
     (http/stop! short)))
 
