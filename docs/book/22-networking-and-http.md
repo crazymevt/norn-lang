@@ -183,16 +183,23 @@ to trust with `:ca-file`.
 
 A TLS server needs a certificate and its private key. For this example,
 make a self-signed certificate for `localhost` with the `openssl` command,
-run through `skein.process` ([Chapter 21](21-the-operating-system.md)):
+run through `skein.process` ([Chapter 21](21-the-operating-system.md)).
+What the certificate says goes in a small configuration file, so that
+every version of `openssl` (and LibreSSL, which macOS calls `openssl`)
+makes the same one: given as options instead, some versions add their
+defaults beside them, and the certificate is refused.
 
 ```clojure
 (require '[skein.process :as proc])
 
+(io/write-text "cert.cnf"
+               (str "[req]\ndistinguished_name = dn\nx509_extensions = ext\nprompt = no\n"
+                    "[dn]\nCN = localhost\n"
+                    "[ext]\nsubjectAltName = DNS:localhost\nbasicConstraints = critical,CA:FALSE\n"))
+
 (:exit (proc/sh "openssl" "req" "-x509" "-newkey" "rsa:2048" "-nodes"
                 "-keyout" "key.pem" "-out" "cert.pem" "-days" "1"
-                "-subj" "/CN=localhost"
-                "-addext" "subjectAltName=DNS:localhost"
-                "-addext" "basicConstraints=critical,CA:FALSE"))
+                "-config" "cert.cnf"))
 ; => 0
 ```
 
