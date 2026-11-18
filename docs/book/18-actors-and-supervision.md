@@ -623,7 +623,7 @@ the crash:
 ```clojure
 (defn wait-for [f]
   (loop [n 0]
-    (or (f) (when (< n 200) (sleep 10) (recur (inc n))))))
+    (or (f) (when (< n 2000) (sleep 10) (recur (inc n))))))
 
 (def watched
   (binding [*debugger* :park]

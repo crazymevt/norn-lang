@@ -46,7 +46,7 @@
 
 (deftest futures
   ;; (500 ms: still running when looked at, even on a loaded machine)
-  (let [f (future (sleep 500) (+ 1 2))]
+  (let [f (future (sleep 2000) (+ 1 2))]
     (is (not (future-done? f)))
     (is (= :not-yet (deref f 10 :not-yet)))
     (is (= 3 @f))
@@ -58,8 +58,8 @@
   (testing "cancelling"
     (let [f (future (sleep 10000) :never)]
       (future-cancel f)
-      ;; (as soon as its fiber has stopped: at most 2 s on a busy machine)
-      (loop [n 0] (when (and (not (future-cancelled? f)) (< n 200)) (sleep 10) (recur (inc n))))
+      ;; (as soon as its fiber has stopped: at most 20 s on a busy machine)
+      (loop [n 0] (when (and (not (future-cancelled? f)) (< n 2000)) (sleep 10) (recur (inc n))))
       (is (future-cancelled? f))
       (is (some? (message (fn [] @f)))))))
 

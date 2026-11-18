@@ -296,9 +296,9 @@ two transactions overlap on purpose:
     (stm/dosync
       (swap! runs inc)                ; a side effect, to count the runs
       (let [seen @balance]
-        (sleep 30)
+        (sleep 300)
         (stm/alter balance + 1))))
-  (sleep 10)
+  (sleep 100)
   (stm/dosync (stm/alter balance + 100)))
 
 [@runs @balance] ; => [2 101]
@@ -408,7 +408,7 @@ on call, each allowed to go off call only if the other stays on:
 (defn go-off-call [me other read-other]
   (stm/dosync
     (when (and @me (read-other other))
-      (sleep 20)
+      (sleep 200)
       (stm/ref-set me false))))
 
 (defn both-try [read-other]
@@ -476,7 +476,7 @@ something at once, such as connections to a server:
     (spawn s
       (sync/with-permit connections
         (swap! most-in-use max (swap! in-use inc))
-        (sleep 10)
+        (sleep 100)
         (swap! in-use dec)))))
 
 @most-in-use ; => 2
@@ -624,11 +624,11 @@ what their names say.
 A TTL cache suits values that go stale, such as a remote configuration:
 
 ```clojure
-(def remote-config (cache/ttl 20))
+(def remote-config (cache/ttl 200))
 
 (cache/through remote-config :flags (fn [_] #{:beta})) ; => #{:beta}
 (cache/lookup remote-config :flags) ; => #{:beta}
-(sleep 30)
+(sleep 300)
 (cache/lookup remote-config :flags :expired) ; => :expired
 ```
 

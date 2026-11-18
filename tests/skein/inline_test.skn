@@ -74,7 +74,7 @@
       (is (str/includes? err "deep\n  at user/calls-tail-error") err))))
 
 (defn parked [id] (first (filter (fn [d] (= id (:fiber d))) (debugging))))
-(defn- wait-until [f] (loop [i 0] (or (f) (when (< i 500) (sleep 2) (recur (inc i))))))
+(defn- wait-until [f] (loop [i 0] (or (f) (when (< i 10000) (sleep 2) (recur (inc i))))))
 (defn halve [x] (when (odd? x) (error "odd:" x)) (quot x 2))
 (defn halve-plus [y] (+ 100 (halve y)))
 

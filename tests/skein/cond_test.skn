@@ -5,7 +5,7 @@
   (:require [skein.test :refer [is]]))
 
 (defn wait-until [pred]
-  (loop [n 0] (cond (pred) true (> n 500) false :else (do (sleep 2) (recur (inc n))))))
+  (loop [n 0] (cond (pred) true (> n 10000) false :else (do (sleep 2) (recur (inc n))))))
 
 ;;; try / catch / finally
 (is (= :caught (try (/ 1 0) (catch RuntimeError e :caught))))

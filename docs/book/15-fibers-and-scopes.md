@@ -110,7 +110,7 @@ has finished. The body's value is the value of the whole form:
 (def log (atom []))
 
 (with-scope [s]
-  (spawn s (sleep 30) (swap! log conj :slow))
+  (spawn s (sleep 100) (swap! log conj :slow))
   (spawn s (swap! log conj :fast))
   :body-done) ; => :body-done
 
@@ -301,7 +301,7 @@ unwinds its stack the way an error would, so its `finally` clauses and
       (swap! events conj :woke-up)
       (finally (swap! events conj :cleaned-up)))))
 
-(sleep 10)
+(sleep 100)
 (cancel! worker)
 (settle worker) ; => {:error "Cancelled"}
 @events ; => [:cleaned-up]
@@ -346,7 +346,7 @@ scopes, all the way down:
       (reset! inner (spawn s (sleep 10000)))
       (sleep 10000))))
 
-(sleep 10)
+(sleep 100)
 (cancel! outer)
 [(settle outer) (settle @inner)] ; => [{:error "Cancelled"} {:error "Cancelled"}]
 ```
@@ -444,7 +444,7 @@ promise to carry an actor's reply.
 body failed:
 
 ```clojure
-(def answer (future (sleep 10) (* 6 7)))
+(def answer (future (sleep 200) (* 6 7)))
 (future-done? answer) ; => false
 @answer ; => 42
 (future-done? answer) ; => true
