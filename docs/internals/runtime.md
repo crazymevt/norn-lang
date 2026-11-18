@@ -347,8 +347,12 @@ values rather than boxes.
   fields; §4.4), and the runtime's own objects kept where they are. Stack
   frames don't need barriers, because frames are scanned through their
   fiber at every GC.
-- **Later: concurrent collection**, as MMTk's concurrent plans mature or
-  through our own plan. **[open]**
+- **After M11: concurrent collection** (its own milestone, M11b; the
+  user, 2026-11-18). M11's full collections stop the program 33–56 ms
+  on stash and grow with what's old, and only collecting while the
+  program runs shortens them. Through MMTk's concurrent plan or our
+  own: the milestone's first step is to find out what MMTk 0.33's can
+  do beside a copied nursery. **[open: which]**
 - **One MMTk mutator per carrier thread**, not per fiber. Fibers allocate from
   their carrier's thread-local buffer.
 - **Conses carry a one-word header** (`[layout][car][cdr]`, 24 bytes), because
@@ -1586,6 +1590,7 @@ each part needs from the runtime:
 | M9b ✅ | After sealing: tree shaking for images (`:shake`, using sealing to prove code unused), and tooling that doesn't shape core: a sampling profiler, source-drift tracking (design §5.1), `skein lsp` (a Language Server Protocol adapter over the editor protocol), `skein new` (project scaffolding), and code coverage if M7 didn't get it | — |
 | M10 ✅ | The optimising compiler: the IR (design §8.3), inlining, direct linking of calls through vars, guarded, with recompilation when one is redefined (moved from M8, 2026-11-16; every var, not only sealed modules', since part 3), type inference from M9's signatures, unboxing, escape analysis; tier 1's full calling convention (push-frame and `return_call`), inline caches, and native compilation of every `defn` | Measured wins on `bench/` with tier 0 and tier 1 still agreeing on every suite |
 | M11 | A collector that gathers what lives ([plan-m11.md](../plans/plan-m11.md); **revised 2026-11-18**, the user): objects may move; generational collection with its nursery copied (write barriers), reached through Immix with defragmentation; the runtime's own objects kept in place. Concurrent collection is decided after its numbers; deadlock detection and complex numbers moved to todo.md | On `bench/stash.skn` at 10 carriers: pages in use level at 3× the live bytes or less (they were about 23× and rising), the longest pause under 20 ms (148), under 2% of the time paused (7.7%), requests a second held; every suite passing with objects moved at every collection |
+| M11b | Collecting while the program runs (decided 2026-11-18, after M11 part 4's numbers; no plan yet): full collections' pauses, which M11 leaves at 33–56 ms on stash. First what MMTk's concurrent plan can do beside a copied nursery, then a plan: a second write barrier (what a store overwrites) in the interpreter and tier 1, and the safepoint protocol | On `bench/stash.skn`, no pause over 20 ms and under 2% of the time paused, the heap and requests a second as M11 left them |
 | M12 | Platforms and distribution: Linux first, then Windows (JIT memory, signals), CI on all three, release builds and installers, `skein` shipped with a base image (bootstrap step 6); WASM as a second target (design §9, open) | Every suite passes on macOS, Linux and Windows; `skein` starts from its bundled image |
 
 ### 12.1 M0 status (2026-11-13)
@@ -1967,7 +1972,9 @@ tests (they now wait for what they check, or watch their own handles).
 1. ~~**Structural-only equality and hashing**~~ — decided: structural, with
    declarative per-class options (§2.3, design §3.4).
 2. **Multi-shot continuations** (§3.4): keep them out unless a need appears?
-3. **Concurrent GC** (§4.1): wait for MMTk, or plan our own?
+3. **Concurrent GC** (§4.1): wait for MMTk, or plan our own? (A
+   milestone of its own after M11, M11b, since 2026-11-18; which of the
+   two is its first question.)
 4. ~~**Parked fibers nothing can wake**~~ — decided: both. When the GC
    finds a parked fiber nothing can reach, it posts a deadlock event (as Go
    does) and moves the fiber into the debugger's list with a `Deadlock`

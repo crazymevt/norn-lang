@@ -558,9 +558,28 @@ pub fn collect(m: &mut Mutator, whole: bool) {
         return;
     }
     REQUEST_EPOCH.with(|e| e.set(crate::safepoint::epoch()));
+    #[cfg(feature = "gc-packets")]
+    if whole {
+        // (see Cargo.toml: MMTk's own start collects all of the heap first)
+        static COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !COUNTING.swap(true, Ordering::SeqCst) {
+            if let Some(g) = mmtk().get_plan().generational() {
+                g.force_full_heap_collection();
+            }
+            return mmtk().harness_begin(m.tls());
+        }
+        COUNTING.store(false, Ordering::SeqCst);
+        mmtk().harness_end();
+    }
     // (with generations, MMTk makes a collection the program asks for a
     // young one unless it's told the next is to be full)
     if whole && let Some(g) = mmtk().get_plan().generational() {
+        // (a young collection first, as before the full ones the heap's
+        // growth brings on (grow_heap): a full collection marks what's
+        // young where it lies, each survivor keeping its block. The
+        // overwrite loop was left on 5.9× what's alive after (gc).)
+        mmtk().handle_user_collection_request(m.tls(), true, false);
+        REQUEST_EPOCH.with(|e| e.set(crate::safepoint::epoch()));
         g.force_full_heap_collection();
     }
     mmtk().handle_user_collection_request(m.tls(), true, whole);

@@ -23,3 +23,8 @@ non-moving = ["mmtk/immix_non_moving"]
 # every root) must be a live object, or the GC panics naming the object
 # and field that held it. Slow.
 gc-check = ["mmtk/vo_bit"]
+# Where collections' time goes, by MMTk's kinds of work (M11 part 5): the
+# first (gc) starts counting and the second prints the totals, so a
+# benchmark that collects before and after what it measures gets a table
+# for just that. Each piece of work is timed, which isn't free.
+gc-packets = ["mmtk/work_packet_stats"]

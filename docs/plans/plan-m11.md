@@ -207,8 +207,9 @@ carriers:
 
 - pages in use level, at no more than 3× the live bytes, after 150 s
   (now about 23× and rising);
-- the longest pause under 20 ms, and time paused under 2% (now 148 ms and
-  7.7%);
+- the longest pause under 20 ms for a young collection and 60 ms for a
+  full one (decision 7; it was 20 ms for both; now 148 ms). Time paused
+  under 2% (now 7.7%) is M11b's (decision 9);
 - requests a second no lower than the baseline's;
 - the overwrite loop under 2× its live data (now 4×);
 - every suite at both tiers, the lang-tests and the image tests passing
@@ -426,6 +427,53 @@ carriers:
     MMTk does in a young collection's fixed 2 ms; making generations
     the default.
 
+- **Part 5: begun (2026-11-18).**
+  - **The longest pauses weren't collections.** A collection waits for
+    every thread that reads the heap, and tier 1's compile thread was
+    one for the whole of a compile: 40 and 80 ms for a large function,
+    at start-up and as the clients start. It now is one only while it
+    reads the function; while Cranelift generates the code (most of the
+    time, and nothing of the heap's) a collection goes ahead, the proto
+    in hand a root (`jit.rs` `COMPILING`). Stash's longest pause: 87–112
+    ms before, 44 ms after, which is a full collection; no collection
+    waits 1 ms to stop. Checked with compiles in the background
+    (`SKEIN_JIT_THRESHOLD=1`) under the stress modes and `gc-check`.
+  - **Where a collection's work goes** (a build with `gc-packets`:
+    MMTk's own timing, between a benchmark's two `(gc)`s). Stash, 40 s:
+    tracing and copying 72%, sweeping 21% (all of the heap, at young
+    collections too), the remembered objects 4%, the roots, weak
+    references and the rest under 1%. A young collection is what
+    survives it and a sweep that grows with the heap, both MMTk's.
+  - **Fibers aren't rescanned while parked**, at young collections:
+    generations did it. A fiber stays put, so it's old from birth and a
+    young collection looks through it only if it was remembered, which
+    it is when it next runs (`run_fiber`'s barrier). Full collections
+    look through every fiber, as they must.
+  - **A larger budget for what's old doesn't reach 2%.** Twice as much
+    (`SKEIN_HEAP_GROWTH=200`): 2.7% of the time paused, the peak 980 MB
+    where it was 790. With a 512 MB nursery as well: 2.2%, 1.27 GB.
+    The defaults stay; under 2% is M11b's, with the pauses (decision 9).
+  - **The overwrite loop** (`bench/overwrite.skn`: 200,000 values each
+    written 20 times, 30 MB alive), the heap's pages over what's alive
+    after a collection at the end: 5.6× in the default build, 3.8× in
+    the moving build without generations, **1.3× with them**. It was
+    5.9× with them at first: `(gc)` went straight to a full collection,
+    which marks what's young where it lies. `(gc)` now collects the
+    young first (`heap.rs` `collect`), as the heap's own full
+    collections do. The most the heap comes to while writing is 375 MB
+    with generations (a nursery) and 240 without.
+  - **`bench/compare.skn`**, the generational build beside the default
+    one in one sitting (80 cases, both tiers): the times' geometric mean
+    is 0.99 of the default's at each tier. One case is slower at both:
+    assoc on a 20-key map, by 17% and 23% (85 ns to 104 at tier 1); not
+    looked into. Nothing else is outside what two runs differ by.
+  - **`(gc)` and the carrier it's called on** (found writing the loop):
+    the collection comes at that carrier's next poll, not before `(gc)`
+    returns. A fiber that reads `(gc-stats)` at once, or sleeps and
+    wakes on another carrier, sees the heap as it was.
+  - **Left**: register liveness (§4.5's imprecision); assoc on a 20-key
+    map; a run on Linux; generations by default.
+
 ## Risks
 
 - **A value in a Rust local across a safepoint.** Today it's harmless if
@@ -462,3 +510,17 @@ carriers:
    requests a second held.
 6. **Deadlock detection and complex numbers move out of M11** (to
    todo.md): the milestone is the collector alone.
+7. **The longest pause is two numbers** (2026-11-18, after part 4's):
+   a young collection under 20 ms, a full one under 60 ms. Full
+   collections take 33–56 ms on stash and grow with what's old; only
+   collecting while the program runs would shorten them, and that isn't
+   M11's (decision 4). (Under 2% of the time paused stood until
+   decision 9.)
+8. **Concurrent collection is a milestone of its own, after M11**
+   (2026-11-18; runtime.md §12 has it as M11b, M12 being the
+   platforms). It begins by finding out what MMTk's concurrent plan
+   can do beside a copied nursery.
+9. **Under 2% of the time paused moves to M11b** (2026-11-18, after
+   part 5's measurements): it's 3.1% by default, and 2.2% is the least
+   a larger nursery and budget reach, at 6.5× what's live. M11's
+   done-check has no number for it.

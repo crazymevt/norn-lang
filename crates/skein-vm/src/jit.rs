@@ -1554,7 +1554,28 @@ fn compile_inner(proto: Value) -> Option<usize> {
     if dump.is_some() {
         cctx.set_disasm(true);
     }
-    let compiled = cctx.compile(&**isa, &mut ControlPlane::default()).ok()?;
+    // From here to the code's being installed nothing reads the heap, and
+    // this is most of a compile (tens of ms for a large function): on the
+    // compile thread a collection needn't wait for it (M11 part 5: the
+    // longest pauses were this wait, 40 and 80 ms). What the code names
+    // stays where it is and alive meanwhile: the proto (COMPILING, below),
+    // linked closures, generics and classes (LINKED), keywords.
+    // (a guard: Cranelift may panic, and the compile thread catches that)
+    struct Safe(bool);
+    impl Drop for Safe {
+        fn drop(&mut self) {
+            if self.0 {
+                skein_rt::safepoint::leave_safe();
+            }
+        }
+    }
+    let safe = Safe(ON_COMPILE_THREAD.with(|c| c.get()));
+    if safe.0 {
+        skein_rt::safepoint::enter_safe();
+    }
+    let compiled = cctx.compile(&**isa, &mut ControlPlane::default());
+    drop(safe);
+    let compiled = compiled.ok()?;
     if dump.is_some() {
         eprintln!("{}\n{}", skein_rt::print::pr_str(proto, true), compiled.vcode.as_deref().unwrap_or(""));
     }
@@ -2810,9 +2831,23 @@ pub fn entry_for(proto: Value) -> usize {
 static QUEUE: Mutex<std::collections::VecDeque<u64>> = Mutex::new(std::collections::VecDeque::new());
 static QUEUE_CV: std::sync::Condvar = std::sync::Condvar::new();
 
-/// Every proto waiting to be compiled (GC roots: sched's for_each_root).
+/// The proto the compile thread has in hand (0: none). A root like those
+/// queued: while Cranelift generates its code the thread isn't a running
+/// participant, and a collection then mustn't free it.
+static COMPILING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    static ON_COMPILE_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Every proto waiting to be compiled, and the one being compiled (GC
+/// roots: sched's for_each_root).
 pub fn for_each_queued(f: &mut dyn FnMut(Value)) {
     QUEUE.lock().unwrap().iter().for_each(|&v| f(Value(v)));
+    let c = COMPILING.load(std::sync::atomic::Ordering::Acquire);
+    if c != 0 {
+        f(Value(c));
+    }
 }
 
 fn enqueue(proto: Value) {
@@ -2830,11 +2865,13 @@ fn enqueue(proto: Value) {
 /// The compile thread: takes protos off the queue, compiles each and
 /// installs its code (unless its native word has changed meanwhile: the
 /// code is then dropped). It reads the heap (the proto, its constants,
-/// what its vars hold), so while compiling it's a running safepoint
-/// participant: a collection waits for the compile in hand to finish (a
-/// few ms) and can't free what it reads. Waiting for work, it's safe; the
+/// what its vars hold), so while it does it's a running safepoint
+/// participant: a collection waits for it and can't free what it reads.
+/// Not while Cranelift generates the code, which is most of the time (see
+/// compile_inner). Waiting for work, it's safe; the
 /// queue keeps what's on it alive.
 fn compile_thread() {
+    ON_COMPILE_THREAD.with(|c| c.set(true));
     loop {
         {
             let mut q = QUEUE.lock().unwrap();
@@ -2848,7 +2885,11 @@ fn compile_thread() {
         let next = {
             let mut q = QUEUE.lock().unwrap();
             let hottest = (0..q.len()).max_by_key(|&i| Value(q[i]).proto_native());
-            hottest.and_then(|i| q.remove(i))
+            let next = hottest.and_then(|i| q.remove(i));
+            // (under the queue's lock, as the roots are read: it's on the
+            // queue or in COMPILING, never neither)
+            COMPILING.store(next.unwrap_or(0), std::sync::atomic::Ordering::Release);
+            next
         };
         let Some(p) = next else {
             skein_rt::safepoint::enter_safe();
@@ -2879,6 +2920,7 @@ fn compile_thread() {
             }
         }
         COMPILES_PENDING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        COMPILING.store(0, std::sync::atomic::Ordering::Release);
         skein_rt::safepoint::enter_safe();
     }
 }
