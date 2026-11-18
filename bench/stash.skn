@@ -46,7 +46,7 @@
 ;; (stash is a project of its own: its modules, from the checkout this is
 ;; run in, as the other benchmarks are)
 (add-lib-path! (io/path (sys/cwd) "lang-tests" "stash" "src"))
-(require '[stash.client :as client] '[stash.server :as server] '[stash.store :as store])
+(require '[stash.client :as client] '[stash.resp :as resp] '[stash.server :as server] '[stash.store :as store])
 
 (def baseline-file "bench/stash-baseline.edn")
 
@@ -138,7 +138,7 @@
                 took (- (nano-time) t0)
                 b (bucket took)]
             (recur (inc k) (assoc hist b (inc (nth hist b))) (max worst took)
-                   (if (instance? stash.resp/Failure reply) (inc errors) errors))))))))
+                   (if (instance? resp/Failure reply) (inc errors) errors))))))))
 
 ;; ---- one run, in this process ---------------------------------------------------------------
 
