@@ -84,11 +84,13 @@
 
 (defn- shows?
   "Does screen (from screen-of) come to show text, after what it showed
-  before, within 10 s?"
+  before, within 60 s? (It's there in well under one; but with everything
+  compiled at its first call the program takes 10 s to start on CI's
+  x86-64 Linux, which is where 10 s here failed.)"
   [screen from text]
   (loop [n 0]
     (cond (str/includes? (term/strip (subs @screen (min from (count @screen)))) text) true
-          (> n 200) false
+          (> n 1200) false
           :else (do (sleep 50) (recur (inc n))))))
 
 (deftest in-a-terminal

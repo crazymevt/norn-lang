@@ -54,22 +54,23 @@
     seen))
 
 (defn- shows?
-  "Does seen (from reader-of) come to hold text within 10 s?"
+  "Does seen (from reader-of) come to hold text within 60 s? (A child skein with everything
+  compiled at its first call takes 10 s to start on CI's x86-64 Linux.)"
   [seen text]
   (loop [n 0]
     (cond (str/includes? @seen text) true
-          (> n 200) false
+          (> n 1200) false
           :else (do (sleep 50) (recur (inc n))))))
 
 ;; (A rebuild can come before the edit's: the watch may report the site's
 ;; files copied just before it began. So the test waits for the edit to
 ;; show, not for the first reload after it.)
 (defn- eventually?
-  "Does (f) come to be true within 10 s?"
+  "Does (f) come to be true within 60 s?"
   [f]
   (loop [n 0]
     (cond (f) true
-          (> n 200) false
+          (> n 1200) false
           :else (do (sleep 50) (recur (inc n))))))
 
 (defn- reloads [seen] (count (re-seq #"data: reload" @seen)))
