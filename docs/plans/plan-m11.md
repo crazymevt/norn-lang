@@ -510,8 +510,10 @@ carriers:
     each game ran in a window through 250 collections; `ffi_test.skn`
     has a collection during a callback, on the calling carrier and in
     a fiber serving one.
-  - **Left**: register liveness (§4.5's imprecision): to do, or to
-    move to todo.md and close M11 without (not decided). (Linux: a quick look in a container passed, both
+  - **Register liveness** (§4.5's imprecision) is in todo.md
+    (decision 12), and **M11 is done** (2026-11-18). The baselines
+    (`bench/baseline.edn`, `bench/stash-baseline.edn`) are recorded
+    again, on the collector that's now the default. (Linux: a quick look in a container passed, both
     builds; CI's nightly `moving` job is the whole of it.)
 
 ## Risks
@@ -572,3 +574,5 @@ carriers:
     and the budget for what's old said to be the setting it is.
 11. **Generations are the default now** (2026-11-18), not after some
     nights of the nightly's job: nobody but the user runs Skein yet.
+12. **Register liveness moves to todo.md, and M11 closes** (2026-11-18):
+    it's an optimisation, and nothing measured points at it.
