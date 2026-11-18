@@ -1157,6 +1157,10 @@ impl Vm {
     fn reload(&mut self, st: &St) {
         if !st.seg.is_nil() && !self.current.is_nil() && self.nested == 0 {
             self.dyn_env = self.current.field(fiber::DYN);
+            // (and a collection forgets what it was told: the fiber's
+            // frames go on being written with no barrier, so say again
+            // that it's one to look through, as run_fiber did)
+            skein_rt::heap::barrier(self.current);
         }
     }
 
@@ -1180,12 +1184,15 @@ impl Vm {
             crate::prof::sample(st.seg, st.fp, entry, st.pc);
         }
         if self.nested == 0 {
-            let gc = std::mem::take(&mut self.want_gc) || safepoint::stress_due();
+            // ((gc) asks for all of the heap; the stress mode for a
+            // collection as the program's own would be)
+            let asked = std::mem::take(&mut self.want_gc);
+            let gc = asked || safepoint::stress_due();
             if gc || safepoint::stop_requested() {
                 self.save(st);
                 self.drop_spare();
                 if gc {
-                    safepoint::collect(&mut self.m);
+                    safepoint::collect(&mut self.m, asked);
                 } else {
                     safepoint::block_for_stop();
                 }
@@ -1945,6 +1952,14 @@ impl Vm {
     /// Run fiber `f` on this carrier until it finishes, parks or yields.
     /// The caller has set `self.current = f` and `self.ns` from the fiber.
     pub(crate) fn run_fiber(&mut self, f: Value) -> Result<Exit> {
+        // The write barrier for a fiber's stack (M11 part 3). Frames are
+        // written by the interpreter and by compiled code with no barrier,
+        // and the collector looks through them as part of their fiber
+        // (heap.rs `scan`: a segment by itself is only its link). So the
+        // fiber is remembered whole, once, as it's taken up to run: a
+        // young collection then looks through its stack, and passes over
+        // the fibers that haven't run since the last one.
+        skein_rt::heap::barrier(f);
         let mode = f.word(fiber::MODE);
         let mut st;
         let pending: Option<(Error, Option<Option<usize>>)>;

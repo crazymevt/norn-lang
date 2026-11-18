@@ -35,6 +35,8 @@ pub fn array_staying(m: &mut Mutator, src: Value) -> Value {
     unsafe {
         std::ptr::copy_nonoverlapping(src.payload_ptr().add(1), a.payload_ptr().add(1), n);
     }
+    // (filled without set_field, and old from the start: say so)
+    crate::heap::barrier(a);
     a
 }
 

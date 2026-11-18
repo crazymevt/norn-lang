@@ -608,6 +608,11 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
     for &obj in &c.objs[first..first + new] {
         let (kind, n) = size_at(off)?;
         fill(off, n, kind, obj.ptr())?;
+        // (filled word by word, with no set_field: an object that's old
+        // from the start has to be remembered, M11 part 3)
+        if kind != Kind::Cons {
+            crate::heap::barrier(obj);
+        }
         if matches!(kind, Kind::Fiber | Kind::Weak) {
             fibers.push(obj);
         }
@@ -629,6 +634,9 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
             return Err(bad("patch changes an object's shape"));
         }
         fill(off, n, kind, tp)?;
+        if kind != Kind::Cons {
+            crate::heap::barrier(target);
+        }
         if matches!(kind, Kind::Fiber | Kind::Weak) {
             fibers.push(target);
         }

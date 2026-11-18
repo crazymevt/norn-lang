@@ -192,6 +192,12 @@ pub fn init_heap() {
         // (SKEIN_GC_PLAN=marksweep: MMTk's free-list plan, to compare; see M11)
         let plan = match std::env::var("SKEIN_GC_PLAN").as_deref() {
             Ok("marksweep") => PlanSelector::MarkSweep,
+            // (M11 parts 3 and 4: generations, the young copied in a build
+            // that moves objects; it needs the write barrier)
+            Ok("sticky") => {
+                BARRIER.store(true, Ordering::Relaxed);
+                PlanSelector::StickyImmix
+            }
             _ => PlanSelector::Immix,
         };
         b.options.plan.set(plan);
@@ -324,12 +330,20 @@ impl Default for Mutator {
 
 impl Mutator {
     pub fn new() -> Self {
+        Self::bound(true)
+    }
+
+    /// A mutator; this thread's own (`CURRENT`: its write barrier's) if `mine`.
+    fn bound(mine: bool) -> Self {
         init_heap();
         let cell = Box::new(AtomicUsize::new(0));
         let tls = VMMutatorThread(VMThread(OpaquePointer::from_address(Address::from_ptr(&*cell))));
         let mut mm = memory_manager::bind_mutator(mmtk(), tls);
         cell.store(&mut *mm as *mut MmMutator as usize, Ordering::Release);
         MUTATORS.lock().unwrap().push(&*cell as *const AtomicUsize as usize);
+        if mine {
+            CURRENT.with(|c| c.set(&mut *mm as *mut MmMutator));
+        }
         Mutator { mm, cell }
     }
 
@@ -364,12 +378,28 @@ impl Mutator {
         // SAFETY: MMTk returned a non-null, aligned address.
         let obj = unsafe { ObjectReference::from_raw_address_unchecked(a) };
         memory_manager::post_alloc(&mut self.mm, obj, bytes, sem);
+        // (With generations, what's in the non-moving space counts as old
+        // from the start: a young collection doesn't look through it. So it
+        // must carry the bit that makes the first store into it remember
+        // it. MMTk 0.33 sets that for its immortal and large-object spaces
+        // and not for an Immix space used as the non-moving one, so it's
+        // set here; without it the first young collection freed everything
+        // that only a var, a fiber or a proto pointed at.)
+        if sem == AllocationSemantics::NonMoving && BARRIER.load(Ordering::Relaxed) {
+            <Skein as ObjectModel<Skein>>::GLOBAL_LOG_BIT_SPEC.mark_as_unlogged::<Skein>(obj, Ordering::SeqCst);
+        }
         a.to_mut_ptr()
     }
 }
 
 impl Drop for Mutator {
     fn drop(&mut self) {
+        let mine = &mut *self.mm as *mut MmMutator;
+        CURRENT.with(|c| {
+            if c.get() == mine {
+                c.set(std::ptr::null_mut());
+            }
+        });
         let me = &*self.cell as *const AtomicUsize as usize;
         MUTATORS.lock().unwrap().retain(|&c| c != me);
         memory_manager::destroy_mutator(&mut self.mm);
@@ -378,15 +408,104 @@ impl Drop for Mutator {
 
 thread_local! {
     static REQUEST_EPOCH: Cell<u64> = const { Cell::new(0) };
+    /// This thread's MMTk mutator, if it made a `Mutator`: where its write
+    /// barrier keeps the objects it remembers.
+    static CURRENT: Cell<*mut MmMutator> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+// ---- the write barrier (M11 part 3) --------------------------------------------------------
+//
+// A young collection traces only what's new, so it has to be told of every
+// old object that has come to point at something new. MMTk's object
+// barrier does it: an old object carries a bit (unlogged), and the first
+// store into it since the last collection clears the bit and remembers
+// the object, whole, for the next young collection to look through.
+//
+// The check is one bit read, and off altogether unless the plan has
+// generations (`BARRIER`). The slow path wants an MMTk mutator to keep
+// the list in: this thread's (`CURRENT`), or for a thread that stores into
+// the heap without one (the timer thread waking a fiber), one they share
+// behind a lock.
+
+/// Is the plan one that needs the barrier?
+static BARRIER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SHARED_BARRIER: Mutex<Option<Mutator>> = Mutex::new(None);
+/// Objects the barrier has remembered (gc-stats).
+static REMEMBERED: AtomicU64 = AtomicU64::new(0);
+
+/// Is the collection now under way a young one? (Only with generations.)
+/// It frees nothing old, and looks through the non-moving space not at
+/// all, so what's there is alive whatever its mark says.
+pub fn in_young_collection() -> bool {
+    BARRIER.load(Ordering::Relaxed) && mmtk().get_plan().generational().is_some_and(|g| g.is_current_gc_nursery())
+}
+
+/// Is object v in the non-moving space: of a kind that stays put, and not
+/// large (a large object is in the large-object space wherever it was
+/// asked for, which keeps its own account of what's young)?
+pub fn in_nonmoving_space(v: Value) -> bool {
+    v.is_obj() && {
+        let p = v.ptr() as *const u64;
+        kind_at(p).stays_put() && object_words(p) * 8 <= LOS_THRESHOLD.load(Ordering::Relaxed)
+    }
+}
+
+/// How many objects the write barrier has remembered so far.
+pub fn remembered_objects() -> u64 {
+    REMEMBERED.load(Ordering::Relaxed)
+}
+
+/// The write barrier: `v` is being stored into, or has just been (a field,
+/// an atom's value, a stack segment's frames). Call it for every store of
+/// a reference into an object that may be old; `Value::set_field` does.
+#[inline]
+pub fn barrier(v: Value) {
+    if BARRIER.load(Ordering::Relaxed) && v.is_obj() {
+        barrier_checked(v);
+    }
+}
+
+#[inline]
+fn barrier_checked(v: Value) {
+    // SAFETY: an object value's pointer is its MMTk reference.
+    let obj = unsafe { ObjectReference::from_raw_address_unchecked(Address::from_mut_ptr(v.ptr())) };
+    if <Skein as ObjectModel<Skein>>::GLOBAL_LOG_BIT_SPEC.is_unlogged::<Skein>(obj, Ordering::Relaxed) {
+        barrier_slow(obj);
+    }
+}
+
+#[cold]
+fn barrier_slow(obj: ObjectReference) {
+    REMEMBERED.fetch_add(1, Ordering::Relaxed);
+    let slot = SkeinSlot(obj.to_raw_address());
+    let mine = CURRENT.with(|c| c.get());
+    if !mine.is_null() {
+        // SAFETY: CURRENT is this thread's own live mutator (cleared when it's dropped).
+        memory_manager::object_reference_write_post(unsafe { &mut *mine }, obj, slot, None);
+    } else {
+        let mut shared = SHARED_BARRIER.lock().unwrap();
+        let m = shared.get_or_insert_with(|| Mutator::bound(false));
+        memory_manager::object_reference_write_post(&mut m.mm, obj, slot, None);
+    }
 }
 
 /// Collect now, from a safepoint (the caller has saved its stack).
-pub fn collect(m: &mut Mutator) {
+///
+/// `whole`: the program asked ((gc)), and means all of the heap. Otherwise
+/// (the stress mode) it's a collection like any the heap's growth brings
+/// on, which with generations is usually a young one: the kind a missed
+/// write barrier shows in.
+pub fn collect(m: &mut Mutator, whole: bool) {
     if MMTK_INSTANCE.get().is_none() {
         return;
     }
     REQUEST_EPOCH.with(|e| e.set(crate::safepoint::epoch()));
-    memory_manager::handle_user_collection_request(mmtk(), m.tls());
+    // (with generations, MMTk makes a collection the program asks for a
+    // young one unless it's told the next is to be full)
+    if whole && let Some(g) = mmtk().get_plan().generational() {
+        g.force_full_heap_collection();
+    }
+    mmtk().handle_user_collection_request(m.tls(), true, whole);
 }
 
 // ---- slots: tagged values ----------------------------------------------------------------
@@ -688,6 +807,60 @@ impl Scanning<Skein> for Skein {
     fn prepare_for_roots_re_scanning() {}
 }
 
+/// gc-check, after every collection (the world still stopped): everything
+/// reachable from the roots, looked through as the collector would, must
+/// hold only references to live objects. This is M11 part 3's check on the
+/// write barrier: a young collection traces only what it was told of, so
+/// an old object that came to point at a new one with no barrier is left
+/// holding the address of something freed or moved. A full collection
+/// never shows that; this walk does, at the first collection after it,
+/// and says which kind of object and which word.
+#[cfg(feature = "gc-check")]
+fn verify_heap() {
+    let mut seen = std::collections::HashSet::new();
+    let mut todo: Vec<*mut u64> = Vec::new();
+    let mut root = |v: Value| {
+        if let Some(r) = to_ref(v) {
+            if mmtk::memory_manager::is_mmtk_object(r.to_raw_address()).is_none() {
+                panic!("gc-check: after a collection, a root is no object: {:#x}", v.0);
+            }
+            let p: *mut u64 = r.to_raw_address().to_mut_ptr();
+            if seen.insert(p as usize) {
+                todo.push(p);
+            }
+        }
+    };
+    crate::runtime::for_each_root(&mut root);
+    crate::image::for_each_root(&mut root);
+    if let Some(f) = EXTRA_ROOTS.get() {
+        f(&mut root);
+    }
+    while let Some(p) = todo.pop() {
+        scan(p, &mut |s| {
+            if let Some(r) = s.load() {
+                if mmtk::memory_manager::is_mmtk_object(r.to_raw_address()).is_none() {
+                    // SAFETY: the slot is within the object being looked through.
+                    let w: u64 = unsafe { s.0.load() };
+                    let index = (s.0.as_usize() as isize - p as isize) / 8;
+                    // SAFETY: p is a live object's address.
+                    let holder = unsafe { ObjectReference::from_raw_address_unchecked(Address::from_mut_ptr(p)) };
+                    let unlogged = <Skein as ObjectModel<Skein>>::GLOBAL_LOG_BIT_SPEC.is_unlogged::<Skein>(holder, Ordering::Relaxed);
+                    panic!(
+                        "gc-check: after collection {}, word {index} of a {:?} at {p:p} is {w:#x}, which is no object (the holder is {}): a store with no write barrier?",
+                        GC_COUNT.load(Ordering::Relaxed),
+                        kind_at(p),
+                        if unlogged { "old, and not remembered" } else { "new, or remembered" }
+                    );
+                }
+                let q: *mut u64 = r.to_raw_address().to_mut_ptr();
+                if seen.insert(q as usize) {
+                    todo.push(q);
+                }
+            }
+        });
+    }
+}
+
 /// gc-check: the word in slot s of the object at p must be a live object
 /// if it's a pointer; else panic, saying where it was.
 #[cfg(feature = "gc-check")]
@@ -725,6 +898,8 @@ impl Collection<Skein> for Skein {
         if HEAP_MAX_PAGES.load(Ordering::Relaxed) != 0 {
             grow_heap(mmtk());
         }
+        #[cfg(feature = "gc-check")]
+        verify_heap();
         if let Some(began) = PAUSE_BEGAN.lock().unwrap().take() {
             let ns = began.elapsed().as_nanos() as u64;
             PAUSE_TOTAL.fetch_add(ns, Ordering::Relaxed);

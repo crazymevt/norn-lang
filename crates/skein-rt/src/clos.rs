@@ -128,7 +128,8 @@ impl Value {
         Value(self.atomic_word(f).load(Ordering::Acquire))
     }
     pub fn class_set_field(self, f: usize, v: Value) {
-        self.atomic_word(f).store(v.0, Ordering::Release)
+        self.atomic_word(f).store(v.0, Ordering::Release);
+        crate::heap::barrier(self);
     }
 }
 
@@ -390,7 +391,8 @@ impl Value {
     }
     /// Set slot `i` of the instance's own layout (mutable instances only).
     pub fn instance_set_raw(self, i: usize, v: Value) {
-        self.atomic_word(3 + i).store(v.0, Ordering::Release)
+        self.atomic_word(3 + i).store(v.0, Ordering::Release);
+        crate::heap::barrier(self);
     }
     pub fn instance_raw(self, i: usize) -> Value {
         Value(self.atomic_word(3 + i).load(Ordering::Acquire))
@@ -511,6 +513,7 @@ pub fn gf_set_methods(m: &mut Mutator, gf: Value, old: Value, new: Value, mask: 
     }
     gf.atomic_word(generic::METHODS).store(new.0, Ordering::Release);
     gf.atomic_word(generic::STATE).store(state.0, Ordering::Release);
+    crate::heap::barrier(gf);
     gf.atomic_word(generic::EPOCH).fetch_add(1, Ordering::AcqRel);
     true
 }
@@ -635,6 +638,7 @@ pub fn cache_put(m: &mut Mutator, gf: Value, epoch: u64, class_epoch: u64, key: 
         let new_state =
             array_from(m, &[state.arr_get(generic::S_MASK), state.arr_get(generic::S_EQLS), cache, Value::fix(class_epoch as i64)]);
         if gf.atomic_word(generic::STATE).compare_exchange(state.0, new_state.0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            crate::heap::barrier(gf);
             return true;
         }
     }
