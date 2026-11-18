@@ -53,7 +53,9 @@ fn saved_fibers_resume_after_load() {
     let d = scratch("fibers");
     let img = d.join("fibers.skimg");
     // A worker that crashes into the debugger, a channel reader, a sleeper, a
-    // timeout channel, and busy fibers preempted mid-loop.
+    // timeout channel, and busy fibers preempted mid-loop. (Busy for most
+    // of a second: at 100,000 turns each they were done in 30-60 ms, and
+    // on a fast machine before the image was saved.)
     let setup = format!(
         r#"(do
   (defn process [x] (/ 100 x))
@@ -65,10 +67,10 @@ fn saved_fibers_resume_after_load() {
   (def sleeper (spawn-detached (sleep 300) :slept))
   (def t (timeout 200))
   (def counter (atom 0))
-  (def busy (mapv (fn [i] (spawn-detached (dotimes [_ 100000] (swap! counter inc)) i)) (range 4)))
+  (def busy (mapv (fn [i] (spawn-detached (dotimes [_ 2000000] (swap! counter inc)) i)) (range 4)))
   (sleep 30)
   (save-image "{}")
-  [(count (debugging)) (< @counter 400000)])"#,
+  [(count (debugging)) (< @counter 8000000)])"#,
         img.display()
     );
     assert_eq!(eval(None, &setup), "[1 true]");
@@ -81,7 +83,7 @@ fn saved_fibers_resume_after_load() {
     (debug-restart-frame id i))
   (>! ch 42)
   [(await worker) @results (await reader) (await sleeper) (<! t) (mapv await busy) @counter (debugging)])"#;
-    assert_eq!(eval(Some(&img), after), r#"[:done [20 0 25] "got 42" :slept nil [0 1 2 3] 400000 []]"#);
+    assert_eq!(eval(Some(&img), after), r#"[:done [20 0 25] "got 42" :slept nil [0 1 2 3] 8000000 []]"#);
 }
 
 #[test]
