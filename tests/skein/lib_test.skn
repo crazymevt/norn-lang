@@ -749,7 +749,8 @@
     (dotimes [_ 8]
       (spawn sc (sync/with-permit s
                   (let [n (swap! active inc)] (swap! peak max n))
-                  (sleep 5)
+                  ;; (long enough that two overlap, whatever else is running)
+                  (sleep 50)
                   (swap! active dec)))))
   (is (= 2 (deref peak)))
   (is (= 2 (sync/available s))))
@@ -785,10 +786,10 @@
   (is (= :none (cache/lookup c :a :none)))
   (cache/clear! c)
   (is (= 0 (cache/size c))))
-(let [c (cache/ttl 300)]
+(let [c (cache/ttl 1000)]
   (cache/store! c :a 1)
   (is (= 1 (cache/lookup c :a)))
-  (sleep 400)
+  (sleep 1300)
   (is (= nil (cache/lookup c :a))))
 (let [calls (atom 0) f (cache/memo-lru (fn [x] (swap! calls inc) (* x 2)) 10)]
   (is (= [2 2 4] [(f 1) (f 1) (f 2)]))

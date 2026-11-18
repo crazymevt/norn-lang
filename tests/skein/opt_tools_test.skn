@@ -28,7 +28,7 @@
     (loop [k 0] (when (and (not (native? f)) (< k 10000)) (apply f args) (sleep 1) (recur (inc k))))))
 
 (defn- parked [id] (first (filter (fn [d] (= id (:fiber d))) (debugging))))
-(defn- wait-until [f] (loop [i 0] (or (f) (when (< i 500) (sleep 2) (recur (inc i))))))
+(defn- wait-until [f] (loop [i 0] (or (f) (when (< i 10000) (sleep 2) (recur (inc i))))))
 (defn- frame-of [id name] (some (fn [[i fr]] (when (= name (:fn fr)) i)) (map-indexed vector (backtrace id))))
 (defn- redefine [src] (load-string (str "(in-ns 'opt-tools-test) " src)))
 

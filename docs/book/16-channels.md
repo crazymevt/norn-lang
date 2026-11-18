@@ -139,7 +139,7 @@ without limit. You can watch it happen:
       (put! pipe i)
       (swap! sent inc))))
 
-(sleep 20)
+(sleep 200)
 @sent ; => 2
 ```
 
@@ -148,7 +148,7 @@ Each `take!` makes room for one more:
 
 ```clojure
 [(take! pipe) (take! pipe) (take! pipe)] ; => [0 1 2]
-(sleep 20)
+(sleep 200)
 @sent ; => 5
 ```
 

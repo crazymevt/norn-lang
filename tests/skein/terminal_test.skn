@@ -113,7 +113,7 @@
             (is (str/includes? (read-until p "resumed") (str esc "[?2004l" esc "[?2004hresumed"))
                 "the options off, and back on"))
           (io/write (:in p) esc)
-          (sleep 300)
+          (sleep 1000)
           (io/write (:in p) "q")
           (let [shown (read-until p "line mode")]
             (is (str/includes? shown "{:key :escape}") "a lone escape, after a moment")

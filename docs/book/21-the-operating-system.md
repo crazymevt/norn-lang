@@ -420,7 +420,7 @@ check for them with the same `alts!` it uses for everything else:
           {:stopped-by s :did-work (pos? jobs-done)}
           (recur (inc jobs-done)))))))
 
-(sleep 50)
+(sleep 300)
 (sig/raise :term)
 (await worker) ; => {:stopped-by :term :did-work true}
 ```

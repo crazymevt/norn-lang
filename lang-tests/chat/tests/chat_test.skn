@@ -127,7 +127,7 @@
     (let [a (join! s "a" nil) b (join! s "b" nil) third (c/connect! "127.0.0.1" (:port s))]
       (is (= "! the server is full" (c/next-line third)))
       (c/leave! a)
-      (sleep 200)
+      (sleep 1000)
       (let [d (join! s "d" nil)]
         (is (some? (state/user (:state s) "d")) "a place comes free when someone goes")
         (c/leave! d))

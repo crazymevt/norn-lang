@@ -117,7 +117,7 @@
 (t/parallel-tests!)
 (def running (atom 0))
 (def peak (atom 0))
-(defn work [] (swap! peak max (swap! running inc)) (sleep 30) (swap! running dec))
+(defn work [] (swap! peak max (swap! running inc)) (sleep 300) (swap! running dec))
 (deftest a (work) (is true))
 (deftest b (work) (is true))
 (deftest c (work) (is true))
