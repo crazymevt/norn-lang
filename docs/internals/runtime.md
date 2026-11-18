@@ -348,11 +348,43 @@ values rather than boxes.
   frames don't need barriers, because frames are scanned through their
   fiber at every GC.
 - **After M11: concurrent collection** (its own milestone, M11b; the
-  user, 2026-11-18). M11's full collections stop the program 33–56 ms
+  user, 2026-11-18). **Parked the same day: not through a fork of
+  mmtk-core or a plan of our own (the user). It waits for an MMTk
+  release with a plan that is generational and marks concurrently:
+  look at `src/plan` at each upgrade.** Until then a full collection's
+  pause grows with what's old (about 55 ms for 440 MB in use on an M1
+  Max's ten cores, so some hundreds of ms for a few GB), and what
+  there is to set is how often they come: `SKEIN_HEAP_GROWTH=200`
+  halves it for a quarter more memory at the peak, and a full
+  collection is taken early when the program is idle (M11 part 5). M11's full collections stop the program 33–56 ms
   on stash and grow with what's old, and only collecting while the
   program runs shortens them. Through MMTk's concurrent plan or our
-  own: the milestone's first step is to find out what MMTk 0.33's can
-  do beside a copied nursery. **[open: which]**
+  own. **[open: which]** What MMTk 0.33 has, read from its source
+  (2026-11-18, `src/plan/concurrent`):
+  - **One plan, `ConcurrentImmix`, and it isn't generational.** One
+    Immix space; a cycle is a pause to start (the roots), marking while
+    the program runs, and a pause to finish. StickyImmix and GenImmix
+    are other plans and don't mark concurrently: it's a copied nursery
+    or concurrent marking, not both.
+  - **A concurrent cycle moves nothing** ("strictly non-moving"). Only
+    its stop-the-world full collection defragments, and that's a pause
+    like M11's full ones. On stash that is the fragmentation back
+    between full collections (30× what's alive when nothing moved).
+  - **It needs a second barrier**: what a store overwrites
+    (`object_reference_write_pre`, snapshot-at-the-beginning), and one
+    on reading a weak reference's referent. M11's barrier is the other
+    kind (after the store, the object written to).
+  - **Fibers' stacks** are written with no barrier, so either every
+    fiber is looked through in the starting pause (a million parked
+    fibers is a long one) or each is looked through before it next
+    runs.
+  - **It's young**: its own comments list what isn't safe yet (a full
+    collection can't take over from a cycle in hand; the finishing
+    pause comes only at a poll).
+  So MMTk's plan alone gives up what M11 gained, and the alternatives
+  are a plan of our own in a fork of mmtk-core (StickyImmix's nursery
+  with its old objects marked concurrently) or waiting for MMTk to
+  have one.
 - **One MMTk mutator per carrier thread**, not per fiber. Fibers allocate from
   their carrier's thread-local buffer.
 - **Conses carry a one-word header** (`[layout][car][cdr]`, 24 bytes), because
@@ -1590,7 +1622,7 @@ each part needs from the runtime:
 | M9b ✅ | After sealing: tree shaking for images (`:shake`, using sealing to prove code unused), and tooling that doesn't shape core: a sampling profiler, source-drift tracking (design §5.1), `skein lsp` (a Language Server Protocol adapter over the editor protocol), `skein new` (project scaffolding), and code coverage if M7 didn't get it | — |
 | M10 ✅ | The optimising compiler: the IR (design §8.3), inlining, direct linking of calls through vars, guarded, with recompilation when one is redefined (moved from M8, 2026-11-16; every var, not only sealed modules', since part 3), type inference from M9's signatures, unboxing, escape analysis; tier 1's full calling convention (push-frame and `return_call`), inline caches, and native compilation of every `defn` | Measured wins on `bench/` with tier 0 and tier 1 still agreeing on every suite |
 | M11 | A collector that gathers what lives ([plan-m11.md](../plans/plan-m11.md); **revised 2026-11-18**, the user): objects may move; generational collection with its nursery copied (write barriers), reached through Immix with defragmentation; the runtime's own objects kept in place. Concurrent collection is decided after its numbers; deadlock detection and complex numbers moved to todo.md | On `bench/stash.skn` at 10 carriers: pages in use level at 3× the live bytes or less (they were about 23× and rising), the longest pause under 20 ms (148), under 2% of the time paused (7.7%), requests a second held; every suite passing with objects moved at every collection |
-| M11b | Collecting while the program runs (decided 2026-11-18, after M11 part 4's numbers; no plan yet): full collections' pauses, which M11 leaves at 33–56 ms on stash. First what MMTk's concurrent plan can do beside a copied nursery, then a plan: a second write barrier (what a store overwrites) in the interpreter and tier 1, and the safepoint protocol | On `bench/stash.skn`, no pause over 20 ms and under 2% of the time paused, the heap and requests a second as M11 left them |
+| M11b (parked) | Collecting while the program runs: full collections' pauses, which M11 leaves at 33–56 ms on stash, and under 2% of the time paused. Parked 2026-11-18 (the user): MMTk 0.33's concurrent plan isn't generational and moves nothing (§4.1), and we won't fork mmtk-core or write a plan of our own | Taken up when an MMTk release has a generational plan that marks concurrently. Then, on `bench/stash.skn`: no pause over 20 ms and under 2% of the time paused, the heap and requests a second as M11 left them |
 | M12 | Platforms and distribution: Linux first, then Windows (JIT memory, signals), CI on all three, release builds and installers, `skein` shipped with a base image (bootstrap step 6); WASM as a second target (design §9, open) | Every suite passes on macOS, Linux and Windows; `skein` starts from its bundled image |
 
 ### 12.1 M0 status (2026-11-13)
@@ -1972,9 +2004,8 @@ tests (they now wait for what they check, or watch their own handles).
 1. ~~**Structural-only equality and hashing**~~ — decided: structural, with
    declarative per-class options (§2.3, design §3.4).
 2. **Multi-shot continuations** (§3.4): keep them out unless a need appears?
-3. **Concurrent GC** (§4.1): wait for MMTk, or plan our own? (A
-   milestone of its own after M11, M11b, since 2026-11-18; which of the
-   two is its first question.)
+3. ~~**Concurrent GC** (§4.1): wait for MMTk, or plan our own?~~ —
+   decided 2026-11-18: wait for MMTk (M11b, parked).
 4. ~~**Parked fibers nothing can wake**~~ — decided: both. When the GC
    finds a parked fiber nothing can reach, it posts a deadlock event (as Go
    does) and moves the fiber into the debugger's list with a `Deadlock`

@@ -477,8 +477,30 @@ carriers:
     with no barrier into data just made (`map.rs`, `colls.rs`'s sorted
     nodes). At tier 1: 104 ns to 56 with generations, 85 to 75 in the
     default build, which paid for part of the check.
-  - **Left**: register liveness (§4.5's imprecision); a run on Linux;
-    generations by default.
+  - **`(gc)` has collected when it returns.** The fiber yields and its
+    carrier collects before queueing it again (`sched.rs` `run_one`);
+    where a fiber can't yield it's still the next poll. That found a
+    bug older than M11: **what a carrier spawns between fibers started
+    in the last fiber's dynamic environment** (`vm.dyn_env`, left as it
+    was when the fiber stopped): a collected object's cleanup, or a root
+    fiber. Wrong bindings always, and after a collection that moved or
+    freed that map, a pointer to nothing: the generational suite crashed
+    one run in three once `(gc)` collected there, and `gc-check` named
+    the fiber's field. The carrier's is now nil between fibers, and a
+    cleanup starts with none wherever it's spawned (a test in
+    `conc_test.skn`, which fails without).
+  - **A full collection when the program is idle** (decision 10): the
+    last carrier to go idle collects all of the heap if half the budget
+    for what's old is spent (`heap.rs` `idle_collection_due`;
+    `SKEIN_GC_IDLE=0` for never). Bursts of 150,000 writes to a
+    million-key map, 150 ms apart, 320 MB alive: the longest a burst
+    stalls is 22–24 ms where it was 32–34, and 10 bursts of 80 stall
+    over 20 ms where 20 did. There are 20 full collections where there
+    were 13: coming at half the budget, they come more often. A program
+    that's never idle is as it was.
+  - **Left**: register liveness (§4.5's imprecision); generations by
+    default. (Linux: a quick look in a container passed, both
+    builds; CI's nightly `moving` job is the whole of it.)
 
 ## Risks
 
@@ -530,3 +552,9 @@ carriers:
    part 5's measurements): it's 3.1% by default, and 2.2% is the least
    a larger nursery and budget reach, at 6.5× what's live. M11's
    done-check has no number for it.
+10. **M11b is parked** (2026-11-18): MMTk 0.33's concurrent plan isn't
+    generational and moves nothing (runtime.md §4.1), and we won't fork
+    mmtk-core or write a plan of our own. It's taken up when an MMTk
+    release has a generational plan that marks concurrently. Meanwhile,
+    in part 5: a full collection taken early when the program is idle,
+    and the budget for what's old said to be the setting it is.

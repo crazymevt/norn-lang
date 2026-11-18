@@ -138,6 +138,9 @@ static PHASE_ROOT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PHASE_WEAK: AtomicU64 = AtomicU64::new(0);
 static NURSERY_PAGES: AtomicUsize = AtomicUsize::new(0);
 static MATURE_LIMIT_PAGES: AtomicUsize = AtomicUsize::new(0);
+/// What was in use after the last full collection: the budget for what's
+/// old is from here to MATURE_LIMIT_PAGES (`idle_collection_due`).
+static MATURE_BASE_PAGES: AtomicUsize = AtomicUsize::new(0);
 
 struct ProportionalTrigger;
 
@@ -194,6 +197,7 @@ fn grow_heap(mmtk: &'static MMTK<Skein>) {
         // (a full collection, with generations: the budget for what's
         // old, and a nursery's room for what's new)
         MATURE_LIMIT_PAGES.store(want.clamp(min, max), Ordering::Relaxed);
+        MATURE_BASE_PAGES.store(in_use, Ordering::Relaxed);
         let limit = (in_use + nursery + nursery / 4).clamp(min, max);
         HEAP_LIMIT_PAGES.store(limit, Ordering::Relaxed);
         PAGES_AFTER.store(in_use, Ordering::Relaxed);
@@ -545,6 +549,27 @@ fn barrier_slow(obj: ObjectReference) {
         let m = shared.get_or_insert_with(|| Mutator::bound(false));
         memory_manager::object_reference_write_post(&mut m.mm, obj, slot, None);
     }
+}
+
+/// With generations: has half the budget for what's old been spent since
+/// the last full collection? The scheduler asks when its last carrier goes
+/// idle, and collects all of the heap then if so (M11 part 5): a full
+/// collection stops the program for tens of ms, and one taken while
+/// nothing runs is one no request waits for. (Half, not all: the budget
+/// spent means a full collection at the next young one, busy or not.)
+pub fn idle_collection_due() -> bool {
+    // (SKEIN_GC_IDLE=0: never)
+    static OFF: OnceLock<bool> = OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var("SKEIN_GC_IDLE").as_deref() == Ok("0")) {
+        return false;
+    }
+    let (base, limit) = (MATURE_BASE_PAGES.load(Ordering::Relaxed), MATURE_LIMIT_PAGES.load(Ordering::Relaxed));
+    if NURSERY_PAGES.load(Ordering::Relaxed) == 0 || limit <= base {
+        return false;
+    }
+    // (what's in use now, less what's been allocated since the last
+    // collection, is what was in use after it)
+    PAGES_AFTER.load(Ordering::Relaxed).saturating_sub(base) >= (limit - base) / 2
 }
 
 /// Collect now, from a safepoint (the caller has saved its stack).

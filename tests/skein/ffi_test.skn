@@ -142,6 +142,33 @@
       (ffi/free-callback! cb)
       (ffi/free! p))))
 
+;; What the caller holds across a call is what it was when C returns, though
+;; a collection came while C was calling back (with the collector that
+;; moves objects, it's somewhere else by then: M11).
+(defn- held-strings [] (mapv (fn [i] (str "held " i)) (range 200)))
+
+(deftest a-collection-during-a-callback
+  (testing "the callback on the calling carrier, collections asked for in it and beside it"
+    (let [held (held-strings)
+          p (ints-at (vec (shuffle (range 200))))
+          beside (spawn-detached (dotimes [_ 20] (gc) (sleep 1)))]
+      (qsort p 200 4 (fn [a b] (gc) (count (mapv str (range 20))) (by-value a b)))
+      (await beside)
+      (is (= (vec (range 200)) (ints-in p 200)))
+      (is (= (held-strings) held))
+      (ffi/free! p)))
+  (testing "the callback served by a fiber, which collects, the caller waiting in C"
+    (let [held (held-strings)
+          p (ints-at (vec (shuffle (range 50))))
+          calls (atom 0)
+          cb (ffi/callback [:pointer :pointer] :int
+                           (fn [a b] (when (zero? (mod (swap! calls inc) 10)) (gc)) (by-value a b)))]
+      (qsort-blocking p 50 4 (ffi/callback-address cb))
+      (is (= (vec (range 50)) (ints-in p 50)))
+      (is (= (held-strings) held))
+      (ffi/free-callback! cb)
+      (ffi/free! p))))
+
 ;; ---- checked signatures, and unsafe modules ----
 
 (def dir (io/path (sys/temp-dir) (str "skein-ffi-test-" (sys/pid) "-" (nano-time))))

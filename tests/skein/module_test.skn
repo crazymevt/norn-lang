@@ -175,14 +175,17 @@
   (let [load (fn [lib] (future (try (run (list 'require (list 'quote lib))) :loaded
                                     (catch Error e (condition-message e)))))
         results [(load 'mt.cyca) (load 'mt.cycb)]
-        outcomes (mapv (fn [f] (deref f 10000 :timed-out)) results)]
+        outcomes (mapv (fn [f] (deref f 60000 :timed-out)) results)]
     (is (not-any? #{:timed-out} outcomes) "neither waits forever")
     (is (some #(and (string? %) (str/includes? % "Circular require")) outcomes))))
 
 (deftest fibers-loading-one-library-share-the-load
   (module! "shared" "(ns mt.shared)\n(sleep 100)\n(def loads (atom 0))\n(swap! loads inc)\n")
   (let [loads (mapv (fn [_] (future (run '(require 'mt.shared)) :ok)) (range 4))]
-    (is (= [:ok :ok :ok :ok] (mapv #(deref % 10000 :timed-out) loads)))
+    ;; (60 s: 10 timed out once on CI's macOS with everything compiled at
+    ;; its first call, every suite running beside this one on three cores.
+    ;; If it's ever :timed-out at 60, a waiting fiber wasn't woken.)
+    (is (= [:ok :ok :ok :ok] (mapv #(deref % 60000 :timed-out) loads)))
     (is (= 1 (run '@mt.shared/loads)) "loaded once")))
 
 (deftest a-macro-used-before-its-definition
