@@ -37,8 +37,7 @@
 (defn- relative
   "Path p relative to the current folder when it's under it."
   [p]
-  (let [cwd (str (sys/cwd) (if (= :windows (sys/os)) "\\" "/"))]
-    (if (str/starts-with? p cwd) (subs p (count cwd)) p)))
+  (or (io/relative-to p (sys/cwd)) p))
 
 (defn counts
   "What's been counted: {file {line runs}}, files as given to the loader

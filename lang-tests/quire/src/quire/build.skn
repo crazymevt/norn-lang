@@ -44,7 +44,7 @@
   "File f's path under folder root, with / between its parts on every
   system, as a site's paths are."
   [root f]
-  (str/replace (subs f (inc (count root))) "\\" "/"))
+  (io/to-slash (io/relative-to f root)))
 
 (defn- static-files [dir]
   (let [root (io/path dir "static")]

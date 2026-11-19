@@ -20,6 +20,7 @@
  "extension" {:arglists ["[p]"], :kind :function, :signature [{:result "nil or String", :args ["nil or String"]}]}
  "file-name" {:arglists ["[p]"], :kind :function, :signature [{:result "nil or String", :args ["nil or String"]}]}
  "file?" {:arglists ["[path]"], :kind :function, :signature [{:result "Boolean", :args ["String"]}]}
+ "from-slash" {:arglists ["[p]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
  "info" {:arglists ["[path]"], :kind :function, :signature [{:result "nil or Map", :args ["String"]}]}
  "line-reader" {:arglists ["[h]"], :kind :function, :signature [{:result "LineReader", :args ["Any"]}]}
  "line-reader?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
@@ -36,8 +37,11 @@
  "read-exactly" {:arglists ["[h n]"], :kind :function, :signature [{:result "nil or Bytes", :args ["Any" "Integer"]}]}
  "read-line" {:arglists ["[]" "[r]"], :kind :function, :signature [{:result "nil or String", :args []} {:result "nil or String", :args ["LineReader"]}]}
  "read-text" {:arglists ["[path]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "relative-to" {:arglists ["[p dir]"], :kind :function, :signature [{:result "nil or String", :args ["String" "String"]}]}
  "rename!" {:arglists ["[from to]"], :kind :function, :signature [{:result "Any", :args ["String" "String"]}]}
  "retry-io" {:arglists ["[h f]"], :kind :function}
+ "same-file?" {:arglists ["[a b]"], :kind :function, :signature [{:result "Boolean", :args ["String" "String"]}]}
+ "separator" {:kind :var}
  "stem" {:arglists ["[p]"], :kind :function, :signature [{:result "nil or String", :args ["nil or String"]}]}
  "stream-close" {:arglists ["[s]"], :kind :generic}
  "stream-read" {:arglists ["[s n]"], :kind :generic}
@@ -47,6 +51,8 @@
  "temp-file" {:arglists ["[& {:or {prefix \"skein-\", suffix \".tmp\"}, :keys [dir prefix suffix]}]"], :kind :function, :signature [{:result "String", :args [], :rest "Any"}]}
  "text-reader" {:arglists ["[h & {:or {encoding :utf-8}, :keys [encoding]}]"], :kind :function, :signature [{:result "TextReader", :args ["Any"], :rest "Any"}]}
  "text-reader?" {:arglists ["[x]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "to-slash" {:arglists ["[p]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "under?" {:arglists ["[p dir]"], :kind :function, :signature [{:result "Boolean", :args ["String" "String"]}]}
  "with-atomic-file" {:arglists ["[[sym path] & body]"], :kind :macro}
  "with-open" {:arglists ["[bindings & body]"], :kind :macro}
  "with-temp-directory" {:arglists ["[[sym & opts] & body]"], :kind :macro}

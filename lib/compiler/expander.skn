@@ -940,7 +940,9 @@
                       src
                       ;; (the same folder written another way, as Windows'
                       ;; C:\Users\RUNNER~1 for C:\Users\runneradmin: then
-                      ;; named under the current folder as it's written)
+                      ;; named under the current folder as it's written.
+                      ;; skein.io/relative-to's rule, here in primitives:
+                      ;; the expander loads skein.io, so can't use it)
                       (let [c (%path-part src :canonical)
                             cc (%path-part (:cwd info) :canonical)
                             cc (when cc (str cc (subs cwd (dec (count cwd)))))]

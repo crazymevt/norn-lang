@@ -58,8 +58,6 @@
 
 (defn- dir-of [p] (io/path root p))
 
-(defn- forward "Path p with / between its parts, as recorded, on every system." [p] (str/replace p "\\" "/"))
-
 (defn- missing-deps
   "The local Git dependencies project p's skein.lock names that aren't on
   this machine."
@@ -110,7 +108,7 @@
   [s tmp]
   (-> (or s "") (str/replace (str "/private" tmp) "$TMP") (str/replace tmp "$TMP")
       ;; (the recording's paths have /, where Windows writes \)
-      (str/replace #"\$TMP[^\s\"']*" (fn [m] (str/replace m "\\" "/")))))
+      (str/replace #"\$TMP[^\s\"']*" io/to-slash)))
 
 (defn- digest
   "The SHA-256 of b (bytes, from a file named name), with temporary folder
@@ -132,7 +130,7 @@
         (for [g globs
               f (fs/glob (str tmp "/" g))
               :when (io/file? f)]
-          [(forward (subs f (inc (count tmp)))) (digest (io/read-bytes f) f tmp)])))
+          [(io/to-slash (subs f (inc (count tmp)))) (digest (io/read-bytes f) f tmp)])))
 
 (defn- run-steps
   "Project p's steps in mode, in a fresh folder: {:steps [{:name :exit :out
@@ -230,10 +228,10 @@
   "An lcov tracefile's lines of the standard library: {\"lib/…\" {line
   runs}}."
   [text lib]
-  (loop [ls (str/split-lines text) file nil out {} lib (forward lib)]
+  (loop [ls (str/split-lines text) file nil out {} lib (io/to-slash lib)]
     (if-let [l (first ls)]
       (cond (str/starts-with? l "SF:")
-            (let [f (forward (subs l 3))]
+            (let [f (io/to-slash (subs l 3))]
               (recur (rest ls) (when (str/starts-with? f (str lib "/")) (str "lib/" (subs f (inc (count lib))))) out lib))
             (and file (str/starts-with? l "DA:"))
             (let [[line n] (str/split (subs l 3) #",")]
@@ -272,7 +270,7 @@
 
 (defn- report-coverage [t record?]
   (let [[lines hit] (sum-of t)
-        libs (set (for [f (fs/glob (str checkout "/lib/skein/**/*.skn"))] (forward (subs f (inc (count checkout))))))
+        libs (set (for [f (fs/glob (str checkout "/lib/skein/**/*.skn"))] (io/to-slash (subs f (inc (count checkout))))))
         unreached (sort (remove (set (keys t)) libs))
         file (io/path expected "coverage.edn")
         before (when (and (not record?) (io/exists? file)) (edn/read-file file))]

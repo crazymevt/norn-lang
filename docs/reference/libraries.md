@@ -237,7 +237,7 @@ instead, and writing carries on.
 
 | Namespace | Use |
 | --- | --- |
-| `skein.io` | Read and write whole files or streams, and work with paths. `bytes-stream` makes a stream of bytes or text in hand. |
+| `skein.io` | Read and write whole files or streams, and work with paths on every system. `bytes-stream` makes a stream of bytes or text in hand. |
 | `skein.fs` | Walk directories, apply glob patterns, and watch for changes. |
 | `skein.sys` | Read process arguments, environment variables, and system information. |
 | `skein.cli` | Parse command lines: typed options, arguments, subcommands, and generated help. |
@@ -246,7 +246,7 @@ instead, and writing carries on.
 | `skein.signal` | Receive operating-system signals through channels. |
 | `skein.net` | Work with TCP, UDP, and TLS. |
 | `skein.http` | Send HTTP/1.1 requests, stream response bodies, send and parse multipart forms, and serve request maps with functions. |
-| `skein.uri` | Parse, build, and percent-encode URIs. |
+| `skein.uri` | Parse, build, and percent-encode URIs, and turn paths into `file:` URIs and back. |
 | `skein.sqlite` | Open SQLite databases, bind query parameters, and run transactions. |
 | `skein.ffi` | Call C functions and describe native memory and data types. Pass `:main-thread true` for APIs that must run on the process's first thread, such as windowing and graphics. |
 | `skein.log` | Emit leveled, structured logs. |
@@ -267,6 +267,18 @@ handle when the body exits, including on failure. It takes several
 bindings, `[in (open a :read) out (open b :write)]`, and closes them in
 reverse order. `close` does nothing given nil. `eprint` and `eprintln`
 print to standard error, as `print` and `println` print to standard output.
+
+Paths that have to work on Windows and elsewhere: `skein.io/separator` is
+`\` on Windows and `/` elsewhere. `to-slash` writes a path with `/` between
+its parts, for a URI, a site's paths, or output that's recorded and compared.
+`from-slash` goes back. `relative-to` gives what's left of a path past a
+folder, or nil when it isn't under it, and `under?` asks only whether it is.
+Both compare the paths as written, then canonical when both exist, so one
+folder written two ways is the same folder (Windows' `C:\Users\RUNNER~1`
+and `C:\Users\runneradmin`, macOS's `/var` and `/private/var`).
+`same-file?` compares two paths canonical. `skein.uri/file-uri` and
+`file-path` turn a path into a `file:` URI and back, with Windows'
+`file:///C:/…`, and `file:///c%3A/…` as VS Code writes it.
 
 `skein.process/start` returns the process handle and its piped streams.
 `skein.process/close` closes them all; call `wait` first. `sh` runs a program

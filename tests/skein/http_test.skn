@@ -34,6 +34,25 @@
   (is (= {"a" ["1" "2"] "b" "x y" "flag" ""} (uri/query-params "a=1&b=x%20y&a=2&flag")))
   (is (= "q=a%20b&m=x&m=y" (uri/query-string [["q" "a b"] ["m" ["x" "y"]]]))))
 
+(deftest file-uris
+  (let [p (io/path (sys/temp-dir) "a b" "é#1.txt")]
+    (is (= (io/absolute p) (uri/file-path (uri/file-uri p))) "there and back"))
+  (is (= (io/absolute "x.txt") (uri/file-path (uri/file-uri "x.txt"))) "made absolute")
+  (is (= [nil nil] [(uri/file-path "https://h/x") (uri/file-path "mailto:a@b.c")]))
+  (if (= :windows (sys/os))
+    (do (is (= "file:///C:/Users/a%20b/c.txt" (uri/file-uri "C:\\Users\\a b\\c.txt")))
+        (is (= ["C:\\Users\\x" "C:\\Users\\x" "C:\\a"]
+               [(uri/file-path "file:///c%3A/Users/x") (uri/file-path "file:///C:/Users/x") (uri/file-path "file://localhost/C:/a")])
+            "as VS Code writes one, as RFC 8089 does, and with the host named")
+        (is (= "\\\\host\\share\\x" (uri/file-path "file://host/share/x")) "a network path")
+        (is (= "file://host/share/x" (uri/file-uri "\\\\host\\share\\x"))))
+    (do (is (= "file:///home/a%20b/%C3%A9.txt" (uri/file-uri "/home/a b/é.txt")))
+        (is (= ["/home/a b/é.txt" "/x" "/x" "/a/b"]
+               [(uri/file-path "file:///home/a%20b/%C3%A9.txt") (uri/file-path "file://localhost/x") (uri/file-path "file:/x")
+                (uri/file-path "file:///a/b?q=1#top")])
+            "decoded; localhost and none name this host; a query and fragment left out")
+        (is (nil? (uri/file-path "file://host/x")) "a file on another host"))))
+
 (deftest resolving-references
   ;; RFC 3986 §5.4.1, every normal example
   (let [base "http://a/b/c/d;p?q"]

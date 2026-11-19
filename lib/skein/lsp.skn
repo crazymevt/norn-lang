@@ -54,26 +54,11 @@
 
 (def ^:private docs "Open documents: uri → their text." (atom {}))
 
-(def ^:private windows? (= :windows (sys/os)))
-
-(defn- uri->path
-  "The path a file: URI names, or nil. (On Windows file:///c%3A/Users/… or
-  file:///C:/Users/… is C:\\Users\\….)"
-  [u]
-  (when (str/starts-with? u "file://")
-    (let [p (uri/decode (subs u 7))]
-      (if-let [[_ drive rest] (and windows? (re-matches #"/([A-Za-z]):(.*)" p))]
-        (str (str/upper-case drive) ":" (str/replace rest "/" "\\"))
-        p))))
-
-(defn- path->uri [p]
-  (str "file://" (uri/encode (if windows? (str "/" (str/replace p "\\" "/")) p) "/")))
-
 (defn- open-text
   "The text of the open document of path p, or nil (looked for by path: an
-  editor and this server needn't write a URI alike)."
+  editor and this server needn't write a URI alike, nor a folder)."
   [p]
-  (some (fn [[u t]] (when (= p (uri->path u)) t)) @docs))
+  (some (fn [[u t]] (let [q (uri/file-path u)] (when (and q (or (= p q) (io/same-file? p q))) t))) @docs))
 
 (defn- lines [text] (str/split text #"\n" -1))
 
@@ -150,7 +135,7 @@
 (defn- publish! [u]
   (when-let [text (get @docs u)]
     (notify! "textDocument/publishDiagnostics"
-             {:uri u :diagnostics (try (diagnostics text (uri->path u))
+             {:uri u :diagnostics (try (diagnostics text (uri/file-path u))
                                        (catch Error e (log! "lint: " (condition-message e)) []))})))
 
 (defn- load-module!
@@ -159,7 +144,7 @@
   [u reload]
   (let [text (get @docs u)
         nsname (namespace-of text)]
-    (when (and (not= nsname "user") (uri->path u))
+    (when (and (not= nsname "user") (uri/file-path u))
       (try (binding [*out* :stderr]
              (if reload (require (symbol nsname) :reload) (require (symbol nsname))))
            (catch Error e (log! "loading " nsname ": " (condition-message e)))))))
@@ -172,7 +157,7 @@
   [d]
   (let [f (:file d)]
     (when (and f (:line d) (not (str/starts-with? f "<")))
-      {:uri (path->uri (str (io/absolute f))) :range (line-range (dec (:line d)) 0 0)})))
+      {:uri (uri/file-uri (str (io/absolute f))) :range (line-range (dec (:line d)) 0 0)})))
 
 (defn- hover [params]
   (let [u (get-in params [:textDocument :uri])
@@ -225,7 +210,7 @@
                                           :when at]
                                       [l (column-of-index (nth ls l) at)]))
                          [l col] (or hit [(dec (:line c)) 0])]]
-               {:uri (path->uri path) :range (line-range l col (+ col (count short)))}))))))
+               {:uri (uri/file-uri path) :range (line-range l col (+ col (count short)))}))))))
 
 (def ^:private symbol-kinds
   "Definition form → LSP SymbolKind."
@@ -235,7 +220,7 @@
 (defn- document-symbols [params]
   (let [u (get-in params [:textDocument :uri])
         text (get @docs u "")
-        r (%reader text (or (uri->path u) "<editor>"))]
+        r (%reader text (or (uri/file-path u) "<editor>"))]
     (loop [out []]
       (let [s (try (syn/read-syntax r) (catch Error _ :eof))]
         (if (= s :eof)
@@ -290,7 +275,7 @@
           text (get @docs u "")]
       (if-let [[l form] (top-level-form-at text (:line pos 0))]
         (let [r (binding [*out* :stderr]
-                  (op {:op :eval :ns (namespace-of text) :file (uri->path u) :line (inc l) :code form}))
+                  (op {:op :eval :ns (namespace-of text) :file (uri/file-path u) :line (inc l) :code form}))
               said (or (:value r) (str "Error: " (:error r)))]
           (notify! "window/showMessage" {:type (if (:error r) 1 3) :message said})
           said)
