@@ -174,7 +174,9 @@ fn find_app() -> Option<App> {
 fn prepare_app() {
     let app = APP.get_or_init(find_app);
     if let Some(a) = app {
-        let host = a.helper_dirs.iter().map(|d| d.join("skein-ui-host")).find(|p| p.is_file());
+        // (skein-ui-host.exe on Windows)
+        let host_file = format!("skein-ui-host{}", std::env::consts::EXE_SUFFIX);
+        let host = a.helper_dirs.iter().map(|d| d.join(&host_file)).find(|p| p.is_file());
         // SAFETY: no other thread exists yet (run_with_main_thread calls
         // this first), so nothing reads the environment meanwhile.
         unsafe {

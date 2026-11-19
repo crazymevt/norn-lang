@@ -23,7 +23,8 @@
 ;;;;             :shake true             leave out what :main doesn't reach
 ;;;;             :keep [app.plugins/x]}  …but keep these (vars, namespaces)
 ;;;; and a package may declare native helpers its code runs, found in its
-;;;; folder, the first candidate that exists ({os} and {arch} filled in):
+;;;; folder, the first candidate that exists ({os} and {arch} filled in;
+;;;; on Windows a candidate's .exe too, and the helper goes in as NAME.exe):
 ;;;;   :helpers {"skein-ui-host" ["target/release/skein-ui-host"
 ;;;;                             "bin/{os}-{arch}/skein-ui-host"]}
 ;;;;
@@ -35,6 +36,18 @@
             [skein.sys :as sys]))
 
 (defn- fail [& parts] (error (str "skein package: " (apply str parts))))
+
+(defn- program-files
+  "The files program path p may be: p, and on Windows p.exe after it (a
+  helper's candidates name it as Unix does: target/release/skein-ui-host)."
+  [p]
+  (if (and (= :windows (sys/os)) (not (str/ends-with? (str/lower-case p) ".exe"))) [p (str p ".exe")] [p]))
+
+(defn- helper-file
+  "Helper h's file name in a package, its file being f: h, or h.exe when f
+  is one (Windows runs a program by its .exe)."
+  [h f]
+  (if (and (str/ends-with? (str/lower-case f) ".exe") (not (str/ends-with? (str/lower-case h) ".exe"))) (str h ".exe") h))
 
 (defn- sh!
   "Run cmd with args (options as skein.process/sh's after them); its output,
@@ -80,7 +93,8 @@
           helpers (into (sorted-map)
                         (for [pkg (cons {:name pname :dir dir} (:packages r))
                               [h candidates] (:helpers (deps/read-project (:dir pkg)))]
-                          (let [found (some (fn [c] (let [f (io/path (:dir pkg) (fill c))] (when (io/file? f) f))) candidates)]
+                          (let [found (some (fn [c] (some (fn [f] (when (io/file? f) f)) (program-files (io/path (:dir pkg) (fill c)))))
+                                            candidates)]
                             (when-not found
                               (fail (:name pkg) " needs its helper " h ", and none of " (pr-str (mapv fill candidates))
                                     " is in " (:dir pkg) ": build it first"))
@@ -169,7 +183,7 @@
     (io/mkdirs! lib)
     (io/copy! image (io/path lib (str (:name info) ".skimg")))
     (doseq [r (:resources info)] (copy-tree! r (io/path lib (io/file-name r))))
-    (doseq [[h f] (:helpers info)] (io/copy! f (io/path lib h)))
+    (doseq [[h f] (:helpers info)] (io/copy! f (io/path lib (helper-file h f))))
     (when (io/exists? archive) (io/delete! archive))
     (sh! "tar" "-czf" archive "-C" out base)
     archive))

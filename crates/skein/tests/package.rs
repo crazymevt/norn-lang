@@ -23,15 +23,21 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-/// A project whose :main prints its arguments, its folder and a resource,
-/// and returns how many arguments it got (the exit status).
-fn project(dir: &Path, targets: &str) {
+/// A project whose :main prints its arguments, its folder, a resource and
+/// the renderer it's pointed at, and returns how many arguments it got (the
+/// exit status). With helper, it declares a native helper as skein-ui does:
+/// a stand-in skein-ui-host (.exe on Windows) where cargo would build it.
+fn project(dir: &Path, targets: &str, helper: bool) {
+    let helpers = if helper { " :helpers {\"skein-ui-host\" [\"build/skein-ui-host\"]}" } else { "" };
     write(
         &dir.join("skein.edn"),
         &format!(
-            "{{:name echo-app :version \"1.2.0\" :main echo-app.main/main\n :package {{:id \"dev.skein.test.echo\" :display-name \"Echo App\" :resources [\"data\"] :targets {targets}}}}}\n"
+            "{{:name echo-app :version \"1.2.0\" :main echo-app.main/main{helpers}\n :package {{:id \"dev.skein.test.echo\" :display-name \"Echo App\" :resources [\"data\"] :targets {targets}}}}}\n"
         ),
     );
+    if helper {
+        write(&dir.join(format!("build/skein-ui-host{}", std::env::consts::EXE_SUFFIX)), "a stand-in\n");
+    }
     write(
         &dir.join("src/echo-app/main.skn"),
         "(ns echo-app.main (:require [skein.io :as io] [skein.sys :as sys]))\n\
@@ -39,6 +45,7 @@ fn project(dir: &Path, targets: &str) {
            (prn :args (vec args))\n\
            (prn :cwd (sys/cwd))\n\
            (prn :hello (io/read-text (io/path (sys/app-resources) \"data\" \"hello.txt\")))\n\
+           (prn :host (sys/getenv \"SKEIN_UI_HOST\"))\n\
            (count args))\n",
     );
     write(&dir.join("data/hello.txt"), "hi from data\n");
@@ -61,7 +68,7 @@ fn run_ok(c: &mut Command) -> String {
 fn a_command_line_archive_runs_its_main_from_anywhere() {
     let dir = temp("cli");
     let proj = dir.join("echo");
-    project(&proj, "[:cli]");
+    project(&proj, "[:cli]", true);
     let made = run_ok(skein().arg("package").current_dir(&proj));
     let os = std::env::consts::OS; // (macos, linux, windows: as sys/os names them)
     let base = format!("echo-app-1.2.0-{os}-{}", std::env::consts::ARCH);
@@ -75,7 +82,12 @@ fn a_command_line_archive_runs_its_main_from_anywhere() {
     run_ok(Command::new("tar").arg("-xzf").arg(&archive).arg("-C").arg(&unpacked));
     std::fs::remove_dir_all(proj.join("dist")).unwrap();
     let launcher = unpacked.join(&base).join(format!("bin/echo-app{}", std::env::consts::EXE_SUFFIX));
-    let out = Command::new(&launcher).args(["-e", "two words", "--image", "x"]).current_dir(&elsewhere).output().unwrap();
+    let out = Command::new(&launcher)
+        .args(["-e", "two words", "--image", "x"])
+        .current_dir(&elsewhere)
+        .env_remove("SKEIN_UI_HOST")
+        .output()
+        .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains(r#":args ["-e" "two words" "--image" "x"]"#), "every argument goes to :main:\n{text}");
     // (printed, a \ in it as \\; and as the system has it: on Windows maybe
@@ -83,6 +95,11 @@ fn a_command_line_archive_runs_its_main_from_anywhere() {
     let cwd = text.lines().find_map(|l| l.strip_prefix(":cwd \"")?.strip_suffix('"')).unwrap_or_else(|| panic!("no :cwd:\n{text}"));
     assert_eq!(canonical(Path::new(&cwd.replace("\\\\", "\\"))), canonical(&elsewhere), "the caller's folder:\n{text}");
     assert!(text.contains(r#":hello "hi from data\n""#), "its resources:\n{text}");
+    // its helper, packaged beside its image and given to its code
+    let host = unpacked.join(&base).join(format!("lib/echo-app/skein-ui-host{}", std::env::consts::EXE_SUFFIX));
+    assert!(host.is_file(), "the helper is packaged as {}", host.display());
+    let given = text.lines().find_map(|l| l.strip_prefix(":host \"")?.strip_suffix('"')).unwrap_or_else(|| panic!("no :host:\n{text}"));
+    assert_eq!(canonical(Path::new(&given.replace("\\\\", "\\"))), canonical(&host), "SKEIN_UI_HOST:\n{text}");
     assert_eq!(Some(4), out.status.code(), ":main's integer is the exit status");
     // through a symbolic link, as when linked into a bin folder
     #[cfg(unix)]
@@ -100,7 +117,7 @@ fn a_command_line_archive_runs_its_main_from_anywhere() {
 fn a_macos_app_is_a_signed_bundle_that_runs() {
     let dir = temp("app");
     let proj = dir.join("echo");
-    project(&proj, "[:app]");
+    project(&proj, "[:app]", false);
     run_ok(skein().arg("package").current_dir(&proj));
     let app = proj.join("dist/Echo App.app");
     let contents = app.join("Contents");
