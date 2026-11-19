@@ -275,6 +275,18 @@
 
 (defn- text-of [v] (bytes->string (bytes v) true))
 
+(defn- code-point?
+  "Whether n is a character's number (a sequence's parameter may be
+  missing, a surrogate, or past U+10FFFF)."
+  [n]
+  (and (int? n) (<= 0 n 0x10FFFF) (not (<= 0xD800 n 0xDFFF))))
+
+(defn- mouse-params?
+  "Whether ps, an SGR mouse report's parameters, are a button and a
+  column and row."
+  [[b col row]]
+  (and (int? b) (<= 0 b 255) (int? col) (int? row)))
+
 (defn- decode-one
   "[key next-index] for the key at index i of byte vector v, or
   :incomplete when v ends partway through one."
@@ -297,7 +309,7 @@
                         (if-let [e (index-of-seq v paste-end next)]
                           [{:key :paste :text (text-of (subvec v next e))} (+ e (count paste-end))]
                           :incomplete)
-                        (and (str/starts-with? ps "<") (#{\M \m} final))
+                        (and (str/starts-with? ps "<") (#{\M \m} final) (mouse-params? (params (subs ps 1))))
                         [(mouse-key (params (subs ps 1)) final) next]
                         (= final \~)
                         (let [[k m] (params ps)]
@@ -308,7 +320,7 @@
                         (= final \O) [{:key :focus-out} next]
                         (and (= final \u) (str/starts-with? ps "?"))
                         [{:key :keyboard-flags :flags (or (first (params (subs ps 1))) 0)} next]
-                        (= final \u)
+                        (and (= final \u) (code-point? (first (params ps))))
                         (let [[cp m] (params ps)]
                           [(with-mods (case cp 13 {:key :enter} 9 {:key :tab} 27 {:key :escape} 127 {:key :backspace}
                                             {:key (char cp)})

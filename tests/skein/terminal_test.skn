@@ -31,6 +31,11 @@
             {:key :mouse :button :left :action :drag :row 2 :col 1}]
            (keys-of (str esc "[<0;10;3M" esc "[<0;10;3m" esc "[<81;5;5M" esc "[<32;1;2M")))))
   (is (= {:key :unknown :sequence (str esc "[99x")} (first (keys-of (str esc "[99x")))))
+  (testing "a sequence whose numbers aren't a key is unknown, not an error"
+    (doseq [s ["[u" "[;5u" "[55296u" "[1114112u" "[99999999999999999999u" "[<M" "[<;;M" "[<0;1m"]]
+      (is (= [{:key :unknown :sequence (str esc s)}] (keys-of (str esc s))) s))
+    (is (= [{:key :unknown :sequence (str esc "[u")} {:key \space :ctrl true}] (:keys (t/decode-keys [27 91 117 0] :final true)))
+        "as the property found it"))
   (testing "a key not complete yet waits for the rest"
     (is (= {:keys [{:key \a}] :rest (bytes (str esc "[1;"))} (t/decode-keys (bytes (str "a" esc "[1;")))))
     (is (= {:keys [] :rest (bytes [0xc3])} (t/decode-keys [0xc3])))
