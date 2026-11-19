@@ -377,7 +377,9 @@ fn pem_certs(pem: &[u8]) -> Result<Vec<rustls::pki_types::CertificateDer<'static
         .map_err(|e| Error::new(format!("Bad certificate PEM: {e:?}")))
 }
 
-/// The OS's trusted root certificates (loaded once).
+/// The OS's trusted root certificates (loaded once). Not on Windows, where
+/// the system verifies a certificate itself (`tls_client`).
+#[cfg(not(windows))]
 fn native_roots() -> Arc<rustls::RootCertStore> {
     static R: OnceLock<Arc<rustls::RootCertStore>> = OnceLock::new();
     R.get_or_init(|| {
@@ -407,21 +409,28 @@ fn wrap(vm: &mut Vm, h: Value, conn: rustls::Connection, info: Value) -> Result<
 
 /// `(%tls-client tcp server-name ca-pem-or-nil)`: start TLS as a client.
 pub(crate) fn tls_client(vm: &mut Vm, h: Value, server_name: &str, ca_pem: Option<&[u8]>, info: Value) -> Result<Value> {
-    let roots = match ca_pem {
+    let builder = rustls::ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| Error::new(e.to_string()))?;
+    let config = match ca_pem {
         Some(pem) => {
             let mut store = rustls::RootCertStore::empty();
             for c in pem_certs(pem)? {
                 store.add(c).map_err(|e| Error::new(format!("Bad CA certificate: {e}")))?;
             }
-            Arc::new(store)
+            builder.with_root_certificates(Arc::new(store))
         }
-        None => native_roots(),
-    };
-    let config = rustls::ClientConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()
-        .map_err(|e| Error::new(e.to_string()))?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+        // (Windows installs only some roots, and fetches the rest when its
+        // own verifier meets one: so it's asked, as schannel's users are)
+        #[cfg(windows)]
+        None => {
+            let v = rustls_platform_verifier::Verifier::new(provider()).map_err(|e| Error::new(e.to_string()))?;
+            builder.dangerous().with_custom_certificate_verifier(Arc::new(v))
+        }
+        #[cfg(not(windows))]
+        None => builder.with_root_certificates(native_roots()),
+    }
+    .with_no_client_auth();
     let name = rustls::pki_types::ServerName::try_from(server_name.to_owned())
         .map_err(|e| Error::new(format!("Bad server name {server_name}: {e}")))?;
     let conn = rustls::ClientConnection::new(Arc::new(config), name).map_err(|e| Error::new(e.to_string()))?;

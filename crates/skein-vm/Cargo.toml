@@ -14,7 +14,6 @@ libc = "0.2"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
 notify = "8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-rustls-native-certs = "0.8"
 libloading = "0.8"
 num-bigint = "0.4"
 num-rational = { version = "0.4", default-features = false, features = ["num-bigint-std"] }
@@ -29,6 +28,9 @@ unicode-width = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
+
+[target.'cfg(not(windows))'.dependencies]
+rustls-native-certs = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -45,6 +47,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_System_Time",
 ] }
+# (Windows verifies a server's certificate itself, fetching a root it
+# hasn't installed yet; its installed roots alone miss some issuers)
+rustls-platform-verifier = "0.7"
 
 [features]
 default = []
