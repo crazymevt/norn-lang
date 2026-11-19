@@ -184,7 +184,17 @@ pub(crate) fn wait(vm: &mut Vm, h: Value) -> Result<Value> {
 
 /// Send a signal (by number) to a child.
 pub(crate) fn kill(vm: &mut Vm, h: Value, sig: i32) -> Result<Value> {
-    reactor::entry_of(h, "process")?;
+    let _e = reactor::entry_of(h, "process")?;
+    // (one already waited for is gone, and its pid may be another
+    // process's by now: nothing to signal. A wait in progress holds the
+    // lock, and its child hasn't been reaped yet.)
+    #[cfg(unix)]
+    if let Ok(mut io) = _e.io.try_lock()
+        && let Some(Io::Child(c)) = io.as_mut()
+        && matches!(c.try_wait(), Ok(Some(_)))
+    {
+        return Ok(Value::NIL);
+    }
     let k = kw(&mut vm.m, "pid");
     let pid = crate::prims::get(h.field(skein_rt::conc::handle::INFO), k).map_or(0, |v| v.as_fixnum());
     platform::kill(pid, sig).map(|()| Value::NIL).map_err(|e| Error::new(format!("kill failed: {e}")))
@@ -353,7 +363,7 @@ fn days_in_month(y: i64, m: i64) -> i64 {
 /// `[year month day hour minute second nanos weekday yearday]` of an
 /// instant seen at UTC offset `offset` (seconds). Weekday 1 = Monday.
 pub(crate) fn civil(nanos: i64, offset: i64) -> [i64; 9] {
-    let local = nanos + offset * 1_000_000_000;
+    let local = nanos.saturating_add(offset.saturating_mul(1_000_000_000));
     let secs = local.div_euclid(1_000_000_000);
     let ns = local.rem_euclid(1_000_000_000);
     let days = secs.div_euclid(86_400);
@@ -399,7 +409,10 @@ pub(crate) fn format_iso(nanos: i64, offset: i64) -> String {
         "Z".to_string()
     } else {
         let a = offset.abs();
-        format!("{}{:02}:{:02}", if offset < 0 { '-' } else { '+' }, a / 3600, a % 3600 / 60)
+        // (an offset with seconds, a zone's local mean time before 1900:
+        // its seconds too, or the text names another instant)
+        let secs = if a % 60 == 0 { String::new() } else { format!(":{:02}", a % 60) };
+        format!("{}{:02}:{:02}{secs}", if offset < 0 { '-' } else { '+' }, a / 3600, a % 3600 / 60)
     };
     format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}{frac}{zone}")
 }
@@ -443,8 +456,15 @@ pub(crate) fn parse_iso(s: &str) -> std::result::Result<(i64, i64), String> {
     }
     let offset = match b.get(i) {
         Some(b'Z' | b'z') if i + 1 == b.len() => 0,
-        Some(&c @ (b'+' | b'-')) if i + 6 == b.len() && b[i + 3] == b':' => {
-            let o = num(i + 1, 2)? * 3600 + num(i + 4, 2)? * 60;
+        // (+hh:mm, hours to 23 and minutes to 59; and +hh:mm:ss, which
+        // format_iso writes for an offset with seconds)
+        Some(&c @ (b'+' | b'-')) if (i + 6 == b.len() || i + 9 == b.len() && b[i + 6] == b':') && b[i + 3] == b':' => {
+            let (oh, om) = (num(i + 1, 2)?, num(i + 4, 2)?);
+            let os = if i + 9 == b.len() { num(i + 7, 2)? } else { 0 };
+            if oh > 23 || om > 59 || os > 59 {
+                return Err(bad());
+            }
+            let o = oh * 3600 + om * 60 + os;
             if c == b'-' { -o } else { o }
         }
         _ => return Err(bad()),

@@ -357,11 +357,18 @@
 (defn read-file "Read one UTF-8 YAML configuration document (options as read-string's)." [^String path & {:keys [keys] :or {keys keyword}}]
   (document (io/read-text path) (str path) keys))
 
+(defn- double-quoted
+  "s as a double-quoted YAML scalar: JSON's escapes, and \\u escapes for
+  the characters YAML's printable set leaves out (DEL, the C1 controls and
+  U+FFFE/U+FFFF), which JSON writes raw."
+  [s]
+  (str/replace (json/write-string s) #"[\x{7F}-\x{9F}\x{FFFE}\x{FFFF}]" (fn [m] (format "\\u%04X" (int (first m))))))
+
 (defn- write-node [x depth]
   (when (> depth 128) (error "YAML document nests deeper than 128 levels"))
   (cond
-    (string? x) (json/write-string x)
-    (keyword? x) (json/write-string (subs (str x) 1))
+    (string? x) (double-quoted x)
+    (keyword? x) (double-quoted (subs (str x) 1))
     (nil? x) "null"
     (or (boolean? x) (integer? x)) (str x)
     (float? x) (cond (NaN? x) ".nan" (= x ##Inf) ".inf" (= x ##-Inf) "-.inf" :else (json/write-string x))

@@ -81,7 +81,20 @@ pub struct Reader<'a> {
 
 /// How deeply a form may nest: reading recurses, and text nested deeper
 /// (untrusted input, for skein.edn) would overflow the native stack.
-const MAX_DEPTH: usize = 10_000;
+pub(crate) const MAX_DEPTH: usize = 10_000;
+
+/// The highest numbered #() argument, %20 (as in Clojure): %N makes N
+/// parameters.
+const MAX_FN_ARG: usize = 20;
+
+/// Four hex digits as a code point: from_str_radix alone takes a sign
+/// (\u+041).
+fn hex4(h: &str) -> Option<char> {
+    if h.len() != 4 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(h, 16).ok().and_then(char::from_u32)
+}
 
 /// Where a form came from: 1-based line and column, character offsets.
 #[derive(Clone, Copy, Default)]
@@ -719,10 +732,13 @@ impl<'a> Reader<'a> {
         }
         let n: usize = if rest.is_empty() {
             1
+        } else if !rest.bytes().all(|b| b.is_ascii_digit()) {
+            return Ok(None);
         } else {
             match rest.parse() {
-                Ok(n) if n >= 1 => n,
-                _ => return Ok(None),
+                Ok(0) => return Ok(None),
+                Ok(n) if n <= MAX_FN_ARG => n,
+                _ => return Err(ReadError::Syntax(format!("#() takes arguments up to %{MAX_FN_ARG}, not %{rest}"))),
             }
         };
         args.max = args.max.max(n);
@@ -755,10 +771,7 @@ impl<'a> Reader<'a> {
                             self.bump();
                         }
                         let hex = &self.src[start..self.pos];
-                        let c = u32::from_str_radix(hex, 16)
-                            .ok()
-                            .and_then(char::from_u32)
-                            .ok_or_else(|| ReadError::Syntax(format!("Bad unicode escape: \\u{hex}")))?;
+                        let c = hex4(hex).ok_or_else(|| ReadError::Syntax(format!("Bad unicode escape: \\u{hex}")))?;
                         s.push(c);
                     }
                     Some(c) => return Err(ReadError::Syntax(format!("Unsupported escape character: \\{c}"))),
@@ -792,10 +805,9 @@ impl<'a> Reader<'a> {
             "backspace" => '\u{8}',
             "formfeed" => '\u{c}',
             "nul" => '\0',
-            _ if tok.starts_with('u') && tok.len() == 5 => u32::from_str_radix(&tok[1..], 16)
-                .ok()
-                .and_then(char::from_u32)
-                .ok_or_else(|| ReadError::Syntax(format!("Invalid character: \\{tok}")))?,
+            _ if tok.starts_with('u') && tok.len() == 5 => {
+                hex4(&tok[1..]).ok_or_else(|| ReadError::Syntax(format!("Invalid character: \\{tok}")))?
+            }
             _ => return Err(ReadError::Syntax(format!("Unsupported character: \\{tok}"))),
         };
         Ok(Value::char(c))

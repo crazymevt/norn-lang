@@ -532,7 +532,18 @@ pub fn dispatch_key(state: Value, args: &[Value], key: &mut Vec<Value>) {
         let a = args[i];
         let k = if !eqls.is_nil() && i < eqls.vec_count() {
             let s = eqls.vec_nth(i);
-            if !s.is_nil() && s.set_contains(a) { a } else { class_of(a) }
+            if s.is_nil() {
+                class_of(a)
+            } else if s.set_contains(a) {
+                a
+            } else {
+                // (when the class is itself one of the eql values, "an
+                // instance of it" mustn't share the key of "the class
+                // itself": its precedence list stands for it, a vector
+                // that begins with it, as unique to it)
+                let c = class_of(a);
+                if s.set_contains(c) { c.field(class::CPL) } else { c }
+            }
         } else {
             class_of(a)
         };

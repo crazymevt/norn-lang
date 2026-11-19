@@ -35,8 +35,14 @@
   ;; The client finishes the handshake here, so an untrusted server fails
   ;; at connect. (A server handshakes on its first read or write, so one slow
   ;; client can't hold up an accept loop.)
-  (let [ca (when (:ca-file opts) (io/read-bytes (:ca-file opts)))
-        t (io/auto-close (%tls-client h (or (:server-name opts) (:host opts)) ca opts))]
+  (let [made (atom false)
+        t (try (let [ca (when (:ca-file opts) (io/read-bytes (:ca-file opts)))
+                     t (io/auto-close (%tls-client h (or (:server-name opts) (:host opts)) ca opts))]
+                 (reset! made true)
+                 t)
+               ;; (a CA file that can't be read or a bad PEM, or a cancel:
+               ;; the TCP socket is closed, as nothing else holds it)
+               (finally (when-not @made (%io-close h))))]
     (finished t (fn [] (%tls-handshake t)))))
 
 (defn- open-connection [info]
@@ -46,16 +52,36 @@
                              (finished h (fn [] (%tcp-check h))))))]
     (if (:tls info) (start-tls h info) (io/auto-close h))))
 
+(defn- drop-result [r] (when (handle? (:ok r)) (%io-close (:ok r))))
+
 (defn- within
   "(f), or a TimeoutError if it takes more than ms: it runs in a fiber of
-  its own, cancelled when the time runs out."
+  its own, cancelled when the time runs out (or when this fiber is). A
+  handle it makes that nobody will take is closed."
   [ms what f]
+  ;; (state goes from :waiting to :done when the worker has put its
+  ;; result, or to :gave-up when the caller stops waiting: whichever comes
+  ;; first decides who owns the result)
   (let [ch (chan 1)
-        w (spawn-detached (put! ch (try {:ok (f)} (catch Error e {:error e}))))
-        [v port] (alts! [ch (timeout ms)])]
-    (if (identical? port ch)
-      (if (contains? v :ok) (:ok v) (throw (:error v)))
-      (do (cancel! w) (error TimeoutError :message (str what " timed out after " ms " ms") :after ms)))))
+        state (atom :waiting)
+        w (spawn-detached
+            (let [r (atom nil)]
+              (try (reset! r (try {:ok (f)} (catch Error e {:error e})))
+                   (put! ch @r)
+                   (finally (when-not (compare-and-set! state :waiting :done) (drop-result @r))))))
+        give-up (fn []
+                  (if (compare-and-set! state :waiting :gave-up)
+                    (do (cancel! w) (drop-result (poll! ch)) nil)
+                    (poll! ch)))
+        settled (atom false)
+        v (try (let [[v port] (alts! [ch (timeout ms)])
+                     v (if (identical? port ch) v (give-up))]
+                 (reset! settled true)
+                 v)
+               (finally (when-not @settled (drop-result (give-up)))))]
+    (cond (nil? v) (error TimeoutError :message (str what " timed out after " ms " ms") :after ms)
+          (contains? v :ok) (:ok v)
+          :else (throw (:error v)))))
 
 (defn connect
   "Connect to host:port: a stream. Options: :tls true (with :ca-file path to

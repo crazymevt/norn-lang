@@ -73,6 +73,33 @@ fn a_slow_fast_ffi_call_gets_a_spare_carrier() {
 }
 
 #[test]
+fn compiled_code_reads_again_what_a_collection_during_a_native_call_moved() {
+    // A compiled function holds a vector across a native call while another
+    // fiber collects (a small nursery: often, and moving what's young).
+    // Native code kept the vector's old address and crashed (SIGSEGV); it
+    // must go on with the moved one.
+    let out = Command::new(env!("CARGO_BIN_EXE_skein"))
+        .args([
+            "-e",
+            "(do (defn holder [ms] (let [v (vec (range 50))] (%native-stall ms) (nth (identity v) 7)))
+                 (dotimes [_ 300] (holder 0))
+                 (def stop (atom false))
+                 (spawn-detached (loop [] (when-not @stop (vec (range 2000)) (recur))))
+                 (def rs (vec (for [_ (range 40)] (holder 20))))
+                 (reset! stop true)
+                 [(frequencies rs) (pos? (gc-count))])",
+        ])
+        .env("SKEIN_THREADS", "2")
+        .env("SKEIN_GC_NURSERY", "4194304")
+        .env("SKEIN_JIT_THRESHOLD", "1")
+        .env("SKEIN_JIT_SYNC", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}: {}", out.status, String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[{7 40} true]");
+}
+
+#[test]
 fn a_collection_during_a_native_call_spares_the_cached_segment() {
     // A carrier keeps one free stack segment cached, and it isn't a GC root.
     // A fiber that has just come back across a segment boundary (so one is

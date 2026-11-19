@@ -213,14 +213,31 @@
               (recur (+ i (retry-io h (fn [] (%io-write h b i))))))))))
     nil))
 
+(def ^:private tls-goodbye-ms
+  "How long close waits for a TLS socket to take its close_notify."
+  1000)
+
+(defn- tls-goodbye
+  "Send TLS handle h's close_notify, waiting at most tls-goodbye-ms for the
+  socket to take it."
+  [h]
+  (when (keyword? (try (%tls-shutdown h) (catch Error _ nil)))
+    ;; (a peer that isn't reading keeps the socket full for ever: past the
+    ;; limit the socket is closed without it, which wakes the wait)
+    (let [limit (spawn-detached (sleep tls-goodbye-ms) (%io-close h))]
+      (try (retry-io h (fn [] (%tls-shutdown h)))
+           (catch Error _ nil)
+           (finally (cancel! limit))))))
+
 (defn close
   "Close a stream (closing twice is harmless, and closing nil does
-  nothing). A TLS stream first tells the peer it is closing."
+  nothing). A TLS stream first tells the peer it is closing (giving up on
+  that after a second when the peer isn't reading)."
   [h]
   (cond (nil? h) nil
         (%instance? h) (stream-close h)
         :else (do (when (and (= :tls (handle-kind h)) (%handle-live? h))
-                    (try (retry-io h (fn [] (%tls-shutdown h))) (catch Error _ nil)))
+                    (tls-goodbye h))
                   (%io-close h))))
 
 (defmacro with-open

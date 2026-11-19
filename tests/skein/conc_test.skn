@@ -313,3 +313,69 @@
 
 ;;; (Timing-sensitive checks of the blocking pool and spare carriers run in
 ;;; their own process: crates/skein/tests/io.rs.)
+
+;; a buffer size too large to make: an error, not an allocation whose size
+;; wrapped (the heap was written past it)
+(is (thrown? Error (chan 4611686018427387903)))
+(is (= 8 (do (chan 8) 8)))
+
+;; the stack-surgery primitives check their arity like the others (an
+;; index out of bounds ended the process)
+(is (thrown? Error (%throw 1)))
+(is (thrown? Error (apply %throw [])))
+(is (thrown? Error (%abort-fiber 1)))
+(is (thrown? Error (%restart-frame)))
+
+;;; waiters that lost (an alts! that fired elsewhere) are swept out of a
+;;; quiet channel's queues, and those still waiting keep their turn
+(let [ctl (chan)
+      first-taker (spawn-detached (take! ctl))]
+  (sleep 10)
+  (dotimes [_ 5000] (alts! [ctl (timeout 0)]))
+  (let [second-taker (spawn-detached (take! ctl))]
+    (sleep 10)
+    (put! ctl :a)
+    (put! ctl :b)
+    (is (= [:a :b] [(await first-taker) (await second-taker)]))))
+(let [c (chan)
+      putter (spawn-detached (put! c :one))]
+  (sleep 10)
+  (dotimes [_ 5000] (alts! [[c :lost] (timeout 0)]))
+  (is (= :one (take! c)))
+  (is (= true (await putter)))
+  (is (= nil (poll! c)) "the lost puts are gone"))
+
+;;; a retry of a parked call that fails when woken, in tail position: the
+;;; call runs again, not the call of the function it's in (whose side
+;;; effect then ran twice)
+(def retry-n (atom 0))
+(defn retry-tail [fut] (swap! retry-n inc) (await fut))
+(let [tries (atom 0)
+      bad (spawn-detached (sleep 50) (throw (ex-info "boom" {})))
+      r (handler-bind [Error (fn [c] (if (= 1 (swap! tries inc))
+                                       (invoke-restart 'retry)
+                                       (invoke-restart 'use-value :used)))]
+          (retry-tail bad))]
+  (is (= [:used 1 2] [r @retry-n @tries])))
+
+;;; restarting the frame of a named function inside another restarts that
+;;; function, not a global one of the same name (its code was named
+;;; user/name, and the restart ran that var's)
+(def restart-calls (atom []))
+(defn restart-helper [x] (swap! restart-calls conj [:global x]) :global)
+(defn restart-outer [ch result]
+  (let [restart-helper (fn restart-helper [x]
+                         (swap! restart-calls conj [:local x])
+                         (let [cmd (take! ch)]
+                           (if (vector? cmd) (%restart-frame (nth cmd 0) (nth cmd 1)) :local)))]
+    (deliver result (restart-helper 1))))
+(let [ch (chan 1)
+      result (promise)
+      f (spawn-detached (restart-outer ch result))]
+  (loop [n 0] (when (and (not (%fiber-parked? f)) (< n 2000)) (sleep 1) (recur (inc n))))
+  (let [fr (first (filter #(= "restart-helper" (name (:fn %))) (%frames f)))]
+    (put! ch [(nth (:id fr) 0) (nth (:id fr) 1)])
+    (sleep 50)
+    (put! ch :stop)
+    (is (= :local (deref result 5000 :timeout)))
+    (is (= [[:local 1] [:local 1]] @restart-calls))))

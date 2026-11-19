@@ -23,6 +23,13 @@
     [(_ [else e]) e]
     [(_ [c e] & more) (if c e (my-cond & more))]))
 
+(def v :global-v)
+(defsyntax in-a-map (syntax-rules () [(_ v) {:k v}]))
+(defsyntax in-a-set (syntax-rules () [(_ v) #{v :s}]))
+(defsyntax get-a (syntax-rules () [(_ m) (let [{:keys [a]} m] a)]))
+(defsyntax nested-map (syntax-rules () [(_ v ...) {:vs [v ...] :n {:first (first [v ...])}}]))
+(defsyntax map-shape (syntax-rules () [(_ {:a x :b y}) [y x]] [(_ other) :no]))
+
 (deftest syntax-rules-macros
   (testing "clauses, recursion and & rest"
     (is (= false (my-or)))
@@ -37,7 +44,17 @@
     (is (= 3 (my-cond [false 1] [nil 2] [else 3])))
     (is (some? (message '(let [else true] (pattern-test/my-cond [else 3])))) "a local else isn't the literal"))
   (testing "no clause matches"
-    (is (str/includes? (message '(pattern-test/swap-pairs [1 2 3])) "bad syntax"))))
+    (is (str/includes? (message '(pattern-test/swap-pairs [1 2 3])) "bad syntax")))
+  (testing "maps and sets in a template are filled in too"
+    (is (= {:k 5} (in-a-map 5)))
+    (is (= #{5 :s} (in-a-set 5)))
+    (is (= 7 (get-a {:a 7})) "map destructuring in a template")
+    (is (= {:vs [1 2] :n {:first 1}} (nested-map 1 2))))
+  (testing "a map pattern: just those keys, by value"
+    (is (= [2 1] (map-shape {:a 1 :b 2})))
+    (is (= :no (map-shape {:a 1})))
+    (is (= :no (map-shape {:a 1 :b 2 :c 3})))
+    (is (= :no (map-shape [1 2])))))
 
 ;; ---- syntax-case ----
 

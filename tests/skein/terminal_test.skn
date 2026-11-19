@@ -124,7 +124,10 @@
             (is (str/includes? shown "{:key :escape}") "a lone escape, after a moment")
             (is (str/includes? shown "{:key \\q}")))
           (io/write (:in p) "hello\n")
-          (is (str/includes? (read-until p "read hello") "hello\r\nread hello") "echo and lines are back")
+          ;; (what was read goes in the message: the nightly's heap-checked
+          ;; run once didn't see the echo, and its log said only false)
+          (let [shown (read-until p "read hello")]
+            (is (str/includes? shown "hello\r\nread hello") (str "echo and lines are back; read " (pr-str shown))))
           (is (= 0 (:exit (proc/wait p)))))))))
 
 ;; (On Windows, a console draws what a program writes, and has no suspending.)

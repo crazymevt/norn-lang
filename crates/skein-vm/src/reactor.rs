@@ -235,11 +235,31 @@ pub(crate) fn close_id(id: u64) {
 
 fn close_id_running(id: u64) {
     let Some(e) = TABLE.lock().unwrap().as_mut().and_then(|t| t.remove(&id)) else { return };
-    if let Some(mut io) = e.io.lock().unwrap().take()
+    // (a job on the blocking pool holds the lock for as long as its call
+    // blocks: a file's read, a child's wait. Waiting for it here would
+    // block this carrier, and a collection would wait for the carrier. The
+    // entry is out of the table, so the job's is the last reference: the
+    // source goes when the job ends, closed by its drop (which also takes a
+    // descriptor out of the poller).)
+    let mut io = match e.io.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            close_waiters(&e);
+            return;
+        }
+    };
+    if let Some(mut io) = io.take()
         && let Some((src, _)) = io.source()
     {
         let _ = registry().deregister(src);
     }
+    drop(io);
+    close_waiters(&e);
+}
+
+/// Mark a closed entry's readiness closed and wake its waiters.
+fn close_waiters(e: &Entry) {
     let ws: Vec<Value> = {
         let mut r = e.ready.lock().unwrap();
         r.closed = true;

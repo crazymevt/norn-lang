@@ -167,6 +167,9 @@
       (is (thrown? ParseError (t/parse-local-date "31/02/2026" "%d/%m/%Y")))
       (is (thrown-with-msg? ParseError #"no month \"Smarch\"" (t/parse-local-date "Smarch 3 2026" "%b %d %Y")))
       (is (thrown-with-msg? ParseError #"no month and day" (t/parse-local-date "2026" "%Y")))
+      (is (thrown-with-msg? ParseError #"no day 366 in 2023" (t/parse-local-date "2023-366" "%Y-%j")) "not 2024-01-01")
+      (is (thrown? ParseError (t/parse-local-date "2023-000" "%Y-%j")) "not 2022-12-31")
+      (is (= (t/local-date 2024 12 31) (t/parse-local-date "2024-366" "%Y-%j")))
       (is (thrown-with-msg? ParseError #"no offset" (t/parse-zoned "2026-11-03 09:30" "%F %H:%M")))
       (is (thrown-with-msg? TypeError #"%H writes the hour" (t/format-local d "%H")))
       (is (thrown-with-msg? TypeError #"%Q isn't a directive" (t/format-local d "%Q")))
@@ -187,3 +190,23 @@
     (is (<= (abs (t/days-between d (:date n))) 1))
     (is (= (t/today 0) (:date (:local (t/in-zone (t/now) 0)))) "in a zone")
     (is (#{0 1} (t/days-between (:date (:local (t/in-zone before 0))) (t/today 0))))))
+
+(deftest instants-past-a-fixnum
+  ;; (nanoseconds since 1970 pass a fixnum's 2^62 outside about 1823–2116:
+  ;; they wrapped, and named another instant; now a bignum, to i64's ends)
+  (is (= "2200-01-01T00:00:00Z" (t/format (t/parse "2200-01-01T00:00:00Z"))))
+  (is (= "1677-09-22T00:00:00Z" (t/format (t/parse "1677-09-22T00:00:00Z"))))
+  (is (neg? (t/epoch-nanos (t/parse "1700-01-01T00:00:00Z"))))
+  (is (= "2200-06-01T12:00:00Z" (t/format #inst "2200-06-01T12:00:00Z")))
+  (is (= "2200-01-02T00:00:00Z" (t/format (t/plus (t/parse "2200-01-01T00:00:00Z") (t/duration :days 1)))))
+  (is (thrown? Error (t/from-fields {:year 2026 :month 1 :day 1 :hour 1.5})) "a field that isn't an integer"))
+
+(deftest offsets-with-seconds
+  ;; (a zone's local mean time has seconds in its offset: cut to minutes, the
+  ;; text named an instant two seconds off)
+  (is (= "1849-12-31T22:30:00-01:30" (t/format (t/parse "1850-01-01T00:00:00Z") -5400)) "whole minutes keep hh:mm")
+  (let [i (t/parse "1850-01-01T00:00:00Z")]
+    (is (= i (t/parse (t/format i 5401))))
+    (is (= "1850-01-01T01:30:01+01:30:01" (t/format i 5401))))
+  (is (thrown? Error (t/parse "2026-01-01T00:00:00+24:00")) "offset hours go to 23")
+  (is (thrown? Error (t/parse "2026-01-01T00:00:00+01:60"))))

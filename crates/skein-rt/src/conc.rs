@@ -189,7 +189,15 @@ pub mod chan {
     pub const TAKERS_BACK: usize = 7;
     pub const PUTTERS_FRONT: usize = 8;
     pub const PUTTERS_BACK: usize = 9;
-    pub const WORDS: usize = 10;
+    /// Raw: waiters in the four lists, those whose claim was taken
+    /// elsewhere included, and the count at which a push next sweeps
+    /// those out (an alts! that keeps losing on a quiet channel would
+    /// otherwise pile them up there).
+    pub const QUEUED: usize = 10;
+    pub const PURGE_AT: usize = 11;
+    pub const WORDS: usize = 12;
+    /// The least PURGE_AT: a sweep runs at most once per this many pushes.
+    pub const PURGE_MIN: u64 = 64;
     pub const VALUE_FIELDS: &[usize] = &[BUF, TAKERS_FRONT, TAKERS_BACK, PUTTERS_FRONT, PUTTERS_BACK];
 }
 
@@ -206,6 +214,8 @@ pub fn chan_new(m: &mut Mutator, cap: usize) -> Value {
     for f in [TAKERS_FRONT, TAKERS_BACK, PUTTERS_FRONT, PUTTERS_BACK] {
         c.set_field(f, Value::NIL);
     }
+    c.set_word(QUEUED, 0);
+    c.set_word(PURGE_AT, PURGE_MIN);
     c
 }
 

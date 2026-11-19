@@ -478,6 +478,7 @@ fn save_base_image(skein: &skein_vm::Skein, path: &std::path::Path) {
     // (no macros here: the first to expand loads skein.validate, which the
     // base image doesn't have)
     let save = format!("(save-image {} :entry nil :fibers :none :layered false)", skein_string(&tmp.to_string_lossy()));
+    skein_vm::save_gensym_as_now();
     if skein.run(RootTask::EvalRaw(save), "user").result.is_err() || std::fs::rename(&tmp, path).is_err() {
         let _ = std::fs::remove_file(&tmp);
         return;

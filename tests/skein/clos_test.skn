@@ -367,3 +367,17 @@
   (is (str/starts-with? (m '(defclass "shape" () ())) "defclass: expected"))
   (is (nil? (m '(defclass shape () ()))))
   (is (nil? (m '(defclass shape [] [x] (:doc "vectors do too"))))))
+
+;;; an eql specializer whose value is a class, beside a method for that
+;;; class's instances: the dispatch cache told them apart only by the first
+;;; call (both keyed by the class)
+(defclass eql-point () (x))
+(defgeneric eql-show (x))
+(defmethod eql-show ((c (eql eql-point))) :the-class)
+(defmethod eql-show ((p eql-point)) :an-instance)
+(let [p (make eql-point :x 1)]
+  (is (= [:an-instance :the-class :an-instance :the-class] [(eql-show p) (eql-show eql-point) (eql-show p) (eql-show eql-point)])))
+(defgeneric eql-kind (x))
+(defmethod eql-kind ((c (eql String))) :the-string-class)
+(defmethod eql-kind ((s String)) :a-string)
+(is (= [:the-string-class :a-string :the-string-class] [(eql-kind String) (eql-kind "abc") (eql-kind String)]))

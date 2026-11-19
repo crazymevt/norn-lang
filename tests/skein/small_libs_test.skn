@@ -81,7 +81,11 @@
       (is (not (c/hmac-valid? :sha256 key "Hi there" tag)))))
   (testing "PBKDF2 (RFC 6070)"
     (is (= "0c60c80f961f0e71f3a9b524af6012062fe037a6" (c/hex (c/pbkdf2 "password" "salt" :alg :sha1 :iterations 1 :length 20))))
-    (is (= "4b007901b765489abead49d926f721d065a429c1" (c/hex (c/pbkdf2 "password" "salt" :alg :sha1 :iterations 4096 :length 20)))))
+    (is (= "4b007901b765489abead49d926f721d065a429c1" (c/hex (c/pbkdf2 "password" "salt" :alg :sha1 :iterations 4096 :length 20))))
+    ;; (an iteration count past 32 bits was cut to its low bits: 2^32 + 1
+    ;; meant one iteration)
+    (is (thrown? Error (c/pbkdf2 "password" "salt" :iterations 4294967297)))
+    (is (thrown? Error (c/pbkdf2 "password" "salt" :iterations 4294967296))))
   (testing "secure random"
     (is (= 32 (count (c/random-bytes 32))))
     (is (not= (c/random-bytes 16) (c/random-bytes 16)))
@@ -182,7 +186,8 @@ role = \"backend\"
   (testing "what the spec forbids"
     (doseq [[bad why] [["a = 1\na = 2" "defined already"] ["[t]\n[t]" "defined twice"] ["a = " "a value expected"]
                        ["a = \"open" "isn't closed"] ["x = 1 2" "more on the line"] ["t = {a = 1}\n[t]" "defined already"]
-                       ["n = 01" "not a value"] ["n = 1__0" "not a value"] ["s = \"\\q\"" "unknown escape"]]]
+                       ["n = 01" "not a value"] ["n = 1__0" "not a value"]
+                       ["n = 0x_1" "not a value"] ["n = 1_.5" "not a value"] ["n = 1._5" "not a value"] ["n = 1_e5" "not a value"] ["s = \"\\q\"" "unknown escape"]]]
       (let [m (message (fn [] (toml/read-string bad)))]
         (is (and m (str/includes? m why)) (str (pr-str bad) ": " m)))
       (is (= "ParseError" (class-of-error (fn [] (toml/read-string bad)))))))

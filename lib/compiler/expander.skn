@@ -545,13 +545,48 @@
                            (doseq [c (if (map? e) (mapcat identity e) e)]
                              (record c ops (inc depth))))))
                      d))
-          args (mapv (fn [a] (record a [] 0)) args)
-          result (apply m args)
+          data (mapv (fn [a] (record a [] 0)) args)
+          ;; (a name the arguments write with more than one set of scopes —
+          ;; a template's (let [x 1] body) with the user's x as body — can't
+          ;; be told apart so: the macro gets a stand-in for each set, an
+          ;; uninterned symbol of that name, which goes back to its syntax.
+          ;; Not for names macros compare as they are: &, _, quote, ...)
+          clash (set (keep (fn [[d cands]]
+                             (when (and (nil? (namespace d)) (not (contains? '#{& _ quote ...} d))
+                                        (let [ss (syn/syntax-scopes (first cands))]
+                                          (some (fn [c] (not= ss (syn/syntax-scopes c))) cands)))
+                               d))
+                           @ids))
+          stand-ins (atom [])
+          stand-in (fn [d stx]
+                     (let [ss (syn/syntax-scopes stx)]
+                       (or (some (fn [[u _ d2 ss2]] (when (and (= d d2) (= ss ss2)) u)) @stand-ins)
+                           (let [u (%uninterned-symbol (name d))]
+                             (swap! stand-ins conj [u stx d ss])
+                             u))))
+          ;; (the arguments' data again, with the stand-ins: their compound
+          ;; parts are new data, noted as record notes them)
+          with-stand-ins (fn with-stand-ins [x ops depth]
+                           (let [d (raw-datum x)]
+                             (cond (not (and (syn/syntax? x) (not (syn/%raw? x)))) d
+                                   (and (symbol? d) (contains? clash d))
+                                   (stand-in d (if (seq ops) (syn/%change-scopes x ops) x))
+                                   (and (compound? (syn/%raw-e x)) (< depth 2))
+                                   (let [ops2 (into ops (or (syn/%pending x) []))
+                                         nd (rebuild (syn/%raw-e x) (fn [c] (with-stand-ins c ops2 (inc depth))))]
+                                     (swap! seen update (%identity-hash nd) conj [nd x ops])
+                                     nd)
+                                   :else d)))
+          data (if (empty? clash) data (mapv (fn [a] (with-stand-ins a [] 0)) args))
+          result (apply m data)
           known @seen
           names @ids
           written @consts
+          stood @stand-ins
           back (fn back [x]
                  (cond (syn/syntax? x) x
+                       (and (symbol? x) (seq stood) (some (fn [[u]] (identical? u x)) stood))
+                       (some (fn [[u stx]] (when (identical? u x) stx)) stood)
                        (symbol? x)
                        (let [cands (get names x)]
                          (if (and (seq cands)

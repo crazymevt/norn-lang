@@ -462,3 +462,14 @@
 (is (= {:a 1 :b 2} (update-in {:a 1} [] assoc :b 2)))
 (is (= [[0 :x] [1 :y]] (reduce-kv (fn [acc i x] (conj acc [i x])) [] [:x :y])))
 (is (= [:x] (reduce-kv (fn [acc i x] (if (= i 1) (reduced acc) (conj acc x))) [] [:x :y :z])))
+
+;; an unrealized stream as a key: realized first (it hashed as the empty
+;; seq, so a map held it beside an equal vector)
+(is (= 1 (count (-> {} (assoc (lazy-seq [1 2]) :lazy) (assoc [1 2] :vec)))))
+(is (= 1 (count (hash-set (lazy-seq [1 2]) [1 2]))))
+(is (= :y (get {[0 1] :y} (lazy [0 1]))))
+(is (contains? #{[0 1]} (lazy [0 1])))
+(is (= #{[1]} (conj #{[1]} (lazy [1]))))
+(is (= {[1] 3} (into {} [[(lazy [1]) 2] [[1] 3]])))
+(is (= {} (dissoc {[1] 2} (lazy [1]))))
+(is (= #{} (disj #{[1]} (lazy [1]))))

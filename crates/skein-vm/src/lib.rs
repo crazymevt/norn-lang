@@ -34,7 +34,7 @@ pub mod text;
 pub mod verify;
 pub mod vm;
 
-pub use image::base_image;
+pub use image::{base_image, save_gensym_as_now};
 pub use reader::{ReadError, Reader};
 pub use sched::{RootDone, RootTask, Skein, start, start_from_base, start_with, subscribe, wait_started};
 pub use vm::{Error, Result, Vm};

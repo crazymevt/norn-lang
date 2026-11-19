@@ -153,6 +153,18 @@
   (is (= 5 (bind-it x 5 x)) "at top level")
   (is (= 3 (let [x 1] (bind-it y 2 (+ x y)))) "the body still sees the function's own locals"))
 
+;; A template's own local, named as a name the user's body also uses: each
+;; keeps its own scopes through the defmacro macro (let, if-let) between.
+(defsyntax x-is-one (syn/syntax-rules () [(_ body) (let [x 1] body)]))
+(defsyntax x-is-one-if (syn/syntax-rules () [(_ body) (if-let [x 1] body)]))
+(defsyntax x-is-one-both (syn/syntax-rules () [(_ body) (let [x 1] [x body])]))
+
+(deftest a-template-local-with-the-name-of-a-user-one
+  (is (= 2 (let [x 2] (x-is-one x))))
+  (is (= 2 (let [x 2] (x-is-one-if x))))
+  (is (= [1 2] (let [x 2] (x-is-one-both x))))
+  (is (= 3 (let [x 2] (x-is-one (inc x))))))
+
 (deftest macroexpand-of-a-hygienic-macro
   (is (= '(let [x 5] x) (macroexpand-1 '(expander-test/bind-it x 5 x))))
   (is (= '(let* [x 5] x) (macroexpand '(expander-test/bind-it x 5 x))))

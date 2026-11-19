@@ -303,13 +303,15 @@
 ;;   literal    an identifier in the literals list: matches an identifier
 ;;              that means the same (free-identifier=?)
 ;;   (p …)      a list; [p …] a vector
+;;   {:k p …}   a map with just those keys (by value), their values matching
 ;;   p ...      zero or more of p (once per list or vector)
 ;;   & p        the rest of the list or vector, matched by p
 ;;   :k 1 "s"   matches itself
 ;;
 ;; (syntax template) is template with the pattern variables of the clauses
 ;; it's in replaced by what they matched; t ... repeats t for each match of
-;; the variables in it; & x splices the parts x matched. Other identifiers
+;; the variables in it (not in a map or set); & x splices the parts x
+;; matched. Maps and sets are filled in too. Other identifiers
 ;; in a template keep the template's context: that's the hygiene.
 ;;
 ;; (syntax-rules (literal…) [pattern template]…) is a transformer (for
@@ -340,6 +342,7 @@
   (let [e (syntax-e p)]
     (cond (symbol? e) (if (or (contains? #{'_ '... '&} e) (some (fn [l] (= e l)) literals)) [] [e])
           (or (seq? e) (vector? e)) (vec (mapcat (fn [x] (pattern-vars x literals)) e))
+          (map? e) (vec (mapcat (fn [x] (pattern-vars x literals)) (vals e)))
           :else [])))
 
 (defn- match-seq
@@ -384,7 +387,15 @@
             {e s})
           (seq? e) (when (seq? (syntax-e s)) (match-seq (vec e) (vec (syntax-e s)) literals s))
           (vector? e) (when (vector? (syntax-e s)) (match-seq e (vec (syntax-e s)) literals s))
-          :else (when (= e (syntax->datum s)) {}))))
+          ;; ({:k p …}: a map with just those keys, by value, their values matching)
+          (map? e) (let [m (syntax-e s)]
+                     (when (and (map? m) (= (count m) (count e)))
+                       (let [by-key (into {} (map (fn [[k v]] [(syntax->datum k) v])) m)
+                             envs (map (fn [[k p]] (let [d (syntax->datum k)]
+                                                     (when (contains? by-key d) (%match p (get by-key d) literals))))
+                                       e)]
+                         (when (every? some? envs) (apply merge {} envs)))))
+          :else (when (= (syntax->datum p) (syntax->datum s)) {}))))
 
 (defn %syntax-case
   "Run syntax-case's clauses ([pattern fender-fn result-fn]…) on syntax s."
@@ -410,7 +421,8 @@
 (defn- vars-in-template [t env]
   (let [e (syntax-e t)]
     (cond (symbol? e) (if (contains? env e) [e] [])
-          (or (seq? e) (vector? e)) (vec (mapcat (fn [x] (vars-in-template x env)) e))
+          (or (seq? e) (vector? e) (set? e)) (vec (mapcat (fn [x] (vars-in-template x env)) e))
+          (map? e) (vec (mapcat (fn [x] (vars-in-template x env)) (apply concat e)))
           :else [])))
 
 (defn %fill
@@ -447,6 +459,9 @@
                                                                (%fill (merge env (into {} (map (fn [v] [v (nth (get env v) k)])) vs)) p))))))
                                 :else (recur (inc i) (conj out (%fill env p)))))))]
             (%make-syntax (if (vector? e) out (apply list out)) (syntax-scopes t) (syntax-loc t) nil))
+          ;; (a map's or set's parts filled in, each on its own: no ... in them)
+          (map? e) (%make-syntax (into {} (map (fn [[k v]] [(%fill env k) (%fill env v)])) e) (syntax-scopes t) (syntax-loc t) nil)
+          (set? e) (%make-syntax (into #{} (map (fn [x] (%fill env x))) e) (syntax-scopes t) (syntax-loc t) nil)
           :else t)))
 
 (defmacro syntax

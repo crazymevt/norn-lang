@@ -120,6 +120,49 @@ pub fn proto(p: Value, nups: usize, from_image: bool) -> R {
     if n == 0 {
         return Err("no code".into());
     }
+    // An inlined call's record ([start end fname debug holes], and for one
+    // that can be restarted [slow base var nargs] after): backtraces, the
+    // debugger and restarts index the code and the registers by it.
+    if locals.is(Kind::Array) {
+        let fix = |v: Value, max: usize| v.is_fixnum() && (0..=max as i64).contains(&v.as_fixnum());
+        for l in locals.arr_slice().chunks(2) {
+            let r = l[0];
+            if !(r.is(Kind::Vector) && r.vec_count() >= 5) {
+                continue;
+            }
+            let bad = || Err::<(), String>("an inlined call's debug record is malformed".into());
+            let (s, e) = (r.vec_nth(0), r.vec_nth(1));
+            if !fix(s, n) || !fix(e, n) || s.as_fixnum() > e.as_fixnum() {
+                return bad();
+            }
+            let d = r.vec_nth(3);
+            if !(d.is_nil()
+                || d.is(Kind::Vector)
+                    && (0..d.vec_count() / 2).all(|i| {
+                        let x = d.vec_nth(2 * i + 1);
+                        x.is_fixnum() && (0..nregs as i64).contains(&x.as_fixnum())
+                    }))
+            {
+                return bad();
+            }
+            let hs = r.vec_nth(4);
+            let hole = |h: Value| h.is(Kind::Vector) && h.vec_count() >= 2 && fix(h.vec_nth(0), n) && fix(h.vec_nth(1), n);
+            if !(hs.is(Kind::Vector) && (0..hs.vec_count()).all(|i| hole(hs.vec_nth(i)))) {
+                return bad();
+            }
+            if r.vec_count() >= 9 {
+                let (slow, base, nargs) = (r.vec_nth(5), r.vec_nth(6), r.vec_nth(8));
+                if !fix(slow, n)
+                    || slow.as_fixnum() + 1 >= n as i64
+                    || !fix(base, nregs)
+                    || !fix(nargs, nregs)
+                    || base.as_fixnum() + 1 + nargs.as_fixnum() > nregs as i64
+                {
+                    return bad();
+                }
+            }
+        }
+    }
     let k = consts.arr_slice();
     // SAFETY: a code object holds code_len instructions.
     let ins = unsafe { std::slice::from_raw_parts(code.code_ptr(), n) };

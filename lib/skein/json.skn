@@ -28,10 +28,32 @@
         (identical? keys identity) (%json-read s false)
         :else (keys-with keys (%json-read s false))))
 
+(defn- key-text [k]
+  (cond (or (keyword? k) (symbol? k)) (if (namespace k) (str (namespace k) "/" (name k)) (name k))
+        :else (str k)))
+
+(defn- check-keys
+  "An error for the first map in x with two keys that write as the same
+  text (\"a\" and :a, 1 and \"1\"): JSON would hold the key twice."
+  [x]
+  (cond (map? x) (do (when (and (> (count x) 1) (not (every? string? (keys x))))
+                       (loop [ks (keys x) seen #{}]
+                         (when (seq ks)
+                           (let [t (key-text (first ks))]
+                             (when (contains? seen t)
+                               (error TypeError :expected "keys that write as different text" :value x
+                                      :message (str "JSON: two keys of the map write as " (pr-str t))))
+                             (recur (rest ks) (conj seen t))))))
+                     (doseq [v (vals x)] (check-keys v)))
+        (and (coll? x) (not (string? x))) (doseq [v x] (check-keys v))
+        :else nil))
+
 (defn write-string
   "JSON text for x. Options: :pretty indents two spaces per level; :ascii
-  escapes every non-ASCII character as \\uXXXX."
+  escapes every non-ASCII character as \\uXXXX. Two keys of a map that
+  write as the same text (\"a\" and :a) are an error."
   ^String [x & {:keys [pretty ascii]}]
+  (check-keys x)
   (%json-write x pretty ascii))
 
 (defn read-file "The JSON value in file path (UTF-8)." [^String path & opts] (apply read-string (slurp path) opts))
