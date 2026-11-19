@@ -654,12 +654,22 @@ impl JsonWriter {
 
     fn entries(&mut self, vm: &mut Vm, pairs: Vec<(Value, Value)>, depth: usize) -> Result<()> {
         self.out.push('{');
+        // (keys of more than one kind can write as the same text, "a" and
+        // :a, 1 and "1": JSON would hold the key twice. Only then are the
+        // texts kept, to tell)
+        let mut seen = (pairs.len() > 1 && pairs.iter().any(|(k, _)| !k.is(Kind::String))).then(std::collections::HashSet::new);
         for (i, (k, v)) in pairs.iter().enumerate() {
             if i > 0 {
                 self.out.push(',');
             }
             self.newline(depth + 1);
+            let at = self.out.len();
             self.key(*k)?;
+            if let Some(seen) = seen.as_mut()
+                && !seen.insert(self.out[at..].to_owned())
+            {
+                return Err(Error::of("TypeError", format!("JSON: two keys of a map write as {}", &self.out[at..])));
+            }
             self.out.push_str(if self.pretty { ": " } else { ":" });
             self.value(vm, *v, depth + 1)?;
         }
