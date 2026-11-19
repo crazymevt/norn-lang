@@ -68,14 +68,19 @@ fn skein_test_reports_the_lines_that_ran() {
         let d = project(&format!("t{tier}"));
         let (ok, out) = skein_test(&d, tier, &["--coverage", "--lcov", "cov.info"]);
         assert!(ok, "tier {tier}:\n{out}");
+        // (paths with /, as on Windows too once its \ are turned)
+        let out = out.replace('\\', "/");
         assert!(out.contains("1 test, 5 checks: 5 passed"), "tier {tier}:\n{out}");
         // Counted: the defs (run as the module loads) and the code that ran;
         // missed: the other case branches and unused's body.
         let line = out.lines().find(|l| l.trim_start().starts_with("src/geo/shapes.skn")).unwrap_or_else(|| panic!("{out}"));
         assert!(line.contains("missed: 8-9, 24-25"), "tier {tier}: {line}");
         assert!(out.contains("in 1 file"), "only the project's own file, not its test: {out}");
-        let info = std::fs::read_to_string(d.join("cov.info")).unwrap();
-        assert!(info.starts_with("TN:\nSF:/") && info.contains("/src/geo/shapes.skn\nDA:1,"), "{info}");
+        let info = std::fs::read_to_string(d.join("cov.info")).unwrap().replace('\\', "/");
+        // (absolute: /… or, on Windows, C:/…)
+        let sf = info.strip_prefix("TN:\nSF:").unwrap_or_else(|| panic!("{info}"));
+        assert!(sf.starts_with('/') || sf.as_bytes().get(1) == Some(&b':'), "{info}");
+        assert!(info.contains("/src/geo/shapes.skn\nDA:1,"), "{info}");
         assert!(info.contains("DA:19,6\n"), "the loop's line ran six times: {info}");
         assert!(info.contains("DA:8,0\n") && info.ends_with("end_of_record\n"), "{info}");
     }

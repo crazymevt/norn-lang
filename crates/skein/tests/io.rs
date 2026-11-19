@@ -2,6 +2,8 @@
 //! process of its own with a known number of carriers (the shared suite
 //! runner keeps every carrier busy with other suites).
 
+mod common;
+
 use std::process::Command;
 
 fn skein(threads: &str, expr: &str) -> String {
@@ -46,17 +48,26 @@ fn a_spare_carrier_runs_fibers_while_carriers_are_stuck_in_native_code() {
 #[test]
 fn a_slow_fast_ffi_call_gets_a_spare_carrier() {
     // usleep declared as a fast (non-blocking) call: both carriers sit in C
-    // for 1.5 s, and the worker still runs on a spare carrier.
+    // for 1.5 s, and the worker still runs on a spare carrier. (Windows has
+    // no usleep: kernel32's Sleep, in milliseconds, there.)
+    let slow_sleep = if cfg!(windows) {
+        r#"(ffi/defcfun %sleep (ffi/library "kernel32.dll") "Sleep" [:uint] :void)
+           (defn slow-sleep [us] (%sleep (quot us 1000)) 0)"#
+    } else {
+        r#"(ffi/defcfun slow-sleep (ffi/library :c) "usleep" [:uint] :int)"#
+    };
     let r = skein(
         "2",
-        r#"(do (require '[skein.ffi :as ffi])
-               (ffi/defcfun slow-sleep (ffi/library :c) "usleep" [:uint] :int)
+        &format!(
+            r#"(do (require '[skein.ffi :as ffi])
+               {slow_sleep}
                (let [stalls (mapv (fn [_] (spawn-detached (slow-sleep 1500000))) (range 2))
                      _ (sleep 50)
                      worker (spawn-detached (reduce + (range 100000)))
                      v (await worker)
                      early (if (some (fn [f] (not (done? f))) stalls) true false)]
-                 [v early (mapv await stalls)]))"#,
+                 [v early (mapv await stalls)]))"#
+        ),
     );
     assert_eq!(r, "[4999950000 true [0 0]]");
 }
@@ -172,7 +183,7 @@ fn a_socket_saved_in_an_image_is_lost_until_reconnected() {
                    (def reply (io/read-line (io/line-reader c)))
                    (save-image "{}")
                    reply)"#,
-            img.display()
+            common::esc(&img)
         ),
     );
     assert_eq!(saved, "\"before!\"");

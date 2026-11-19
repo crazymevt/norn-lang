@@ -1,6 +1,8 @@
 //! M7.5 done-check (this repository's half): native extensions and the
 //! main-thread handoff, through `skein-ext-demo` (src/bin/ext_demo.rs).
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -59,7 +61,7 @@ fn extension_primitives_and_native_handles() {
 fn images_remember_their_extensions() {
     let d = scratch("images");
     let img = d.join("demo.skimg");
-    let save = format!("(def c (skein.demo/counter)) (skein.demo/bump! c) (save-image \"{}\")", img.display());
+    let save = format!("(def c (skein.demo/counter)) (skein.demo/bump! c) (save-image \"{}\")", common::esc(&img));
     let (ok, _, err) = demo(&["-e", &save], &[]);
     assert!(ok, "{err}");
     // Reloaded in the same binary, the native object is gone, like a socket.

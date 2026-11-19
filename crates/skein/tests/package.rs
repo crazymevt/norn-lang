@@ -44,6 +44,13 @@ fn project(dir: &Path, targets: &str) {
     write(&dir.join("data/hello.txt"), "hi from data\n");
 }
 
+/// Path p as skein writes it: canonical (on Windows the long names, not
+/// `RUNNER~1`, and without `\\?\`).
+fn canonical(p: &Path) -> String {
+    let c = p.canonicalize().unwrap().display().to_string();
+    c.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(c)
+}
+
 fn run_ok(c: &mut Command) -> String {
     let out = c.output().expect("run");
     assert!(out.status.success(), "{c:?} failed:\n{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
@@ -56,10 +63,10 @@ fn a_command_line_archive_runs_its_main_from_anywhere() {
     let proj = dir.join("echo");
     project(&proj, "[:cli]");
     let made = run_ok(skein().arg("package").current_dir(&proj));
-    let os = if cfg!(target_os = "macos") { "macos" } else { "linux" };
+    let os = std::env::consts::OS; // (macos, linux, windows: as sys/os names them)
     let base = format!("echo-app-1.2.0-{os}-{}", std::env::consts::ARCH);
     let archive = proj.join("dist").join(format!("{base}.tar.gz"));
-    assert!(made.contains(archive.to_str().unwrap()), "{made}");
+    assert!(made.contains(&canonical(&archive)), "{made}");
     // unpacked somewhere else, and run from yet another folder
     let unpacked = dir.join("unpacked");
     let elsewhere = dir.join("elsewhere");
@@ -67,12 +74,13 @@ fn a_command_line_archive_runs_its_main_from_anywhere() {
     std::fs::create_dir_all(&elsewhere).unwrap();
     run_ok(Command::new("tar").arg("-xzf").arg(&archive).arg("-C").arg(&unpacked));
     std::fs::remove_dir_all(proj.join("dist")).unwrap();
-    let launcher = unpacked.join(&base).join("bin/echo-app");
+    let launcher = unpacked.join(&base).join(format!("bin/echo-app{}", std::env::consts::EXE_SUFFIX));
     let out = Command::new(&launcher).args(["-e", "two words", "--image", "x"]).current_dir(&elsewhere).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains(r#":args ["-e" "two words" "--image" "x"]"#), "every argument goes to :main:\n{text}");
-    let cwd = elsewhere.canonicalize().unwrap();
-    assert!(text.contains(&format!(":cwd \"{}\"", cwd.display())), "the caller's folder:\n{text}");
+    // (printed: a \ in it is \\)
+    let cwd = canonical(&elsewhere).replace('\\', "\\\\");
+    assert!(text.contains(&format!(":cwd \"{cwd}\"")), "the caller's folder:\n{text}");
     assert!(text.contains(r#":hello "hi from data\n""#), "its resources:\n{text}");
     assert_eq!(Some(4), out.status.code(), ":main's integer is the exit status");
     // through a symbolic link, as when linked into a bin folder

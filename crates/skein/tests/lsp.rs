@@ -100,11 +100,21 @@ fn json_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n"))
 }
 
+/// The file: URI an editor names path p by: file:///Users/… or, as VS Code
+/// writes a Windows path, file:///c%3A/Users/….
+fn file_uri(p: &Path) -> String {
+    let s = p.display().to_string();
+    match s.as_bytes() {
+        [d, b':', ..] => format!("file:///{}%3A{}", (*d as char).to_ascii_lowercase(), s[2..].replace('\\', "/")),
+        _ => format!("file://{s}"),
+    }
+}
+
 #[test]
 fn a_client_gets_what_it_asks_for() {
     let d = project("protocol");
     let path = d.join("src/geo/shapes.skn");
-    let uri = format!("file://{}", path.display());
+    let uri = file_uri(&path);
     let text = std::fs::read_to_string(&path).unwrap();
     let mut c = Client::start(&d);
     let init = c.request("initialize", r#"{"processId":null,"rootUri":null,"capabilities":{}}"#);
