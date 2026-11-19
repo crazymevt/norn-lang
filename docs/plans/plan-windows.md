@@ -1,10 +1,81 @@
 # Plan: Windows
 
-Drafted 2026-11-18, on a Mac, before anything of Skein has run on
-Windows. **Nothing here is decided, and none of it has been tried.** The
-Windows API names are from memory and each needs checking against its
-documentation as it's used. It's the first part of runtime.md §12's M12
-(platforms and distribution).
+Drafted 2026-11-18, on a Mac, before anything of Skein had run on
+Windows; it's the first part of runtime.md §12's M12 (platforms and
+distribution). **Parts 0 to 6 were then done the same day on a Windows
+11 ARM64 VM**: see Status, next. The sections after it are the draft as
+it was written, kept for the reasoning; where the VM's work chose
+otherwise, Status says so.
+
+## Status (2026-11-18, from the VM; `../mmtk-core-windows/HANDOFF.md` has all of it)
+
+On Windows 11 ARM64, a release build, with `clang` and `git` on the
+`PATH`:
+
+| Check | Result |
+|---|---|
+| MMTk's layer: its own tests, MMTk's unit tests, the mock tests | 11 of 11; 544 of 544; 39 pass, 2 fail for reasons not the layer's |
+| The 51 suites of `tests/skein`, tier 0, tier 1, and tier 0 with collections forced | 51 pass in each |
+| The lang-tests, six programs in three modes | All pass, outputs as recorded on the Mac |
+| On macOS and Linux, the same changes | See the pull request that brought them in |
+
+What it took, beyond filling in `platform/windows.rs`:
+
+- **Two bugs in the MMTk layer**: the heap's address (2 TB is among a
+  Windows process's own allocations: 4 launches of 300 died; it's 8 TB
+  there now) and `munmap` across more than one allocation.
+- **The seam changed shape once**, as section 3 foresaw:
+  `platform::Child`. And `sync_dir` and `connect_settled` joined it
+  (Windows can't flush a directory; a connecting socket there reports a
+  peer address before it's connected).
+- **Paths**: `SKEIN_PATH` split as `PATH` is, `\\?\` taken off
+  canonical paths, `fs/glob` with either separator, and several places
+  in the libraries and the lang-tests that split on `/`.
+- **The FFI**: Windows arm64's variadic calls, and Microsoft's bit-field
+  layout.
+
+**Decided on the VM, for the user to confirm or change** (the plan had
+left them open):
+
+- **Signals**: `:int` Ctrl-C, `:break` Ctrl-Break (new), `:term` the
+  console closing or the session ending, `:winch` the console's size,
+  `:kill` sent only. Any other name is an error.
+- **`:winch` polls** the size four times a second while anyone listens.
+- **`proc/kill` sends only `:term` and `:kill`** on Windows (the draft
+  proposed `:int` as a Ctrl-Break to the child's process group).
+- **Pipes are `mio::windows::NamedPipe`** (A in section 1). A child's
+  pipes are the standard library's, which happen to be overlapped named
+  pipes on our side: its private detail.
+- **`proc/sh` needed no decision**: it runs a program directly.
+
+**Still open:**
+
+1. **How Skein depends on a patched MMTk.** For now, and so that CI
+   can build it: the patch is in the repository
+   (`tools/windows/mmtk-0.33.0.patch`), `tools/windows/mmtk.sh` makes
+   `target/mmtk-windows` from the MMTk on crates.io and it, and the
+   build is told to use that (`cargo --config
+   "patch.crates-io.mmtk.path='target/mmtk-windows'" build`). Skein's
+   manifests and `Cargo.lock` are as they were, so that build can't be
+   `--locked`. Still to decide: whether this stays (and at each MMTk
+   upgrade the patch is made again), becomes a branch of mmtk-core, or
+   goes upstream.
+2. **CI on Windows arm64** (part 7) is a job that can't fail the run
+   yet (`.github/workflows/ci.yml`, `windows`): the suites, the suites
+   with collections forced, the lang-tests, and `cargo test`, which had
+   never run on Windows (images, the 10,000 connections, `skein
+   --server`, `skein lsp`, `skein new`, `skein package`). Its first run
+   is the pull request that added it. A clone on Windows needs `git
+   config core.autocrlf false` first: the job sets it, and nothing in
+   the repository does.
+3. **x64** (part 8): nothing run.
+4. **Not tried**: the REPL by hand at a console; a real Ctrl-Break, the
+   console closing, the session ending.
+5. **A source file that begins with a byte-order mark doesn't load**
+   (found there; Windows tools write one).
+6. **The oldest Windows supported.**
+
+## The draft
 
 The target, in order: **Windows on ARM first** (the user has a VM), then
 x64. ARM first because tier 1's arm64 back end and the arm64 FFI carry
@@ -178,6 +249,8 @@ Parts 1 to 3 need nothing but the easy table. Each of 4, 5 and 6 is one
 of the three designs above, and they don't depend on each other.
 
 ## To decide
+
+(As drafted. Status, above, says which of these the VM's work settled.)
 
 1. **How Skein depends on a patched MMTk**: a `[patch.crates-io]` on a
    path or a git branch, for Windows only or for every platform; and

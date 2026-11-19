@@ -4,6 +4,11 @@
 # tiers against their recorded outputs, and skein check. On macOS arm64 and
 # Linux arm64 and x86-64. One job also checks the Rust's formatting and
 # shows clippy's warnings; macOS runs the book's examples.
+#
+# Windows on ARM is a job of its own, and for now one that can't fail the
+# run: it's new (docs/plans/plan-windows.md), `cargo test` has never run
+# there, and it builds against an MMTk patched for Windows
+# (tools/windows/mmtk.sh), which Cargo.lock doesn't name.
 name: CI
 
 on:
@@ -109,3 +114,66 @@ jobs:
         # wrong with nothing to say so)
         if: ${{ !cancelled() && runner.os == 'macOS' }}
         run: python3 docs/book/check.py --skein target/release/skein
+
+  windows:
+    name: Windows arm64
+    runs-on: windows-11-arm
+    timeout-minutes: 90
+    # (to be read, not to fail the run, until it has been green a while)
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    env:
+      # (MMTk with its Windows layer, in place of the one on crates.io)
+      MMTK: --config=patch.crates-io.mmtk.path='target/mmtk-windows'
+    steps:
+      - name: Files as they are in the repository
+        # (Git on Windows would give every text file \r\n line ends: the
+        # shell script, the patch, and the outputs the lang-tests compare)
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: clang on the PATH
+        # (ring builds C with clang on Windows arm64, and ffi_test builds its
+        # fixture with it; where LLVM is installed, it isn't on the PATH)
+        run: |
+          if [ -x "/c/Program Files/LLVM/bin/clang.exe" ]; then
+            echo "C:\\Program Files\\LLVM\\bin" >> "$GITHUB_PATH"
+            "/c/Program Files/LLVM/bin/clang.exe" --version
+          else
+            echo "::warning::No LLVM in C:\\Program Files\\LLVM: clang must already be on the PATH"
+            clang --version
+          fi
+
+      - name: MMTk with its Windows layer
+        run: tools/windows/mmtk.sh
+
+      - name: Build
+        run: cargo "$MMTK" build --release
+
+      - name: Every Skein suite
+        if: ${{ !cancelled() }}
+        run: target/release/skein test tests/skein
+
+      - name: Every Skein suite, a collection forced every 50th poll
+        if: ${{ !cancelled() }}
+        run: target/release/skein test tests/skein
+        env:
+          SKEIN_TIER: "0"
+          SKEIN_GC_STRESS: "50"
+
+      - name: lang-tests
+        if: ${{ !cancelled() }}
+        run: target/release/skein lang-tests/run.skn
+
+      - name: Rust tests
+        # (never run on Windows before this job: images, 10,000 connections,
+        # skein --server, skein lsp, skein new, skein package)
+        if: ${{ !cancelled() }}
+        run: cargo "$MMTK" test --release --workspace --no-fail-fast
