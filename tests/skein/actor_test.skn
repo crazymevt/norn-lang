@@ -207,7 +207,9 @@
     (testing "supervised like the others"
       (a/send :dyn-b [:crash])
       (is (eventually (fn [] (let [p (a/whereis :dyn-b)] (and p (not (identical? p b)))))))
-      (is (= 5 (a/ask :dyn-b [:get]))))
+      ;; (20 s, as eventually waits: under skein check's load on CI's Linux
+      ;; arm64, 5 s once wasn't enough)
+      (is (= 5 (a/ask :dyn-b [:get] 20000))))
     (testing "an id it has already"
       (is (thrown? Error (a/start-child! sup (a/child :dyn-a counter 1))))
       (is (= [:dyn-a :dyn-b] (mapv first (a/which-children sup))) "and the supervisor carries on"))
