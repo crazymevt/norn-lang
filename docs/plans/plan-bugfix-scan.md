@@ -74,7 +74,7 @@ Data libraries (worktree C):
 
 ## Left for a decision
 
-- Calling a Var object ignores dynamic bindings (`((var *g*))` → root), as `var-get` does. Clojure honours the binding. Not changed.
+- Calling a Var object ignored dynamic bindings (`((var *g*))` → root), and so did `@#'*g*`. An oversight: both were written in M0, before bindings; M3 taught only GETVAR (reading the name) to look at the fiber's bindings. Decided (2026-11-19): both give the fiber's value now; `var-get` stays the root, as documented and as `alter-var-root` needs (Clojure's gives the bound value; the reference says so).
 
 ## Result
 

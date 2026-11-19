@@ -2007,7 +2007,9 @@ fn deref(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     if x.is(Kind::Atom) {
         Ok(x.atom_get())
     } else if x.is(Kind::Var) {
-        Ok(x.var_root())
+        // (its value in this fiber, a binding's if it has one, as reading
+        // its symbol gives; var-get is the root's)
+        Ok(vm.var_value(x))
     } else if x.is(Kind::Fiber) {
         crate::conc::await_fiber(vm, x)
     } else {

@@ -621,7 +621,7 @@ fn jit_resolve(vm: &mut Vm, mut f: Value, args: &[Value]) -> Callee {
             };
         }
         if f.is(Kind::Var) {
-            match Vm::deref_var(f) {
+            match vm.deref_var(f) {
                 Ok(g) => f = g,
                 Err(e) => return Callee::Failed(e),
             }
@@ -1379,8 +1379,23 @@ impl Vm {
         }
     }
 
-    fn deref_var(f: Value) -> Result<Value> {
-        let v = f.var_root();
+    /// Var v's value in this fiber: its binding (`binding`), else its
+    /// root, as reading its symbol gives (GETVAR).
+    pub(crate) fn var_value(&self, v: Value) -> Value {
+        if v.var_flags() & VAR_DYNBOUND != 0
+            && !self.dyn_env.is_nil()
+            && let Some(x) = self.dyn_env.map_get(v)
+        {
+            return x;
+        }
+        v.var_root()
+    }
+
+    /// The function a call of var f calls: its value in this fiber, as for a
+    /// call through its name. (It was the root alone, from before bindings
+    /// existed: `((var *f*))` called another function than `(*f*)`.)
+    fn deref_var(&self, f: Value) -> Result<Value> {
+        let v = self.var_value(f);
         if v == Value::UNBOUND {
             return Err(Error::of("UnboundVarError", format!("Unbound var: {}", pr_str(f, true))).with("var", ErrData::Val(f)));
         }
@@ -1412,7 +1427,7 @@ impl Vm {
                     };
                 }
                 if f.is(Kind::Var) {
-                    f = Self::deref_var(f)?;
+                    f = self.deref_var(f)?;
                     continue;
                 }
                 if f.is(Kind::Generic) || f.is(Kind::Class) {
@@ -1925,7 +1940,7 @@ impl Vm {
                 }
             }
             if f.is(Kind::Var) {
-                f = Self::deref_var(f)?;
+                f = self.deref_var(f)?;
                 continue;
             }
             if f.is(Kind::Generic) || f.is(Kind::Class) {
@@ -1981,7 +1996,7 @@ impl Vm {
                     if thunk.is(Kind::Array) { (thunk.arr_get(0), thunk.arr_slice()[1..].to_vec()) } else { (thunk, Vec::new()) };
                 let mut callee = callee;
                 while callee.is(Kind::Var) {
-                    callee = Self::deref_var(callee)?;
+                    callee = self.deref_var(callee)?;
                 }
                 if !callee.is(Kind::Closure) {
                     // Primitives and data run to completion directly.

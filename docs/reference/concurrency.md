@@ -79,6 +79,7 @@ provides mailbox-based processes and supervision.
 | `(swap! a f args…)` | Replace the value with the result of applying `f` to the old value and any extra arguments. Return the new value. |
 | `(compare-and-set! a old new)` | Update if the current value is identical to `old`, returning whether the update happened. |
 | `(binding [var-name expr …] body…)` | Give a var a temporary value within a dynamic extent. Spawned fibers inherit those bindings. |
+| `@#'v`, `(#'v args…)` | A var's value in this fiber, as its name gives: inside `binding`, the bound value. `(var-get #'v)` is its root value whatever is bound (Clojure's `var-get` gives the bound one). |
 
 An atom update function may run again under contention. Keep side effects
 outside the function.
