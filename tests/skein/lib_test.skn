@@ -417,6 +417,27 @@
   (is (= :error (fails (net/connect "localhost" port :tls true))))
   (io/close l))
 
+;; A socket closed while another fiber reads or writes it closes for the
+;; peer too: the one parked is told, and the peer reads what was sent, then
+;; the end (todo.md's kicked chat clients).
+(doseq [parked [:reader :writer]]
+  (let [l (net/listen "127.0.0.1" 0)
+        c (net/connect "127.0.0.1" (net/port (net/local-address l)))
+        s (net/accept l)
+        big (apply str (repeat 65536 "x"))
+        f (spawn-detached
+            (try (case parked
+                   :reader (io/read-line (io/line-reader s))
+                   :writer (dotimes [_ 1000] (io/write s big)))
+                 :finished
+                 (catch Error e (condition-message e))))]
+    (sleep 200)
+    (io/close s)
+    (is (= "The handle is closed" (deref (future (await f)) 5000 :still-parked)) (str "the " (name parked) " is told"))
+    (is (= :end (deref (future (loop [] (if (io/read c 65536) (recur) :end))) 5000 :no-end)) (str "the peer sees the end, a " (name parked) " parked"))
+    (io/close c)
+    (io/close l)))
+
 ;; A listener whose backlog takes the connection, but which never accepts:
 ;; the handshake is never answered, and :timeout gives up on it.
 (let [l (net/listen "127.0.0.1" 0)
