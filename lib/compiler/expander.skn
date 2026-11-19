@@ -936,7 +936,16 @@
                     (and (> n (count "_test.skn")) (= "_test.skn" (subs src (- n (count "_test.skn"))))) nil
                     ;; (absolute: /… or, on Windows, C:\…)
                     (or (= "/" (subs src 0 (min 1 n))) (= ":" (subs src (min 1 n) (min 2 n))))
-                    (when (= cwd (subs src 0 (min n (count cwd)))) src)
+                    (if (= cwd (subs src 0 (min n (count cwd))))
+                      src
+                      ;; (the same folder written another way, as Windows'
+                      ;; C:\Users\RUNNER~1 for C:\Users\runneradmin: then
+                      ;; named under the current folder as it's written)
+                      (let [c (%path-part src :canonical)
+                            cc (%path-part (:cwd info) :canonical)
+                            cc (when cc (str cc (subs cwd (dec (count cwd)))))]
+                        (when (and c cc (= cc (subs c 0 (min (count c) (count cc)))))
+                          (str cwd (subs c (count cc))))))
                     (= ".." (subs src 0 (min 2 n))) nil
                     :else src)]
         (swap! cover-files assoc src (or f false))
