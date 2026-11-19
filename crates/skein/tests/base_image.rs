@@ -53,6 +53,13 @@ fn the_first_start_saves_it_and_the_next_start_from_it() {
     assert_eq!(eval(&skein(), &c, "(do (require '[skein.string :as s]) (s/upper-case \"ok\"))", &[]), "\"OK\"");
     assert_eq!(eval(&skein(), &c, "((fn f [n] (if (< n 2) n (+ (f (- n 1)) (f (- n 2))))) 20)", &[]), "6765");
     assert_eq!(images(&c), saved, "started from, not saved again");
+    // and it looks booted from source: no image to tell of, to layer on, or
+    // whose fiber numbers go on
+    assert_eq!(eval(&skein(), &c, "(image-info)", &[]), "nil");
+    assert_eq!(eval(&skein(), &c, "(str (current-fiber))", &[]), "\"#<fiber 1 running>\"");
+    let layered =
+        format!("(try (save-image {:?} :layered true) (catch Error e (condition-message e)))", c.join("l.skimg").display().to_string());
+    assert!(eval(&skein(), &c, &layered, &[]).contains("needs a base"), "a layered save has no base");
     assert_eq!(std::fs::metadata(&saved[0]).unwrap().modified().unwrap(), when);
     std::fs::remove_dir_all(&c).unwrap();
 }

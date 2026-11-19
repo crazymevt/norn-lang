@@ -1456,8 +1456,16 @@ fn start_from(image: Option<&std::path::Path>, fallback: bool) -> Result<&'stati
                 None => None,
             };
             FROM_IMAGE.store(restore.is_some(), Ordering::Release);
+            // (the base image looks booted from source: image-info and a
+            // layered save don't see it, and its fiber numbers, used up
+            // saving it, aren't carried on; it holds no fibers)
+            if fallback && restore.is_some() {
+                skein_rt::image::hide_chain();
+            }
             let _ = SCHED.set(Sched::new(n));
-            if let Some(r) = &restore {
+            if let Some(r) = &restore
+                && !fallback
+            {
                 sched().next_id.fetch_max(r.next_fiber_id, Ordering::Relaxed);
             }
             let (boot_tx, boot_rx) = mpsc::channel::<Result<(), String>>();
@@ -1490,7 +1498,15 @@ fn start_from(image: Option<&std::path::Path>, fallback: bool) -> Result<&'stati
         // Tell the image it has been restored (on-image-restore hooks).
         static RESTORED: std::sync::Once = std::sync::Once::new();
         let mut r = Ok(());
-        RESTORED.call_once(|| r = skein.run(RootTask::Call("%image-restored", String::new()), "user").result.map(|_| ()));
+        RESTORED.call_once(|| {
+            let before = sched().next_id.load(Ordering::Relaxed);
+            r = skein.run(RootTask::Call("%image-restored", String::new()), "user").result.map(|_| ());
+            // (the base image's restore hooks run and are done, leaving no
+            // fiber: the numbers start where a boot from source's do)
+            if fallback {
+                sched().next_id.store(before, Ordering::Relaxed);
+            }
+        });
         r?;
     }
     Ok(skein)
