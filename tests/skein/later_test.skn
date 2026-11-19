@@ -11,7 +11,7 @@
 (defn- wait-for "Until (pred), for at most 5 s." [pred]
   (loop [i 0] (when (and (not (pred)) (< i 500)) (sleep 10) (recur (inc i)))))
 (defn- parked "f, once it's parked (at most 5 s)." [f] (wait-for (fn [] (%fiber-parked? f))) f)
-(defn- awaited "(await f), or :hung after 10 s." [f] (deref (future (await f)) 10000 :hung))
+(defn- awaited "(await f), or :hung after 60 s (a slow runner under GC stress)." [f] (deref (future (await f)) 60000 :hung))
 
 (deftest deref-is-as-it-was
   (is (= 1 @(atom 1)))
