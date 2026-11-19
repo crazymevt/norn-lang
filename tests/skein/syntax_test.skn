@@ -19,6 +19,10 @@
       (is (= "t.skn:1:9" (where params)))
       (is (= "t.skn:1:10" (where (first (syn/syntax->list params)))))
       (is (= "t.skn:2:3" (where body)))))
+  (testing "after a byte-order mark, places are the text's"
+    (let [[f] (syn/read-all-syntax (str (char 0xFEFF) "(f x)\n(g y)") "b.skn")
+          [_ x] (syn/syntax->list f)]
+      (is (= ["b.skn:1:1" "b.skn:1:4"] [(where f) (where x)]))))
   (testing "a map's entries keep their places, though the map reorders them"
     (let [m (into {} (map (fn [[k v]] [(syn/syntax->datum k) [(where k) (where v)]])) (syn/syntax-e (nth (syn/syntax->list (first forms)) 3)))]
       (is (= ["t.skn:2:4" "t.skn:2:7"] (get m :a)))
