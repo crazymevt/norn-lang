@@ -91,11 +91,25 @@ plan had left them open):
      PATH for `ffi_test`'s fixture; ring builds as cc chooses for MSVC.
 4. **Not tried**: the REPL by hand at a console; a real Ctrl-Break, the
    console closing, the session ending.
-5. **A source file that begins with a byte-order mark doesn't load**
-   (found there; Windows tools write one).
+5. **A source file that begins with a byte-order mark didn't load**
+   (found there; Windows tools write one). **Fixed 2026-11-19:** the
+   reader starts after one, and counts line 1's columns from there.
 6. **The oldest Windows supported: decided 2026-11-19 (the user),
    Windows 10 version 1809**, ConPTY's own minimum (on ARM, Windows 11
    in practice).
+7. **From skein-ui's handoff** (2026-11-19), **fixed the same day:**
+   - **TLS**: Windows installs only some root certificates and fetches
+     the rest when its own verifier meets one, so a server with an
+     issuer not yet fetched (`https://example.com`'s) failed with
+     `UnknownIssuer`. On Windows, a connection with no `:ca` is verified
+     by Windows (`rustls-platform-verifier`), as schannel's users are;
+     elsewhere it's the installed roots, as before.
+   - **`skein package`'s helpers**: on Windows a helper's candidate is
+     found as NAME.exe too, goes into the archive as NAME.exe, and the
+     launcher finds `skein-ui-host.exe` beside its image.
+   - Not changed: the archive is a `.tar.gz` everywhere (Windows 10 1809
+     and later have `tar`), and there's no Windows layout like macOS's
+     `.app`.
 
 ## The draft
 
