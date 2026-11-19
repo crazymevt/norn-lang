@@ -23,6 +23,8 @@
            :ended (future (loop [] (when-let [b (io/read (:out p) 4096)] (swap! text str (bytes->string b true)) (recur)))
                           :end))))
 
+;; (a check reads up to what it waits for, and no further: wait for the
+;; whole of what it looks at, ":got :int", not ":got")
 (defn- read-until
   "What p (watched) has shown since the last read-until, through the first
   s (or all of it, once s shows with the escape sequences taken out); all
@@ -150,7 +152,7 @@
       (let [p (watched (proc/start-pty skein-exe :args ["-e" "(do (require '[skein.signal :as sig]) (let [l (sig/listen :int)] (println :ready) (println :got (first (alts! [(:signals l) (timeout 20000)])))))"]))]
         (read-until p ":ready")
         (io/write (:in p) (bytes [3]))
-        (is (str/includes? (plain (read-until p ":got")) ":got :int"))
+        (is (str/includes? (plain (read-until p ":got :int")) ":got :int"))
         (read-until p nil)
         (is (= 0 (:exit (wait-for p))) "it carries on, and ends as it means to"))))
 
@@ -169,7 +171,7 @@
       (let [p (watched (proc/start-pty skein-exe :args ["-e" "(do (require '[skein.signal :as sig]) (let [l (sig/listen :winch)] (sleep 800) (println :ready) (println :got (first (alts! [(:signals l) (timeout 20000)])))))"]))]
         (read-until p ":ready")
         (proc/resize p 40 100)
-        (is (str/includes? (plain (read-until p ":got")) ":got :winch"))
+        (is (str/includes? (plain (read-until p ":got :winch")) ":got :winch"))
         (read-until p nil)
         (is (= 0 (:exit (wait-for p)))))))
 

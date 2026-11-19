@@ -10,8 +10,10 @@
 (defn- wait-for "Until (pred), for at most 5 s." [pred]
   (loop [i 0] (when (and (not (pred)) (< i 500)) (sleep 10) (recur (inc i)))))
 (defn- parked "f, once it's parked (at most 5 s)." [f] (wait-for (fn [] (%fiber-parked? f))) f)
-(defn- settled "(settle f), or :hung after 10 s." [f] (deref (future (settle f)) 10000 :hung))
-(defn- awaited "(await f), or :hung after 10 s." [f] (deref (future (await f)) 10000 :hung))
+;; (60 s: long enough for 50 fibers' pipe round trips under GC stress on a
+;; slow runner, where 10 s wasn't; the watchdog's 10 minutes is the run's)
+(defn- settled "(settle f), or :hung after 60 s." [f] (deref (future (settle f)) 60000 :hung))
+(defn- awaited "(await f), or :hung after 60 s." [f] (deref (future (await f)) 60000 :hung))
 
 ;;; fibers
 (is (= 42 (await (spawn-detached (+ 40 2)))))
