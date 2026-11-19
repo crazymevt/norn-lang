@@ -1,0 +1,587 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -216,3 +216,7 @@
+ [lints.clippy]
+ uninlined_format_args = "allow"
+ upper_case_acronyms = "allow"
++
++[target.'cfg(windows)'.dependencies.windows-sys]
++version = "0.59"
++features = ["Win32_Foundation", "Win32_System_Memory", "Win32_System_Threading"]
+--- a/src/policy/sft_map.rs
++++ b/src/policy/sft_map.rs
+@@ -287,7 +287,10 @@
+         fn test_address_arithmetic() {
+             // Before 1st space
+             assert_eq!(SFTSpaceMap::addr_to_index(Address::ZERO), 0);
+-            assert_eq!(SFTSpaceMap::addr_to_index(vm_layout().heap_start - 1), 0);
++            assert_eq!(
++                SFTSpaceMap::addr_to_index(vm_layout().heap_start - 1),
++                (vm_layout().heap_start >> vm_layout().log_space_extent) - 1
++            );
+ 
+             let assert_for_index = |i: usize| {
+                 let (start, end) = SFTSpaceMap::index_to_space_range(i);
+--- a/src/util/heap/layout/vm_layout.rs
++++ b/src/util/heap/layout/vm_layout.rs
+@@ -143,11 +143,15 @@
+     /// Normal 64-bit configuration
+     #[cfg(target_pointer_width = "64")]
+     pub const fn new_64bit() -> Self {
++        // (Windows randomises where a process's own allocations go, and they
++        // reach past 2 TB: a heap there can't always be reserved at startup.)
++        #[cfg(target_os = "windows")]
++        const HEAP_START: usize = 0x0000_0800_0000_0000;
++        #[cfg(not(target_os = "windows"))]
++        const HEAP_START: usize = 0x0000_0200_0000_0000;
+         let layout64 = Self {
+             log_address_space: 47,
+-            heap_start: chunk_align_down(unsafe {
+-                Address::from_usize(0x0000_0200_0000_0000usize)
+-            }),
++            heap_start: chunk_align_down(unsafe { Address::from_usize(HEAP_START) }),
+             heap_end: chunk_align_up(unsafe { Address::from_usize(0x0000_2200_0000_0000usize) }),
+             log_space_extent: 41,
+             force_use_contiguous_spaces: true,
+--- a/src/util/malloc/library.rs
++++ b/src/util/malloc/library.rs
+@@ -50,7 +50,17 @@
+     // ANSI C
+     pub use libc::{calloc, free, malloc, realloc};
+     // Posix
++    #[cfg(not(target_os = "windows"))]
+     pub use libc::posix_memalign;
++    // Windows' C runtime: no posix_memalign, and what _aligned_malloc gives
++    // must go back through _aligned_free, which `free` here isn't. Nothing
++    // aligned is handed out there: see malloc_ms_util::align_alloc.
++    #[cfg(target_os = "windows")]
++    extern "C" {
++        pub fn _msize(ptr: *mut libc::c_void) -> usize;
++    }
++    #[cfg(target_os = "windows")]
++    pub use self::_msize as malloc_usable_size;
+     // GNU
+     #[cfg(target_os = "linux")]
+     pub use libc::malloc_usable_size;
+--- a/src/util/malloc/malloc_ms_util.rs
++++ b/src/util/malloc/malloc_ms_util.rs
+@@ -4,6 +4,15 @@
+ use crate::vm::VMBinding;
+ 
+ /// Allocate with alignment. This also guarantees the memory is zero initialized.
++#[cfg(target_os = "windows")]
++pub fn align_alloc(_size: usize, _align: usize) -> Address {
++    // TODO(windows): the C runtime's aligned allocations are freed with
++    // _aligned_free, and the callers here free with `free`.
++    unimplemented!("aligned malloc on Windows")
++}
++
++/// Allocate with alignment. This also guarantees the memory is zero initialized.
++#[cfg(not(target_os = "windows"))]
+ pub fn align_alloc(size: usize, align: usize) -> Address {
+     let mut ptr = std::ptr::null_mut::<libc::c_void>();
+     let ptr_ptr = std::ptr::addr_of_mut!(ptr);
+--- a/src/util/os/imp/mod.rs
++++ b/src/util/os/imp/mod.rs
+@@ -9,3 +9,9 @@
+ 
+ #[cfg(target_os = "macos")]
+ pub use unix_like::macos::MacOS as OS;
++
++#[cfg(target_os = "windows")]
++pub(crate) mod windows;
++
++#[cfg(target_os = "windows")]
++pub use windows::Windows as OS;
+--- /dev/null
++++ b/src/util/os/imp/windows.rs
+@@ -0,0 +1,475 @@
++//! Windows implementation of the OS layer.
++//!
++//! Windows separates reserving address space from committing memory to it,
++//! where mmap does both (or, with MAP_NORESERVE, something between). The
++//! mapping of MMTk's requests:
++//!
++//! - quarantine (no access, not reserved): `MEM_RESERVE`;
++//! - a mapping to use: `MEM_COMMIT` of what's reserved, and
++//!   `MEM_RESERVE | MEM_COMMIT` of what's free. Committed pages are zero;
++//! - unmap: `MEM_RELEASE` when the range is a whole allocation, else
++//!   `MEM_DECOMMIT` (the address space stays reserved).
++//!
++//! A request may cross several regions (reservations can't be merged), so
++//! each is walked with `VirtualQuery`.
++
++use crate::util::address::Address;
++use crate::util::constants::BYTES_IN_PAGE;
++use crate::util::conversions::raw_align_up;
++use crate::util::os::*;
++use std::ffi::c_void;
++use std::io::{Error, ErrorKind, Result};
++use windows_sys::Win32::Foundation::{ERROR_COMMITMENT_LIMIT, ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY};
++use windows_sys::Win32::System::Memory::{
++    VirtualAlloc, VirtualFree, VirtualProtect, VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_DECOMMIT, MEM_FREE,
++    MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_NOACCESS, PAGE_READWRITE,
++};
++use windows_sys::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThread, GetCurrentThreadId, SetThreadAffinityMask};
++
++/// Windows implementation of the `OS` trait.
++pub struct Windows;
++
++impl MmapProtection {
++    fn get_native_flags(&self) -> u32 {
++        match self {
++            Self::ReadWrite => PAGE_READWRITE,
++            Self::ReadWriteExec => PAGE_EXECUTE_READWRITE,
++            Self::NoAccess => PAGE_NOACCESS,
++        }
++    }
++}
++
++/// The region `addr` is in: (its end, its state, the base of its allocation).
++fn region(addr: Address) -> Result<(Address, u32, Address)> {
++    let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
++    let n = unsafe { VirtualQuery(addr.to_ptr::<c_void>(), &mut info, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) };
++    if n == 0 {
++        return Err(Error::last_os_error());
++    }
++    let end = Address::from_mut_ptr(info.BaseAddress) + info.RegionSize;
++    Ok((end, info.State, Address::from_mut_ptr(info.AllocationBase)))
++}
++
++fn alloc(start: Address, size: usize, kind: u32, prot: u32) -> Result<()> {
++    let p = unsafe { VirtualAlloc(start.to_ptr::<c_void>(), size, kind, prot) };
++    if p.is_null() {
++        Err(Error::last_os_error())
++    } else {
++        Ok(())
++    }
++}
++
++/// The end of the allocation that starts at `base`.
++fn allocation_end(base: Address) -> Address {
++    let mut at = base;
++    while let Ok((region_end, state, allocation)) = region(at) {
++        if state == MEM_FREE || allocation != base {
++            break;
++        }
++        at = region_end;
++    }
++    at
++}
++
++/// Map [start, start + size) as `strategy` says, region by region.
++fn map(start: Address, size: usize, strategy: MmapStrategy) -> Result<()> {
++    let quarantine = matches!(strategy.prot, MmapProtection::NoAccess) && !strategy.reserve;
++    let prot = strategy.prot.get_native_flags();
++    let end = start + size;
++    let mut at = start;
++    while at < end {
++        let (region_end, state, _) = region(at)?;
++        let piece_end = if region_end < end { region_end } else { end };
++        let piece = piece_end - at;
++        if state == MEM_FREE {
++            let kind = if quarantine { MEM_RESERVE } else { MEM_RESERVE | MEM_COMMIT };
++            alloc(at, piece, kind, prot)?;
++        } else if !strategy.replace {
++            // (as mmap with MAP_FIXED_NOREPLACE)
++            return Err(Error::from(ErrorKind::AlreadyExists));
++        } else if !quarantine {
++            if state == MEM_COMMIT {
++                // (replacing a mapping gives zero pages: decommit them first)
++                if unsafe { VirtualFree(at.to_mut_ptr::<c_void>(), piece, MEM_DECOMMIT) } == 0 {
++                    return Err(Error::last_os_error());
++                }
++            }
++            alloc(at, piece, MEM_COMMIT, prot)?;
++        } else if state == MEM_COMMIT && unsafe { VirtualFree(at.to_mut_ptr::<c_void>(), piece, MEM_DECOMMIT) } == 0 {
++            // (quarantining what was in use: it stays reserved, with nothing committed)
++            return Err(Error::last_os_error());
++        }
++        at = piece_end;
++    }
++    Ok(())
++}
++
++/// Reserve `size` bytes aligned to `align`, near `preferred` if it's free.
++fn map_aligned(preferred: Address, size: usize, align: usize, strategy: MmapStrategy, annotation: &MmapAnnotation<'_>) -> MmapResult<Address> {
++    debug_assert!(align.is_power_of_two());
++    debug_assert!(align % BYTES_IN_PAGE == 0);
++    debug_assert!(size % BYTES_IN_PAGE == 0);
++    let aligned_size = raw_align_up(size, align);
++    let fail = |e: Error| MmapError::new(preferred, aligned_size + align, annotation, e);
++    let fresh = strategy.replace(false);
++    if !preferred.is_zero() && preferred.is_aligned_to(align) && map(preferred, size, fresh).is_ok() {
++        return Ok(preferred);
++    }
++    // Windows has no unmapping of part of a reservation: find room with a
++    // larger one, give it back, and take the aligned part of where it was.
++    // Another thread may take it between the two: try again.
++    for _ in 0..64 {
++        let p = unsafe { VirtualAlloc(std::ptr::null(), aligned_size + align, MEM_RESERVE, PAGE_NOACCESS) };
++        if p.is_null() {
++            return Err(fail(Error::last_os_error()));
++        }
++        unsafe { VirtualFree(p, 0, MEM_RELEASE) };
++        let aligned = Address::from_mut_ptr(p).align_up(align);
++        if map(aligned, size, fresh).is_ok() {
++            return Ok(aligned);
++        }
++    }
++    Err(fail(Error::from(ErrorKind::AddrNotAvailable)))
++}
++
++impl OSMemory for Windows {
++    fn dzmmap(start: Address, size: usize, strategy: MmapStrategy, annotation: &MmapAnnotation<'_>) -> MmapResult<Address> {
++        // (annotations and huge pages are ignored on Windows)
++        map(start, size, strategy).map_err(|e| MmapError::new(start, size, annotation, e))?;
++        Ok(start)
++    }
++
++    fn dzmmap_anywhere(size: usize, align: usize, strategy: MmapStrategy, annotation: &MmapAnnotation<'_>) -> MmapResult<Address> {
++        map_aligned(Address::ZERO, size, align, strategy, annotation)
++    }
++
++    fn dzmmap_preferred(start: Address, size: usize, align: usize, strategy: MmapStrategy, annotation: &MmapAnnotation<'_>) -> MmapResult<Address> {
++        map_aligned(start, size, align, strategy, annotation)
++    }
++
++    fn is_mmap_oom(os_errno: i32) -> bool {
++        let e = os_errno as u32;
++        e == ERROR_NOT_ENOUGH_MEMORY || e == ERROR_OUTOFMEMORY || e == ERROR_COMMITMENT_LIMIT
++    }
++
++    fn munmap(start: Address, size: usize) -> Result<()> {
++        // As with munmap, the range may cross allocations and free space, so
++        // walk it. An allocation wholly inside is released; part of one is
++        // decommitted, and its address space stays reserved (a later mapping
++        // there commits). Free space is skipped.
++        let end = start + size;
++        let mut at = start;
++        while at < end {
++            let (region_end, state, base) = region(at)?;
++            if state == MEM_FREE {
++                at = region_end;
++            } else if base >= start && allocation_end(base) <= end {
++                let next = allocation_end(base);
++                if unsafe { VirtualFree(base.to_mut_ptr::<c_void>(), 0, MEM_RELEASE) } == 0 {
++                    return Err(Error::last_os_error());
++                }
++                at = next;
++            } else {
++                let piece_end = if region_end < end { region_end } else { end };
++                if state == MEM_COMMIT && unsafe { VirtualFree(at.to_mut_ptr::<c_void>(), piece_end - at, MEM_DECOMMIT) } == 0 {
++                    return Err(Error::last_os_error());
++                }
++                at = piece_end;
++            }
++        }
++        Ok(())
++    }
++
++    fn set_memory_access(start: Address, size: usize, prot: MmapProtection) -> Result<()> {
++        let mut old = 0u32;
++        if unsafe { VirtualProtect(start.to_ptr::<c_void>(), size, prot.get_native_flags(), &mut old) } == 0 {
++            return Err(Error::last_os_error());
++        }
++        Ok(())
++    }
++
++    fn panic_if_unmapped(start: Address, size: usize) {
++        let end = start + size;
++        let mut at = start;
++        while at < end {
++            let (region_end, state, _) = region(at).unwrap();
++            assert!(state == MEM_COMMIT, "{at} is not mapped");
++            at = region_end;
++        }
++    }
++}
++
++impl OSProcess for Windows {
++    type ProcessIDType = u32;
++    type ThreadIDType = u32;
++
++    fn get_process_memory_maps() -> Result<String> {
++        // (only for debugging: there's no /proc/self/maps to read)
++        Ok(String::from("(the process's memory maps aren't listed on Windows)"))
++    }
++
++    fn get_process_id() -> Result<Self::ProcessIDType> {
++        Ok(unsafe { GetCurrentProcessId() })
++    }
++
++    fn get_thread_id() -> Result<Self::ThreadIDType> {
++        Ok(unsafe { GetCurrentThreadId() })
++    }
++
++    fn get_total_num_cpus() -> CoreNum {
++        std::thread::available_parallelism().map(|n| n.get() as CoreNum).unwrap_or(1)
++    }
++
++    fn bind_current_thread_to_core(core_id: CoreId) {
++        Self::bind_current_thread_to_cpuset(&[core_id]);
++    }
++
++    fn bind_current_thread_to_cpuset(core_ids: &[CoreId]) {
++        // (one processor group: the first 64 cores)
++        let mask = core_ids.iter().filter(|&&c| c < 64).fold(0usize, |m, &c| m | (1usize << c));
++        if mask != 0 {
++            unsafe { SetThreadAffinityMask(GetCurrentThread(), mask) };
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::util::heap::layout::vm_layout::BYTES_IN_CHUNK;
++    use crate::util::test_util::{serial_test, with_cleanup};
++
++    const RW: MmapStrategy = MmapStrategy { huge_page: HugePageSupport::No, prot: MmapProtection::ReadWrite, replace: false, reserve: true };
++    const RESERVE_ONLY: MmapStrategy = MmapStrategy { huge_page: HugePageSupport::No, prot: MmapProtection::NoAccess, replace: false, reserve: false };
++
++    fn write_read(start: Address, size: usize) {
++        let p = start.to_mut_ptr::<u8>();
++        for i in (0..size).step_by(BYTES_IN_PAGE) {
++            unsafe {
++                assert_eq!(p.add(i).read(), 0, "a fresh page is zero");
++                p.add(i).write(0xab);
++                assert_eq!(p.add(i).read(), 0xab);
++            }
++        }
++    }
++
++    /// Address space nothing else has: reserved, then released.
++    fn free_space(size: usize) -> Address {
++        let a = Windows::dzmmap_anywhere(size, BYTES_IN_CHUNK, RESERVE_ONLY, mmap_anno_test!()).unwrap();
++        Windows::munmap(a, size).unwrap();
++        assert_eq!(region(a).unwrap().1, MEM_FREE, "a whole reservation is released, not decommitted");
++        a
++    }
++
++    #[test]
++    fn anywhere_is_aligned_and_reserved() {
++        serial_test(|| {
++            let size = BYTES_IN_CHUNK + BYTES_IN_PAGE;
++            let a = Windows::dzmmap_anywhere(size, BYTES_IN_CHUNK, RESERVE_ONLY, mmap_anno_test!()).unwrap();
++            with_cleanup(
++                || {
++                    assert!(a.is_aligned_to(BYTES_IN_CHUNK));
++                    assert_eq!(region(a).unwrap().1, MEM_RESERVE);
++                },
++                || {
++                    let _ = Windows::munmap(a, size);
++                },
++            );
++        });
++    }
++
++    #[test]
++    fn commit_inside_a_reservation() {
++        serial_test(|| {
++            let size = 4 * BYTES_IN_CHUNK;
++            let a = Windows::dzmmap_anywhere(size, BYTES_IN_CHUNK, RESERVE_ONLY, mmap_anno_test!()).unwrap();
++            with_cleanup(
++                || {
++                    // (the middle of it, at a page, not at Windows' 64 KB)
++                    let at = a + BYTES_IN_CHUNK + BYTES_IN_PAGE;
++                    Windows::dzmmap(at, 3 * BYTES_IN_PAGE, RW.replace(true), mmap_anno_test!()).unwrap();
++                    write_read(at, 3 * BYTES_IN_PAGE);
++                    assert_eq!(region(a).unwrap().1, MEM_RESERVE, "the rest stays only reserved");
++                    Windows::panic_if_unmapped(at, 3 * BYTES_IN_PAGE);
++                },
++                || {
++                    let _ = Windows::munmap(a, size);
++                },
++            );
++        });
++    }
++
++    #[test]
++    fn map_free_space_and_refuse_to_map_it_twice() {
++        serial_test(|| {
++            let size = BYTES_IN_CHUNK;
++            let a = free_space(size);
++            with_cleanup(
++                || {
++                    Windows::dzmmap(a, size, RW, mmap_anno_test!()).unwrap();
++                    write_read(a, size);
++                    let again = Windows::dzmmap(a, size, RW, mmap_anno_test!());
++                    assert_eq!(again.unwrap_err().error.kind(), ErrorKind::AlreadyExists);
++                },
++                || {
++                    let _ = Windows::munmap(a, size);
++                },
++            );
++        });
++    }
++
++    #[test]
++    fn replacing_a_mapping_gives_zero_pages() {
++        serial_test(|| {
++            let size = BYTES_IN_CHUNK;
++            let a = free_space(size);
++            with_cleanup(
++                || {
++                    Windows::dzmmap(a, size, RW, mmap_anno_test!()).unwrap();
++                    write_read(a, size);
++                    Windows::dzmmap(a, size, RW.replace(true), mmap_anno_test!()).unwrap();
++                    write_read(a, size);
++                },
++                || {
++                    let _ = Windows::munmap(a, size);
++                },
++            );
++        });
++    }
++
++    #[test]
++    fn unmap_part_and_map_it_again() {
++        serial_test(|| {
++            let size = 2 * BYTES_IN_CHUNK;
++            let a = free_space(size);
++            with_cleanup(
++                || {
++                    Windows::dzmmap(a, size, RW, mmap_anno_test!()).unwrap();
++                    write_read(a, size);
++                    // (the second half: part of the allocation, so decommitted)
++                    Windows::munmap(a + BYTES_IN_CHUNK, BYTES_IN_CHUNK).unwrap();
++                    assert_eq!(region(a + BYTES_IN_CHUNK).unwrap().1, MEM_RESERVE);
++                    unsafe { assert_eq!(a.to_ptr::<u8>().read(), 0xab, "the first half is as it was") };
++                    Windows::dzmmap(a + BYTES_IN_CHUNK, BYTES_IN_CHUNK, RW.replace(true), mmap_anno_test!()).unwrap();
++                    write_read(a + BYTES_IN_CHUNK, BYTES_IN_CHUNK);
++                },
++                || {
++                    let _ = Windows::munmap(a, size);
++                },
++            );
++        });
++    }
++
++    #[test]
++    fn committing_too_much_is_out_of_memory() {
++        serial_test(|| {
++            // (1 TB: as mock_test_handle_mmap_oom, assumed beyond the commit limit)
++            let size = 1usize << 40;
++            let a = free_space(size);
++            with_cleanup(
++                || {
++                    let e = Windows::dzmmap(a, size, RW, mmap_anno_test!()).unwrap_err();
++                    let code = e.error.raw_os_error().expect("an OS error");
++                    assert!(Windows::is_mmap_oom(code), "error {code} is not out of memory");
++                },
++                || {
++                    let _ = Windows::munmap(a, size);
++                },
++            );
++        });
++    }
++
++    #[test]
++    fn unmap_more_than_is_mapped() {
++        serial_test(|| {
++            let size = 3 * BYTES_IN_CHUNK;
++            let a = free_space(size);
++            with_cleanup(
++                || {
++                    Windows::dzmmap(a, BYTES_IN_CHUNK, RW, mmap_anno_test!()).unwrap();
++                    // (as munmap: the free space after the mapping is no error)
++                    Windows::munmap(a, size).unwrap();
++                    assert_eq!(region(a).unwrap().1, MEM_FREE);
++                    Windows::munmap(a, size).unwrap();
++                    Windows::dzmmap(a, BYTES_IN_CHUNK, RW, mmap_anno_test!()).unwrap();
++                    write_read(a, BYTES_IN_CHUNK);
++                },
++                || {
++                    let _ = Windows::munmap(a, size);
++                },
++            );
++        });
++    }
++
++    #[test]
++    fn unmap_across_allocations() {
++        serial_test(|| {
++            let size = 3 * BYTES_IN_CHUNK;
++            let a = free_space(size);
++            with_cleanup(
++                || {
++                    // [two chunks][one chunk]: unmap the last two chunks.
++                    Windows::dzmmap(a, 2 * BYTES_IN_CHUNK, RW, mmap_anno_test!()).unwrap();
++                    Windows::dzmmap(a + 2 * BYTES_IN_CHUNK, BYTES_IN_CHUNK, RW, mmap_anno_test!()).unwrap();
++                    unsafe { a.to_mut_ptr::<u8>().write(0xab) };
++                    Windows::munmap(a + BYTES_IN_CHUNK, 2 * BYTES_IN_CHUNK).unwrap();
++                    unsafe { assert_eq!(a.to_ptr::<u8>().read(), 0xab, "the first chunk is as it was") };
++                    assert_eq!(region(a + BYTES_IN_CHUNK).unwrap().1, MEM_RESERVE, "part of an allocation is decommitted");
++                    assert_eq!(region(a + 2 * BYTES_IN_CHUNK).unwrap().1, MEM_FREE, "a whole allocation is released");
++                },
++                || {
++                    let _ = Windows::munmap(a, size);
++                },
++            );
++        });
++    }
++
++    #[test]
++    fn one_mapping_across_two_reservations_and_free_space() {
++        serial_test(|| {
++            // [reserved][free][reserved], then all three mapped at once.
++            let size = 3 * BYTES_IN_CHUNK;
++            let a = free_space(size);
++            with_cleanup(
++                || {
++                    Windows::dzmmap(a, BYTES_IN_CHUNK, RESERVE_ONLY, mmap_anno_test!()).unwrap();
++                    Windows::dzmmap(a + 2 * BYTES_IN_CHUNK, BYTES_IN_CHUNK, RESERVE_ONLY, mmap_anno_test!()).unwrap();
++                    Windows::dzmmap(a, size, RW.replace(true), mmap_anno_test!()).unwrap();
++                    write_read(a, size);
++                },
++                || {
++                    for i in 0..3 {
++                        let _ = Windows::munmap(a + i * BYTES_IN_CHUNK, BYTES_IN_CHUNK);
++                    }
++                },
++            );
++        });
++    }
++
++    #[test]
++    fn protect_and_unprotect() {
++        serial_test(|| {
++            let size = BYTES_IN_CHUNK;
++            let a = free_space(size);
++            with_cleanup(
++                || {
++                    Windows::dzmmap(a, size, RW, mmap_anno_test!()).unwrap();
++                    unsafe { a.to_mut_ptr::<u8>().write(7) };
++                    Windows::set_memory_access(a, size, MmapProtection::NoAccess).unwrap();
++                    Windows::set_memory_access(a, size, MmapProtection::ReadWrite).unwrap();
++                    unsafe { assert_eq!(a.to_ptr::<u8>().read(), 7, "protecting keeps what's there") };
++                },
++                || {
++                    let _ = Windows::munmap(a, size);
++                },
++            );
++        });
++    }
++
++    #[test]
++    fn the_process() {
++        assert!(Windows::get_total_num_cpus() >= 1);
++        assert_eq!(Windows::get_process_id().unwrap(), std::process::id());
++        Windows::bind_current_thread_to_core(0);
++    }
++}
+--- a/src/util/test_util/mod.rs
++++ b/src/util/test_util/mod.rs
+@@ -53,6 +53,11 @@
+ #[cfg(target_os = "macos")]
+ const TEST_ADDRESS: Address =
+     crate::util::conversions::chunk_align_down(unsafe { Address::from_usize(0x2_0000_0000) });
++// (Windows: below the heap, at 8 TB, and above where a process's own
++// allocations go, which reach past 2 TB.)
++#[cfg(target_os = "windows")]
++const TEST_ADDRESS: Address =
++    crate::util::conversions::chunk_align_down(unsafe { Address::from_usize(0x600_0000_0000) });
+ 
+ // util::heap::layout::mmapper::csm
+ pub(crate) const CHUNK_STATE_MMAPPER_TEST_REGION: MmapTestRegion =
