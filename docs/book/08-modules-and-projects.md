@@ -562,6 +562,13 @@ it, and you never need to clear the cache by hand. Set `SKEIN_CACHE` to
 another folder to move it, or to `off` to turn it off. `skein build` always
 compiles from source.
 
+The language itself is cached there too. The first time a `skein` starts,
+it boots the core library, the compiler and the expander from source, and
+saves the result as a base image beside the compiled modules. Every start
+after that loads the image instead, which is more than twice as fast. A
+rebuilt `skein` makes its own image the next time it starts, and replaces
+the old one. Set `SKEIN_BASE_IMAGE=off` to always boot from source.
+
 ## Other ns clauses
 
 Two more clauses belong to later chapters:

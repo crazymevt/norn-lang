@@ -1480,8 +1480,24 @@ so it can replace this piece by piece.
   and by that result produce identical code for every function
   (`tests/skein/compiler_test.skn`).
 - Step 5 is available since M5: `skein build base.skimg` saves the booted
-  runtime, and `skein --image base.skimg` starts from it. The default start
-  still boots from source, which takes 7 ms of a 40 ms start (§7.5).
+  runtime, and `skein --image base.skimg` starts from it.
+- **Step 6, built 2026-11-19.** By then booting from source took about 55 ms
+  of a 91 ms start (`skein -e nil`, release, Apple M-series), where starting
+  from an image took 36 ms. Without `--image`, `skein` starts from its base
+  image (`image::base_image`): the runtime as booted from source, saved by
+  the first start, before anything else runs, in the module cache's folder.
+  A start that finds no image, or one that doesn't load, boots from source
+  and saves one; that first start takes about 15 ms longer. The image is
+  named for the executable's path and for its build: `build_id`, and the
+  file's size and time, since a change to the VM's Rust alone changes
+  neither. Saving one deletes that executable's older builds' images.
+  None is used with `SKEIN_BASE_IMAGE=off`, `SKEIN_CACHE=off`,
+  `SKEIN_COMPILER=seed` or `SKEIN_EXPANDER=off`, nor by `skein build`, which
+  compiles from source, or a packaged app, which has its own image. It's
+  made where it's used, not shipped, because what a library works out as
+  it loads (`skein.io`'s `windows?`, say) is saved with it. Tested in
+  `crates/skein/tests/base_image.rs`; the suites' child `skein`s start from
+  it.
 - **Macros run in the compiling fiber.** Since the compiler is Skein code,
   macros are ordinary calls: they can block, and compilation no longer
   inhibits the GC. The nested-run machinery remains only for boot and the
