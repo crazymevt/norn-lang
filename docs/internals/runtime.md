@@ -832,7 +832,13 @@ heap under GC stress in M6; the fix and this rule came together.
     links itself), and later arguments may still take registers. A
     variadic call is made through a thunk that sets `%al` (which
     Cranelift can't) and jumps to the function.
-- **Not yet:** structs by value and variadic functions on Windows.
+  - **Windows** (M12): on arm64, AAPCS64's rules, but a variadic
+    function takes every argument, the named ones too, in integer
+    registers and then on the stack. On x86-64, Win64's: a struct of 1,
+    2, 4 or 8 bytes goes and comes back as an integer of that size (no
+    HFAs), any other by reference to a copy, a result through a pointer
+    passed first; a float among the variadic arguments goes in the
+    integer register, as its bits.
 
 ### 5.7 Native extensions and the main thread **[built in M7.5]**
 

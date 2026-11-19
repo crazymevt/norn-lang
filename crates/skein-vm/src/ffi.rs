@@ -33,8 +33,8 @@
 //! (`skein.ffi`). **Callbacks** are below.
 //!
 //! Structs by value and variadic functions are done for arm64 (Apple's,
-//! AAPCS64 and Windows') and x86-64 System V (Linux, the BSDs); on other
-//! machines they're an error for now.
+//! AAPCS64 and Windows'), x86-64 System V (Linux, the BSDs) and Win64; on
+//! other machines they're an error for now.
 
 use crate::reactor::{self, Io};
 use crate::vm::{Error, Result, Vm};
@@ -134,13 +134,20 @@ impl CType {
 /// integer register; when there aren't registers enough for all of it, or
 /// it's larger (or a field straddles an eightbyte), as a copy on the stack.
 /// A larger result goes through a pointer the caller passes first.
+///
+/// By Win64's: a struct of 1, 2, 4 or 8 bytes as an integer of that size
+/// (floats or not: there are no HFAs), in a register or a stack slot as any
+/// integer goes; any other size by reference to a copy the caller makes,
+/// and as a result through a pointer the caller passes first.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Agg {
     Hfa(CType, u8),
     Words(u8),
     /// System V: n eightbytes, bit k set if eightbyte k goes in a float register.
     Eights(u8, u8),
-    /// arm64: by reference. System V: in memory (a copy on the stack).
+    /// Win64: an integer of this many bytes (1, 2, 4 or 8).
+    Int(u8),
+    /// arm64 and Win64: by reference. System V: in memory (a copy on the stack).
     Indirect,
 }
 
@@ -160,17 +167,31 @@ pub(crate) enum Ty {
 const APPLE_ARM64: bool = cfg!(all(target_arch = "aarch64", target_vendor = "apple"));
 const SYSV_X64: bool = cfg!(all(target_arch = "x86_64", not(windows)));
 const WINDOWS_ARM64: bool = cfg!(all(target_arch = "aarch64", windows));
+const WINDOWS_X64: bool = cfg!(all(target_arch = "x86_64", windows));
 
 fn float_type(t: CType) -> cranelift_codegen::ir::Type {
     if t == CType::F32 { types::F32 } else { types::F64 }
+}
+
+/// The integer type of n bytes (1, 2, 4 or 8).
+fn int_type(n: u8) -> cranelift_codegen::ir::Type {
+    match n {
+        1 => types::I8,
+        2 => types::I16,
+        4 => types::I32,
+        _ => types::I64,
+    }
 }
 
 fn classify(size: u32, leaves: &[(u32, CType)]) -> Result<Agg> {
     if SYSV_X64 {
         return Ok(classify_sysv(size, leaves));
     }
+    if WINDOWS_X64 {
+        return Ok(if matches!(size, 1 | 2 | 4 | 8) { Agg::Int(size as u8) } else { Agg::Indirect });
+    }
     if !cfg!(target_arch = "aarch64") {
-        return Err(Error::new("Structs by value aren't supported on this machine yet (only arm64 and x86-64 System V): pass a pointer"));
+        return Err(Error::new("Structs by value aren't supported on this machine yet (only arm64 and x86-64): pass a pointer"));
     }
     let n = leaves.len() as u32;
     if (1..=4).contains(&n) {
@@ -239,10 +260,13 @@ enum Piece {
 /// argument that doesn't fit the registers left goes on the stack whole,
 /// and so does everything after it of its kind (fillers take the rest of
 /// the registers). On Apple arm64, every variadic argument goes on the
-/// stack too. (System V: see lower_sysv.)
+/// stack too. (System V: see lower_sysv; Win64: lower_win64.)
 fn lower(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Vec<Piece> {
     if SYSV_X64 {
         return lower_sysv(params, ret);
+    }
+    if WINDOWS_X64 {
+        return lower_win64(params, variadic_from);
     }
     if WINDOWS_ARM64 && variadic_from.is_some() {
         return lower_windows_variadic(params);
@@ -308,7 +332,7 @@ fn lower(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Vec<Piece> {
                 ngrn = (ngrn + 1).min(8);
                 out.push(Piece::Ptr(i));
             }
-            Ty::S(SAbi { agg: Agg::Eights(..), .. }) => unreachable!("System V structs are lowered by lower_sysv"),
+            Ty::S(SAbi { agg: Agg::Eights(..) | Agg::Int(_), .. }) => unreachable!("x86-64 structs are lowered elsewhere"),
         }
     }
     out
@@ -373,12 +397,33 @@ fn lower_sysv(params: &[Ty], ret: Ty) -> Vec<Piece> {
     out
 }
 
+/// The C signature's parameters for params by Win64's rules, where each
+/// argument takes the next of four slots, an integer or a float register
+/// by its type (Cranelift places them, and the rest on the stack): a struct
+/// as an integer of its size or as the address of its copy (see `Agg`). A
+/// float among a variadic function's variadic arguments goes as its bits,
+/// in the integer register, which is where the callee's va_arg looks.
+fn lower_win64(params: &[Ty], variadic_from: Option<usize>) -> Vec<Piece> {
+    let mut out = Vec::new();
+    for (i, &t) in params.iter().enumerate() {
+        out.push(match t {
+            Ty::C(c) if c.is_float() && variadic_from.is_some_and(|v| i >= v) => Piece::Word(i, CType::U64),
+            Ty::C(c) => Piece::Word(i, c),
+            Ty::S(SAbi { agg: Agg::Int(n), .. }) => Piece::Part(i, 0, int_type(n)),
+            Ty::S(SAbi { agg: Agg::Indirect, .. }) => Piece::Ptr(i),
+            Ty::S(_) => unreachable!("only Win64's structs are classified on Win64"),
+        });
+    }
+    out
+}
+
 /// The register results a struct comes back in, or none (by pointer).
 fn struct_returns(agg: Agg) -> Vec<cranelift_codegen::ir::Type> {
     match agg {
         Agg::Hfa(c, n) => vec![float_type(c); n as usize],
         Agg::Words(w) => vec![types::I64; w as usize],
         Agg::Eights(n, sse) => (0..n).map(|k| if sse >> k & 1 == 1 { types::F64 } else { types::I64 }).collect(),
+        Agg::Int(n) => vec![int_type(n)],
         Agg::Indirect => vec![],
     }
 }
@@ -566,7 +611,8 @@ fn stub_for(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Result<usiz
                     b.ins().store(flags, r, retp, (k * es) as i32);
                 }
             }
-            Ty::S(SAbi { agg: Agg::Words(_) | Agg::Eights(..), .. }) => {
+            // (Win64's Int: one result, stored at its own size)
+            Ty::S(SAbi { agg: Agg::Words(_) | Agg::Eights(..) | Agg::Int(_), .. }) => {
                 for (k, &r) in results.iter().enumerate() {
                     b.ins().store(flags, r, retp, (k * 8) as i32);
                 }
@@ -662,8 +708,8 @@ pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret:
         }
         let k = keyword_name(p)?;
         if k == "..." {
-            if !cfg!(target_arch = "aarch64") && !SYSV_X64 {
-                return Err(Error::new("Variadic functions aren't supported on this machine yet (only arm64 and x86-64 System V)"));
+            if !cfg!(any(target_arch = "aarch64", target_arch = "x86_64")) {
+                return Err(Error::new("Variadic functions aren't supported on this machine yet (only arm64 and x86-64)"));
             }
             variadic = Some(ps.len());
             continue;
@@ -1402,7 +1448,7 @@ fn trampoline(id: u64, params: &[Ty], ret: Ty) -> Result<usize> {
                     out.push(b.ins().stack_load(types::I64, float_type(c), slot, (a + k * es) as i32));
                 }
             }
-            Ty::S(SAbi { agg: agg @ (Agg::Words(_) | Agg::Eights(..)), .. }) => {
+            Ty::S(SAbi { agg: agg @ (Agg::Words(_) | Agg::Eights(..) | Agg::Int(_)), .. }) => {
                 let a = ret_area.unwrap();
                 for (k, t) in struct_returns(agg).into_iter().enumerate() {
                     out.push(b.ins().stack_load(types::I64, t, slot, (a + k as u32 * 8) as i32));

@@ -68,7 +68,22 @@ left them open):
    is the pull request that added it. A clone on Windows needs `git
    config core.autocrlf false` first: the job sets it, and nothing in
    the repository does.
-3. **x64** (part 8): nothing run.
+3. **x64** (part 8): written on the Mac, run only by CI (`windows-x64`,
+   on `windows-latest`, another job that can't fail the run).
+   - **The FFI** has Win64's rules: a struct of 1, 2, 4 or 8 bytes goes
+     and comes back as an integer of that size (no HFAs: two floats go in
+     an integer register), any other size by reference to a copy and
+     comes back through a hidden pointer passed first; a float among a
+     variadic function's variadic arguments goes as its bits in the
+     integer register. `ffi_fixture.c` gained structs of 3 and 4 bytes
+     and one after four arguments, the cases Win64 sets apart.
+   - **Tier 1 probes the stack** on Windows, both machines: Cranelift
+     emits no stack probes unless asked, and a frame larger than a page
+     that skips Windows' guard page is an access violation. The probes
+     are inline (an outline one is a call to `__chkstk`, a relocation the
+     installed code doesn't resolve). Small frames get none.
+     `jit::tests` runs a 256 KB frame on a fresh thread.
+   - **CI's results**: STATUS-PENDING.
 4. **Not tried**: the REPL by hand at a console; a real Ctrl-Break, the
    console closing, the session ending.
 5. **A source file that begins with a byte-order mark doesn't load**
