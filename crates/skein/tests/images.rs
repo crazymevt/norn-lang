@@ -7,6 +7,8 @@
 //! Every test drives the real `skein` binary, since an image is loaded at
 //! process start.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::Instant;
@@ -71,7 +73,7 @@ fn saved_fibers_resume_after_load() {
   (sleep 30)
   (save-image "{}")
   [(count (debugging)) (< @counter 8000000)])"#,
-        img.display()
+        common::esc(&img)
     );
     assert_eq!(eval(None, &setup), "[1 true]");
 
@@ -99,7 +101,7 @@ fn the_saving_fiber_and_unsaved_fibers_end_with_an_error() {
   (def waits-on-me (spawn-detached (try (await me) (catch Error e (condition-message e)))))
   (sleep 20)
   (:objects (save-image "{}" {opts})))"#,
-            path.display()
+            common::esc(&path)
         )
     };
     eval(None, &setup(&parked, ""));
@@ -131,14 +133,17 @@ fn layered_images_store_only_what_changed() {
     let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("layers");
     let (l0, l1, l2) = (d.join("l0.skimg"), d.join("l1.skimg"), d.join("l2.skimg"));
-    eval(None, &format!("(:objects (save-image \"{}\"))", l0.display()));
-    eval(Some(&l0), &format!(r#"(do (defn hello [n] (str "hello " n)) (def answer 42) (save-image "{}" :layered true))"#, l1.display()));
-    eval(Some(&l1), &format!(r#"(do (defn more [] (hello answer)) (save-image "{}" :layered true))"#, l2.display()));
+    eval(None, &format!("(:objects (save-image \"{}\"))", common::esc(&l0)));
+    eval(
+        Some(&l0),
+        &format!(r#"(do (defn hello [n] (str "hello " n)) (def answer 42) (save-image "{}" :layered true))"#, common::esc(&l1)),
+    );
+    eval(Some(&l1), &format!(r#"(do (defn more [] (hello answer)) (save-image "{}" :layered true))"#, common::esc(&l2)));
     assert_eq!(eval(Some(&l2), "[(more) (count (:chain (image-info)))]"), r#"["hello 42" 3]"#);
     let size = |p: &PathBuf| std::fs::metadata(p).unwrap().len();
     assert!(size(&l1) * 5 < size(&l0), "a delta should be much smaller than its base");
     // A delta refuses a base that has changed since.
-    eval(None, &format!("(do (def changed true) (:objects (save-image \"{}\")))", l0.display()));
+    eval(None, &format!("(do (def changed true) (:objects (save-image \"{}\")))", common::esc(&l0)));
     let o = skein().arg("--image").arg(&l1).arg("-e").arg("1").output().unwrap();
     assert!(!o.status.success() && text(&o).contains("different version"), "{}", text(&o));
 }
@@ -185,7 +190,7 @@ fn resources_are_dead_after_a_restore_until_reconnected() {
   (defmethod on-image-restore ((c Conn)) (= (:name c) "eager"))
   (defmethod reconnect ((c Conn)) (swap! reconnects inc) c)
   (:objects (save-image "{}")))"#,
-        img.display()
+        common::esc(&img)
     );
     eval(None, &setup);
     let check = r#"[(resource-live? eager) (resource-live? lazy)
@@ -208,7 +213,7 @@ fn print_object_methods_still_print_after_a_restore() {
   (defmethod print-object ((p Pt)) "<a point>")
   (def things [(Pt :x 1) (dec/parse "12.30")])
   (:objects (save-image "{}")))"#,
-        img.display()
+        common::esc(&img)
     );
     eval(None, &setup);
     assert_eq!(eval(Some(&img), "(do (prn things) (println things))"), "[<a point> #skein/decimal \"12.30\"]\n[<a point> 12.30]\nnil");
@@ -219,7 +224,7 @@ fn damaged_images_are_refused() {
     let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("damaged");
     let good = d.join("good.skimg");
-    eval(None, &format!("(:objects (save-image \"{}\"))", good.display()));
+    eval(None, &format!("(:objects (save-image \"{}\"))", common::esc(&good)));
     let bytes = std::fs::read(&good).unwrap();
     let mut cases: Vec<(&str, Vec<u8>)> =
         vec![("truncated", bytes[..bytes.len() / 2].to_vec()), ("text", b"not an image\n".to_vec()), ("empty", Vec::new())];
@@ -273,7 +278,7 @@ fn weak_references_keep_only_what_else_is_saved() {
                    (def w2 (weak-ref (vec (range 7))))
                    (def c (add-cleanup! strong (fn [] :never)))
                    (:objects (save-image "{}")))"#,
-            img.display()
+            common::esc(&img)
         ),
     );
     // The cleanup releases a per-process resource, so it isn't saved.
@@ -292,15 +297,15 @@ fn a_file_handle_from_an_image_is_lost_until_reconnected() {
                    (def h (skein.io/open "{}" :write))
                    (skein.io/write h "before\n")
                    (:objects (save-image "{}")))"#,
-            file.display(),
-            img.display()
+            common::esc(&file),
+            common::esc(&img)
         ),
     );
     let check = format!(
         r#"[(try (skein.io/write h "x") (catch ResourceLost c :lost))
             (handler-bind [ResourceLost (fn [c] (invoke-restart 'reconnect))] (skein.io/write h "after\n") :ok)
             (skein.io/read-text "{}")]"#,
-        file.display()
+        common::esc(&file)
     );
     assert_eq!(eval(Some(&img), &check), r#"[:lost :ok "before\nafter\n"]"#);
 }
@@ -316,7 +321,7 @@ fn foreign_functions_work_again_after_a_restore() {
             r#"(do (require '[skein.ffi :as ffi])
                    (ffi/defcfun c-strlen (ffi/library :c) "strlen" [:string] :usize)
                    [(c-strlen "abc") (:objects (save-image "{}"))])"#,
-            img.display()
+            common::esc(&img)
         ),
     );
     // The library reloads and the symbol re-resolves without a ResourceLost.
@@ -335,7 +340,7 @@ fn mutable_objects_owned_by_the_saver_are_free_after_a_restore() {
                    (def c (counter))
                    (set-slot! c :n 5)
                    (:objects (save-image "{}")))"#,
-            img.display()
+            common::esc(&img)
         ),
     );
     // The saving fiber didn't survive, so the object is free to claim.
@@ -349,7 +354,10 @@ fn sorted_collections_and_queues_survive_an_image() {
     let img = d.join("colls.skimg");
     eval(
         None,
-        &format!(r#"(do (def sm (sorted-map 3 :c 1 :a)) (def q (queue 1 2)) (def ss (sorted-set 5 4)) (save-image "{}"))"#, img.display()),
+        &format!(
+            r#"(do (def sm (sorted-map 3 :c 1 :a)) (def q (queue 1 2)) (def ss (sorted-set 5 4)) (save-image "{}"))"#,
+            common::esc(&img)
+        ),
     );
     assert_eq!(
         eval(Some(&img), "[(assoc sm 2 :b) (conj q 3) (conj ss 1) (= sm {1 :a 3 :c}) (pop q)]"),
@@ -376,7 +384,7 @@ fn code_in_an_image_is_verified_before_it_runs() {
     let _shared = ALONE.read().unwrap_or_else(|e| e.into_inner());
     let d = scratch("verify");
     let good = d.join("good.skimg");
-    eval(None, &format!("(do (defn seven [a b c d e f g] [a g]) (:objects (save-image \"{}\")))", good.display()));
+    eval(None, &format!("(do (defn seven [a b c d e f g] [a g]) (:objects (save-image \"{}\")))", common::esc(&good)));
     assert_eq!(eval(Some(&good), "(seven 1 2 3 4 5 6 7)"), "[1 7]");
     let bytes = std::fs::read(&good).unwrap();
     let words: Vec<u64> = bytes.chunks(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();

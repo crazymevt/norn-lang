@@ -46,7 +46,7 @@ fn a_new_project_runs_tests_and_packages_as_it_is() {
     assert_eq!((0, String::new()), (code, text), "lint-clean");
     let (code, text) = run(skein().args(["package", "--cli"]).current_dir(&proj));
     assert_eq!(0, code, "{text}");
-    let os = if cfg!(target_os = "macos") { "macos" } else { "linux" };
+    let os = std::env::consts::OS; // (macos, linux, windows: as sys/os names them)
     assert!(proj.join(format!("dist/my-app-0.1.0-{os}-{}.tar.gz", std::env::consts::ARCH)).is_file());
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -163,9 +163,16 @@ fn dev_reloads_what_is_saved_while_main_runs() {
     assert!(read_until(&mut out, &mut seen, "wasn't reloaded"), "{seen}");
     let after = seen.len();
     assert!(read_until(&mut out, &mut seen, "second\n") && !seen[after..].contains("third"));
-    // Ctrl-C stops it, cancelling a main that doesn't listen for it
-    Command::new("kill").args(["-INT", &p.id().to_string()]).status().unwrap();
-    assert!(read_until(&mut out, &mut seen, "skein dev: stopped\n"), "{seen}");
-    assert_eq!(Some(0), p.wait().unwrap().code());
+    // Ctrl-C stops it, cancelling a main that doesn't listen for it. (On
+    // Windows a Ctrl-C reaches only a console's own programs, which this
+    // isn't; pty_test sends one at a console.)
+    if cfg!(windows) {
+        p.kill().unwrap();
+        p.wait().unwrap();
+    } else {
+        Command::new("kill").args(["-INT", &p.id().to_string()]).status().unwrap();
+        assert!(read_until(&mut out, &mut seen, "skein dev: stopped\n"), "{seen}");
+        assert_eq!(Some(0), p.wait().unwrap().code());
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }

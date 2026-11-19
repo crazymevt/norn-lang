@@ -9,7 +9,8 @@ use skein_vm::{RootTask, start};
 /// Run one suite with skein.test; fail with its report if any check failed.
 fn suite(name: &str) {
     let skein = start().unwrap();
-    let path = format!("{}/../../tests/skein/{name}", env!("CARGO_MANIFEST_DIR"));
+    // (escaped as a Skein string: a Windows path is full of \)
+    let path = format!("{}/../../tests/skein/{name}", env!("CARGO_MANIFEST_DIR")).replace('\\', "\\\\");
     let call = format!(
         r#"(do (require 'skein.test)
              (let [r (skein.test/run-files ["{path}"] :serial true)

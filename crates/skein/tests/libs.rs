@@ -2,6 +2,8 @@
 //! `:as` aliases (also inside syntax-quote), `:refer`, concurrent requires,
 //! circular requires, and aliases surviving an image save and load.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -57,7 +59,7 @@ fn circular_requires_are_an_error() {
 fn aliases_survive_an_image() {
     let d = scratch("image");
     let img = d.join("libs.skimg");
-    skein(&d, &["-e", &format!("(do (require 'my.app) (:objects (save-image \"{}\")))", img.display())]);
+    skein(&d, &["-e", &format!("(do (require 'my.app) (:objects (save-image \"{}\")))", common::esc(&img))]);
     let r = skein(&d, &["--image", img.to_str().unwrap(), "-e", "(do (in-ns 'my.app) [(u/shout \"x\") (run) @my.util/loads])"]);
     assert_eq!(r, r#"["x!" ["a!" "b!" "c!c!"] 1]"#);
 }
