@@ -266,7 +266,7 @@
 (deftest the-default-on-error-writes-to-stderr
   ;; (it printed to stdout, mixing with what a program writes there; run
   ;; only as skein: under the Rust test harness, the executable is the harness)
-  (when-let [skein-exe (let [e (:executable (sys/info))] (when (and e (str/ends-with? e "/skein")) e))]
+  (when-let [skein-exe (let [e (:executable (sys/info))] (when (and e (= "skein" (io/stem e))) e))]
     (let [script (str "(require '[skein.http :as http])"
                       "(let [s (http/serve (fn [_] (error \"kaboom\")))]"
                       "  (print (:status (http/get (str \"http://127.0.0.1:\" (:port s) \"/x\") :keep-alive false)))"

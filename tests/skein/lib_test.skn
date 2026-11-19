@@ -15,6 +15,8 @@
 (defmacro fails [expr]
   `(try ~expr :no-error (~'catch Error e# :error)))
 
+(def windows? (= :windows (sys/os)))
+
 ;;; ---- skein.bytes ----
 (def hello (b/utf8 "héllo"))
 (is (= 6 (count hello)))
@@ -79,23 +81,25 @@
 (is (= "y.skn" (io/file-name "x/y.skn")))
 (is (= ["x" "skn" "y"] [(io/parent "x/y.skn") (io/extension "x/y.skn") (io/stem "x/y.skn")]))
 (is (= [nil nil "/"] [(io/parent "c.txt") (io/parent "/") (io/parent "/c.txt")]) "a bare name has no parent")
-(is (= "a/b/c" (io/path "a" "b" "c")))
+(is (= (if (= :windows (sys/os)) "a\\b\\c" "a/b/c") (io/path "a" "b" "c")))
 (is (= nil (io/extension "README")))
 (is (= true (= (io/absolute "x") (io/path (sys/cwd) "x"))))
 (is (nil? (io/canonical "/no/such/path/here")))
 (is (= (io/canonical (io/parent (sys/cwd))) (io/canonical (io/path (sys/cwd) "." "..")))
     "canonical resolves . and ..")
-(let [links (str dir "-links")]
-  (io/mkdirs! links)
-  (proc/sh "ln" "-s" (f "a.txt") (io/path links "to-file"))
-  (proc/sh "ln" "-s" (f "sub") (io/path links "to-dir"))
-  (proc/sh "ln" "-s" (f "gone") (io/path links "dangling"))
-  (is (= :symlink (:type (io/info (io/path links "to-file")))) "info tells a link from its target")
-  (is (= [true false] [(io/file? (io/path links "to-file")) (io/directory? (io/path links "to-file"))])
-      "file? follows a link (a CLI in ~/.local/bin is often one)")
-  (is (= [false true] [(io/file? (io/path links "to-dir")) (io/directory? (io/path links "to-dir"))]))
-  (is (= [false false] [(io/file? (io/path links "dangling")) (io/directory? (io/path links "dangling"))]))
-  (io/delete! links :recursive true))
+;; (not on Windows: there's no ln, and making a link takes a privilege)
+(when-not (= :windows (sys/os))
+  (let [links (str dir "-links")]
+    (io/mkdirs! links)
+    (proc/sh "ln" "-s" (f "a.txt") (io/path links "to-file"))
+    (proc/sh "ln" "-s" (f "sub") (io/path links "to-dir"))
+    (proc/sh "ln" "-s" (f "gone") (io/path links "dangling"))
+    (is (= :symlink (:type (io/info (io/path links "to-file")))) "info tells a link from its target")
+    (is (= [true false] [(io/file? (io/path links "to-file")) (io/directory? (io/path links "to-file"))])
+        "file? follows a link (a CLI in ~/.local/bin is often one)")
+    (is (= [false true] [(io/file? (io/path links "to-dir")) (io/directory? (io/path links "to-dir"))]))
+    (is (= [false false] [(io/file? (io/path links "dangling")) (io/directory? (io/path links "dangling"))]))
+    (io/delete! links :recursive true)))
 
 ;;; ---- skein.io: streams ----
 (io/with-open [h (io/open (f "s.txt") :write)]
@@ -126,7 +130,7 @@
 (defmethod print-object ((p SpitPoint)) (str "<" (:x p) ">"))
 (spit (f "b.txt") (SpitPoint :x 5))
 (is (= "<5>" (slurp (f "b.txt"))) "and anything else as str does")
-(when (= "skein" (io/file-name (:executable (sys/info)))) ; (under the Rust test harness, the executable is the harness)
+(when (= "skein" (io/stem (:executable (sys/info)))) ; (under the Rust test harness, the executable is the harness)
   (is (= {:out "nil\n" :err "a :b <1>\nc"}
          (select-keys (proc/sh (:executable (sys/info)) "-e"
                                (str "(require '[skein.io :as io]) (defclass P () (x)) (defmethod print-object ((p P)) \"<1>\")"
@@ -199,31 +203,59 @@
 (is (= false (io/exists? dir)))
 
 ;;; ---- skein.process ----
-(is (= {:exit 0 :signal nil :out "hello world\n" :err ""} (proc/sh "echo" "hello" "world")))
-(is (= "piped in" (:out (proc/sh "cat" :in "piped in"))))
-(is (= [3 "err\n"] (let [r (proc/sh "sh" "-c" "echo err >&2; exit 3")] [(:exit r) (:err r)])))
-(is (= "/" (:out (proc/sh "sh" "-c" "cd . && pwd | tr -d '\\n'" :dir "/"))))
-(is (= "yes" (:out (proc/sh "sh" "-c" "printf %s \"$SKEIN_TEST_VAR\"" :env {"SKEIN_TEST_VAR" "yes"}))))
-(let [p (proc/start "sh" :args ["-c" "echo one; echo two; sleep 30"])
-      r (io/line-reader (:out p))]
-  (is (= ["one" "two"] [(io/read-line r) (io/read-line r)]))
-  (proc/kill p)
-  (is (= {:exit nil :signal :term} (proc/wait p)) "by name")
-  (doseq [k [:in :out :err :process]] (io/close (k p))))
+(when-not windows?
+  (is (= {:exit 0 :signal nil :out "hello world\n" :err ""} (proc/sh "echo" "hello" "world")))
+  (is (= "piped in" (:out (proc/sh "cat" :in "piped in"))))
+  (is (= [3 "err\n"] (let [r (proc/sh "sh" "-c" "echo err >&2; exit 3")] [(:exit r) (:err r)])))
+  (is (= "/" (:out (proc/sh "sh" "-c" "cd . && pwd | tr -d '\\n'" :dir "/"))))
+  (is (= "yes" (:out (proc/sh "sh" "-c" "printf %s \"$SKEIN_TEST_VAR\"" :env {"SKEIN_TEST_VAR" "yes"}))))
+  (let [p (proc/start "sh" :args ["-c" "echo one; echo two; sleep 30"])
+        r (io/line-reader (:out p))]
+    (is (= ["one" "two"] [(io/read-line r) (io/read-line r)]))
+    (proc/kill p)
+    (is (= {:exit nil :signal :term} (proc/wait p)) "by name")
+    (doseq [k [:in :out :err :process]] (io/close (k p)))))
+;; (the same on Windows, with its command interpreter; a killed process has
+;; only an exit code there)
+(when windows?
+  (let [cmd (sys/getenv "ComSpec")]
+    (is (= {:exit 0 :signal nil :out "hello world\r\n" :err ""} (proc/sh cmd "/c" "echo hello world")))
+    (is (= "piped in\n" (:out (proc/sh "findstr" "^" :in "piped in\n"))))
+    (is (= [3 "err\r\n"] (let [r (proc/sh cmd "/c" "(echo err)1>&2& exit 3")] [(:exit r) (:err r)])))
+    (is (= "C:\\Windows\r\n" (:out (proc/sh cmd "/c" "cd" :dir "C:\\Windows"))))
+    (is (= "yes\r\n" (:out (proc/sh cmd "/c" "echo %SKEIN_TEST_VAR%" :env {"SKEIN_TEST_VAR" "yes"}))))
+    (is (= "clear\r\n" (:out (proc/sh cmd "/c" "if defined USERPROFILE (echo set) else (echo clear)" :clear-env true)))
+        "cmd takes :clear-env")
+    (let [p (proc/start cmd :args ["/c" "echo one& echo two& set /p x="])
+          r (io/line-reader (:out p))]
+      (is (= ["one" "two"] [(io/read-line r) (io/read-line r)]))
+      (proc/kill p)
+      (is (= {:exit 1 :signal nil} (proc/wait p)))
+      (doseq [k [:in :out :err :process]] (io/close (k p))))
+    (is (instance? FileNotFound (try (proc/sh cmd :dir "C:\\no\\such\\dir") (catch Error e e))) "and so is a missing :dir")
+    (let [p (proc/start "findstr" :args ["^"])]
+      (io/write (:in p) "x\n")
+      (io/close (:in p))
+      (is (= "x\n" (bytes->string (io/read-all (:out p)))))
+      (proc/wait p)
+      (is (nil? (proc/close p)) "close closes everything start gave")
+      (is (every? (fn [k] (not (%handle-live? (k p)))) [:in :out :err :process]))
+      (proc/close p))))
 (is (= :error (fails (proc/sh "/no/such/program"))))
 (let [e (try (proc/sh "/no/such/program") (catch Error e e))]
   (is (instance? FileNotFound e) "a missing program is FileNotFound")
   (is (= "/no/such/program" (:path e))))
-(is (instance? FileNotFound (try (proc/sh "true" :dir "/no/such/dir") (catch Error e e))) "and so is a missing :dir")
-(is (= "" (:out (proc/sh "sh" "-c" "printf %s \"$HOME\"" :clear-env true))) "sh takes :clear-env")
-(let [p (proc/start "cat")]
-  (io/write (:in p) "x")
-  (io/close (:in p))
-  (is (= "x" (bytes->string (io/read-all (:out p)))))
-  (proc/wait p)
-  (is (nil? (proc/close p)) "close closes everything start gave")
-  (is (every? (fn [k] (not (%handle-live? (k p)))) [:in :out :err :process]))
-  (proc/close p))
+(when-not windows?
+  (is (instance? FileNotFound (try (proc/sh "true" :dir "/no/such/dir") (catch Error e e))) "and so is a missing :dir")
+  (is (= "" (:out (proc/sh "sh" "-c" "printf %s \"$HOME\"" :clear-env true))) "sh takes :clear-env")
+  (let [p (proc/start "cat")]
+    (io/write (:in p) "x")
+    (io/close (:in p))
+    (is (= "x" (bytes->string (io/read-all (:out p)))))
+    (proc/wait p)
+    (is (nil? (proc/close p)) "close closes everything start gave")
+    (is (every? (fn [k] (not (%handle-live? (k p)))) [:in :out :err :process]))
+    (proc/close p)))
 (is (nil? (io/close nil)) "closing nil does nothing")
 
 ;;; ---- skein.time ----
@@ -246,20 +278,29 @@
 (is (= true (instance? t/Instant (t/now))))
 
 ;;; ---- skein.signal ----
-(let [l (sig/listen :usr1)]
-  (sig/raise :usr1)
-  (is (= :usr1 (first (alts! [(:signals l) (timeout 5000)]))))
-  (sig/stop! l))
-(let [l (sig/listen :usr2)]
-  (proc/sh "kill" "-USR2" (str (sys/pid)))
-  (is (= :usr2 (first (alts! [(:signals l) (timeout 5000)]))))
-  (sig/stop! l))
+;; (Windows has its own few: console events, and the console's size)
+(when windows?
+  (doseq [s [:term :winch :int]]
+    (let [l (sig/listen s)]
+      (sig/raise s)
+      (is (= s (first (alts! [(:signals l) (timeout 5000)]))))
+      (sig/stop! l)))
+  (is (= :error (fails (sig/listen :usr1))) "a signal Windows doesn't have"))
+(when-not windows?
+  (let [l (sig/listen :usr1)]
+    (sig/raise :usr1)
+    (is (= :usr1 (first (alts! [(:signals l) (timeout 5000)]))))
+    (sig/stop! l))
+  (let [l (sig/listen :usr2)]
+    (proc/sh "kill" "-USR2" (str (sys/pid)))
+    (is (= :usr2 (first (alts! [(:signals l) (timeout 5000)]))))
+    (sig/stop! l))
+  (let [l (sig/listen :abrt)] (sig/stop! l)))
 (is (= :error (fails (sig/listen :kill))))
 (is (= :error (fails (sig/listen :segv))) "the runtime keeps it")
-(let [l (sig/listen :abrt)] (sig/stop! l))
 ;; The skein command, for the checks that run one (none when this file runs
 ;; elsewhere, as in the Rust test harness: that would run the harness).
-(def skein-exe (let [e (:executable (sys/info))] (when (and e (= "skein" (io/file-name e))) e)))
+(def skein-exe (let [e (:executable (sys/info))] (when (and e (= "skein" (io/stem e))) e)))
 
 ;; Once the last listener stops, a signal does what it did before: SIGTERM
 ;; ends the process again (it used to be ignored from then on).
@@ -272,7 +313,7 @@
                 (sig/raise :term) (sleep 2000) (prn :alive))"
         r (proc/sh skein-exe "-e" code)]
     (is (= ":term\n" (:out r)) "one listener left still gets it")
-    (is (= :term (:signal r)))))
+    (is (if windows? (= 1 (:exit r)) (= :term (:signal r))))))
 
 ;; A pipeline's fiber is its caller's to await: f's error reaches them, and
 ;; isn't also printed as a detached fiber's failure would be (quire
@@ -378,13 +419,17 @@
 (def libm (ffi/library :m))
 (ffi/defcfun c-strlen libc "strlen" [:string] :usize)
 (ffi/defcfun c-abs libc "abs" [:int] :int)
-(ffi/defcfun c-getpid libc "getpid" [] :int)
+(ffi/defcfun c-getpid libc (if windows? "_getpid" "getpid") [] :int)
 (ffi/defcfun c-sqrt libm "sqrt" [:double] :double)
 (ffi/defcfun c-sqrtf libm "sqrtf" [:float] :float)
 (ffi/defcfun c-getenv libc "getenv" [:string] :string)
 (ffi/defcfun c-memcpy libc "memcpy" [:out :bytes :usize] :pointer)
 (ffi/defcfun c-toupper libc "toupper" [:int] :int)
-(ffi/defcfun c-usleep libc "usleep" [:uint] :int :blocking true)
+;; (20 ms on the blocking pool; Windows' C library has no usleep)
+(def c-pause
+  (if windows?
+    (let [f (ffi/function (ffi/library "kernel32.dll") "SleepEx" [:uint :int] :uint :blocking true)] (fn [] (ffi/call f 20 0)))
+    (let [f (ffi/function libc "usleep" [:uint] :int :blocking true)] (fn [] (ffi/call f 20000)))))
 (is (= 5 (c-strlen "hello")))
 (is (= 6 (c-strlen "héllo")))
 (is (= 42 (c-abs -42)))
@@ -395,7 +440,7 @@
 (is (= nil (c-getenv "SKEIN_SURELY_UNSET_VARIABLE")))
 (is (= (bytes [1 2 3]) (second (c-memcpy 3 (bytes [1 2 3]) 3))))
 (is (= 65 (c-toupper 97)))
-(is (= [0 0 0 0] (mapv await (mapv (fn [_] (spawn-detached (c-usleep 20000))) (range 4)))))
+(is (= [0 0 0 0] (mapv await (mapv (fn [_] (spawn-detached (c-pause))) (range 4)))))
 (is (= :error (fails (ffi/function libc "no_such_symbol_xyz" [] :void))))
 (is (= :error (fails (c-abs 1 2))))
 (is (= :error (fails (c-abs 3000000000))))

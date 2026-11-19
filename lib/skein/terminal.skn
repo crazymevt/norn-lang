@@ -438,7 +438,8 @@
     (doseq [m (rseq modes)] (when (seq (:off m)) (print (:off m))))
     (when (some :raw modes) (%tty-restore! 0))
     (try
-      (%raise-signal :tstp)
+      ;; (Windows has no job control: nothing could resume it)
+      (when-not (= :windows (sys/os)) (%raise-signal :tstp))
       (finally
         (when (some :raw modes) (%tty-raw! 0))
         (doseq [m modes] (when (seq (:on m)) (print (:on m))))))

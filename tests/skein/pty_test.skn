@@ -3,54 +3,158 @@
 
 (ns pty-test
   (:require [skein.test :refer [is deftest testing]] [skein.process :as proc] [skein.io :as io]
-            [skein.string :as str]))
+            [skein.string :as str] [skein.sys :as sys]))
+
+(def windows? (= :windows (sys/os)))
+
+(defn- plain
+  "Text s without its terminal escape sequences. (Windows' console draws what
+  a program writes: the cursor moves between words, and titles come and go.)"
+  [s]
+  (str/replace s #"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[=>]" ""))
 
 (defn- read-until
   "What p's terminal shows, until it shows s (or ends)."
   [p s]
   (loop [acc ""]
-    (if (and s (str/includes? acc s))
+    (if (and s (str/includes? (plain acc) s))
       acc
       (if-let [b (io/read (:out p) 4096)] (recur (str acc (bytes->string b true))) acc))))
 
-(deftest a-program-on-a-terminal
-  (let [p (proc/start-pty "sh" :args ["-c" "stty size; [ -t 0 ] && [ -t 1 ] && echo terminal; echo TERM=$TERM; read x; echo got $x"]
-                          :rows 30 :cols 90)]
-    (is (:pty p))
-    (let [shown (read-until p "TERM=")]
-      (is (str/includes? shown "30 90") "its size")
-      (is (str/includes? shown "terminal") "stdin and stdout are a terminal")
-      (is (str/includes? shown "TERM=xterm-256color")))
-    (io/write (:in p) "hello\n")
-    ;; (now and then there's a second \r\n between the two: one run in four
-    ;; of a debug build on Linux with every suite running beside this one.
-    ;; Probably what's typed reaching the terminal before sh is reading;
-    ;; not looked into further)
-    (is (re-matches #"hello\r\n(\r\n)?got hello\r\n" (read-until p "got hello"))
-        "the terminal echoes what's typed, and turns \\n into \\r\\n")
-    (is (nil? (io/read (:out p) 10)) "the end, once it exits")
-    (is (= {:exit 0 :signal nil} (proc/wait p)))))
+;; ---- on Unix ----
 
-(deftest resizing
-  (let [p (proc/start-pty "sh" :args ["-c" "read x; stty size"])]
-    (proc/resize p 40 100)
-    (io/write (:in p) "go\n")
-    (is (str/includes? (read-until p nil) "40 100"))
-    (proc/wait p))
-  (is (some? (try (proc/resize (proc/start "true") 1 1) nil (catch Error e e))) "only a pty's"))
+(when-not windows?
+  (deftest a-program-on-a-terminal
+    (let [p (proc/start-pty "sh" :args ["-c" "stty size; [ -t 0 ] && [ -t 1 ] && echo terminal; echo TERM=$TERM; read x; echo got $x"]
+                            :rows 30 :cols 90)]
+      (is (:pty p))
+      (let [shown (read-until p "TERM=")]
+        (is (str/includes? shown "30 90") "its size")
+        (is (str/includes? shown "terminal") "stdin and stdout are a terminal")
+        (is (str/includes? shown "TERM=xterm-256color")))
+      (io/write (:in p) "hello\n")
+      ;; (now and then there's a second \r\n between the two: one run in four
+      ;; of a debug build on Linux with every suite running beside this one.
+      ;; Probably what's typed reaching the terminal before sh is reading;
+      ;; not looked into further)
+      (is (re-matches #"hello\r\n(\r\n)?got hello\r\n" (read-until p "got hello"))
+          "the terminal echoes what's typed, and turns \\n into \\r\\n")
+      (is (nil? (io/read (:out p) 10)) "the end, once it exits")
+      (is (= {:exit 0 :signal nil} (proc/wait p)))))
 
-(deftest the-terminal-is-a-controlling-one
-  (testing "^C at the terminal interrupts the program"
-    (let [p (proc/start-pty "sh" :args ["-c" "echo ready; sleep 30"])]
-      (read-until p "ready")
+  (deftest resizing
+    (let [p (proc/start-pty "sh" :args ["-c" "read x; stty size"])]
+      (proc/resize p 40 100)
+      (io/write (:in p) "go\n")
+      (is (str/includes? (read-until p nil) "40 100"))
+      (proc/wait p))
+    (is (some? (try (proc/resize (proc/start "true") 1 1) nil (catch Error e e))) "only a pty's"))
+
+  (deftest the-terminal-is-a-controlling-one
+    (testing "^C at the terminal interrupts the program"
+      (let [p (proc/start-pty "sh" :args ["-c" "echo ready; sleep 30"])]
+        (read-until p "ready")
+        (io/write (:in p) (bytes [3]))
+        (is (str/includes? (read-until p nil) "^C") "echoed")
+        (is (= :int (:signal (proc/wait p))) "SIGINT"))))
+
+  (deftest an-interactive-program
+    (let [p (proc/start-pty "cat")]
+      (io/write (:in p) "one\n")
+      (is (str/includes? (read-until p "one\r\none") "one"))
+      (io/write (:in p) (bytes [4]))
+      (read-until p nil)
+      (is (= 0 (:exit (proc/wait p))) "^D: the end of its input"))))
+
+;; ---- on Windows: the same, with its console's programs and keys ----
+
+(when windows?
+  (def cmd (sys/getenv "ComSpec"))
+
+  (deftest a-program-on-a-console
+    (let [p (proc/start-pty cmd :args ["/v:on" "/c" "mode con& echo TERM=%TERM%& set /p x=& echo got !x!"] :rows 30 :cols 90)]
+      (is (:pty p))
+      (let [shown (plain (read-until p "TERM=xterm-256color"))]
+        (is (re-find #"Lines:\s*30" shown) "its size")
+        (is (re-find #"Columns:\s*90" shown)))
+      (io/write (:in p) "hello\r")
+      (is (str/includes? (plain (read-until p "got hello")) "got hello") "what's typed reaches it")
+      (read-until p nil)
+      (is (nil? (io/read (:out p) 10)) "the end, once it exits")
+      (is (= {:exit 0 :signal nil} (proc/wait p)))))
+
+  (deftest resizing-a-console
+    (let [p (proc/start-pty cmd :args ["/c" "set /p x=& mode con"])]
+      (proc/resize p 40 100)
+      (io/write (:in p) "go\r")
+      (let [shown (plain (read-until p nil))]
+        (is (re-find #"Lines:\s*40" shown))
+        (is (re-find #"Columns:\s*100" shown)))
+      (proc/wait p))
+    (is (some? (try (proc/resize (proc/start cmd :args ["/c" "exit"]) 1 1) nil (catch Error e e))) "only a pty's"))
+
+  (deftest control-c-at-a-console
+    ;; (timeout refuses to run without a console. There are no signals: it
+    ;; ends long before its 30 seconds, with an exit code of its own)
+    (let [p (proc/start-pty "timeout" :args ["/t" "30" "/nobreak"])
+          began (nano-time)]
+      (read-until p "quit")
       (io/write (:in p) (bytes [3]))
-      (is (str/includes? (read-until p nil) "^C") "echoed")
-      (is (= :int (:signal (proc/wait p))) "SIGINT"))))
+      (read-until p nil)
+      (let [r (proc/wait p)]
+        (is (nil? (:signal r)))
+        (is (not= 0 (:exit r)))
+        (is (< (- (nano-time) began) 20000000000) "^C ended it"))))
 
-(deftest an-interactive-program
-  (let [p (proc/start-pty "cat")]
-    (io/write (:in p) "one\n")
-    (is (str/includes? (read-until p "one\r\none") "one"))
-    (io/write (:in p) (bytes [4]))
-    (read-until p nil)
-    (is (= 0 (:exit (proc/wait p))) "^D: the end of its input")))
+  (deftest an-interactive-console-program
+    (let [p (proc/start-pty cmd :args ["/v:on" "/c" "set /p a=& echo first !a!& set /p b=& echo second !b!"])]
+      (io/write (:in p) "one\r")
+      (is (str/includes? (plain (read-until p "first one")) "first one"))
+      (io/write (:in p) "two\r")
+      (is (str/includes? (plain (read-until p "second two")) "second two") "and again, once it has answered")
+      (read-until p nil)
+      (is (= 0 (:exit (proc/wait p))))))
+
+  ;; Console events reaching a child skein. (Under the Rust test harness, the
+  ;; executable is the harness.)
+  (def skein-exe (let [e (:executable (sys/info))] (when (and e (= "skein" (io/stem e))) e)))
+
+  (deftest control-c-is-a-signal-to-a-program-listening
+    (when skein-exe
+      (let [p (proc/start-pty skein-exe :args ["-e" "(do (require '[skein.signal :as sig]) (let [l (sig/listen :int)] (println :ready) (println :got (first (alts! [(:signals l) (timeout 20000)])))))"])]
+        (read-until p ":ready")
+        (io/write (:in p) (bytes [3]))
+        (is (str/includes? (plain (read-until p ":got")) ":got :int"))
+        (read-until p nil)
+        (is (= 0 (:exit (proc/wait p))) "it carries on, and ends as it means to"))))
+
+  (deftest control-c-interrupts-what-nothing-listens-for
+    (when skein-exe
+      (let [p (proc/start-pty skein-exe :args ["-e" "(do (println :ready) (sleep 30000) (println :slept))"])
+            began (nano-time)]
+        (read-until p ":ready")
+        (io/write (:in p) (bytes [3]))
+        (is (not (str/includes? (plain (read-until p nil)) ":slept")))
+        (is (= 1 (:exit (proc/wait p))))
+        (is (< (- (nano-time) began) 20000000000) "at once"))))
+
+  (deftest a-resized-console-is-a-winch
+    (when skein-exe
+      (let [p (proc/start-pty skein-exe :args ["-e" "(do (require '[skein.signal :as sig]) (let [l (sig/listen :winch)] (sleep 800) (println :ready) (println :got (first (alts! [(:signals l) (timeout 20000)])))))"])]
+        (read-until p ":ready")
+        (proc/resize p 40 100)
+        (is (str/includes? (plain (read-until p ":got")) ":got :winch"))
+        (read-until p nil)
+        (is (= 0 (:exit (proc/wait p)))))))
+
+  (deftest a-console-program-that-isnt-there
+    (is (instance? FileNotFound (try (proc/start-pty "C:\\no\\such\\program") (catch Error e e))))
+    (is (instance? FileNotFound (try (proc/start-pty cmd :dir "C:\\no\\such\\dir") (catch Error e e))) "nor its folder"))
+
+  (deftest a-console-keeps-to-its-environment
+    (let [p (proc/start-pty cmd :args ["/v:on" "/c" "if defined USERPROFILE (echo KEPT) else (echo CLEARED)& echo [!PTY_TEST!]"]
+                            :clear-env true :env {"PTY_TEST" "a b"})
+          shown (plain (read-until p nil))]
+      (is (str/includes? shown "CLEARED"))
+      (is (str/includes? shown "[a b]"))
+      (proc/wait p))))

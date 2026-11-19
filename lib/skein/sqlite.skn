@@ -53,7 +53,10 @@
 
 (defn- library-path []
   (or (sys/getenv "SKEIN_SQLITE")
-      (if (= (sys/os) :macos) "/usr/lib/libsqlite3.dylib" "libsqlite3.so.0")))
+      (case (sys/os)
+        :macos "/usr/lib/libsqlite3.dylib"
+        :windows "winsqlite3.dll"
+        "libsqlite3.so.0")))
 
 (def ^:private lib
   (try (ffi/library (library-path))

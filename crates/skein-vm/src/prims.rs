@@ -477,8 +477,8 @@ prims! {
     "%main-thread-served?" 0 Some(0) => |_, _| Ok(Value::bool(crate::main_lane::served()));
     "%ffi-callback-reply!" 3 Some(3) => |_, a| crate::ffi::callback_reply(a);
     "%ffi-callback-free!" 1 Some(1) => |_, a| crate::ffi::callback_free(a);
-    "%ffi-libc-path" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, if cfg!(target_os = "macos") { "/usr/lib/libSystem.B.dylib" } else { "libc.so.6" }));
-    "%ffi-libm-path" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, if cfg!(target_os = "macos") { "/usr/lib/libSystem.B.dylib" } else { "libm.so.6" }));
+    "%ffi-libc-path" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, if cfg!(windows) { "ucrtbase.dll" } else if cfg!(target_os = "macos") { "/usr/lib/libSystem.B.dylib" } else { "libc.so.6" }));
+    "%ffi-libm-path" 0 Some(0) => |vm, _| Ok(str_new(&mut vm.m, if cfg!(windows) { "ucrtbase.dll" } else if cfg!(target_os = "macos") { "/usr/lib/libSystem.B.dylib" } else { "libm.so.6" }));
     // processes, time, signals, fiber dumps (os.rs; skein.process, skein.time, skein.signal)
     "%process-start" 6 Some(6) => |vm, a| process_start(vm, a);
     "%deflate" 3 Some(3) => |vm, a| crate::pack::deflate(&mut vm.m, a);

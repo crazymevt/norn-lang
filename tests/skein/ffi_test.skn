@@ -7,6 +7,7 @@
   (:unsafe))
 
 (def libc (ffi/library :c))
+(def windows? (= :windows (sys/os)))
 
 (defn- caught [f] (try (f) nil (catch Error e e)))
 (defn- message [f] (when-let [c (caught f)] (condition-message c)))
@@ -63,20 +64,26 @@
 ;; struct tm, as the C library defines it (macOS and Linux agree)
 (ffi/defcstruct tm [sec :int min :int hour :int mday :int mon :int year :int wday :int yday :int isdst :int
                     gmtoff :long zone :string])
+;; (Windows' has only the nine ints, and its function takes them the other way round)
+(ffi/defcstruct windows-tm [sec :int min :int hour :int mday :int mon :int year :int wday :int yday :int isdst :int])
 (ffi/defcstruct time-t [t :i64])
-(ffi/defcfun gmtime-r libc "gmtime_r" [t [:* time-t] out [:out tm]] :pointer)
+(def gmtime
+  (if windows?
+    (let [f (ffi/function libc "_gmtime64_s" [[:out windows-tm] [:* time-t]] :int)] (fn [t] (ffi/call f nil t)))
+    (let [f (ffi/function libc "gmtime_r" [[:* time-t] [:out tm]] :pointer)] (fn [t] (ffi/call f t nil)))))
 
 (deftest the-c-librarys-own-structs
-  (let [[r tmv] (gmtime-r {:t 86400000} nil)]
+  (let [[r tmv] (gmtime {:t 86400000})]
     (is (integer? r))
     (is (= {:year 72 :mon 8 :mday 27 :hour 0 :yday 270 :wday 3} (select-keys tmv [:year :mon :mday :hour :yday :wday]))
         "a day of 1972")
-    (is (contains? #{"UTC" "GMT"} (ffi/string-at (:zone tmv))) "a string field: its address")))
+    (when-not windows?
+      (is (contains? #{"UTC" "GMT"} (ffi/string-at (:zone tmv))) "a string field: its address"))))
 
 (ffi/defcstruct named [id :int label :string])
 (ffi/defcfun c-strlen libc "strlen" [s :string] :usize)
 (ffi/defcfun c-setlocale libc "setlocale" [category :int locale :string] :string)
-(def lc-all "C's LC_ALL" (if (= :macos (sys/os)) 0 6))
+(def lc-all "C's LC_ALL" (if (contains? #{:macos :windows} (sys/os)) 0 6))
 
 (deftest string-fields-and-parameters
   (testing "a :string field reads as the address it was given, so a struct round-trips"
@@ -98,10 +105,12 @@
       (is (= "TypeError" (name (class-name (class-of c)))) "not printed: (strlen :abc) was 4")
       (is (= :abc (:value c))))))
 
-(ffi/defcfun snprintf libc "snprintf" [buf :out n :usize fmt :string & xs] :int)
+;; (Windows' snprintf is inline in its headers: the older C library has one to call)
+(ffi/defcfun snprintf (if windows? (ffi/library "msvcrt.dll") libc) (if windows? "_snprintf" "snprintf")
+  [buf :out n :usize fmt :string & xs] :int)
 
 (deftest variadic-from-the-c-library
-  (let [[n buf] (snprintf 64 64 "%d %s %.2f %ld %c" -42 "hi" 3.14159 9000000000 65)]
+  (let [[n buf] (snprintf 64 64 (if windows? "%d %s %.2f %lld %c" "%d %s %.2f %ld %c") -42 "hi" 3.14159 9000000000 65)]
     (is (= "-42 hi 3.14 9000000000 A" (subs (bytes->string buf true) 0 n))))
   (is (str/includes? (message (fn [] (ffi/function libc "printf" [:... :string] :int))) ":... comes last")))
 
@@ -205,8 +214,10 @@
 ;; ---- against C's own: tests/skein/ffi_fixture.c, built here with cc ----
 
 (def here (let [loc (%location)] (io/parent (subs loc 0 (str/last-index-of loc ":")))))
-(def fixture-path (io/path dir (str "libffi_fixture" (if (= (sys/os) :macos) ".dylib" ".so"))))
-(let [r (proc/sh "cc" "-shared" "-fPIC" "-o" fixture-path (io/path here "ffi_fixture.c"))]
+(def fixture-path (io/path dir (str "libffi_fixture" (case (sys/os) :macos ".dylib" :windows ".dll" ".so"))))
+(let [r (if windows?
+          (proc/sh "clang" "-shared" "-o" fixture-path (io/path here "ffi_fixture.c"))
+          (proc/sh "cc" "-shared" "-fPIC" "-o" fixture-path (io/path here "ffi_fixture.c")))]
   (when-not (zero? (:exit r)) (error (str "Couldn't build the C fixture: " (:err r)))))
 (def fix (ffi/library fixture-path))
 
@@ -350,10 +361,17 @@
 ;; Whether f's calls run on the process's first thread (a function of no
 ;; arguments, made with opts).
 (defn- first-thread-check [opts]
-  (if (= :macos (sys/os))
-    (let [f (apply ffi/function libc "pthread_main_np" [] :int opts)] (fn [] (= 1 (ffi/call f))))
-    (let [f (apply ffi/function libc "gettid" [] :int opts) pid (ffi/function libc "getpid" [] :int)]
-      (fn [] (= (ffi/call pid) (ffi/call f))))))
+  (cond (= :macos (sys/os))
+        (let [f (apply ffi/function libc "pthread_main_np" [] :int opts)] (fn [] (= 1 (ffi/call f))))
+        ;; (Windows can't say which thread was first: the same one as the lane's, then)
+        windows?
+        (let [k (ffi/library "kernel32.dll")
+              f (apply ffi/function k "GetCurrentThreadId" [] :uint opts)
+              lane (ffi/function k "GetCurrentThreadId" [] :uint :main-thread true)]
+          (fn [] (= (ffi/call lane) (ffi/call f))))
+        :else
+        (let [f (apply ffi/function libc "gettid" [] :int opts) pid (ffi/function libc "getpid" [] :int)]
+          (fn [] (= (ffi/call pid) (ffi/call f))))))
 
 (deftest main-thread-calls
   (let [on-main? (first-thread-check [:main-thread true])

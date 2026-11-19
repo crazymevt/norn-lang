@@ -10,7 +10,8 @@
 //!
 //! What a platform provides:
 //!
-//! - **processes**: `exit_signal`, `kill`, `raise`, and the signals Skein
+//! - **processes**: `Child` (what the reactor holds: `id`, `wait`, and
+//!   `From<std::process::Child>`), `exit_signal`, `kill`, `raise`, and the signals Skein
 //!   names (`SIGNALS`, `SIGINT`, `SIGQUIT`, `MAX_SIGNAL`, `catchable`);
 //! - **listening for signals**: `on_signals` (a thread that's told of each)
 //!   and its `SignalHandle`, `default_disposition`, `default_when`;
@@ -23,7 +24,7 @@
 //! - **the host terminal**: `is_terminal`, `terminal_size`,
 //!   `terminal_raw`, `terminal_restore`, `terminal_read`;
 //! - **the machine**: `hostname`, `total_memory`, `page_size`,
-//!   `local_offset`, `raise_file_limit`;
+//!   `local_offset`, `raise_file_limit`, `sync_dir`, `connect_settled`;
 //! - **executable memory** for tier 1: `code_alloc`, `code_write`.
 //!
 //! What's left outside it that a port must still look at: `sys.rs` takes
@@ -34,3 +35,8 @@
 mod unix;
 #[cfg(unix)]
 pub(crate) use unix::*;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub(crate) use windows::*;

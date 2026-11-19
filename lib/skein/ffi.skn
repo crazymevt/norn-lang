@@ -113,6 +113,27 @@
 
 (defn- round-up [n a] (* a (quot (+ n (dec a)) a)))
 
+(def ^:private msvc-bit-fields?
+  "Does this system's C lay bit fields out as Microsoft's compiler does?"
+  (= :windows (:family (%sys-info))))
+
+(defn- msvc-bit-field
+  "Bit field n of type ut and width w, laid out by Microsoft's rule: fields
+  share a unit only if their types are the same size, and a field that doesn't
+  fit what's left of the unit starts another. bit is where the last field
+  ended, open the unit it's in ([end-bit bytes], or nil). [bit open entry]."
+  [n ut w bit open]
+  (let [bytes (sizeof ut)
+        unit (* 8 bytes)
+        from (if open (first open) bit)]
+    (cond (zero? w) [(round-up from unit) nil nil]
+          (and open (= bytes (second open)) (<= (+ bit w) (first open)))
+          (let [start (- (first open) unit)]
+            [(+ bit w) open {:name n :type [:bits ut w] :offset (quot start 8) :shift (- bit start) :width w}])
+          :else
+          (let [start (round-up from unit)]
+            [(+ start w) [(+ start unit) bytes] {:name n :type [:bits ut w] :offset (quot start 8) :shift 0 :width w}]))))
+
 (defn- field-pairs [what lname fields]
   (when (odd? (count fields)) (error (str what " " lname ": fields come as name type pairs")))
   (map (fn [[n t]] [(keyword (name n)) t]) (partition 2 fields)))
@@ -127,25 +148,32 @@
   up to the struct's alignment (its largest field's), as C lays them out.
   A bit field, [:bits type width], goes in the unit of its type it starts
   in, if it fits there, else the next one (width 0: on to the next unit);
-  bits go from the lowest up."
+  bits go from the lowest up. (On Windows, by Microsoft's rule: a field of a
+  type of another size starts a new unit.)"
   ^Map [sname ^Sequential fields]
-  (loop [fs (field-pairs "defcstruct" sname fields) bit 0 align 1 out []]
+  ;; (open: the Microsoft storage unit bits are going in, [end-bit bytes])
+  (loop [fs (field-pairs "defcstruct" sname fields) bit 0 align 1 out [] open nil]
     (if (empty? fs)
-      (finish-layout sname out (quot (+ bit 7) 8) align false)
+      (finish-layout sname out (quot (+ (if open (first open) bit) 7) 8) align false)
       (let [[n t] (first fs)]
         (if (bits-type? t)
           (let [[_ ut w] t
                 unit (* 8 (sizeof ut))
-                _ (when-not (and (integer? w) (<= 0 w unit)) (error (str "A bit field of " ut " has 0 to " unit " bits, not " w)))
-                bit (if (or (zero? w) (not= (quot bit unit) (quot (+ bit w -1) unit))) (round-up bit unit) bit)]
-            (recur (rest fs) (+ bit w) (max align (sizeof ut))
-                   (if (zero? w)
-                     out
-                     (conj out {:name n :type t :offset (* (quot bit unit) (sizeof ut)) :shift (mod bit unit) :width w}))))
+                _ (when-not (and (integer? w) (<= 0 w unit)) (error (str "A bit field of " ut " has 0 to " unit " bits, not " w)))]
+            (if msvc-bit-fields?
+              (let [[bit open entry] (msvc-bit-field n ut w bit open)]
+                (recur (rest fs) bit (max align (sizeof ut)) (if entry (conj out entry) out) open))
+              (let [bit (if (or (zero? w) (not= (quot bit unit) (quot (+ bit w -1) unit))) (round-up bit unit) bit)]
+                (recur (rest fs) (+ bit w) (max align (sizeof ut))
+                       (if (zero? w)
+                         out
+                         (conj out {:name n :type t :offset (* (quot bit unit) (sizeof ut)) :shift (mod bit unit) :width w}))
+                       nil))))
           (let [a (alignof t)
-                at (round-up (quot (+ bit 7) 8) a)]
+                at (round-up (quot (+ (if open (first open) bit) 7) 8) a)]
             (recur (rest fs) (* 8 (+ at (sizeof t))) (max align a)
-                   (conj out {:name n :type t :offset at}))))))))
+                   (conj out {:name n :type t :offset at})
+                   nil)))))))
 
 (defn union-layout
   "A union's layout: every field at offset 0, the size the largest

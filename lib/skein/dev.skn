@@ -141,8 +141,7 @@
             watches (mapv (fn [r] (fs/watch r :recursive true)) roots)
             done (atom false)]
         (println (str "skein dev: running " entry ", reloading what's saved in " (str/join ", " (:paths project ["src"]))))
-        (let [stop (or (try (signal/listen :int :term) (catch Error _ nil)) ; (Windows has only :int)
-                       (signal/listen :int))
+        (let [stop (signal/listen :int :term)
               fiber (atom (start-main entry args done))]
           (loop []
             (let [files (changes (mapv :events watches) (:signals stop))]

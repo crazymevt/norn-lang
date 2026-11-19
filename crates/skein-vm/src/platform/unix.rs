@@ -6,6 +6,9 @@ use std::process::{Command, ExitStatus};
 
 // ---- processes and signals ----------------------------------------------------------------------
 
+/// A child process, as the reactor holds it.
+pub(crate) type Child = std::process::Child;
+
 /// The signal that ended a process, if one did.
 pub(crate) fn exit_signal(st: &ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;
@@ -215,7 +218,13 @@ pub(crate) enum PtyError {
 /// input, output and error are the terminal, which it has as its
 /// controlling terminal (a session of its own). The child, and the two
 /// ends its parent keeps: what the terminal shows, and what's typed at it.
-pub(crate) fn spawn_on_pty(c: &mut Command, rows: u16, cols: u16) -> std::result::Result<(std::process::Child, PipeIn, PipeOut), PtyError> {
+/// (`_clear_env`: `c` has been told already; Windows has to be told apart.)
+pub(crate) fn spawn_on_pty(
+    c: &mut Command,
+    _clear_env: bool,
+    rows: u16,
+    cols: u16,
+) -> std::result::Result<(Child, PipeIn, PipeOut), PtyError> {
     let (master, slave) = open_pty(rows, cols).map_err(PtyError::Open)?;
     let ends = || -> Result<[OwnedFd; 3]> { Ok([slave.try_clone()?, slave.try_clone()?, slave.try_clone()?]) };
     let [stdin, stdout, stderr] = ends().map_err(PtyError::Open)?;
@@ -408,6 +417,17 @@ pub(crate) fn local_offset(epoch_secs: i64) -> i64 {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let ok = unsafe { !libc::localtime_r(&t, &mut tm).is_null() };
     if ok { tm.tm_gmtoff } else { 0 }
+}
+
+/// Has the connect `s` started finished, one way or the other? (Here its
+/// peer address says: the caller asks.)
+pub(crate) fn connect_settled(_s: &mio::net::TcpStream) -> Result<bool> {
+    Ok(true)
+}
+
+/// Flush the directory `path`'s entries to storage.
+pub(crate) fn sync_dir(path: &str) -> Result<()> {
+    std::fs::File::open(path)?.sync_all()
 }
 
 /// Let this process have as many open files as the system allows.

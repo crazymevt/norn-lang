@@ -13,7 +13,6 @@ cranelift-native = "0.137.1"
 libc = "0.2"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
 notify = "8"
-signal-hook = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
 libloading = "0.8"
@@ -27,6 +26,25 @@ flate2 = "1"
 ring = "0.17"
 unicode-segmentation = "1"
 unicode-width = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+] }
 
 [features]
 default = []

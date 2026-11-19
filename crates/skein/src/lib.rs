@@ -57,6 +57,14 @@ static CURRENT: AtomicU64 = AtomicU64::new(0);
 const SUBMITTING: u64 = u64::MAX;
 const PENDING: u64 = u64::MAX - 1;
 
+/// Run `f` at each Ctrl-C.
+fn on_ctrl_c(f: impl FnMut() + Send + 'static) {
+    #[cfg(windows)]
+    skein_vm::os::on_interrupt(f);
+    #[cfg(not(windows))]
+    let _ = ctrlc::set_handler(f);
+}
+
 /// Submit `task` as the root fiber Ctrl-C interrupts: its ticket. A Ctrl-C
 /// that comes before the ticket is known (the fiber may already be
 /// running, and raising SIGINT itself) is held, and delivered once it is.
@@ -188,7 +196,7 @@ fn run_app(app: &App) -> ! {
         eprintln!("{}: {e}", app.name);
         exit(1)
     });
-    let _ = ctrlc::set_handler(move || {
+    on_ctrl_c(move || {
         // (a program listening for :int handles ^C itself)
         if !skein_vm::os::listening_for_interrupt()
             && let Some(t) = current_for_interrupt()
@@ -272,7 +280,7 @@ pub fn run() {
         eprintln!("{e}");
         exit(1)
     });
-    let _ = ctrlc::set_handler(move || {
+    on_ctrl_c(move || {
         // (a program listening for :int handles ^C itself)
         if skein_vm::os::listening_for_interrupt() {
             return;
@@ -714,7 +722,8 @@ impl LineEditor {
         }
         let mut ed = rustyline::Editor::new().ok()?;
         ed.set_helper(Some(SkeinHelper { skein, ns: std::cell::RefCell::new("user".into()) }));
-        let history = std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".skein_history"));
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+        let history = home.map(|h| std::path::PathBuf::from(h).join(".skein_history"));
         if let Some(h) = &history {
             let _ = ed.load_history(h);
         }
@@ -781,6 +790,10 @@ fn read_form(prompt: &str, indent: usize) -> Option<String> {
 fn find_project(start: &std::path::Path) -> Option<std::path::PathBuf> {
     let start = if start.as_os_str().is_empty() { std::path::Path::new(".") } else { start };
     let mut d = std::fs::canonicalize(start).ok()?;
+    // (Windows' canonical paths start \\?\, in which a / is no separator)
+    if let Some(plain) = d.to_str().and_then(|s| s.strip_prefix(r"\\?\")).filter(|s| s.as_bytes().get(1) == Some(&b':')) {
+        d = std::path::PathBuf::from(plain);
+    }
     loop {
         if d.join("skein.edn").is_file() {
             return Some(d);

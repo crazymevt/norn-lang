@@ -215,7 +215,8 @@
       (when-not (or (some? (%bound-value (symbol (str here) (str w))))
                     (some (fn [d] (= w (second (second d)))) @*wrappers*))
         (let [loc (or (%location) "")
-              file (let [i (%str-index loc ":" nil false)] (if i (subs loc 0 i) loc))
+              ;; ("source:line", by the last colon: a Windows path has one of its own)
+              file (let [i (%str-index loc ":" nil true)] (if i (subs loc 0 i) loc))
               caller (str here (when (seq file) (str " (" file ")")))]
           (%intern here w)
           (let [src (skein.core/%wrapper-source v caller w)]
@@ -924,7 +925,8 @@
     (if (some? known)
       (or known nil)
       (let [n (count src)
-            cwd (str (:cwd (%sys-info)) "/")
+            info (%sys-info)
+            cwd (str (:cwd info) (if (= :windows (:os info)) "\\" "/"))
             f (cond (contains? #{"<string>" "<editor>" "<repl>"} src) nil
                     (= "<" (subs src 0 (min 1 n)))
                     (let [lib (subs src 1 (dec n))
@@ -932,7 +934,9 @@
                           p (str (or (%getenv "SKEIN_COVER_LIB") "lib") "/" rel)]
                       (when (%fs-info p) p))
                     (and (> n (count "_test.skn")) (= "_test.skn" (subs src (- n (count "_test.skn"))))) nil
-                    (= "/" (subs src 0 (min 1 n))) (when (= cwd (subs src 0 (min n (count cwd)))) src)
+                    ;; (absolute: /… or, on Windows, C:\…)
+                    (or (= "/" (subs src 0 (min 1 n))) (= ":" (subs src (min 1 n) (min 2 n))))
+                    (when (= cwd (subs src 0 (min n (count cwd)))) src)
                     (= ".." (subs src 0 (min 2 n))) nil
                     :else src)]
         (swap! cover-files assoc src (or f false))

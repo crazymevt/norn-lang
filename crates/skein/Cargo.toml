@@ -22,8 +22,10 @@ path = "src/bin/ext_demo.rs"
 [dependencies]
 skein-rt = { path = "../skein-rt", default-features = false }
 skein-vm = { path = "../skein-vm", default-features = false }
-ctrlc = "3"
 rustyline = "15"
+
+[target.'cfg(unix)'.dependencies]
+ctrlc = "3"
 
 [features]
 default = []

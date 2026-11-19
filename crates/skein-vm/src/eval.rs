@@ -95,7 +95,8 @@ pub const LIBS: &[(&str, &str)] = &[
 
 /// `(%find-lib "a.b-c")`: the source of library `a.b-c` and where it came
 /// from — embedded, or `a/b-c.skn` under a folder added at run time, a
-/// directory on `SKEIN_PATH` (colon-separated) or the current directory.
+/// directory on `SKEIN_PATH` (separated as the system's `PATH` is) or the
+/// current directory.
 /// Folders added at run time (`(add-lib-path! dir)`): a project's source
 /// folders and its packages' (M8 part 8.10), searched before SKEIN_PATH,
 /// which is the fallback.
@@ -121,6 +122,10 @@ pub(crate) fn cache_dir() -> Option<String> {
     {
         return Some(format!("{x}/skein"));
     }
+    if cfg!(windows) {
+        let local = std::env::var("LOCALAPPDATA").ok().filter(|d| !d.is_empty())?;
+        return Some(format!("{local}\\skein\\cache"));
+    }
     let home = std::env::var("HOME").ok()?;
     Some(if cfg!(target_os = "macos") { format!("{home}/Library/Caches/skein") } else { format!("{home}/.cache/skein") })
 }
@@ -130,9 +135,12 @@ pub(crate) fn find_lib(name: &str) -> Option<(String, String)> {
         return Some(((*src).to_owned(), format!("<{name}>")));
     }
     let rel = format!("{}.skn", name.replace('.', "/"));
-    let path = std::env::var("SKEIN_PATH").unwrap_or_default();
+    // (`;` between folders on Windows, where a folder may hold a `:`)
+    let path: Vec<String> = std::env::var_os("SKEIN_PATH")
+        .map(|p| std::env::split_paths(&p).map(|d| d.to_string_lossy().into_owned()).filter(|d| !d.is_empty()).collect())
+        .unwrap_or_default();
     let added = LIB_PATH.read().unwrap().clone();
-    added.iter().map(String::as_str).chain(path.split(':').filter(|d| !d.is_empty())).chain(std::iter::once(".")).find_map(|dir| {
+    added.iter().chain(path.iter()).map(String::as_str).chain(std::iter::once(".")).find_map(|dir| {
         let p = std::path::Path::new(dir).join(&rel);
         std::fs::read_to_string(&p).ok().map(|src| (src, p.to_string_lossy().into_owned()))
     })
