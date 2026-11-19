@@ -103,7 +103,9 @@
 ;;; cancellation and stack overflow run cleanups
 (let [log (atom [])
       f (spawn-detached (unwind-protect (take! (chan)) (swap! log conj :cleaned)))]
-  (sleep 5)
+  ;; (cancelled once it's parked inside unwind-protect: a fiber cancelled
+  ;; before it starts has no cleanup to run)
+  (wait-until (fn [] (%fiber-parked? f)))
   (cancel! f)
   (is (= {:error "Cancelled"} (settle f)))
   (is (= [:cleaned] @log)))

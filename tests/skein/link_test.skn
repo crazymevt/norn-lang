@@ -55,7 +55,11 @@
 (defn- count-steps [n] (loop [i 0 s 0] (if (= i n) s (recur (inc i) (+ s (step i))))))
 
 (deftest a-redefinition-reaches-a-loop-already-running
-  (let [steps (spawn-detached (loop [i 0] (let [s (step i)] (if (or (= s 2) (> i 100000000)) s (recur (inc i))))))]
+  (let [running (atom false)
+        steps (spawn-detached (reset! running true)
+                              (loop [i 0] (let [s (step i)] (if (or (= s 2) (> i 100000000)) s (recur (inc i))))))]
+    ;; (redefined once the loop has started, and gone round a while)
+    (loop [k 0] (when (and (not @running) (< k 500)) (sleep 10) (recur (inc k))))
     (sleep 30)
     (redefine "(defn step [i] 2)")
     (is (= 2 (await steps)) "the loop sees the new step")

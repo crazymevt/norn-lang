@@ -181,11 +181,17 @@
 
 (deftest fibers-loading-one-library-share-the-load
   (module! "shared" "(ns mt.shared)\n(sleep 100)\n(def loads (atom 0))\n(swap! loads inc)\n")
-  (let [loads (mapv (fn [_] (future (run '(require 'mt.shared)) :ok)) (range 4))]
-    ;; (60 s: 10 timed out once on CI's macOS with everything compiled at
-    ;; its first call, every suite running beside this one on three cores.
-    ;; If it's ever :timed-out at 60, a waiting fiber wasn't woken.)
-    (is (= [:ok :ok :ok :ok] (mapv #(deref % 60000 :timed-out) loads)))
+  (let [loads (mapv (fn [_] (future (run '(require 'mt.shared)) :ok)) (range 4))
+        ;; (60 s: 10 timed out once on CI's macOS with everything compiled
+        ;; at its first call, every suite running beside this one on three
+        ;; cores. If it's ever :timed-out at 60, a waiting fiber wasn't
+        ;; woken, or never ran: the message has the load's state, who
+        ;; waits for what, and where every fiber is)
+        outcomes (mapv #(deref % 60000 :timed-out) loads)]
+    (is (= [:ok :ok :ok :ok] outcomes)
+        (when (some #{:timed-out} outcomes)
+          (str "the load: " (pr-str (get @skein.core/%libs 'mt.shared))
+               "; waits: " (pr-str @skein.core/%lib-waits) "\n" (fiber-dump))))
     (is (= 1 (run '@mt.shared/loads)) "loaded once")))
 
 (deftest a-macro-used-before-its-definition

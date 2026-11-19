@@ -195,9 +195,12 @@
 
 ;;; ---- skein.fs: watching ----
 (def w (fs/watch dir :recursive true))
-(sleep 200)
-(io/write-text (f "watched.txt") "hi")
-(def ev (first (alts! [(:events w) (timeout 10000)])))
+;; (the watcher may begin after watch returns, missing a change made then:
+;; one is made again until it sees one, for up to 10 s)
+(def ev (loop [i 0]
+          (io/write-text (f "watched.txt") (str "hi " i))
+          (or (first (alts! [(:events w) (timeout 500)]))
+              (when (< i 20) (recur (inc i))))))
 (is (= true (and (map? ev) (some? (:kind ev)) (vector? (:paths ev)))))
 (fs/unwatch w)
 
@@ -433,7 +436,8 @@
       s (await srv)
       big (apply str (repeat 65536 "x"))
       writer (spawn-detached (try (dotimes [_ 1000] (io/write s big)) (catch Error _ :stopped)))]
-  (sleep 200)
+  ;; (once the writer has filled what the peer would take, and waits)
+  (loop [i 0] (when (and (not (%fiber-parked? writer)) (< i 500)) (sleep 10) (recur (inc i))))
   (is (= :closed (deref (future (io/close s) :closed) 10000 :hung)) "the close")
   (is (= :stopped (deref (future (await writer)) 5000 :hung)) "and the writer parked on it")
   (%io-close c)
@@ -457,8 +461,12 @@
 (let [l (net/listen "127.0.0.1" 0)
       port (net/port (net/local-address l))
       caller (spawn-detached (net/connect "127.0.0.1" port :tls true :server-name "localhost" :ca-file (io/path certs "ca.pem") :timeout 60000))
-      s (net/accept l)]
-  (sleep 50)
+      s (net/accept l)
+      ;; (cancelled once it waits in the handshake: its hello has come, and
+      ;; it's parked for the answer. A sleep of 50 ms could cancel it before)
+      hello (deref (future (io/read s 4096)) 5000 nil)]
+  (is (some? hello) "the handshake began")
+  (loop [i 0] (when (and (not (%fiber-parked? caller)) (< i 500)) (sleep 10) (recur (inc i))))
   (cancel! caller)
   (is (= :end (deref (future (loop [] (if (io/read s 4096) (recur) :end))) 5000 :still-open)))
   (is (contains? (settle caller) :error))
@@ -479,7 +487,9 @@
                    :writer (dotimes [_ 1000] (io/write s big)))
                  :finished
                  (catch Error e (condition-message e))))]
-    (sleep 200)
+    ;; (closed once f waits on it: a writer when it has filled what the
+    ;; peer would take)
+    (loop [i 0] (when (and (not (%fiber-parked? f)) (< i 500)) (sleep 10) (recur (inc i))))
     (io/close s)
     (is (= "The handle is closed" (deref (future (await f)) 5000 :still-parked)) (str "the " (name parked) " is told"))
     (is (= :end (deref (future (loop [] (if (io/read c 65536) (recur) :end))) 5000 :no-end)) (str "the peer sees the end, a " (name parked) " parked"))
@@ -549,7 +559,7 @@
 ;;; ---- fiber dumps ----
 (let [ch (chan)
       waiting (spawn-detached (take! ch))
-      _ (sleep 20)
+      _ (loop [i 0] (when (and (not (%fiber-parked? waiting)) (< i 500)) (sleep 10) (recur (inc i))))
       dump (fiber-dump)]
   (is (= true (string? dump)))
   (is (= true (> (count dump) 20)))
@@ -904,7 +914,10 @@
     (dotimes [_ 8]
       (spawn sc (sync/with-permit s
                   (let [n (swap! active inc)] (swap! peak max n))
-                  ;; (long enough that two overlap, whatever else is running)
+                  ;; (two overlap: the first waits for a second, for up to
+                  ;; 5 s, however slowly they're started, then each holds
+                  ;; its permit a while, for a third to show if it got in)
+                  (loop [i 0] (when (and (< @peak 2) (< i 500)) (sleep 10) (recur (inc i))))
                   (sleep 50)
                   (swap! active dec)))))
   (is (= 2 (deref peak)))
@@ -921,7 +934,9 @@
     (dotimes [i 3]
       (spawn sc (swap! log conj [:a i]) (sync/arrive! b) (swap! log conj [:b i]) (sync/arrive! b))))
   (is (= true (every? (fn [e] (= :a (first e))) (take 3 (deref log))))))
-(let [rl (sync/rate-limiter 20 5)]
+;; (5 a second: 3 come back in 600 ms, and 2 in 400, so a slow machine has
+;; that long between the steps; at 20 they came in 150 and 100)
+(let [rl (sync/rate-limiter 5 5)]
   (is (= 5 (count (filter true? (repeatedly 5 (fn [] (sync/try-take! rl)))))))
   (is (= false (sync/try-take! rl 3)))
   (let [t0 (nano-time)]

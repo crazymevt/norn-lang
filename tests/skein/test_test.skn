@@ -117,7 +117,12 @@
 (t/parallel-tests!)
 (def running (atom 0))
 (def peak (atom 0))
-(defn work [] (swap! peak max (swap! running inc)) (sleep 300) (swap! running dec))
+;; (each waits, at most 2 s, for the others to be running too: a sleep alone
+;; left a slow machine's third test starting after the first had finished)
+(defn work []
+  (swap! peak max (swap! running inc))
+  (loop [i 0] (when (and (< @running 3) (< i 200)) (sleep 10) (recur (inc i))))
+  (swap! running dec))
 (deftest a (work) (is true))
 (deftest b (work) (is true))
 (deftest c (work) (is true))
