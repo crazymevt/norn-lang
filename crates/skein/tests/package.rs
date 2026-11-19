@@ -78,9 +78,10 @@ fn a_command_line_archive_runs_its_main_from_anywhere() {
     let out = Command::new(&launcher).args(["-e", "two words", "--image", "x"]).current_dir(&elsewhere).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains(r#":args ["-e" "two words" "--image" "x"]"#), "every argument goes to :main:\n{text}");
-    // (printed: a \ in it is \\)
-    let cwd = canonical(&elsewhere).replace('\\', "\\\\");
-    assert!(text.contains(&format!(":cwd \"{cwd}\"")), "the caller's folder:\n{text}");
+    // (printed, a \ in it as \\; and as the system has it: on Windows maybe
+    // C:\Users\RUNNER~1, so compared canonical)
+    let cwd = text.lines().find_map(|l| l.strip_prefix(":cwd \"")?.strip_suffix('"')).unwrap_or_else(|| panic!("no :cwd:\n{text}"));
+    assert_eq!(canonical(Path::new(&cwd.replace("\\\\", "\\"))), canonical(&elsewhere), "the caller's folder:\n{text}");
     assert!(text.contains(r#":hello "hi from data\n""#), "its resources:\n{text}");
     assert_eq!(Some(4), out.status.code(), ":main's integer is the exit status");
     // through a symbolic link, as when linked into a bin folder
