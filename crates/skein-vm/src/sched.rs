@@ -218,7 +218,15 @@ impl Sched {
         }
         self.injector.lock().unwrap().iter().for_each(|&v| f(v));
         self.timers.lock().unwrap().entries.values().for_each(|(_, v)| f(*v));
-        self.roots.lock().unwrap().values().for_each(|&v| f(v));
+        // (but not a root task's fiber while it's parked: then what can wake
+        // it is what keeps it, and if nothing does it's deadlocked, which
+        // deadlock.rs finds. Rust only waits for its result. A root task's
+        // key is its fiber's ticket: other roots have keys of their own)
+        for (&k, &v) in self.roots.lock().unwrap().iter() {
+            if !(v.is(Kind::Fiber) && v.word(fiber::NOTIFY) == k && v.fiber_state().load(Ordering::Acquire) == fiber::PARKED) {
+                f(v);
+            }
+        }
         self.native_keep.lock().unwrap().values().flatten().for_each(|&v| f(v));
         crate::jit::for_each_linked(f);
         crate::jit::for_each_queued(f);
@@ -618,6 +626,30 @@ fn spawn_in(vm: &mut Vm, thunk: Value, scope_v: Value, body: bool) -> Value {
     s.spawned.fetch_add(1, Ordering::Relaxed);
     schedule(f);
     f
+}
+
+/// Wake fiber `f`, which a collection found parked with nothing that can
+/// wake it, with a `Deadlock` condition at the operation it parked in: one
+/// its handlers can take, the debugger can keep, or that ends it. Its
+/// waiter is claimed first: should something deliver to it after all (a
+/// fiber deadlocked beside it, running its cleanups), only one wake wins.
+fn wake_deadlocked(vm: &mut Vm, f: Value) {
+    if f.fiber_state().load(Ordering::Acquire) != fiber::PARKED {
+        return;
+    }
+    let w = f.field(fiber::PARK);
+    if !w.is(Kind::Waiter) || !try_claim(w.field(waiter::CLAIM)) {
+        return;
+    }
+    let id = f.fiber_id();
+    post_event(format!("{{:event :deadlock :fiber {id}}}"));
+    let msg = str_new(&mut vm.m, &format!("Deadlock: fiber {id} is parked, and nothing can wake it"));
+    let class = rt().symbol(&mut vm.m, None, "Deadlock");
+    let k = rt().keyword(&mut vm.m, None, "fiber");
+    let data = skein_rt::map::map_assoc(&mut vm.m, skein_rt::map::map_empty(), k, Value::fix(id as i64));
+    let err = skein_rt::vector::vec_from_slice(&mut vm.m, &[msg, class, data]);
+    aset(f, fiber::WAKE_ERR, err);
+    deliver(w, Value::NIL, Value::NIL);
 }
 
 /// Transition a woken fiber towards running.
@@ -1083,6 +1115,11 @@ pub fn process_external(vm: &mut Vm) {
         spawn(vm, f, Value::NIL);
     }
     vm.dyn_env = mine;
+    // Fibers a collection found parked with nothing to wake them (skein-rt
+    // deadlock.rs): each woken with a Deadlock condition.
+    for f in skein_rt::deadlock::take_ready() {
+        wake_deadlocked(vm, f);
+    }
     if s.external_len.load(Ordering::Acquire) == 0 {
         return;
     }
@@ -1148,8 +1185,31 @@ pub fn process_external(vm: &mut Vm) {
 
 // ---- carriers ---------------------------------------------------------------------------------
 
+/// A fiber has run since the last look for deadlocked fibers when idle
+/// (read before it's written: no write, and no cache line shared between
+/// carriers, while it's already set).
+static RAN: AtomicBool = AtomicBool::new(false);
+
+/// How long every carrier must have been idle, with nothing outside that
+/// could wake a fiber, before a full collection looks for deadlocked ones.
+const DEADLOCK_IDLE: Duration = Duration::from_secs(1);
+
+/// Could anything outside the carriers still wake a parked fiber? A timer,
+/// the blocking pool, native code, or work handed in (and the reactor,
+/// whose look is dearer: `reactor::any_waiters`, taken last). Called with
+/// no scheduler lock held.
+fn wakers_outside(s: &Sched) -> bool {
+    !s.timers.lock().unwrap().entries.is_empty()
+        || crate::blocking::any_in_flight()
+        || in_native(s)
+        || s.external_len.load(Ordering::Acquire) > 0
+}
+
 fn run_one(vm: &mut Vm, f: Value) {
     let s = sched();
+    if !RAN.load(Ordering::Relaxed) {
+        RAN.store(true, Ordering::Relaxed);
+    }
     s.currents[vm.carrier].store(f.0, Ordering::Release);
     f.fiber_state().store(fiber::RUNNING, Ordering::Release);
     vm.current = f;
@@ -1277,6 +1337,8 @@ fn spin_for_work(s: &Sched, me: usize) -> Option<Value> {
 fn carrier_loop(vm: &mut Vm) {
     let s = sched();
     let me = vm.carrier;
+    // (the next time idle, wait a while, then look for deadlocked fibers)
+    let mut look_for_deadlock = false;
     loop {
         if begin_work(s) {
             process_external(vm);
@@ -1327,6 +1389,39 @@ fn carrier_loop(vm: &mut Vm) {
             drop(g);
             vm.drop_spare();
             safepoint::collect(&mut vm.m, true);
+            continue;
+        }
+        // The last carrier to go idle after fibers ran, with nothing outside
+        // that could wake one: a fiber still parked may be one nothing can
+        // wake, and with nothing running nothing allocates, so no collection
+        // would ever look. If a second passes with no work, have a full one
+        // (deadlock.rs: it finds them). A process waiting on a socket, a
+        // timer or the pool never does this. (Decided with no lock held: the
+        // timer thread takes the idle lock while holding its own. Then once
+        // more round, whose checks for work, under the lock, lose no wake.)
+        if look_for_deadlock {
+            look_for_deadlock = false;
+            if s.idle_count.load(Ordering::SeqCst) >= s.n {
+                vm.drop_spare();
+                safepoint::enter_safe();
+                let (g, waited) = s.idle_cv.wait_timeout(g, DEADLOCK_IDLE).unwrap();
+                s.idle_count.fetch_sub(1, Ordering::AcqRel);
+                drop(g);
+                safepoint::leave_safe();
+                if waited.timed_out() && !RAN.load(Ordering::Relaxed) && !wakers_outside(s) && !crate::reactor::any_waiters() {
+                    safepoint::collect(&mut vm.m, true);
+                }
+                continue;
+            }
+        } else if me < s.n
+            && s.idle_count.load(Ordering::SeqCst) >= s.n
+            && RAN.load(Ordering::Relaxed)
+            && !skein_rt::heap::idle_collections_off()
+        {
+            s.idle_count.fetch_sub(1, Ordering::AcqRel);
+            drop(g);
+            RAN.store(false, Ordering::Relaxed);
+            look_for_deadlock = !wakers_outside(s);
             continue;
         }
         vm.drop_spare();

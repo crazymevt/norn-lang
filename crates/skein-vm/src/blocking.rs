@@ -139,6 +139,11 @@ fn worker() {
     skein_rt::safepoint::while_running(move || drop(m));
 }
 
+/// Is any fiber waiting for the pool?
+pub(crate) fn any_in_flight() -> bool {
+    !IN_FLIGHT.lock().unwrap().is_empty()
+}
+
 /// Is waiter `w` waiting for the pool?
 pub(crate) fn holds_waiter(w: Value) -> bool {
     IN_FLIGHT.lock().unwrap().contains(&w)

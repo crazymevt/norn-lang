@@ -40,6 +40,7 @@
  "ConnectionError" {:kind :class, :slots ["address" "location" "message" "path" "reason" "trace"], :supers ["skein.core/IOError"]}
  "Contract" {:kind :class, :slots ["alts" "blamed" "check" "inner" "name" "of-class" "parts" "pred" "test"], :supers ["skein.core/StandardObject"]}
  "ContractError" {:kind :class, :slots ["blame" "expected" "function" "location" "message" "position" "trace" "value"], :supers ["skein.core/TypeError"]}
+ "Deadlock" {:kind :class, :slots ["fiber" "location" "message" "trace"], :supers ["skein.core/Error"]}
  "Delay" {:kind :class, :slots ["claimed" "result" "thunk"], :supers ["skein.core/StandardObject"]}
  "Error" {:kind :class, :slots ["location" "message" "trace"], :supers ["skein.core/SeriousCondition"]}
  "ExInfo" {:kind :class, :slots ["cause" "data" "location" "message" "trace"], :supers ["skein.core/Error"]}
@@ -183,7 +184,7 @@
  "dec" {:arglists ["[x]"], :kind :function}
  "declare" {:arglists ["[& xs]"], :kind :macro}
  "dedupe" {:arglists ["[]" "[coll]"], :kind :function}
- "defclass" {:arglists ["[cname supers slots & options]"], :kind :macro}
+ "defclass" {:arglists ["[cname & more]"], :kind :macro}
  "defcontract" {:arglists ["[fname c]"], :kind :macro}
  "defgeneric" {:arglists ["[gname params & options]"], :kind :macro}
  "define-method-combination" {:arglists ["[cname & {:keys [operator]}]"], :kind :macro}
@@ -272,6 +273,7 @@
  "future?" {:arglists ["[x]"], :kind :function}
  "gc" {:arglists ["[]"], :kind :function}
  "gc-count" {:arglists ["[]"], :kind :function}
+ "gc-stats" {:arglists ["[]" "[reset]"], :kind :function}
  "generic-methods" {:arglists ["[gf]"], :kind :function}
  "generic?" {:arglists ["[x]"], :kind :function}
  "gensym" {:arglists ["[]" "[prefix]"], :kind :function}

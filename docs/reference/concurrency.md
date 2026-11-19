@@ -40,6 +40,21 @@ in `with-scope` cancels the whole scope.
 input order. `(preduce f init coll)` reduces chunks in parallel. Supply
 an associative operation and its identity as `init`.
 
+A fiber parked on something nothing can ever deliver (a channel, promise
+or fiber that no running fiber, timer, socket or other waker still
+holds) is **deadlocked**. Rather than leave it waiting forever, the
+runtime signals a `Deadlock` condition in it, at the operation it waits
+in: its handlers can take it, `use-value` gives that operation a value,
+and in a REPL or editor it waits in the debugger with its stack. A full
+collection finds such fibers, and when every carrier has been idle for
+about a second with nothing outside that could wake a fiber, the
+runtime runs one to look. A fiber that something could wake but never
+does (a channel a live fiber holds and never writes) isn't found.
+
+```clojure
+(handler-case (take! (chan)) (Deadlock [e] :stuck)) ; => :stuck
+```
+
 ## Channels
 
 | Function | Behavior |

@@ -48,7 +48,7 @@ beginning with `%` are runtime internals.
 - [`debug-abort`](conditions.md#debugging-a-parked-fiber) · [`debug-restart`](conditions.md#debugging-a-parked-fiber) · [`debug-restart-frame`](conditions.md#debugging-a-parked-fiber) · [`debugging`](conditions.md#debugging-a-parked-fiber) · `dec` · `declare`
 - `dedupe` · [`def`](syntax.md#binding-and-functions) · [`defclass`](objects.md#class-definition-and-slots) · [`defcontract`](syntax.md#function-contracts) · [`defgeneric`](objects.md#generic-functions-and-methods) · [`define-method-combination`](objects.md#method-combination)
 - `definition` · [`defmacro`](syntax.md#macros-and-expansion) · [`defonce`](syntax.md#binding-and-functions) · [`defmethod`](objects.md#generic-functions-and-methods) · [`defn`](syntax.md#binding-and-functions) · [`defn-`](syntax.md#binding-and-functions) · [`defprotocol`](objects.md#protocols-and-object-customization)
-- `Delay` · `delay` · `delay?` · `deliver` · `denominator` · [`deref`](concurrency.md#atoms-and-dynamic-vars)
+- [`Deadlock`](concurrency.md#fibers-and-scopes) · `Delay` · `delay` · `delay?` · `deliver` · `denominator` · [`deref`](concurrency.md#atoms-and-dynamic-vars)
 - `deref-object` · `destructure` · `disassemble` · [`disj`](collections.md#lookup-and-update) · [`disj!`](collections.md#transients) · [`dissoc`](collections.md#lookup-and-update)
 - [`dissoc!`](collections.md#transients) · `distinct` · `distinct?` · [`do`](syntax.md#branching-and-sequencing) · `doall` · [`doc`](../getting-started.md#look-up-a-name)
 - `done?` · `dorun` · [`doseq`](syntax.md#iteration-and-tail-calls) · [`dotimes`](syntax.md#iteration-and-tail-calls) · `doto` · `double`

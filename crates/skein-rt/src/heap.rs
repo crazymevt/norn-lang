@@ -579,10 +579,15 @@ fn barrier_slow(obj: ObjectReference) {
 /// collection stops the program for tens of ms, and one taken while
 /// nothing runs is one no request waits for. (Half, not all: the budget
 /// spent means a full collection at the next young one, busy or not.)
-pub fn idle_collection_due() -> bool {
-    // (SKEIN_GC_IDLE=0: never)
+/// SKEIN_GC_IDLE=0: no collections for being idle (this one, nor the
+/// runtime's look for deadlocked fibers when nothing runs).
+pub fn idle_collections_off() -> bool {
     static OFF: OnceLock<bool> = OnceLock::new();
-    if *OFF.get_or_init(|| std::env::var("SKEIN_GC_IDLE").as_deref() == Ok("0")) {
+    *OFF.get_or_init(|| std::env::var("SKEIN_GC_IDLE").as_deref() == Ok("0"))
+}
+
+pub fn idle_collection_due() -> bool {
+    if idle_collections_off() {
         return false;
     }
     let (base, limit) = (MATURE_BASE_PAGES.load(Ordering::Relaxed), MATURE_LIMIT_PAGES.load(Ordering::Relaxed));
@@ -924,8 +929,14 @@ impl Scanning<Skein> for Skein {
         factory.create_process_pinning_roots_work(nodes);
         PHASE_ROOTS.store(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
-    fn process_weak_refs(_: &mut mmtk::scheduler::GCWorker<Skein>, _: impl mmtk::vm::ObjectTracerContext<Skein>) -> bool {
+    fn process_weak_refs(worker: &mut mmtk::scheduler::GCWorker<Skein>, tracer: impl mmtk::vm::ObjectTracerContext<Skein>) -> bool {
         let began = std::time::Instant::now();
+        // Parked fibers nothing reached are kept, deadlocked (deadlock.rs):
+        // first, so that what they hold is reached before weak references
+        // to it are cleared. Keeping any runs the trace again, then this.
+        if crate::deadlock::process(worker, &tracer) {
+            return true;
+        }
         crate::weak::process();
         PHASE_WEAK.store(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
         false

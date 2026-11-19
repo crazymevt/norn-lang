@@ -1547,6 +1547,17 @@
   when known. An I/O timeout is one too (:reason :timed-out, :address).
   Not an IOError, since what timed out needn't be I/O."))
 
+;; Deadlock: a parked fiber nothing can wake (nothing reachable holds what
+;; it waits on), found by a full collection (runtime.md §13, question 4).
+;; Signalled at the operation it parked in: use-value gives that a value,
+;; retry parks again.
+(defclass Deadlock (Error) ((fiber :initform nil))
+  (:doc "A fiber is parked, and nothing can wake it: what it waits on (a
+  channel, a fiber, a promise…) is held by nothing that runs. :fiber is its
+  id. Signalled in that fiber, at the operation it waits in, once a full
+  collection finds it (and, when every carrier is idle with nothing
+  outside to wake a fiber, about a second after)."))
+
 ;; ParseError: text that isn't what it should be (:source, :line, :column
 ;; where known): Skein source, EDN, JSON, a URI, an HTTP message.
 (defclass ParseError (Error) ((source :initform nil) (line :initform nil) (column :initform nil))
