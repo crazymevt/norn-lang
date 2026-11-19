@@ -68,8 +68,9 @@ left them open):
    is the pull request that added it. A clone on Windows needs `git
    config core.autocrlf false` first: the job sets it, and nothing in
    the repository does.
-3. **x64** (part 8): written on the Mac, run only by CI (`windows-x64`,
-   on `windows-latest`, another job that can't fail the run).
+3. **x64** (part 8): **done 2026-11-19**, written on the Mac and run
+   only by CI (`windows-x64`, on `windows-latest`, another job that
+   can't fail the run). MMTk's Windows layer ran there unchanged.
    - **The FFI** has Win64's rules: a struct of 1, 2, 4 or 8 bytes goes
      and comes back as an integer of that size (no HFAs: two floats go in
      an integer register), any other size by reference to a copy and
@@ -83,7 +84,11 @@ left them open):
      are inline (an outline one is a call to `__chkstk`, a relocation the
      installed code doesn't resolve). Small frames get none.
      `jit::tests` runs a 256 KB frame on a fresh thread.
-   - **CI's results**: STATUS-PENDING.
+   - **CI's results**, its first run (44524743638): every step green.
+     The suites, 342 tests, at tier 1 and at tier 0 with collections
+     forced; the lang-tests, six programs in three modes; and `cargo
+     test` (the workspace but jit-spike). The job puts clang on the
+     PATH for `ffi_test`'s fixture; ring builds as cc chooses for MSVC.
 4. **Not tried**: the REPL by hand at a console; a real Ctrl-Break, the
    console closing, the session ending.
 5. **A source file that begins with a byte-order mark doesn't load**
