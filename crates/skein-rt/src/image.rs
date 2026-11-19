@@ -93,6 +93,20 @@ struct Chain {
 
 static CHAIN: Mutex<Option<Chain>> = Mutex::new(None);
 
+/// The chain loaded is the base image (bootstrap step 6), which a start
+/// from it doesn't show: the process looks booted from source, to
+/// `image-info` and to a layered save. Its objects are still roots.
+static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Treat the chain loaded as the base image (see HIDDEN).
+pub fn hide_chain() {
+    HIDDEN.store(true, std::sync::atomic::Ordering::Release);
+}
+
+fn hidden() -> bool {
+    HIDDEN.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// GC roots: every object loaded from an image (they are immortal).
 pub fn for_each_root(f: &mut dyn FnMut(Value)) {
     if let Some(c) = CHAIN.lock().unwrap().as_ref() {
@@ -102,11 +116,17 @@ pub fn for_each_root(f: &mut dyn FnMut(Value)) {
 
 /// The image this process was started from (the top of its chain), if any.
 pub fn loaded_path() -> Option<PathBuf> {
+    if hidden() {
+        return None;
+    }
     CHAIN.lock().unwrap().as_ref().and_then(|c| c.layers.last().map(|l| l.path.clone()))
 }
 
 /// Paths of the loaded chain, base first.
 pub fn loaded_chain() -> Vec<PathBuf> {
+    if hidden() {
+        return Vec::new();
+    }
     CHAIN.lock().unwrap().as_ref().map(|c| c.layers.iter().map(|l| l.path.clone()).collect()).unwrap_or_default()
 }
 
@@ -343,7 +363,7 @@ pub fn reached_contains(reached: &HashSet<u64>, v: Value) -> bool {
 /// stopped every fiber and holds off the GC.
 pub fn save(path: &Path, spec: &Save) -> Result<Saved, String> {
     let chain = CHAIN.lock().unwrap();
-    let base = match (spec.layered, chain.as_ref()) {
+    let base = match (spec.layered, chain.as_ref().filter(|_| !hidden())) {
         (true, Some(c)) => Some(c),
         (true, None) => return Err("a layered image needs a base: start from an image first".into()),
         (false, _) => None,
