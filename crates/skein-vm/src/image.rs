@@ -71,6 +71,35 @@ pub fn build_id() -> u64 {
     })
 }
 
+/// Where this `skein` keeps its base image (bootstrap step 6, runtime.md
+/// §9): the runtime as booted from source, saved once and started from
+/// after, in the module cache's folder. Named for the executable (its
+/// path) and for this build of it (`build_id`, and the file's size and
+/// time, since a change to the VM's Rust changes neither the sources nor
+/// the primitives `build_id` takes in). None where there's to be none:
+/// `SKEIN_BASE_IMAGE=off`, no cache folder (`SKEIN_CACHE=off`), or a boot
+/// that isn't the usual one (`SKEIN_COMPILER=seed`, `SKEIN_EXPANDER=off`).
+pub fn base_image() -> Option<std::path::PathBuf> {
+    let off = |var: &str, value: &str| std::env::var(var).as_deref() == Ok(value);
+    if off("SKEIN_BASE_IMAGE", "off") || off("SKEIN_COMPILER", "seed") || off("SKEIN_EXPANDER", "off") {
+        return None;
+    }
+    let dir = crate::eval::cache_dir()?;
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let meta = std::fs::metadata(&exe).ok()?;
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    let fnv = |parts: &[&[u8]]| {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in parts.iter().flat_map(|p| p.iter()) {
+            h = (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    };
+    let which = fnv(&[exe.to_string_lossy().as_bytes()]);
+    let build = fnv(&[&build_id().to_le_bytes(), &meta.len().to_le_bytes(), &modified.to_le_bytes()]);
+    Some(Path::new(&dir).join(format!("base-{which:016x}-{build:016x}.skimg")))
+}
+
 // ---- roots ------------------------------------------------------------------------------
 //
 //   ROOTS_VERSION

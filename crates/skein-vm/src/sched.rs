@@ -1425,6 +1425,24 @@ pub fn start() -> Result<&'static Skein, Error> {
 /// from source (`None`). Once per process: later calls return the runtime
 /// started first.
 pub fn start_with(image: Option<&std::path::Path>) -> Result<&'static Skein, Error> {
+    start_from(image, false)
+}
+
+/// Whether the runtime was started from an image (false: booted from
+/// source, or not started yet).
+static FROM_IMAGE: AtomicBool = AtomicBool::new(false);
+
+/// Start the runtime from base image `base` if it loads, else by booting
+/// from source (bootstrap step 6, runtime.md §9): the runtime, and whether
+/// it came from the image. Once per process, as `start_with`.
+pub fn start_from_base(base: &std::path::Path) -> Result<(&'static Skein, bool), Error> {
+    let skein = start_from(Some(base), true)?;
+    Ok((skein, FROM_IMAGE.load(Ordering::Acquire)))
+}
+
+/// `start_with`, falling back to booting from source when `fallback` and
+/// the image doesn't load.
+fn start_from(image: Option<&std::path::Path>, fallback: bool) -> Result<&'static Skein, Error> {
     let skein = SKEIN
         .get_or_init(|| {
             let n = carrier_count();
@@ -1432,10 +1450,12 @@ pub fn start_with(image: Option<&std::path::Path>) -> Result<&'static Skein, Err
             let restore = match image {
                 Some(p) => match crate::image::load(p) {
                     Ok(r) => Some(r),
+                    Err(_) if fallback => None,
                     Err(e) => return Err(e),
                 },
                 None => None,
             };
+            FROM_IMAGE.store(restore.is_some(), Ordering::Release);
             let _ = SCHED.set(Sched::new(n));
             if let Some(r) = &restore {
                 sched().next_id.fetch_max(r.next_fiber_id, Ordering::Relaxed);
@@ -1466,7 +1486,7 @@ pub fn start_with(image: Option<&std::path::Path>) -> Result<&'static Skein, Err
         })
         .as_ref()
         .map_err(|e| Error::new(e.clone()))?;
-    if image.is_some() {
+    if FROM_IMAGE.load(Ordering::Acquire) {
         // Tell the image it has been restored (on-image-restore hooks).
         static RESTORED: std::sync::Once = std::sync::Once::new();
         let mut r = Ok(());

@@ -101,7 +101,7 @@ fn the_saving_fiber_and_unsaved_fibers_end_with_an_error() {
   (def waits-on-me (spawn-detached (try (await me) (catch Error e (condition-message e)))))
   (sleep 20)
   (:objects (save-image "{}" {opts})))"#,
-            common::esc(&path)
+            common::esc(path)
         )
     };
     eval(None, &setup(&parked, ""));

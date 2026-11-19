@@ -279,7 +279,19 @@ pub fn run() {
         Some(f) if !f.starts_with('-') => skein_vm::sys::set_program_args(args[1..].to_vec()),
         _ => skein_vm::sys::set_program_args(Vec::new()),
     }
-    let skein = start_with(image.as_deref()).unwrap_or_else(|e| {
+    // Without --image, this skein's base image (bootstrap step 6): booted
+    // from source the first time, and saved before anything else runs.
+    let base = if image.is_none() { skein_vm::base_image() } else { None };
+    let started = match &base {
+        Some(b) => skein_vm::start_from_base(b).map(|(skein, from_image)| {
+            if !from_image {
+                save_base_image(skein, b);
+            }
+            skein
+        }),
+        None => start_with(image.as_deref()),
+    };
+    let skein = started.unwrap_or_else(|e| {
         eprintln!("{e}");
         exit(1)
     });
@@ -450,6 +462,34 @@ fn image_tool(args: &[String]) -> i32 {
 /// `s` as a Skein string literal.
 fn skein_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n"))
+}
+
+/// Save the runtime as just booted from source as base image `path`, for
+/// later starts. It's written beside it and renamed into place, so no start
+/// reads half of one (two first starts at once both save, and the second
+/// rename wins), and this executable's earlier builds' images go. Failing
+/// is no matter: the next start boots from source again.
+fn save_base_image(skein: &skein_vm::Skein, path: &std::path::Path) {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    // (no macros here: the first to expand loads skein.validate, which the
+    // base image doesn't have)
+    let save = format!("(save-image {} :entry nil :fibers :none :layered false)", skein_string(&tmp.to_string_lossy()));
+    if skein.run(RootTask::EvalRaw(save), "user").result.is_err() || std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    // (base-WHICH-BUILD.skimg: the same WHICH is this executable)
+    let Some(which) = name.rsplit_once('-').map(|(w, _)| format!("{w}-")) else { return };
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.starts_with(&which) && n.ends_with(".skimg") && n != name {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// `skein build OUT.skimg [FILE…] [--entry NS/NAME] [--image BASE.skimg [--layered]] [--shake [--keep NAME]…]`.
