@@ -459,6 +459,13 @@ fn start_on_console(c: &std::process::Command, clear_env: bool, hpc: HPCON) -> R
             si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
             si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
             si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
+            // A child takes its parent's ignoring of Ctrl-C (a process
+            // started in a group of its own has it, and so do its children,
+            // as under CI's runner), and on a console of its own ^C would
+            // then do nothing; as on Unix, where a terminal's child has the
+            // signals' defaults. Windows sets it only for this process, so
+            // from here this one handles Ctrl-C at its console too.
+            SetConsoleCtrlHandler(None, 0);
             let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
             let ok = CreateProcessW(
                 std::ptr::null(),
