@@ -310,6 +310,17 @@ pub(crate) fn isa() -> Option<&'static OwnedTargetIsa> {
         // tier 1 silently falls back to tier 0. arm64 needs no flag)
         #[cfg(target_arch = "x86_64")]
         flags.set("preserve_frame_pointers", "true").ok()?;
+        // (Windows commits a thread's stack a page at a time, as a guard
+        // page below what's committed is touched: a frame larger than a
+        // page has to touch each page it skips, or the first store past the
+        // guard page is an access violation. Inline probes, a store a page
+        // from loops of them for a large frame: an outline one would be a
+        // call to __chkstk, a relocation that the code installed here
+        // doesn't resolve. Unix maps a thread's stack whole.)
+        if cfg!(windows) {
+            flags.set("enable_probestack", "true").ok()?;
+            flags.set("probestack_strategy", "inline").ok()?;
+        }
         cranelift_native::builder().ok()?.finish(settings::Flags::new(flags)).ok()
     })
     .as_ref()
@@ -3010,4 +3021,51 @@ extern "C" fn relink(proto: u64, cell: u64) -> u64 {
         RELINKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use cranelift_codegen::control::ControlPlane;
+    use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, StackSlotData, StackSlotKind, UserFuncName, types};
+    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+
+    /// A frame of 256 KB, on a thread of its own (whose stack, on Windows,
+    /// is committed only as it's touched): with no stack probes, the store
+    /// at its far end is past the guard page, and the process dies.
+    #[test]
+    fn a_frame_larger_than_a_page_probes_the_stack() {
+        let isa = super::isa().expect("a native code generator");
+        assert_eq!(isa.flags().enable_probestack(), cfg!(windows), "stack probes are on where they're needed");
+        let mut sig = Signature::new(isa.default_call_conv());
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 3), sig);
+        let mut fbc = FunctionBuilderContext::new();
+        {
+            let mut b = FunctionBuilder::new(&mut func, &mut fbc);
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let x = b.block_params(entry)[0];
+            let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 256 << 10, 4));
+            // (offset 0 is the frame's far end, the lowest address)
+            b.ins().stack_store(types::I64, x, slot, 0);
+            let one = b.ins().iconst(types::I64, 1);
+            b.ins().stack_store(types::I64, one, slot, (256 << 10) - 8);
+            let lo = b.ins().stack_load(types::I64, types::I64, slot, 0);
+            let hi = b.ins().stack_load(types::I64, types::I64, slot, (256 << 10) - 8);
+            let r = b.ins().iadd(lo, hi);
+            b.ins().return_(&[r]);
+            b.finalize(isa.frontend_config());
+        }
+        let mut ctx = cranelift_codegen::Context::for_function(func);
+        let code = ctx.compile(&**isa, &mut ControlPlane::default()).expect("it compiles");
+        assert!(code.buffer.relocs().is_empty(), "inline probes: no call to resolve");
+        let at = super::install_code(code.code_buffer()).expect("executable memory");
+        // SAFETY: compiled above for this signature, in the platform's convention.
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(at) };
+        let r = std::thread::Builder::new().stack_size(1 << 20).spawn(move || f(41)).unwrap().join().unwrap();
+        assert_eq!(r, 42);
+    }
 }

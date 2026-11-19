@@ -14,6 +14,8 @@
 #pragma comment(linker, "/EXPORT:many_ints /EXPORT:many_floats /EXPORT:apply_pair /EXPORT:apply_v4 /EXPORT:apply_big")
 #pragma comment(linker, "/EXPORT:apply_dl /EXPORT:apply_five_then_odd /EXPORT:apply_many /EXPORT:apply_many_floats")
 #pragma comment(linker, "/EXPORT:sum_longs /EXPORT:sum_doubles /EXPORT:mixed /EXPORT:call_from_thread")
+#pragma comment(linker, "/EXPORT:rgb_make /EXPORT:rgb_sum /EXPORT:half_make /EXPORT:half_sum /EXPORT:four_then_half")
+#pragma comment(linker, "/EXPORT:apply_rgb")
 #else
 #include <pthread.h>
 #endif
@@ -30,6 +32,8 @@ typedef struct { long a, b, c; } Big;            // 24 bytes: by reference
 typedef struct { char c; double d; short s; } Padded;
 typedef struct { double d; long l; } DL;       // x86-64: a float eightbyte, then an integer one
 typedef struct { int i; float f; } IF;         // x86-64: an int and a float in one eightbyte: integer
+typedef struct { char r, g, b; } Rgb;          // 3 bytes: Win64 passes it by reference
+typedef struct { short a, b; } Half;           // 4 bytes: Win64, as an int
 typedef struct {
     unsigned a : 3;
     unsigned b : 5;
@@ -101,6 +105,14 @@ DL dl_make(double d, long l) { DL r = {d, l}; return r; }
 double dl_sum(DL x) { return x.d + x.l * 10; }
 IF if_make(int i, float f) { IF r = {i, f}; return r; }
 double if_sum(IF x) { return x.i + x.f * 10; }
+Rgb rgb_make(char r, char g, char b) { Rgb x = {r, g, b}; return x; }
+long rgb_sum(Rgb x) { return x.r + x.g * 10 + x.b * 100; }
+Half half_make(short a, short b) { Half h = {a, b}; return h; }
+long half_sum(Half h) { return h.a + h.b * 1000; }
+
+// (Win64: four arguments take the four registers; the struct, as an int,
+// goes on the stack)
+long four_then_half(long a1, long a2, long a3, long a4, Half h) { return a1 + a2 + a3 + a4 + half_sum(h) * 10; }
 
 // (x86-64: the struct needs two registers and one is left: it goes on the
 // stack, and the next argument still takes that last register)
@@ -122,6 +134,7 @@ Pair apply_pair(Pair (*f)(Pair, int), Pair p, int k) { return f(p, k); }
 V4 apply_v4(V4 (*f)(V4, double), V4 v) { return f(v, 2.0); }
 Big apply_big(Big (*f)(Big), Big b) { return f(b); }
 DL apply_dl(DL (*f)(DL, IF), DL x, IF y) { return f(x, y); }
+Rgb apply_rgb(Rgb (*f)(Rgb, Half), Rgb x, Half h) { return f(x, h); }
 long apply_five_then_odd(long (*f)(long, long, long, long, long, Odd12, long)) {
     Odd12 o = {1, 2, 3};
     return f(1, 2, 3, 4, 5, o, 8);

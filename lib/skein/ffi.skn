@@ -57,8 +57,9 @@
 ;;;; return structs by value too. A freed callback's code is reused by the
 ;;;; next of its signature.
 ;;;;
-;;;; Structs by value and variadic functions are for arm64 (macOS and
-;;;; Linux) and x86-64 System V (Linux) so far; elsewhere they're an error.
+;;;; Structs by value and variadic functions are for arm64 (macOS, Linux
+;;;; and Windows) and x86-64 (Linux and Windows) so far; elsewhere they're
+;;;; an error.
 
 (ns skein.ffi
   (:unsafe))

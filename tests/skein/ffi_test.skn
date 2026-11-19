@@ -229,6 +229,8 @@
 (ffi/defcstruct padded [c :char d :double s :short])
 (ffi/defcstruct dl [d :double l :long])
 (ffi/defcstruct if-pair [i :int f :float])
+(ffi/defcstruct rgb [r :char g :char b :char])
+(ffi/defcstruct half [a :short b :short])
 (ffi/defcstruct flags [a [:bits :u32 3] b [:bits :u32 5] c [:bits :i32 4] d [:bits :u32 22] e [:bits :u8 2] f [:bits :u64 40]])
 (ffi/defcunion any [i :int f :float c [:array :char 6] d :double])
 (ffi/defcstruct tagged [tag :char u any])
@@ -282,6 +284,11 @@
 (ffi/defcfun dl-sum fix "dl_sum" [x dl] :double)
 (ffi/defcfun if-make fix "if_make" [i :int f :float] if-pair)
 (ffi/defcfun if-sum fix "if_sum" [x if-pair] :double)
+(ffi/defcfun rgb-make fix "rgb_make" [r :char g :char b :char] rgb)
+(ffi/defcfun rgb-sum fix "rgb_sum" [x rgb] :long)
+(ffi/defcfun half-make fix "half_make" [a :short b :short] half)
+(ffi/defcfun half-sum fix "half_sum" [h half] :long)
+(ffi/defcfun four-then-half fix "four_then_half" [a1 :long a2 :long a3 :long a4 :long h half] :long)
 (ffi/defcfun five-then-odd fix "five_then_odd" [a1 :long a2 :long a3 :long a4 :long a5 :long o odd12 after :long] :long)
 (ffi/defcfun many-ints fix "many_ints"
   [a1 :long a2 :long a3 :long a4 :long a5 :long a6 :long a7 :long o odd12 after :long] :long)
@@ -302,6 +309,10 @@
   (testing "a double and a long, and an int and a float in one word (x86-64: float and integer registers mixed)"
     (is (= [{:d 1.5 :l 4} 41.5] [(dl-make 1.5 4) (dl-sum {:d 1.5 :l 4})]))
     (is (= [{:i 3 :f 0.5} 8.0] [(if-make 3 0.5) (if-sum {:i 3 :f 0.5})])))
+  (testing "smaller than a word (Win64: 4 bytes as an int, 3 by reference)"
+    (is (= [{:r 1 :g 2 :b 3} 321] [(rgb-make 1 2 3) (rgb-sum {:r 1 :g 2 :b 3})]))
+    (is (= [{:a -2 :b 7} 6998] [(half-make -2 7) (half-sum {:a -2 :b 7})]))
+    (is (= 69910 (four-then-half 1 2 3 4 {:a -10 :b 7})) "after four others, on the stack"))
   (testing "with a union in it, and bit fields"
     (is (= 3007 (tagged-check {:tag 3 :u {:i 7}})))
     (is (= 41 (flags-sum {:a 1 :b 2 :c -3 :d 4 :e 3 :f 34}))))
@@ -321,12 +332,14 @@
   (is (= 25 (sum-longs 3 10 20 -5)))
   (is (= 0 (sum-longs 0)))
   (is (= 3.75 (sum-doubles 2 1.5 2.25)))
+  (is (= 15.5 (sum-doubles 5 1.0 2.0 3.0 4.0 5.5)) "more than the registers hold")
   (is (= 101.5 (mixed "ilds" -3 100 0.5 "four")) "int, long, double and string, each call's own")
   (is (some? (message (fn [] (sum-longs 1 :k)))) "a keyword isn't a C value"))
 
 (ffi/defcfun apply-pair fix "apply_pair" [f [:callback [pair :int] pair] p pair k :int] pair)
 (ffi/defcfun apply-v4 fix "apply_v4" [f [:callback [v4 :double] v4] v v4] v4)
 (ffi/defcfun apply-big fix "apply_big" [f [:callback [big] big] b big] big)
+(ffi/defcfun apply-rgb fix "apply_rgb" [f [:callback [rgb half] rgb] x rgb h half] rgb)
 (ffi/defcfun apply-dl fix "apply_dl" [f [:callback [dl if-pair] dl] x dl y if-pair] dl)
 (ffi/defcfun apply-five-then-odd fix "apply_five_then_odd"
   [f [:callback [:long :long :long :long :long odd12 :long] :long]] :long)
@@ -341,6 +354,8 @@
   (is (= {:a 20 :b 13} (apply-pair (fn [p k] {:a (* k (:a p)) :b (+ k (:b p))}) {:a 2 :b 3} 10)))
   (is (= {:x 2.0 :y 4.0 :z 6.0 :w 8.0} (apply-v4 (fn [v k] (update-vals v (fn [x] (* k x)))) {:x 1.0 :y 2.0 :z 3.0 :w 4.0})))
   (is (= {:a 2 :b 3 :c 4} (apply-big (fn [b] (update-vals b inc)) {:a 1 :b 2 :c 3})) "by reference both ways")
+  (is (= {:r 11 :g 2 :b -4} (apply-rgb (fn [x h] {:r (+ (:r x) (:a h)) :g (:g x) :b (- (:b x) (:b h))}) {:r 1 :g 2 :b 3} {:a 10 :b 7}))
+      "smaller than a word")
   (is (= {:d 2.0 :l 7} (apply-dl (fn [x y] {:d (+ (:d x) (:f y)) :l (+ (:l x) (:i y))}) {:d 1.5 :l 4} {:i 3 :f 0.5})))
   (is (= 8321015 (apply-five-then-odd (fn [a b c d e o h] (+ a b c d e (* 1000 (+ (:a o) (* 10 (:b o)) (* 100 (:c o)))) (* 1000000 h))))))
   (is (= 8321028 (apply-many (fn [a b c d e f g o h] (+ a b c d e f g (* 1000 (+ (:a o) (* 10 (:b o)) (* 100 (:c o)))) (* 1000000 h))))))

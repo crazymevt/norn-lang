@@ -763,7 +763,8 @@ signatures, `defcstruct`, memory access and callbacks from C (on the
 calling thread, or posted to a fiber from any other). A module using it
 says `(:unsafe)` in its `ns`. Since 9.8b it also has unions, bit fields,
 structs by value (calls and callbacks) and variadic functions, on arm64
-and (since M12's Linux work) x86-64 System V; Windows waits for M12.
+and (since M12's Linux work) x86-64 System V, and (M12) on Windows, arm64
+and x86-64.
 
 ### 9.1 UI: `skein.ui` **[decided, 2026-11-13]**
 
