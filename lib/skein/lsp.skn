@@ -54,12 +54,26 @@
 
 (def ^:private docs "Open documents: uri → their text." (atom {}))
 
-(defn- uri->path
-  "The path a file: URI names, or nil."
-  [u]
-  (when (str/starts-with? u "file://") (uri/decode (subs u 7))))
+(def ^:private windows? (= :windows (sys/os)))
 
-(defn- path->uri [p] (str "file://" (uri/encode p "/")))
+(defn- uri->path
+  "The path a file: URI names, or nil. (On Windows file:///c%3A/Users/… or
+  file:///C:/Users/… is C:\\Users\\….)"
+  [u]
+  (when (str/starts-with? u "file://")
+    (let [p (uri/decode (subs u 7))]
+      (if-let [[_ drive rest] (and windows? (re-matches #"/([A-Za-z]):(.*)" p))]
+        (str (str/upper-case drive) ":" (str/replace rest "/" "\\"))
+        p))))
+
+(defn- path->uri [p]
+  (str "file://" (uri/encode (if windows? (str "/" (str/replace p "\\" "/")) p) "/")))
+
+(defn- open-text
+  "The text of the open document of path p, or nil (looked for by path: an
+  editor and this server needn't write a URI alike)."
+  [p]
+  (some (fn [[u t]] (when (= p (uri->path u)) t)) @docs))
 
 (defn- lines [text] (str/split text #"\n" -1))
 
@@ -203,7 +217,7 @@
                    :let [f (:file c)]
                    :when (and f (:line c) (not (str/starts-with? f "<")))
                    :let [path (str (io/absolute f))
-                         ls (lines (or (get @docs (path->uri path)) (try (slurp path) (catch Error _ ""))))
+                         ls (lines (or (open-text path) (try (slurp path) (catch Error _ ""))))
                          ;; (where in the caller's definition it's written: the
                          ;; first line from its start that names it)
                          hit (first (for [l (range (dec (:line c)) (min (count ls) (+ (:line c) 200)))
