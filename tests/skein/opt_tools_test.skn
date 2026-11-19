@@ -29,6 +29,11 @@
 
 (defn- parked [id] (first (filter (fn [d] (= id (:fiber d))) (debugging))))
 (defn- wait-until [f] (loop [i 0] (or (f) (when (< i 10000) (sleep 2) (recur (inc i))))))
+(defn- result-of
+  "Fiber f's result, or :timeout after 20 s (one the debugger didn't set
+  going again fails the test, rather than hanging the run)."
+  [f]
+  (deref (future (await f)) 20000 :timeout))
 (defn- frame-of [id name] (some (fn [[i fr]] (when (= name (:fn fr)) i)) (map-indexed vector (backtrace id))))
 (defn- redefine [src] (load-string (str "(in-ns 'opt-tools-test) " src)))
 
@@ -55,7 +60,7 @@
       (testing "restarted with a new definition"
         (redefine "(defn drift [n bad] (loop [i 0 x 0.0] (if (= i n) x (recur (inc i) (+ x 0.5)))))")
         (debug-restart-frame id i)))
-    (is (= 20.0 (await f)))))
+    (is (= 20.0 (result-of f)))))
 
 (defn scale [x] (when (neg? x) (error "negative:" x)) (* x 1.5))
 (defn scale-sum [xs] (loop [s 0.0 xs xs] (if (seq xs) (recur (+ s (scale (first xs))) (rest xs)) s)))
@@ -74,7 +79,7 @@
       (is (= 1.5 (get (:locals (nth frames (inc i))) 's)) "the caller's float so far")
       (redefine "(defn scale [x] (* (abs x) 1.5))")
       (debug-restart-frame id i))
-    (is (= 9.0 (await f)) "1.5 + 3.0 + 4.5"))
+    (is (= 9.0 (result-of f)) "1.5 + 3.0 + 4.5"))
   (redefine "(defn scale [x] (when (neg? x) (error \"negative:\" x)) (* x 1.5))"))
 
 (defn ratio [a b] (loop [k 0 acc 0.0] (if (= k 3) (+ acc (/ a b)) (recur (inc k) (+ acc 1.0)))))
@@ -86,7 +91,7 @@
         id (fiber-id f)]
     (is (wait-until (fn [] (parked id))))
     (debug-restart id 0 0.5)
-    (is (= 3.5 (await f)))))
+    (is (= 3.5 (result-of f)))))
 
 (deftest an-image-saved-after-compiling
   (let [img (io/path (sys/temp-dir) (str "opt-tools-" (sys/pid) "-" (nano-time) ".skimg"))

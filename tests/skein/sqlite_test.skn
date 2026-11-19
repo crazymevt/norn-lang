@@ -135,9 +135,10 @@
                                 (sql/execute! db "DELETE FROM people")
                                 (deliver started true)
                                 (take! (chan))))]
-        @started
+        ;; (bounded: a fiber that failed before it got there never delivers)
+        (is (= true (deref started 10000 :never-started)))
         (cancel! f)
-        (is (= {:error "Cancelled"} (settle f)))
+        (is (= {:error "Cancelled"} (deref (future (settle f)) 10000 :hung)))
         (is (= 2 (n)) "rolled back")
         (is (not (sql/in-transaction? db)))
         (is (= :next (sql/with-transaction [db] :next)))))

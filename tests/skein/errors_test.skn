@@ -76,9 +76,11 @@
         (is (= ["ConnectionError" :closed] [(class-of-name c) (:reason c)]))))
     (let [l (net/listen "127.0.0.1" 0)
           f (spawn-detached (caught (fn [] (net/accept l))))]
-      (sleep 20)
+      ;; (closed once it's parked in accept; and a wake-up lost fails, not hangs)
+      (loop [i 0] (when (and (not (%fiber-parked? f)) (< i 500)) (sleep 10) (recur (inc i))))
       (io/close l)
-      (is (= ["ConnectionError" :closed] ((juxt class-of-name :reason) (await f))) "closed while waiting")))
+      (is (= ["ConnectionError" :closed] ((juxt class-of-name :reason) (deref (future (await f)) 10000 :hung)))
+          "closed while waiting")))
   (testing "TLS"
     (let [certs (io/path here "certs")
           s (http/serve (fn [_] {:status 200 :body "ok"}) :tls true

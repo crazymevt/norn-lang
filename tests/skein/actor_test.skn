@@ -12,6 +12,13 @@
   (loop [n 0]
     (or (f) (when (< n 2000) (sleep 10) (recur (inc n))))))
 
+(defn- ask
+  "a/ask, waiting up to 20 s, as eventually does: its 5 s once wasn't
+  enough for a process just restarted, under skein check's load on CI's
+  Linux arm64."
+  [p msg]
+  (a/ask p msg 20000))
+
 (defn- class-name-of [c] (when-not (keyword? c) (name (class-name (class-of c)))))
 
 (a/defprocess counter [n]
@@ -27,7 +34,7 @@
     (a/send c [:inc])
     (a/send c [:add 5])
     (a/send c [:add :x]) ; (no clause takes it: it stays in the mailbox)
-    (is (= 6 (a/ask c [:get])))
+    (is (= 6 (ask c [:get])))
     (is (= [[:add :x]] @(:mailbox c)))
     (a/send c [:stop])
     (is (= :normal (a/await-exit c 10000)))
@@ -46,8 +53,9 @@
         "a message that doesn't match doesn't end the wait")
     (is (= :soon (a/run-in-process
                   (fn [] (let [me (a/self)]
+                           ;; (it comes during the wait; 20 s for it to, on a loaded machine)
                            (spawn-detached (do (sleep 20) (a/send me :soon)))
-                           (a/receive :soon :soon :after 2000 :late)))))))
+                           (a/receive :soon :soon :after 20000 :late)))))))
   (is (some? (try (a/self) nil (catch Error e e))) "self: only in a process"))
 
 (deftest names
@@ -55,7 +63,7 @@
     (a/register! :the-counter c)
     (is (identical? c (a/whereis :the-counter)))
     (a/send :the-counter [:inc])
-    (is (= 2 (a/ask :the-counter [:get])))
+    (is (= 2 (ask :the-counter [:get])))
     (is (some? (try (a/register! :the-counter (a/spawn-process counter 0)) nil (catch Error e e)))
         "a name a living process has")
     (a/exit! :the-counter)
@@ -85,6 +93,9 @@
       (is (a/alive? b))
       (a/send b :go)
       (is (= :normal (a/await-exit b 10000)))))
+  ;; (the waits for :EXIT and :DOWN messages here and in monitors are 10
+  ;; s: with a collection forced every 50th poll on a CI runner, a crashed
+  ;; process took over 1 s to end; see too-many-restarts)
   (testing "trapping exits: a message instead"
     (is (= [:EXIT :boom]
            (a/run-in-process
@@ -92,12 +103,12 @@
               (a/trap-exits!)
               (let [p (a/spawn-link (fn [] (a/receive _ (a/exit! (a/self) :boom))))]
                 (a/send p :go)
-                (a/receive [:EXIT (:? (fn [x] (identical? x p))) r] [:EXIT r] :after 1000 :none)))))))
+                (a/receive [:EXIT (:? (fn [x] (identical? x p))) r] [:EXIT r] :after 10000 :none)))))))
   (testing "linking to a process that has ended"
     (let [dead (a/spawn-process (fn [] :done))]
-      (a/await-exit dead)
+      (a/await-exit dead 10000)
       (is (= [:EXIT :normal] (a/run-in-process (fn [] (a/trap-exits!) (a/link! dead)
-                                                 (a/receive [:EXIT _ r] [:EXIT r] :after 1000 :none)))))))
+                                                 (a/receive [:EXIT _ r] [:EXIT r] :after 10000 :none)))))))
   (testing "exit! to a process trapping exits is a message, unless it's :kill"
     (let [p (a/spawn-process (fn [] (a/trap-exits!) (a/receive [:EXIT _ r] r)))]
       (eventually (fn [] @(:trapping p)))
@@ -115,7 +126,7 @@
             (let [p (a/spawn-process (fn [] (a/receive :go :ok)))
                   ref (a/monitor p)]
               (a/send p :go)
-              (a/receive [:DOWN r q reason] [:DOWN (and (= r ref) (identical? q p)) reason] :after 1000 :none))))))
+              (a/receive [:DOWN r q reason] [:DOWN (and (= r ref) (identical? q p)) reason] :after 10000 :none))))))
   (testing "a monitor doesn't end the watcher"
     (is (= :still-here
            (a/run-in-process
@@ -123,17 +134,17 @@
               (let [p (a/spawn-process counter 0)]
                 (a/monitor p)
                 (a/send p [:crash])
-                (a/receive [:DOWN _ _ _] :still-here :after 1000 :none))))))))
+                (a/receive [:DOWN _ _ _] :still-here :after 10000 :none))))))))
 
 (deftest a-supervisor-restarts-what-crashed
   (let [sup (a/supervisor {} [(a/child :sup-counter counter 0)])
         first-one (eventually (fn [] (a/whereis :sup-counter)))]
     (a/send :sup-counter [:inc])
-    (is (= 1 (a/ask :sup-counter [:get])))
+    (is (= 1 (ask :sup-counter [:get])))
     (a/send :sup-counter [:crash])
     (let [second-one (eventually (fn [] (let [p (a/whereis :sup-counter)] (when (and p (not (identical? p first-one))) p))))]
       (is (some? second-one) "a new process, under the same name")
-      (is (= 0 (a/ask :sup-counter [:get])) "starting again from its arguments")
+      (is (= 0 (ask :sup-counter [:get])) "starting again from its arguments")
       (is (= "ArithmeticError" (class-name-of (a/exit-reason first-one))))
       (is (= [[:sup-counter second-one]] (a/which-children sup))))
     (a/stop-supervisor! sup)
@@ -152,7 +163,7 @@
       (let [p (a/whereis id)]
         (a/send id [:crash])
         (eventually (fn [] (let [q (a/whereis id)] (and q (not (identical? p q))))))))
-    (is (= [:v1 :v2] [(a/ask :by-value [:which]) (a/ask :by-var [:which])]))
+    (is (= [:v1 :v2] [(ask :by-value [:which]) (ask :by-var [:which])]))
     (a/stop-supervisor! sup)
     (alter-var-root #'versioned (constantly old))))
 
@@ -203,13 +214,11 @@
         b (a/start-child! sup (a/child :dyn-b counter 5))]
     (is (identical? b (a/whereis :dyn-b)) "started and registered when start-child! returns")
     (is (= [:dyn-a :dyn-b] (mapv first (a/which-children sup))) "after the others")
-    (is (= 5 (a/ask :dyn-b [:get])))
+    (is (= 5 (ask :dyn-b [:get])))
     (testing "supervised like the others"
       (a/send :dyn-b [:crash])
       (is (eventually (fn [] (let [p (a/whereis :dyn-b)] (and p (not (identical? p b)))))))
-      ;; (20 s, as eventually waits: under skein check's load on CI's Linux
-      ;; arm64, 5 s once wasn't enough)
-      (is (= 5 (a/ask :dyn-b [:get] 20000))))
+      (is (= 5 (ask :dyn-b [:get]))))
     (testing "an id it has already"
       (is (thrown? Error (a/start-child! sup (a/child :dyn-a counter 1))))
       (is (= [:dyn-a :dyn-b] (mapv first (a/which-children sup))) "and the supervisor carries on"))
@@ -251,7 +260,7 @@
     (a/send :held-counter [:crash])
     (let [second-one (eventually (fn [] (let [p (a/whereis :held-counter)] (when (and p (not (identical? p first-one))) p))))]
       (is (some? second-one) "restarted")
-      (is (= 0 (a/ask :held-counter [:get])) "and answering")
+      (is (= 0 (ask :held-counter [:get])) "and answering")
       (is (= "Divide by zero" (:condition (eventually held))) "while the crash waits in the debugger")
       (debug-abort id)
       (is (eventually (fn [] (nil? (held)))))

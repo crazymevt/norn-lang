@@ -93,11 +93,38 @@
 (println \"read\" (io/read-line))
 ")
 
-(defn- read-until [p s]
-  (loop [acc ""]
-    (if (str/includes? acc s)
-      acc
-      (if-let [b (io/read (:out p) 4096)] (recur (str acc (bytes->string b true))) acc))))
+(defn- watched
+  "p, from start-pty, with what its terminal shows read as it comes, as a
+  terminal emulator does, into the atom (:text p), until the end, which
+  the future (:ended p) is."
+  [p]
+  (let [text (atom "")]
+    (assoc p :text text :mark (atom 0)
+           :ended (future (loop [] (when-let [b (io/read (:out p) 4096)] (swap! text str (bytes->string b true)) (recur)))
+                          :end))))
+
+(defn- read-until
+  "What p (watched) has shown since the last read-until, through the first
+  s; or all of it once it ends or 60 s have passed. (Not a read of its own:
+  one that never returns hung the run; and what came after s in the same
+  read was lost to the next.)"
+  [p s]
+  (let [deadline (+ (nano-time) 60000000000)]
+    (loop []
+      (let [done (or (realized? (:ended p)) (> (nano-time) deadline))
+            text @(:text p)
+            from @(:mark p)
+            i (str/index-of text s from)
+            end (if i (+ i (count s)) (count text))]
+        (if (or i done)
+          (do (reset! (:mark p) end) (subs text from end))
+          (do (sleep 10) (recur)))))))
+
+(defn- wait-for
+  "proc/wait for p, for at most 60 s; then it's killed, and the test fails
+  on how it ended, not the run on waiting."
+  [p]
+  (or (deref (future (proc/wait p)) 60000 nil) (do (proc/kill p :kill) (proc/wait p))))
 
 (deftest raw-mode-on-a-terminal
   (let [exe (:executable (sys/info))]
@@ -105,10 +132,10 @@
       (println "terminal_test: not running as skein; skipping the pseudo-terminal test")
       (io/with-temp-file [script :suffix ".skn"]
         (io/write-text script child)
-        (let [p (proc/start-pty exe :args [script] :rows 30 :cols 100)]
+        (let [p (watched (proc/start-pty exe :args [script] :rows 30 :cols 100))]
           (is (str/includes? (read-until p "raw") "tty true true {:rows 30, :cols 100}"))
           (io/write (:in p) (str "a" esc "[A" (char 3) esc "[200~pasted" esc "[201~"))
-          (let [shown (read-until p "pasted")]
+          (let [shown (read-until p "pasted\"}")]
             (is (str/includes? shown "{:key \\a}"))
             (is (str/includes? shown "{:key :up}"))
             (is (str/includes? shown "{:key \\c, :ctrl true}") "Ctrl-C is a key, not a signal")
@@ -118,17 +145,19 @@
             (is (str/includes? (read-until p "resumed") (str esc "[?2004l" esc "[?2004hresumed"))
                 "the options off, and back on"))
           (io/write (:in p) esc)
-          (sleep 1000)
+          ;; (q once the escape is read alone, not after a second's sleep: a
+          ;; child slower than that would take the two together, as Alt-q)
+          (is (str/includes? (read-until p "{:key :escape}") "{:key :escape}") "a lone escape, after a moment")
           (io/write (:in p) "q")
-          (let [shown (read-until p "line mode")]
-            (is (str/includes? shown "{:key :escape}") "a lone escape, after a moment")
-            (is (str/includes? shown "{:key \\q}")))
+          ;; (line mode is printed once the terminal is back as it was: the
+          ;; restore waits for the output before it, and returns once done)
+          (is (str/includes? (read-until p "line mode") "{:key \\q}"))
           (io/write (:in p) "hello\n")
           ;; (what was read goes in the message: the nightly's heap-checked
           ;; run once didn't see the echo, and its log said only false)
           (let [shown (read-until p "read hello")]
             (is (str/includes? shown "hello\r\nread hello") (str "echo and lines are back; read " (pr-str shown))))
-          (is (= 0 (:exit (proc/wait p)))))))))
+          (is (= 0 (:exit (wait-for p)))))))))
 
 ;; (On Windows, a console draws what a program writes, and has no suspending.)
 (def ^:private console-child
@@ -206,5 +235,5 @@
           (io/write (:in p) "hi\n")
           (is (seen? "read hi"))
           (io/write (:in p) "exit\n")
-          (proc/wait p)
-          @reader)))))
+          (wait-for p)
+          (deref reader 60000 nil))))))

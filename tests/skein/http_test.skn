@@ -68,6 +68,8 @@
 
 (def connections (atom #{}))
 (def errors (atom []))
+;; (/slow answers when the timeouts test is done with it, or after 30 s)
+(def slow-gate (promise))
 
 (defn- handler [req]
   (swap! connections conj (:remote-addr req))
@@ -82,7 +84,7 @@
     "/moved" {:status 302 :headers {"location" "hello?name=redirected"}}
     "/see-other" {:status 303 :headers {"location" "/info"}}
     "/loop" {:status 302 :headers {"location" "/loop"}}
-    "/slow" (do (sleep 1000) {:status 200 :body "late"})
+    "/slow" (do (deref slow-gate 30000 nil) {:status 200 :body "late"})
     "/close" {:status 200 :headers {"connection" "close"} :body "bye"}
     "/boom" (error "kaboom")
     {:status 404 :body "nope"}))
@@ -157,7 +159,10 @@
   (let [t0 (nano-time)
         m (message (fn [] (http/get (url "/slow") :timeout 150)))]
     (is (= (str "The request to " (url "/slow") " timed out after 150 ms") m))
-    (is (< (/ (- (nano-time) t0) 1e6) 900) "it didn't wait for the handler")))
+    ;; (the handler would take 30 s: 10 leaves a loaded machine room, where
+    ;; 900 against a handler of 1 s was a thin margin)
+    (is (< (/ (- (nano-time) t0) 1e6) 10000) "it didn't wait for the handler")
+    (deliver slow-gate true)))
 
 (deftest the-edges-of-the-protocol
   (testing "a malformed request: 400, and the connection closes"

@@ -6,6 +6,12 @@
 
 (defn- message [f] (try (f) nil (catch Error e (condition-message e))))
 (defn- class-name-of [c] (when c (name (class-name (class-of c)))))
+;; (waits with a deadline: on a slow machine a fiber may not have started
+;; yet, and a lost wake-up should fail a check, not hang the run)
+(defn- wait-for "Until (pred), for at most 5 s." [pred]
+  (loop [i 0] (when (and (not (pred)) (< i 500)) (sleep 10) (recur (inc i)))))
+(defn- parked "f, once it's parked (at most 5 s)." [f] (wait-for (fn [] (%fiber-parked? f))) f)
+(defn- awaited "(await f), or :hung after 10 s." [f] (deref (future (await f)) 10000 :hung))
 
 (deftest deref-is-as-it-was
   (is (= 1 @(atom 1)))
@@ -15,10 +21,9 @@
   (let [p (promise)]
     (is (not (realized? p)))
     (is (= :late (deref p 30 :late)) "a timeout")
-    (let [waiters (mapv (fn [_] (spawn-detached @p)) (range 20))]
-      (sleep 20)
+    (let [waiters (mapv (fn [_] (parked (spawn-detached @p))) (range 20))]
       (is (= p (deliver p 42)))
-      (is (= (repeat 20 42) (mapv await waiters)) "every fiber waiting wakes"))
+      (is (= (repeat 20 42) (mapv awaited waiters)) "every fiber waiting wakes"))
     (is (realized? p))
     (is (nil? (deliver p 43)) "once only")
     (is (= 42 @p))
@@ -47,11 +52,11 @@
     (let [runs (atom 0)
           d (delay (when (= 1 (swap! runs inc)) (sleep 5000)) :computed)
           f (future @d)]
-      (loop [] (when (zero? @runs) (sleep 1) (recur)))
-      (let [waiter (spawn-detached @d)]
-        (sleep 5)
+      (wait-for (fn [] (pos? @runs)))
+      ;; (cancelled once the waiter waits on it)
+      (let [waiter (parked (spawn-detached @d))]
         (future-cancel f)
-        (is (= :computed (await waiter)) "a fiber waiting on it is woken, and computes it")
+        (is (= :computed (awaited waiter)) "a fiber waiting on it is woken, and computes it")
         (is (= :computed @d))
         (is (= 2 @runs))
         (is (realized? d))))
@@ -61,7 +66,7 @@
       (is (= :thrown (catch-tag :out @d)) "not stuck: computed again"))))
 
 (deftest futures
-  ;; (500 ms: still running when looked at, even on a loaded machine)
+  ;; (2 s: still running when looked at, even on a loaded machine)
   (let [f (future (sleep 2000) (+ 1 2))]
     (is (not (future-done? f)))
     (is (= :not-yet (deref f 10 :not-yet)))

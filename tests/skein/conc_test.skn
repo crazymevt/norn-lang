@@ -4,6 +4,15 @@
 (ns conc-test
   (:require [skein.test :refer [is]]))
 
+;; Waits with a deadline: on a slow machine a fiber may not have started
+;; yet, and if what's awaited never comes, a check fails instead of the run
+;; hanging.
+(defn- wait-for "Until (pred), for at most 5 s." [pred]
+  (loop [i 0] (when (and (not (pred)) (< i 500)) (sleep 10) (recur (inc i)))))
+(defn- parked "f, once it's parked (at most 5 s)." [f] (wait-for (fn [] (%fiber-parked? f))) f)
+(defn- settled "(settle f), or :hung after 10 s." [f] (deref (future (settle f)) 10000 :hung))
+(defn- awaited "(await f), or :hung after 10 s." [f] (deref (future (await f)) 10000 :hung))
+
 ;;; fibers
 (is (= 42 (await (spawn-detached (+ 40 2)))))
 (is (= 42 @(spawn-detached (* 6 7))))
@@ -21,31 +30,34 @@
   (is (= true (>= (- (nano-time) t0) 20000000))))
 
 ;;; cancellation
-(let [f (spawn-detached (take! (chan)))]
-  (sleep 5)
+(let [f (parked (spawn-detached (take! (chan))))]
   (cancel! f)
-  (is (= {:error "Cancelled"} (settle f))))
-(let [f (spawn-detached (loop [] (recur)))]
-  (sleep 5)
+  (is (= {:error "Cancelled"} (settled f))))
+(let [running (atom false)
+      f (spawn-detached (reset! running true) (loop [] (recur)))]
+  (wait-for (fn [] @running)) ; (in its loop, not cancelled before it starts)
   (cancel! f)
-  (is (= {:error "Cancelled"} (settle f))))
+  (is (= {:error "Cancelled"} (settled f))))
 
 ;; Regression: a cancel arriving while the target is between starting a
 ;; blocking operation and parking must still wake it (it used to park forever).
-(is (= :survived (do (dotimes [_ 2000]
-                       (let [f (spawn-detached (take! (chan)))]
-                         (cancel! f)
-                         (settle f)))
-                     :survived)))
-(is (= :survived (do (dotimes [_ 500]
-                       (let [inner (atom nil)
-                             f (spawn-detached (with-scope [s]
-                                                 (reset! inner (spawn s (take! (chan))))
-                                                 (take! (chan))))]
-                         (cancel! f)
-                         (settle f)
-                         (when @inner (settle @inner))))
-                     :survived)))
+;; (in a future: should one park forever again, the check fails, not the run)
+(is (= :survived (deref (future (dotimes [_ 2000]
+                                  (let [f (spawn-detached (take! (chan)))]
+                                    (cancel! f)
+                                    (settle f)))
+                                :survived)
+                        60000 :hung)))
+(is (= :survived (deref (future (dotimes [_ 500]
+                                  (let [inner (atom nil)
+                                        f (spawn-detached (with-scope [s]
+                                                            (reset! inner (spawn s (take! (chan))))
+                                                            (take! (chan))))]
+                                    (cancel! f)
+                                    (settle f)
+                                    (when @inner (settle @inner))))
+                                :survived)
+                        60000 :hung)))
 
 ;;; structured concurrency
 (is (= 6 (with-scope [s]
@@ -61,8 +73,8 @@
             (reset! blocked (spawn s (take! never)))
             (spawn s (error "child failed"))
             :unreachable))]
-  (is (= {:error "child failed"} (settle f)))
-  (is (= {:error "Cancelled"} (settle @blocked))))
+  (is (= {:error "child failed"} (settled f)))
+  (is (= {:error "Cancelled"} (settled @blocked))))
 ;; Cancelling the owner cancels the whole tree.
 (let [inner (atom nil)
       f (spawn-detached
@@ -72,8 +84,8 @@
   ;; wait for the tree to exist before cancelling it
   (loop [i 0] (when (and (nil? @inner) (< i 1000)) (sleep 1) (recur (inc i))))
   (cancel! f)
-  (is (= {:error "Cancelled"} (settle f)))
-  (is (= {:error "Cancelled"} (settle @inner))))
+  (is (= {:error "Cancelled"} (settled f)))
+  (is (= {:error "Cancelled"} (settled @inner))))
 
 ;; A scope fails only for an error nobody handled (book finding 6).
 ;; A child the body cancels ends quietly:
@@ -86,7 +98,8 @@
 ;; ...so a race can cancel its losers.
 (is (= 10 (with-scope [s]
             (let [out (chan 3)
-                  fs (mapv (fn [ms] (spawn s (sleep ms) (put! out ms))) [200 10 100])
+                  ;; (the others 100 times longer: a busy machine can't reorder them)
+                  fs (mapv (fn [ms] (spawn s (sleep ms) (put! out ms))) [2000 10 1000])
                   v (take! out)]
               (run! cancel! fs)
               v))))
@@ -161,10 +174,12 @@
       f (spawn-detached (with-scope [s]
                           (try (sleep 10000)
                                (finally (deliver late (spawn s (swap! ran conj :late)))))))]
-  (sleep 10)
+  ;; (cancelled only once it's parked inside its try: one cancelled before it
+  ;; starts runs no finally, and late would never be delivered)
+  (parked f)
   (cancel! f)
-  (is (= {:error "Cancelled"} (settle f)))
-  (is (= {:error "Cancelled"} (settle @late)))
+  (is (= {:error "Cancelled"} (settled f)))
+  (is (= {:error "Cancelled"} (some-> (deref late 10000 nil) settled)))
   (is (= [] @ran)))
 
 ;;; channels
@@ -191,11 +206,10 @@
 ;; A full buffered channel blocks the putter until a take makes room.
 (let [c (chan 1) log (atom [])]
   (put! c 1)
-  (let [f (spawn-detached (put! c 2) (swap! log conj :put-done))]
-    (sleep 10)
+  (let [f (parked (spawn-detached (put! c 2) (swap! log conj :put-done)))]
     (is (= [] @log))
     (is (= 1 (take! c)))
-    (await f)
+    (settled f)
     (is (= [:put-done] @log))
     (is (= 2 (take! c)))))
 
@@ -305,7 +319,7 @@
     (await echo)
     (doseq [h (concat ab ba)] (%io-close h))
     [sum (mapv %handle-live? (concat ab ba))]))
-(let [rs (mapv await (mapv (fn [_] (spawn-detached (pipe-pair-echo 200))) (range 50)))]
+(let [rs (mapv awaited (mapv (fn [_] (spawn-detached (pipe-pair-echo 200))) (range 50)))]
   (is (= (* 50 (+ (* 200 6) (reduce + (map (fn [i] (mod i 256)) (range 200))))) (reduce + (map first rs))))
   ;; every pipe end is closed (other suites may hold handles meanwhile, so
   ;; count these, not the process's total)
@@ -330,19 +344,18 @@
 ;;; quiet channel's queues, and those still waiting keep their turn (each
 ;;; fiber waited for until it's parked: a sleep alone may not be long
 ;;; enough on a busy machine, and the order would then be another)
-(defn- parked [f] (loop [i 0] (when (and (not (%fiber-parked? f)) (< i 500)) (sleep 10) (recur (inc i)))) f)
 (let [ctl (chan)
       first-taker (parked (spawn-detached (take! ctl)))]
   (dotimes [_ 5000] (alts! [ctl (timeout 0)]))
   (let [second-taker (parked (spawn-detached (take! ctl)))]
     (put! ctl :a)
     (put! ctl :b)
-    (is (= [:a :b] [(await first-taker) (await second-taker)]))))
+    (is (= [:a :b] [(awaited first-taker) (awaited second-taker)]))))
 (let [c (chan)
       putter (parked (spawn-detached (put! c :one)))]
   (dotimes [_ 5000] (alts! [[c :lost] (timeout 0)]))
   (is (= :one (take! c)))
-  (is (= true (await putter)))
+  (is (= true (awaited putter)))
   (is (= nil (poll! c)) "the lost puts are gone"))
 
 ;;; a retry of a parked call that fails when woken, in tail position: the
@@ -351,7 +364,11 @@
 (def retry-n (atom 0))
 (defn retry-tail [fut] (swap! retry-n inc) (await fut))
 (let [tries (atom 0)
-      bad (spawn-detached (sleep 50) (throw (ex-info "boom" {})))
+      go (promise)
+      bad (spawn-detached @go (throw (ex-info "boom" {})))
+      this (current-fiber)
+      ;; (bad fails only once this fiber is parked in its await)
+      _ (spawn-detached (parked this) (deliver go true))
       r (handler-bind [Error (fn [c] (if (= 1 (swap! tries inc))
                                        (invoke-restart 'retry)
                                        (invoke-restart 'use-value :used)))]
@@ -372,10 +389,11 @@
 (let [ch (chan 1)
       result (promise)
       f (spawn-detached (restart-outer ch result))]
-  (loop [n 0] (when (and (not (%fiber-parked? f)) (< n 2000)) (sleep 1) (recur (inc n))))
+  (parked f)
   (let [fr (first (filter #(= "restart-helper" (name (:fn %))) (%frames f)))]
     (put! ch [(nth (:id fr) 0) (nth (:id fr) 1)])
-    (sleep 50)
+    ;; (stopped once the restarted frame is waiting again)
+    (wait-for (fn [] (and (= 2 (count @restart-calls)) (%fiber-parked? f))))
     (put! ch :stop)
     (is (= :local (deref result 5000 :timeout)))
     (is (= [[:local 1] [:local 1]] @restart-calls))))
