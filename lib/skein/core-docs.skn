@@ -795,7 +795,9 @@
   [sym])
 
 (primitive var-get
-  "The root value of var v. A non-var signals TypeError."
+  "The root value of var v, whatever binding gives it in this fiber (deref,
+  @, and calling the var give that: its value as its name does). A non-var
+  signals TypeError."
   [v])
 
 (primitive disassemble
