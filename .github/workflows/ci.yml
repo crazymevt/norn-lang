@@ -55,8 +55,9 @@ jobs:
 
       - name: Linux packages
         if: runner.os == 'Linux'
-        # SQLite for skein.sqlite (loaded at run time), zsh for terminal_test
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-0 zsh
+        # SQLite for skein.sqlite (loaded at run time), zsh for terminal_test,
+        # gdb for tools/ci/watchdog.sh's native stacks
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-0 zsh gdb
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -85,16 +86,20 @@ jobs:
         run: cargo test --locked --release --workspace --no-fail-fast
 
       - name: Every Skein suite
-        # (after a failure too: every failure in one run)
+        # (after a failure too: every failure in one run. Under a watchdog,
+        # as the steps after it: a run that waits forever prints every
+        # fiber's stack, and the native threads', after about ten times as
+        # long as it takes, and fails, instead of sitting until the job's
+        # limit with nothing to say which test; tools/ci/watchdog.sh)
         if: ${{ !cancelled() }}
-        run: target/release/skein test tests/skein
+        run: tools/ci/watchdog.sh 600 target/release/skein test tests/skein
 
       - name: Every Skein suite, a collection forced every 50th poll
         # (M11: the collector moves objects and has generations; a stale
         # pointer or a store with no write barrier shows here, and seldom
         # in an ordinary run. After a failure too.)
         if: ${{ !cancelled() }}
-        run: target/release/skein test tests/skein
+        run: tools/ci/watchdog.sh 600 target/release/skein test tests/skein
         env:
           SKEIN_TIER: "0"
           SKEIN_GC_STRESS: "50"
@@ -102,12 +107,12 @@ jobs:
       - name: lang-tests
         # (after a failure too: every failure in one run)
         if: ${{ !cancelled() }}
-        run: target/release/skein lang-tests/run.skn
+        run: tools/ci/watchdog.sh 1200 target/release/skein lang-tests/run.skn
 
       - name: skein check
         # (after a failure too: every failure in one run)
         if: ${{ !cancelled() }}
-        run: target/release/skein check
+        run: tools/ci/watchdog.sh 600 target/release/skein check
 
       - name: The book's examples
         # (on macOS, where they've been run: the rename left seven of them
