@@ -932,20 +932,23 @@
   (is (= [:v :v :v] (mapv await (mapv (fn [_] (spawn-detached (f))) (range 3)))))
   (is (= 1 (deref calls))))
 ;; A first caller cancelled while f runs leaves it to the next: one already
-;; waiting, or a later one.
+;; waiting, or a later one. (The first call waits until it's cancelled, and
+;; each step waits for the last to have happened: sleeps alone were too
+;; short on a busy CI runner, where a hadn't started f before b came.)
+(defn- once-until [ok?] (loop [i 0] (when (and (not (ok?)) (< i 500)) (sleep 10) (recur (inc i)))))
 (let [calls (atom 0)
-      f (sync/once (fn [] (swap! calls inc) (sleep 100) :v))
+      f (sync/once (fn [] (when (= 1 (swap! calls inc)) @(promise)) :v))
       a (spawn-detached (f))
-      _ (sleep 20)
+      _ (once-until #(= 1 @calls))
       b (spawn-detached (f))]
-  (sleep 20)
+  (once-until #(%fiber-parked? b))
   (cancel! a)
   (is (= :v (deref (future (await b)) 5000 :hung)) "a waiter")
   (is (= 2 (deref calls))))
 (let [calls (atom 0)
-      f (sync/once (fn [] (swap! calls inc) (sleep 100) :v))
+      f (sync/once (fn [] (when (= 1 (swap! calls inc)) @(promise)) :v))
       a (spawn-detached (f))]
-  (sleep 20)
+  (once-until #(= 1 @calls))
   (cancel! a)
   (is (= :v (deref (future (f)) 5000 :hung)) "a later caller")
   (is (= 2 (deref calls))))

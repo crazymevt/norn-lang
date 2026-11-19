@@ -327,19 +327,19 @@
 (is (thrown? Error (%restart-frame)))
 
 ;;; waiters that lost (an alts! that fired elsewhere) are swept out of a
-;;; quiet channel's queues, and those still waiting keep their turn
+;;; quiet channel's queues, and those still waiting keep their turn (each
+;;; fiber waited for until it's parked: a sleep alone may not be long
+;;; enough on a busy machine, and the order would then be another)
+(defn- parked [f] (loop [i 0] (when (and (not (%fiber-parked? f)) (< i 500)) (sleep 10) (recur (inc i)))) f)
 (let [ctl (chan)
-      first-taker (spawn-detached (take! ctl))]
-  (sleep 10)
+      first-taker (parked (spawn-detached (take! ctl)))]
   (dotimes [_ 5000] (alts! [ctl (timeout 0)]))
-  (let [second-taker (spawn-detached (take! ctl))]
-    (sleep 10)
+  (let [second-taker (parked (spawn-detached (take! ctl)))]
     (put! ctl :a)
     (put! ctl :b)
     (is (= [:a :b] [(await first-taker) (await second-taker)]))))
 (let [c (chan)
-      putter (spawn-detached (put! c :one))]
-  (sleep 10)
+      putter (parked (spawn-detached (put! c :one)))]
   (dotimes [_ 5000] (alts! [[c :lost] (timeout 0)]))
   (is (= :one (take! c)))
   (is (= true (await putter)))
