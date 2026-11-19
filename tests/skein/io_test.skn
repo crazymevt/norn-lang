@@ -162,14 +162,25 @@
       (let [fifo (io/path d "fifo")]
         (proc/sh "mkfifo" fifo)
         (let [opener (spawn-detached (io/open fifo :read))]
-          (sleep 50)
+          ;; (cancelled once it waits in the open: the pool finishes that
+          ;; open regardless, so a writer then finds it. Cancelled before
+          ;; it got there, as a sleep of 50 ms let happen on a busy CI
+          ;; runner, nothing opened the FIFO and the writer's open below
+          ;; waited forever. That open has a deadline too: past it, a
+          ;; reader of this test's own lets it through, and the check fails)
+          (loop [i 0] (when (and (not (%fiber-parked? opener)) (< i 500)) (sleep 10) (recur (inc i))))
           (cancel! opener)
-          (let [w (io/open fifo :write)]
-            (is (contains? (settle opener) :error))
-            (is (= :broken-pipe
-                   (loop [i 0]
-                     (let [e (caught #(io/write w "x"))]
-                       (cond e (:reason (ex-data e))
-                             (< i 100) (do (sleep 20) (recur (inc i)))
-                             :else :reader-still-open)))))
+          (let [opened (promise)
+                _ (spawn-detached (deliver opened (io/open fifo :write)))
+                on-time (deref opened 10000 nil)
+                w (or on-time (do (io/close (io/open fifo :read)) (deref opened)))]
+            (is (some? on-time) "a reader came: the cancelled fiber's open ran")
+            (when on-time
+              (is (contains? (settle opener) :error))
+              (is (= :broken-pipe
+                     (loop [i 0]
+                       (let [e (caught #(io/write w "x"))]
+                         (cond e (:reason (ex-data e))
+                               (< i 100) (do (sleep 20) (recur (inc i)))
+                               :else :reader-still-open))))))
             (io/close w)))))))
