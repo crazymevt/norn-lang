@@ -22,7 +22,9 @@ how to continue.
 `Condition` is the base class. `SeriousCondition` extends `Condition`,
 `Error` extends `SeriousCondition`, and `RuntimeError` extends `Error`.
 Built-in conditions include `TypeError`, `ArityError`,
-`ArithmeticError`, `IOError`, `ParseError`, and `TimeoutError`.
+`ArithmeticError`, `IOError`, `ParseError`, `TimeoutError`, and
+`Deadlock` (a fiber parked on what nothing can deliver: see
+[concurrency](concurrency.md#fibers-and-scopes)).
 
 ## Handling and cleanup
 

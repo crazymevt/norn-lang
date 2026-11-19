@@ -506,6 +506,36 @@ that is only the seed compiler holding forms while it calls a macro.
   liveness maps (or clearing on return) were M11's and are in todo.md
   since 2026-11-18 (the user): nothing M11 measured comes from this.
 
+### 4.6 Deadlocked fibers **[built 2026-11-19]**
+
+`crates/skein-rt/src/deadlock.rs`; the plan, with why it's sound:
+[plan-deadlock.md](../plans/plan-deadlock.md).
+
+- **The idea.** Whatever can wake a parked fiber holds its waiter: a
+  channel's queue, a fiber it awaits, a scope, a promise; outside the heap,
+  a GC root (timers, the reactor, the blocking pool, signal and watcher
+  channels, FFI callbacks, the main lane). So a parked fiber the collector
+  didn't reach can't be woken, ever.
+- **Finding them.** Every fiber is registered when made (or loaded), untraced,
+  in shards by id. At a full collection's weak pass, before weak references
+  are cleared, each registered fiber that's parked and unreached is traced
+  (kept, with all it reaches: the pass returns true, the trace runs again)
+  and put on a ready list, a root; ended fibers' entries go. A young
+  collection skips it: fibers are in the non-moving space, which it counts
+  as reached.
+- **Waking them.** At a carrier (`process_external`): the fiber's waiter
+  claimed, a `{:event :deadlock :fiber id}` posted, and the fiber woken with
+  `[message Deadlock {:fiber id}]` as its wake error: a condition at the
+  operation it parked in, with `use-value` and `retry`.
+- **Root tasks** (`-e`, a REPL evaluation) are rooted so Rust can be told
+  their result; while one's parked, that root doesn't count.
+- **When nothing runs** nothing allocates, so no collection would look: the
+  last carrier to go idle after fibers ran, with no timer, blocking job,
+  native region, external job or (looked at last, after the wait) reactor
+  waiter, waits a second and then has a full collection. `SKEIN_GC_IDLE=0`
+  turns it off. So `skein -e '(take! (chan))'` ends with `Deadlock`.
+- **Not found:** a fiber something reachable could wake but never will.
+
 ---
 
 ## 5. Scheduler and I/O
@@ -2038,8 +2068,8 @@ tests (they now wait for what they check, or watch their own handles).
 2. **Multi-shot continuations** (§3.4): keep them out unless a need appears?
 3. ~~**Concurrent GC** (§4.1): wait for MMTk, or plan our own?~~ —
    decided 2026-11-18: wait for MMTk (M11b, parked).
-4. ~~**Parked fibers nothing can wake**~~ — decided: both. When the GC
-   finds a parked fiber nothing can reach, it posts a deadlock event (as Go
-   does) and moves the fiber into the debugger's list with a `Deadlock`
-   condition instead of freeing it. To be built on M6's finalizers (it was
-   M11's; in todo.md since 2026-11-18).
+4. ~~**Parked fibers nothing can wake**~~ — decided: both, and built
+   (2026-11-19, §4.6). When a full collection finds a parked fiber nothing
+   can reach, it keeps it, posts a deadlock event (as Go does) and signals
+   a `Deadlock` condition in it, which puts it in the debugger's list
+   under `*debugger* :park`.

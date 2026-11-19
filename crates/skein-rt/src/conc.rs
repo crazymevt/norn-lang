@@ -114,6 +114,8 @@ pub fn fiber_new(m: &mut Mutator, id: u64, thunk: Value, scope: Value, ns: usize
     f.set_word(LOCK, 0);
     f.set_word(NOTIFY, 0);
     f.set_word(CANCELLED_WITH, 0);
+    // (watched for being parked with nothing to wake it: deadlock.rs)
+    crate::deadlock::register(f);
     f
 }
 

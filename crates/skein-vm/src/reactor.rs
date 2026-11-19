@@ -290,6 +290,11 @@ pub(crate) fn for_each_root(f: &mut dyn FnMut(Value)) {
     }
 }
 
+/// Is any fiber parked on the reactor?
+pub(crate) fn any_waiters() -> bool {
+    TABLE.lock().unwrap().as_ref().is_some_and(|t| t.values().any(|e| e.ready.lock().unwrap().waiters.iter().any(|w| !w.is_empty())))
+}
+
 /// Is waiter `w` parked on the reactor? (An image saves such fibers dead.)
 pub(crate) fn holds_waiter(w: Value) -> bool {
     TABLE.lock().unwrap().as_ref().is_some_and(|t| t.values().any(|e| e.ready.lock().unwrap().waiters.iter().flatten().any(|&x| x == w)))

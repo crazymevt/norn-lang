@@ -321,4 +321,5 @@ pub fn for_each_root(f: &mut dyn FnMut(Value)) {
     }
     crate::clos::for_each_root(f);
     crate::weak::for_each_root(f);
+    crate::deadlock::for_each_root(f);
 }

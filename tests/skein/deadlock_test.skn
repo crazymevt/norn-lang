@@ -1,0 +1,131 @@
+;;;; Deadlock detection (docs/plans/plan-deadlock.md): a parked fiber that
+;;;; nothing reachable can wake gets a Deadlock condition, at the operation
+;;;; it parked in, once a full collection finds it.
+;;;; Run by crates/skein-vm/tests/skein_suites.rs, or `skein test tests/skein/deadlock_test.skn`.
+
+(ns deadlock-test
+  (:require [skein.test :refer [is deftest testing]]
+            [skein.io :as io]
+            [skein.net :as net]
+            [skein.process :as proc]
+            [skein.string :as str]
+            [skein.sys :as sys]))
+
+;; (a full collection, a few times if need be: what finds a deadlocked fiber
+;; runs then, and the fiber is woken after it, at a carrier)
+(defn- collect-until [p]
+  (loop [i 0]
+    (when (and (not (realized? p)) (< i 50))
+      (gc)
+      (deref p 100 nil)
+      (recur (inc i))))
+  (deref p 5000 :never))
+
+;; (a fiber that parks in f, holding nothing anyone else can reach, and
+;; tells promise p how it ended; the fiber itself is let go)
+(defn- parks-in [f]
+  (let [p (promise)]
+    (spawn-detached (deliver p (handler-case [:returned (f)]
+                                 (Deadlock [e] [:deadlock (integer? (:fiber e)) (str/includes? (condition-message e) "nothing can wake it")]))))
+    p))
+
+(deftest a-fiber-nothing-can-wake
+  (testing "taking from a channel nothing else holds"
+    (is (= [:deadlock true true] (collect-until (parks-in (fn [] (take! (chan))))))))
+  (testing "putting to one"
+    (is (= [:deadlock true true] (collect-until (parks-in (fn [] (put! (chan) :x)))))))
+  (testing "a promise nothing delivers"
+    (is (= [:deadlock true true] (collect-until (parks-in (fn [] @(promise)))))))
+  (testing "alts! on channels nothing else holds"
+    (is (= [:deadlock true true] (collect-until (parks-in (fn [] (alts! [(chan) (chan)])))))))
+  (testing "awaiting a fiber that's itself deadlocked: both"
+    (let [inner (promise)
+          outer (parks-in (fn [] (await (spawn-detached (deliver inner (handler-case (take! (chan)) (Deadlock [_] :inner)))))))]
+      ;; (the same collection finds the two: neither can wake the other)
+      (is (= :inner (collect-until inner)))
+      (is (= [:deadlock true true] (collect-until outer))))))
+
+;; (two fibers, each taking from a channel only the other would put to;
+;; the promises they tell are all that's kept)
+(defn- each-waiting-on-the-other []
+  (let [a-got (promise)
+        b-got (promise)
+        a->b (chan)
+        b->a (chan)]
+    (spawn-detached (deliver a-got (handler-case (take! b->a) (Deadlock [_] :deadlock))) (put! a->b :never))
+    (spawn-detached (deliver b-got (handler-case (take! a->b) (Deadlock [_] :deadlock))) (put! b->a :never))
+    [a-got b-got]))
+
+(deftest two-fibers-each-waiting-on-the-other
+  (let [[a b] (each-waiting-on-the-other)]
+    (is (= [:deadlock :deadlock] [(collect-until a) (collect-until b)]))))
+
+(def ^:private held (chan))
+
+(deftest a-fiber-something-can-wake-isnt
+  (let [p (promise)
+        f (spawn-detached (deliver p (handler-case (take! held) (Deadlock [_] :deadlock))))]
+    (loop [i 0] (when (and (not (%fiber-parked? f)) (< i 500)) (sleep 10) (recur (inc i))))
+    (dotimes [_ 5] (gc) (sleep 20))
+    (is (not (realized? p)) "held by a var")
+    (put! held :here)
+    (is (= :here (deref p 5000 :never))))
+  (testing "a sleep"
+    (let [p (promise)]
+      (spawn-detached (deliver p (handler-case (do (sleep 300) :woke) (Deadlock [_] :deadlock))))
+      (dotimes [_ 3] (gc) (sleep 20))
+      (is (= :woke (deref p 5000 :never)))))
+  (testing "a socket"
+    (let [l (net/listen "127.0.0.1" 0)
+          p (promise)]
+      (spawn-detached (deliver p (handler-case (do (io/close (net/accept l)) :accepted) (Deadlock [_] :deadlock))))
+      (dotimes [_ 3] (gc) (sleep 20))
+      (is (not (realized? p)) "waiting in accept")
+      (io/close (net/connect "127.0.0.1" (net/port (net/local-address l))))
+      (is (= :accepted (deref p 5000 :never)))
+      (io/close l))))
+
+(deftest a-restart-gives-the-operation-a-value
+  (let [p (promise)]
+    (spawn-detached (deliver p (handler-bind [Deadlock (fn [_] (invoke-restart 'use-value :given))]
+                                 (take! (chan)))))
+    (is (= :given (collect-until p)))))
+
+(deftest the-debugger-keeps-it
+  (let [id (promise)]
+    (spawn-detached (binding [*debugger* :park]
+                      (deliver id (fiber-id (current-fiber)))
+                      (take! (chan))))
+    (let [id (deref id 5000 nil)
+          entry (fn [] (first (filter (fn [d] (= id (:fiber d))) (debugging))))]
+      (loop [i 0] (when (and (nil? (entry)) (< i 50)) (gc) (sleep 100) (recur (inc i))))
+      (is (str/includes? (str (:condition (entry))) "Deadlock") "in the debugger's list, with its stack")
+      (when (entry) (debug-abort id)))))
+
+;; (a process of its own: what the runtime does when nothing runs)
+(def ^:private skein-exe (let [e (:executable (sys/info))] (when (and e (= "skein" (io/stem e))) e)))
+
+(deftest a-program-whose-only-fiber-is-stuck-ends
+  (when skein-exe
+    (let [began (nano-time)
+          r (proc/sh skein-exe "-e" "(take! (chan))")]
+      (is (= 1 (:exit r)))
+      (is (str/includes? (:err r) "Deadlock") (:err r))
+      (is (< (- (nano-time) began) 30000000000) "a second or so after it went idle"))))
+
+(deftest waiting-on-a-socket-is-not-looked-into
+  ;; (nothing runs, but the reactor could wake it: no collection, however
+  ;; long it waits)
+  (when skein-exe
+    (let [p (proc/start skein-exe :args ["-e" (str "(do (require '[skein.net :as net] '[skein.io :as io])"
+                                                   " (let [l (net/listen \"127.0.0.1\" 0)]"
+                                                   " (println (net/port (net/local-address l)) (gc-count))"
+                                                   " (let [s (net/accept l)] (println :after (gc-count)) (io/close s))))")])
+          out (io/line-reader (:out p))
+          first-line (io/read-line out)
+          [port before] (str/split first-line #" ")]
+      (sleep 2500)
+      (io/close (net/connect "127.0.0.1" (parse-long port)))
+      (let [after (io/read-line out)]
+        (is (= (str ":after " before) after) "no collection while it waited")
+        (proc/wait p)))))

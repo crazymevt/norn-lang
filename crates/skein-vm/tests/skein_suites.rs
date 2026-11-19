@@ -122,6 +122,11 @@ fn later_suite() {
 }
 
 #[test]
+fn deadlock_suite() {
+    suite("deadlock_test.skn");
+}
+
+#[test]
 fn match_suite() {
     suite("match_test.skn");
 }
@@ -193,8 +198,9 @@ fn interrupt_stops_a_runaway_root_fiber() {
     skein.interrupt(t);
     let r = skein.wait(t).result;
     assert!(matches!(&r, Err(e) if e.msg == "Interrupted"), "{r:?}");
-    // And a blocked one.
-    let t = skein.submit(RootTask::Eval("(take! (chan))".into()), "interrupt-test");
+    // And a blocked one. (On a channel something holds: on one nothing
+    // did, a collection meanwhile would find it deadlocked first.)
+    let t = skein.submit(RootTask::Eval("(do (def held (chan)) (take! held))".into()), "interrupt-test");
     std::thread::sleep(std::time::Duration::from_millis(50));
     skein.interrupt(t);
     let r = skein.wait(t).result;

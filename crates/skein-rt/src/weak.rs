@@ -40,12 +40,12 @@ fn is_ref(v: Value) -> bool {
     v.is_obj() || v.is_cons()
 }
 
-fn object(v: Value) -> Option<ObjectReference> {
+pub(crate) fn object(v: Value) -> Option<ObjectReference> {
     // SAFETY: v is a tagged pointer to an MMTk object.
     ObjectReference::from_raw_address(unsafe { Address::from_usize(v.ptr() as usize) })
 }
 
-fn reachable(v: Value) -> bool {
+pub(crate) fn reachable(v: Value) -> bool {
     // (a young collection hasn't looked through the non-moving space: an
     // object there is alive, and its mark is the last full collection's)
     if crate::heap::in_young_collection() && crate::heap::in_nonmoving_space(v) {
@@ -56,7 +56,7 @@ fn reachable(v: Value) -> bool {
 
 /// Where the collection moved live object v to, if it did (never, until
 /// objects move: M11), with v's tag.
-fn moved(v: Value) -> Option<Value> {
+pub(crate) fn moved(v: Value) -> Option<Value> {
     let to = object(v)?.get_forwarded_object()?;
     Some(Value(to.to_raw_address().as_usize() as u64 | (v.0 & crate::value::TAG_MASK)))
 }

@@ -377,6 +377,8 @@ pub(crate) fn load(path: &Path) -> std::result::Result<Restore, String> {
     // Fibers saved their namespace by name.
     let mut dead = Vec::new();
     for &f in &loaded.fibers {
+        // (watched for deadlock as a fiber made here is: deadlock.rs)
+        skein_rt::deadlock::register(f);
         let name = Value(f.word(fiber::NS));
         if !name.is(Kind::Symbol) {
             return Err("a fiber in the image has no namespace".into());

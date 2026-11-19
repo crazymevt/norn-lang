@@ -7,6 +7,7 @@ pub mod array;
 pub mod clos;
 pub mod colls;
 pub mod conc;
+pub mod deadlock;
 pub mod equal;
 pub mod func;
 pub mod heap;
