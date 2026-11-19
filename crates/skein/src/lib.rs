@@ -152,7 +152,8 @@ static APP: std::sync::OnceLock<Option<App>> = std::sync::OnceLock::new();
 
 fn find_app() -> Option<App> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let name = exe.file_name()?.to_str()?.to_owned();
+    // (on Windows without its .exe: NAME.exe is app NAME)
+    let name = if cfg!(windows) { exe.file_stem() } else { exe.file_name() }?.to_str()?.to_owned();
     if name == "skein" {
         return None;
     }
