@@ -2,7 +2,8 @@
 ;;;; exclusive creation, temporary files and atomic replacement.
 
 (ns io-test
-  (:require [skein.test :refer [deftest is testing]] [skein.io :as io] [skein.bytes :as b]))
+  (:require [skein.test :refer [deftest is testing]] [skein.io :as io] [skein.bytes :as b]
+            [skein.process :as proc] [skein.sys :as sys]))
 
 (defn- caught [f] (try (f) nil (catch Error e e)))
 
@@ -151,3 +152,24 @@
         ;; (about 0.5 s in a debug build; the limit leaves room for a loaded
         ;; machine, the workspace run's suites in parallel)
         (is (< (quot (- (nano-time) t0) 1000000) 30000) "(quadratic copying took minutes)")))))
+
+(deftest a-cancelled-open-closes-what-it-opened
+  ;; (an open of a FIFO waits on the blocking pool for a writer: the fiber
+  ;; cancelled meanwhile never gets its handle, so the pool closes it, and
+  ;; the writer, left without a reader, is told so)
+  (when-not (= :windows (sys/os))
+    (io/with-temp-directory [d]
+      (let [fifo (io/path d "fifo")]
+        (proc/sh "mkfifo" fifo)
+        (let [opener (spawn-detached (io/open fifo :read))]
+          (sleep 50)
+          (cancel! opener)
+          (let [w (io/open fifo :write)]
+            (is (contains? (settle opener) :error))
+            (is (= :broken-pipe
+                   (loop [i 0]
+                     (let [e (caught #(io/write w "x"))]
+                       (cond e (:reason (ex-data e))
+                             (< i 100) (do (sleep 20) (recur (inc i)))
+                             :else :reader-still-open)))))
+            (io/close w)))))))

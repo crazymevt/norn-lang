@@ -1,7 +1,7 @@
 ;;;; Clojure core functions added in M7.6.
 
 (ns core-more-test
-  (:require [skein.test :refer [is are deftest]]))
+  (:require [skein.test :refer [is are deftest]] [skein.string :as str]))
 
 (deftest control-macros
   (are [x out] (= out (case x 1 :one (2 3) :few :many))
@@ -10,6 +10,18 @@
   (is (= :error (try (case 5 1 :one) (catch Error _ :error))))
   (is (= :b (condp = 2 1 :a 2 :b :c)))
   (is (= :c (condp = 9 1 :a 2 :b :c)))
+  (is (= 3 (condp some [1 2] #{2} :>> inc :none)) ":>> gives the test's result to a function")
+  (is (= :none (condp some [1 2] #{7} :>> inc :none)))
+  (is (= :b (condp = 2 1 :a 2 :b)))
+  (is (= :no-match (try (condp = 3 1 :a) (catch Error _ :no-match))))
+  (let [msg (fn [form] (try (eval form) nil (catch Error e (condition-message e))))]
+    ;; (try's body, binding's… run as a function: a recur in one used to
+    ;; restart that function instead)
+    (is (str/includes? (msg '(loop [i 0] (try (if (< i 3) (recur (inc i)) i) (catch Error e :err)))) "Can't recur across try"))
+    (is (str/includes? (msg '(loop [] (binding [*out* *out*] (recur)))) "Can't recur across try"))
+    (is (str/includes? (msg '(fn [x] (catch-tag :t (recur x)))) "Can't recur across try")))
+  (is (= 3 (loop [_ 0] (try (loop [j 0] (if (< j 3) (recur (inc j)) j)) (catch Error _ :err)))) "a loop inside try")
+  (is (= 3 (loop [i 0] (if (< i 3) (recur (inc i)) (try i (finally nil))))))
   (is (= 6 (cond-> 1 true inc false (* 100) true (* 3))))
   (is (= [3 1] (cond->> [1] true (cons 3) false (cons 9) true vec)))
   (is (nil? (some-> {:a nil} :a inc)))
@@ -40,6 +52,15 @@
   (is (not ((every-pred odd? pos?) 1 -3)))
   (is (= [0 1 3 6] (reductions + 0 [1 2 3])))
   (is (= [1 3 6] (reductions + [1 2 3])))
+  (is (= [1 3 6 6] (reductions (fn [a x] (if (> a 3) (reduced a) (+ a x))) [1 2 3 4 5])) "reduced stops it, as reduce")
+  (is (= [5] (reductions + (reduced 5) [1 2])))
+  (is (= 5 (let [c (atom 0)] (sort-by (fn [x] (swap! c inc) x) > [3 1 2 5 4]) @c)) "keyfn once per element")
+  (is (= [[2 :b] [1 :a] [1 :c]] (sort-by first > [[1 :a] [2 :b] [1 :c]])) "stable")
+  (is (= [() () ()] [(flatten nil) (flatten 1) (flatten [])]))
+  (is (= [:skein.core/skip 1] (map identity (lazy [:skein.core/skip 1]))) "no keyword is taken for nothing")
+  (is (= [:skein.core/skip] (filter keyword? (lazy [:skein.core/skip 1]))))
+  (is (= [:skein.core/none 1] (dedupe [:skein.core/none 1])))
+  (is (= [:skein.core/none 1] (vec (dedupe (lazy [:skein.core/none :skein.core/none 1])))))
   (is (= [2 3] (eduction (map inc) [1 2])))
   (is (= [3 4] (nthrest [1 2 3 4] 2)))
   (is (= 2 (fnext [1 2 3])))
@@ -56,6 +77,13 @@
   (is (= [0 :a 1 :b] (vec (interleave (range) [:a :b]))) "until one runs out")
   (is (= [0 1 3 6] (take 4 (reductions + (range)))))
   (is (= [10 10 11] (take 3 (reductions + 10 (range)))))
+  (is (= [0 1 3 6 6] (vec (take 10 (reductions (fn [a x] (if (> a 3) (reduced a) (+ a x))) (range))))) "reduced ends it")
+  (is (= [[0 0 0] [1 1 1]] (take 2 (map vector (range) (range) (range)))))
+  (is (= [[0 0 0 0] [1 1 1 1]] (take 2 (map vector (range) (range) (range) (range)))))
+  (is (= [[0 :a 0] [1 :b 1]] (vec (map vector (range) [:a :b] (range)))) "until one runs out")
+  (is (= [0 0] (take 2 (mapcat vector (range) (range)))))
+  (is (= [0 0 9 1 1 9] (take 6 (mapcat vector (range) (range) (repeat 9)))))
+  (is (every? stream? [(map vector (range) [1] [2]) (mapcat vector [1] (range))]))
   (is (= [0 0 1 1] (take 4 (flatten (map (fn [x] [x [x]]) (range))))))
   (is (every? stream? [(partition 2 (range)) (partition-all 2 (range)) (partition-by odd? (range)) (interpose 0 (range))
                        (dedupe (range)) (interleave (range) (range)) (reductions + (range)) (flatten (range))]))
@@ -82,6 +110,8 @@
     [1 2 1] (dedupe [1 1 2 2 1])
     [1 :a 2 :b] (interleave [1 2] [:a :b :c])
     '(1 3 6) (reductions + [1 2 3])
+    [[1 3 5] [2 4 6]] (map vector [1 2] [3 4] [5 6])
+    [1 3 2 4] (mapcat vector [1 2] [3 4])
     '(1 2 3) (flatten [1 [2 [3]]])
     [] (interleave))
   (is (vector? (partition 2 [1 2])))
@@ -107,3 +137,13 @@
   (is (every? ifn? [inc :k {} #{} []]))
   (is (distinct? 1 2 3))
   (is (not (distinct? 1 2 1))))
+
+(defn- read-error [s] (try (read-string s) nil (catch Error e (condition-message e))))
+
+(deftest reader-limits
+  (is (= "#() takes arguments up to %20, not %21" (read-error "#(%21)")))
+  (is (some? (read-error "#(%4611686018427387904)")) "an error, not a parameter for every number to it")
+  (is (= 20 (count (second (read-string "#(%20)")))))
+  (is (= ["Bad unicode escape: \\u+041" "Invalid character: \\u+041"] [(read-error "\"\\u+041\"") (read-error "\\u+041")])
+      "\\u takes hex digits alone")
+  (is (= ["Aé" \A] [(read-string "\"\\u0041\\u00e9\"") (read-string "\\u0041")])))

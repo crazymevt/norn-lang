@@ -94,7 +94,9 @@ pub(crate) fn index(_: &mut Vm, a: &[Value]) -> Result<Value> {
     let from = if a[2].is_nil() { None } else { Some(int(a[2], "index-of")?.max(0) as usize) };
     let found = if last {
         let end = match from {
-            Some(f) => byte_of(a[0], f).map(|b| (b + n.len()).min(s.len())).unwrap_or(s.len()),
+            // (a match starting at or before from ends by b + the needle's
+            // length, and on a character boundary)
+            Some(f) => byte_of(a[0], f).map(|b| s.floor_char_boundary(b + n.len())).unwrap_or(s.len()),
             None => s.len(),
         };
         s[..end].rfind(&n)
@@ -295,7 +297,12 @@ pub(crate) fn re_search(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     let m0 = c.get(0).unwrap();
     if a[3].truthy() && (m0.start() != 0 || m0.end() != s.len()) {
         // The leftmost-first match isn't the whole string; try anchoring.
-        let anchored = compile(&format!("^(?:{})$", re.as_str()))?;
+        // A (?x) pattern ending in a # comment swallows the closing `)$`,
+        // so then that goes on a line of its own (whitespace to (?x)).
+        let anchored = match compile(&format!("^(?:{})$", re.as_str())) {
+            Ok(r) => r,
+            Err(_) => compile(&format!("^(?:{}\n)$", re.as_str()))?,
+        };
         let Some(c) = anchored.captures(s) else { return Ok(Value::NIL) };
         let names = group_names(vm, &re);
         let inner = shift_groups(vm, &c, a[1], names);
@@ -367,7 +374,8 @@ struct JsonReader<'a> {
 
 impl JsonReader<'_> {
     fn err(&self, what: &str) -> Error {
-        let before = &self.src[..self.i.min(self.src.len())];
+        // (i may be inside a character: past a bad escape's first byte)
+        let before = &self.src[..self.src.floor_char_boundary(self.i)];
         let line = before.matches('\n').count() + 1;
         let col = before.rsplit('\n').next().map(|l| l.chars().count()).unwrap_or(0) + 1;
         Error::of("ParseError", format!("JSON: {what} at line {line}, column {col}"))
@@ -519,6 +527,10 @@ impl JsonReader<'_> {
 
     fn hex4(&mut self) -> Result<u32> {
         let h = self.src.get(self.i..self.i + 4).ok_or_else(|| self.err("short \\u escape"))?;
+        // (from_str_radix alone takes a sign: \u+041)
+        if !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(self.err("bad \\u escape"));
+        }
         let n = u32::from_str_radix(h, 16).map_err(|_| self.err("bad \\u escape"))?;
         self.i += 4;
         Ok(n)
@@ -765,18 +777,21 @@ pub(crate) fn format(vm: &mut Vm, a: &[Value]) -> Result<Value> {
             }
             it.next();
         }
-        let num = |it: &mut std::iter::Peekable<std::str::Chars>| {
+        let num = |it: &mut std::iter::Peekable<std::str::Chars>, what: &str| {
             let mut n: Option<usize> = None;
             while let Some(d) = it.peek().and_then(|c| c.to_digit(10)) {
-                n = Some(n.unwrap_or(0) * 10 + d as usize);
+                n = Some(n.unwrap_or(0).saturating_mul(10).saturating_add(d as usize));
                 it.next();
             }
-            n
+            match n {
+                Some(n) if n > MAX_FIELD => Err(Error::new(format!("format: a {what} is {MAX_FIELD} at most"))),
+                n => Ok(n),
+            }
         };
-        spec.width = num(&mut it).unwrap_or(0);
+        spec.width = num(&mut it, "width")?.unwrap_or(0);
         if it.peek() == Some(&'.') {
             it.next();
-            spec.prec = Some(num(&mut it).unwrap_or(0));
+            spec.prec = Some(num(&mut it, "precision")?.unwrap_or(0));
         }
         let conv = it.next().ok_or_else(|| Error::new("format: the format ends inside a directive"))?;
         if conv == '%' {
@@ -794,6 +809,10 @@ pub(crate) fn format(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     }
     Ok(str_new(&mut vm.m, &out))
 }
+
+/// The widest field and longest precision a directive takes (Rust's
+/// formatting takes no longer precision; a wider field is a mistake).
+const MAX_FIELD: usize = u16::MAX as usize;
 
 fn forced_args(args: &[Value]) -> Result<()> {
     for &x in args {

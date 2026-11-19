@@ -7,11 +7,12 @@
 //! directly from putter to taker (rendezvous).
 //!
 //! Waiters whose claim was already taken (cancelled, or an `alts!` that fired
-//! elsewhere) stay in the queues and are skipped when popped.
+//! elsewhere) stay in the queues and are skipped when popped; a push sweeps
+//! them out once the queues have doubled since the last sweep.
 
 use crate::sched::{deliver, park_on};
 use crate::vm::{Error, Vm};
-use skein_rt::conc::{SpinGuard, chan, claim_new, spin_lock, try_claim, waiter, waiter_new};
+use skein_rt::conc::{SpinGuard, chan, claim_new, is_claimed, spin_lock, try_claim, waiter, waiter_new};
 use skein_rt::object::cons;
 use skein_rt::print::pr_str;
 use skein_rt::runtime::rt;
@@ -31,8 +32,41 @@ fn expect_chan(c: Value, op: &str) -> Result<Value> {
 // ---- waiter queues ------------------------------------------------------------------
 
 fn q_push(m: &mut Mutator, c: Value, back: usize, w: Value) {
+    let n = c.word(chan::QUEUED);
+    if n >= c.word(chan::PURGE_AT) {
+        // (amortised O(1): the next sweep waits until the survivors have
+        // doubled)
+        let left = purge(m, c);
+        c.set_word(chan::PURGE_AT, (2 * left).max(chan::PURGE_MIN));
+    }
     let l = cons(m, w, c.field(back));
     c.set_field(back, l);
+    c.set_word(chan::QUEUED, c.word(chan::QUEUED) + 1);
+}
+
+/// Drop the waiters whose claim was taken from all four lists, keeping the
+/// others in order; how many are left.
+fn purge(m: &mut Mutator, c: Value) -> u64 {
+    let mut left = 0;
+    for f in [chan::TAKERS_FRONT, chan::TAKERS_BACK, chan::PUTTERS_FRONT, chan::PUTTERS_BACK] {
+        let mut keep = Vec::new();
+        let mut l = c.field(f);
+        while l.is_cons() {
+            let w = l.car();
+            if !is_claimed(w.field(waiter::CLAIM)) {
+                keep.push(w);
+            }
+            l = l.cdr();
+        }
+        left += keep.len() as u64;
+        let mut r = Value::NIL;
+        for &w in keep.iter().rev() {
+            r = cons(m, w, r);
+        }
+        c.set_field(f, r);
+    }
+    c.set_word(chan::QUEUED, left);
+    left
 }
 
 fn q_pop(m: &mut Mutator, c: Value, front: usize, back: usize) -> Option<Value> {
@@ -50,6 +84,7 @@ fn q_pop(m: &mut Mutator, c: Value, front: usize, back: usize) -> Option<Value> 
         c.set_field(back, Value::NIL);
     }
     c.set_field(front, f.cdr());
+    c.set_word(chan::QUEUED, c.word(chan::QUEUED).saturating_sub(1));
     Some(f.car())
 }
 
@@ -212,6 +247,7 @@ fn drain(c: Value, front: usize, back: usize, value: Value) {
         }
         c.set_field(f, Value::NIL);
     }
+    c.set_word(chan::QUEUED, 0);
 }
 
 /// `(close! c)`: parked takers get nil, parked putters get false. Buffered

@@ -158,7 +158,7 @@
 ;;;   {:op :if :test :then :else}
 ;;;   {:op :do :body [node…]}
 ;;;   {:op :def :var v :init node-or-nil}
-;;;   {:op :fn :self b-or-nil :fname :named :arities [{:params [b…] :nfixed :variadic :body}]}
+;;;   {:op :fn :self b-or-nil :fname :named :arities [{:params [b…] :nfixed :variadic :body :barrier?}]}
 ;;;   {:op :let :loop bool :bindings [[b node]…] :body}
 ;;;   {:op :letrec :bindings [[b fn-node]…] :body}
 ;;;   {:op :recur :args [node…]}
@@ -306,29 +306,55 @@
        :fixed (if variadic (:fixed state) (conj (:fixed state) nfixed))
        :variadic (or variadic (:variadic state))})))
 
-;; (fn* name? [params] body…) or (fn* name? ([params] body…)…).
-(defn- analyze-fn [env xs]
-  (let [named (symbol? (nth xs 1 nil))
-        self-name (when named (nth xs 1))
-        rst (vec (drop (if named 2 1) xs))
-        sigs (cond (empty? rst) (cerr "fn* requires a parameter vector")
-                   (vector? (first rst)) [[(first rst) (vec (rest rst))]]
-                   :else (mapv (fn [sig]
-                                 (let [s (vec sig)]
-                                   (if (and (cons? sig) (vector? (first s)))
-                                     [(first s) (vec (rest s))]
-                                     (cerr "fn* arity must look like ([params] body...)"))))
-                               rst))
-        ;; (an anonymous one's code is named for where it is: outer/fn, outer
-        ;; the function or def around it, for backtraces and profiles; the
-        ;; function itself still prints as fn)
-        outer (or (:fname (peek (:frames env))) (:def-name env))
-        fname (cond named (symbol (name (current-ns)) (name self-name))
-                    outer (symbol (str outer) "fn"))
-        self (when named (new-binding self-name))
-        env (update env :frames conj {:self self :locals [] :fname fname})
-        st (reduce (fn [st sig] (analyze-arity env sig st)) {:arities [] :fixed [] :variadic false} sigs)]
-    {:op :fn :self self :fname fname :named named :arities (:arities st)}))
+;; (fn* name? [params] body…) or (fn* name? ([params] body…)…). barrier: it's
+;; a macro's hidden function for its body (see body-runners), which a recur
+;; in it can't reach.
+(defn- analyze-fn
+  ([env xs] (analyze-fn env xs false))
+  ([env xs barrier]
+   (let [named (symbol? (nth xs 1 nil))
+         self-name (when named (nth xs 1))
+         rst (vec (drop (if named 2 1) xs))
+         sigs (cond (empty? rst) (cerr "fn* requires a parameter vector")
+                    (vector? (first rst)) [[(first rst) (vec (rest rst))]]
+                    :else (mapv (fn [sig]
+                                  (let [s (vec sig)]
+                                    (if (and (cons? sig) (vector? (first s)))
+                                      [(first s) (vec (rest s))]
+                                      (cerr "fn* arity must look like ([params] body...)"))))
+                                rst))
+         ;; (an anonymous one's code is named for where it is: outer/fn, outer
+         ;; the function or def around it, for backtraces and profiles; the
+         ;; function itself still prints as fn)
+         ;; (a named one inside another function is named for it too,
+         ;; outer/name: its code isn't the var's of that name, which
+         ;; restarting its frame would run instead; it prints as ns/name)
+         inside (:fname (peek (:frames env)))
+         outer (or inside (:def-name env))
+         fname (cond (and named inside) (symbol (str inside) (name self-name))
+                     named (symbol (name (current-ns)) (name self-name))
+                     outer (symbol (str outer) "fn"))
+         self (when named (new-binding self-name))
+         env (update env :frames conj {:self self :locals [] :fname fname})
+         st (reduce (fn [st sig] (analyze-arity env sig st)) {:arities [] :fixed [] :variadic false} sigs)]
+     {:op :fn :self self :fname fname :named named
+      :tname (when named (symbol (name (current-ns)) (name self-name)))
+      :arities (if barrier (mapv (fn [a] (assoc a :barrier true)) (:arities st)) (:arities st))})))
+
+;; The functions that run a fn* they're given as the body of try, binding,
+;; catch-tag, handler-case, locking… (those macros' hidden thunks). A recur in
+;; such a body would restart the thunk, not reach the loop or fn around it:
+;; it's an error instead, as recur across try is in Clojure.
+(def ^:private body-runners
+  #{"skein.core/%with-bindings*" "skein.core/%catch*" "skein.core/%unwind-protect*" "skein.core/%with-handlers"
+    "skein.core/%handler-case" "skein.core/%restart-case" "skein.core/%with-lock" "skein.core/%with-out-str"})
+
+(defn- body-runner? [env h]
+  (and (symbol? h)
+       (not (and (nil? (namespace h)) (lexical? env h)))
+       (let [v (resolve h)] (and v (contains? body-runners (str (%var-name v)))))))
+
+(defn- fn*-form? [x] (and (cons? x) (symbol? (first x)) (nil? (namespace (first x))) (= "fn*" (name (first x)))))
 
 (defn- analyze-list [env form]
   (let [h (first form)
@@ -357,8 +383,10 @@
       (let [v (macro-var env form)]
         (if v
           (analyze env (expand v form))
-          (let [items (vec form)]
-            {:op :call :f (analyze env (first items)) :args (mapv (fn [x] (analyze env x)) (rest items))}))))))
+          (let [items (vec form)
+                runner (body-runner? env (first items))]
+            {:op :call :f (analyze env (first items))
+             :args (mapv (fn [x] (if (and runner (fn*-form? x)) (analyze-fn env (vec x) true) (analyze env x))) (rest items))}))))))
 
 (defn analyze
   "Form, as the IR (see above), in environment env (nil: at top level)."
@@ -802,6 +830,8 @@
     (when-not (:recur pos) (cerr "Can only recur from tail position"))
     (let [t (peek (nth (ar cs) RECUR))]
       (when-not t (cerr "recur outside of loop or fn"))
+      (when (= t :barrier)
+        (cerr "Can't recur across try (or binding, catch-tag, handler-case… which run their body as a function): loop inside it"))
       (let [start (nth t 0)
             regs (nth t 1)]
         (when (not= (count args) (count regs))
@@ -838,7 +868,7 @@
     (assoc! fc FAR a)
     (assoc! cs CUR a)
     (let [regs (mapv (fn [b] (let [r (alloc! cs)] (bind-local! cs b r) r)) (:params arity))]
-      (push-field! a RECUR [0 regs])
+      (push-field! a RECUR (if (:barrier arity) :barrier [0 regs]))
       (let [d (alloc! cs)]
         (gen-do! cs (:body arity) d {:tail true :recur true})
         (finish-arity a fname (:nfixed arity) (:variadic arity) d)))))
@@ -852,7 +882,7 @@
         _ (pop! fns)
         _ (assoc! cs CUR (nth (tpeek fns) FAR))
         caps (mapv second (persistent! (nth fc UPVALS)))
-        tmpl (%make-template (when (:named node) (:fname node)) protos caps)]
+        tmpl (%make-template (:tname node) protos caps)]
     (assoc! cs TEMPLATE tmpl) ; (the latest, for gen-def!)
     (emit! cs (abx CLOSURE dest (konst! cs tmpl)))
     (finish! cs dest pos)

@@ -223,6 +223,10 @@
   (is (= [3 "err\n"] (let [r (proc/sh "sh" "-c" "echo err >&2; exit 3")] [(:exit r) (:err r)])))
   (is (= "/" (:out (proc/sh "sh" "-c" "cd . && pwd | tr -d '\\n'" :dir "/"))))
   (is (= "yes" (:out (proc/sh "sh" "-c" "printf %s \"$SKEIN_TEST_VAR\"" :env {"SKEIN_TEST_VAR" "yes"}))))
+  ;; A child that stops reading :in, or never reads it, isn't an error.
+  (let [big (apply str (repeat (* 1024 1024) "x"))]
+    (is (= {:exit 0 :out "xxx"} (select-keys (proc/sh "head" "-c" "3" :in big) [:exit :out])))
+    (is (= 0 (:exit (proc/sh "true" :in big)))))
   (let [p (proc/start "sh" :args ["-c" "echo one; echo two; sleep 30"])
         r (io/line-reader (:out p))]
     (is (= ["one" "two"] [(io/read-line r) (io/read-line r)]))
@@ -417,6 +421,50 @@
   (is (= :error (fails (net/connect "localhost" port :tls true))))
   (io/close l))
 
+;; A peer that never reads: closing a TLS stream doesn't wait for it to
+;; take the close_notify for long.
+(let [l (net/listen "127.0.0.1" 0)
+      port (net/port (net/local-address l))
+      srv (spawn-detached (let [s (net/accept l :tls true :cert-file (io/path certs "server.pem") :key-file (io/path certs "server.key"))]
+                            (io/read s 6)
+                            s))
+      c (net/connect "localhost" port :tls true :ca-file (io/path certs "ca.pem"))
+      _ (io/write c "hello\n")
+      s (await srv)
+      big (apply str (repeat 65536 "x"))
+      writer (spawn-detached (try (dotimes [_ 1000] (io/write s big)) (catch Error _ :stopped)))]
+  (sleep 200)
+  (is (= :closed (deref (future (io/close s) :closed) 10000 :hung)) "the close")
+  (is (= :stopped (deref (future (await writer)) 5000 :hung)) "and the writer parked on it")
+  (%io-close c)
+  (io/close l))
+
+;; A TLS connect that fails before its handshake (a CA file that isn't
+;; there, or isn't PEM) closes its TCP socket: the server reads the end.
+(io/with-temp-file [bad]
+  (io/write-text bad "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n")
+  (doseq [ca [(io/path certs "missing.pem") bad]]
+    (let [l (net/listen "127.0.0.1" 0)
+          port (net/port (net/local-address l))]
+      (is (= :error (fails (net/connect "localhost" port :tls true :ca-file ca))))
+      (let [s (net/accept l)]
+        (is (= :end (deref (future (loop [] (if (io/read s 4096) (recur) :end))) 5000 :still-open)) ca)
+        (io/close s))
+      (io/close l))))
+
+;; A caller of connect :timeout cancelled while it waits takes the attempt
+;; with it: the socket is closed, as the server sees.
+(let [l (net/listen "127.0.0.1" 0)
+      port (net/port (net/local-address l))
+      caller (spawn-detached (net/connect "127.0.0.1" port :tls true :server-name "localhost" :ca-file (io/path certs "ca.pem") :timeout 60000))
+      s (net/accept l)]
+  (sleep 50)
+  (cancel! caller)
+  (is (= :end (deref (future (loop [] (if (io/read s 4096) (recur) :end))) 5000 :still-open)))
+  (is (contains? (settle caller) :error))
+  (io/close s)
+  (io/close l))
+
 ;; A socket closed while another fiber reads or writes it closes for the
 ;; peer too: the one parked is told, and the peer reads what was sent, then
 ;; the end (todo.md's kicked chat clients).
@@ -559,6 +607,8 @@
 (is (= nil (str/index-of "héllo" "z")))
 (is (= 3 (str/last-index-of "héllo" \l)))
 (is (= 2 (str/last-index-of "héllo" "l" 2)))
+(is (= [nil nil 1] [(str/last-index-of "aé" "é" 0) (str/last-index-of "éa" "a" 0) (str/last-index-of "aéb" "é" 1)])
+    "a match from from would end inside é")
 (is (= true (str/includes? "héllo" "él")))
 (is (= true (str/starts-with? "héllo" "hé")))
 (is (= false (str/starts-with? "h" "hé")))
@@ -604,6 +654,8 @@
 (is (= "123" (re-matches #"\d+" "123")))
 (is (= nil (re-matches #"\d+" "123a")))
 (is (= "ab" (re-matches #"a|ab" "ab")))
+(is (= ["ab" nil] [(re-matches #"(?x)a|ab # comment" "ab") (re-matches #"(?x)a+ # comment" "xaa")])
+    "a (?x) pattern's last comment doesn't swallow the anchoring")
 (is (= ["1" "22" "333"] (re-seq #"\d+" "1a22b333")))
 (is (= {:match "2026-11" :start 3 :end 10 :groups ["2026" "11"] :named {:y "2026" :m "11"}}
        (re/match #"(?<y>\d{4})-(?<m>\d\d)" "on 2026-11!")))
@@ -634,6 +686,8 @@
 (is (= :error (fails (json/read-string "[1,]"))))
 (is (= :error (fails (json/read-string "01"))))
 (is (= :error (fails (json/read-string "[1] 2"))))
+(is (= [:error :error] [(fails (json/read-string "\"\\é\"")) (fails (json/read-string "\"\\u+041\""))])
+    "a bad escape of a multi-byte character; \\u takes hex digits alone")
 (is (= true (str/includes? (try (json/read-string "{\n  \"a\": x}") (catch Error e (condition-message e))) "line 2, column 8")))
 (is (= "{\"a\":[1,2.5,\"x\",null]}" (json/write-string {:a [1 2.5 "x" nil]})))
 (is (= "[\"k\",\"ns/s\",\"c\"]" (json/write-string [:k 'ns/s \c])))
@@ -678,6 +732,11 @@
 (is (= "hé" (format "%.2s" "héllo")))
 (is (= :error (fails (format "%d"))))
 (is (= :error (fails (format "%d" "x"))))
+(is (= [:error :error :error] [(fails (format "%.70000f" 1.5)) (fails (format "%.70000e" 1.5)) (fails (format "%.70000g" 1.5))])
+    "a precision past 65535")
+(is (= [:error :error] [(fails (format "%99999999999999999999d" 1)) (fails (format "%10000000000000d" 1))])
+    "a width past 65535, or past a usize")
+(is (= 65535 (count (format "%65535d" 1))))
 (is (= "1,234.57" (fmt/number 1234.567)))
 (is (= "1,234" (fmt/number 1234)))
 (is (= "26%" (fmt/percent 0.256)))
@@ -868,9 +927,28 @@
   (let [t0 (nano-time)]
     (sync/take-token! rl 2)
     (is (< 50000000 (- (nano-time) t0)))))
+(is (= :error (fails (sync/take-token! (sync/rate-limiter 100 2) 5))) "more than the burst never comes")
 (let [calls (atom 0) f (sync/once (fn [] (swap! calls inc) (sleep 5) :v))]
   (is (= [:v :v :v] (mapv await (mapv (fn [_] (spawn-detached (f))) (range 3)))))
   (is (= 1 (deref calls))))
+;; A first caller cancelled while f runs leaves it to the next: one already
+;; waiting, or a later one.
+(let [calls (atom 0)
+      f (sync/once (fn [] (swap! calls inc) (sleep 100) :v))
+      a (spawn-detached (f))
+      _ (sleep 20)
+      b (spawn-detached (f))]
+  (sleep 20)
+  (cancel! a)
+  (is (= :v (deref (future (await b)) 5000 :hung)) "a waiter")
+  (is (= 2 (deref calls))))
+(let [calls (atom 0)
+      f (sync/once (fn [] (swap! calls inc) (sleep 100) :v))
+      a (spawn-detached (f))]
+  (sleep 20)
+  (cancel! a)
+  (is (= :v (deref (future (f)) 5000 :hung)) "a later caller")
+  (is (= 2 (deref calls))))
 ;;; ---- skein.cache ----
 (let [c (cache/lru 2)]
   (cache/store! c :a 1) (cache/store! c :b 2)
@@ -919,6 +997,8 @@
        (codefmt/format-string "(defn f\n  (^Map [^Map a]\n          (g a)\n   (h a)))")))
 (is (thrown? Error (codefmt/format-string "(a")))
 (is (thrown? Error (codefmt/format-string "a)")))
+(is (str/includes? (try (codefmt/parse (apply str (repeat 200000 "["))) (catch Error e (condition-message e))) "Nested more than 10000 deep")
+    "the reader proper's limit, not a stack overflow")
 (is (every? (fn [f] (codefmt/formatted? (slurp f)))
             [(io/path here "../../lib/core/core.skn") (io/path here "../../lib/skein/fmt.skn") (io/path here "lib_test.skn")]))
 

@@ -150,7 +150,10 @@
                     (apply str out))))
         clean (str/replace token "_" "")
         bad (fn [] (fail! st (str "not a value: " (pr-str token))))]
-    (when (or (str/includes? token "__") (str/starts-with? token "_") (str/ends-with? token "_")) (bad))
+    ;; (every underscore needs a digit on each side: 1_000, 0xdead_beef)
+    (when (or (str/starts-with? token "_") (str/ends-with? token "_")
+              (re-find (if (str/starts-with? token "0x") #"[^0-9a-fA-F]_|_[^0-9a-fA-F]" #"[^0-9]_|_[^0-9]") token))
+      (bad))
     (cond
       (contains? #{"true" "false"} token) (= token "true")
       (contains? #{"inf" "+inf"} token) ##Inf

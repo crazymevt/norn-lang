@@ -837,6 +837,8 @@
 (defn- date-from-parts [{:keys [year month day yearday weekday bad]} s]
   (when-not year (bad "the pattern gives no year"))
   (when-not (or (and month day) yearday) (bad "the pattern gives no month and day, or day of the year"))
+  (when (and yearday (not (and month day)) (not (<= 1 yearday (if (leap-year? year) 366 365))))
+    (bad (str "no day " yearday " in " year)))
   (let [d (parsing s "local date"
                    (fn [] (if (and month day)
                             (local-date year month day)

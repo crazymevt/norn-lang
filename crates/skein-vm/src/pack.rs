@@ -214,10 +214,9 @@ pub(crate) fn pbkdf2(m: &mut Mutator, a: &[Value]) -> Result<Value> {
         "sha512" => ring::pbkdf2::PBKDF2_HMAC_SHA512,
         x => return Err(Error::new(format!("No PBKDF2 :{x} (:sha256, :sha384, :sha512 or :sha1)"))),
     };
-    let iters = if a[1].is_fixnum() && a[1].as_fixnum() > 0 {
-        a[1].as_fixnum() as u32
-    } else {
-        return Err(Error::new("pbkdf2: iterations must be a positive integer"));
+    let iters = match a[1].is_fixnum().then(|| std::num::NonZeroU32::try_from(u32::try_from(a[1].as_fixnum()).ok()?).ok()).flatten() {
+        Some(n) => n,
+        None => return Err(Error::new("pbkdf2: iterations must be an integer from 1 to 4294967295")),
     };
     let n = if a[4].is_fixnum() && (1..=1024).contains(&a[4].as_fixnum()) {
         a[4].as_fixnum() as usize
@@ -225,7 +224,7 @@ pub(crate) fn pbkdf2(m: &mut Mutator, a: &[Value]) -> Result<Value> {
         return Err(Error::new("pbkdf2: a key of 1 to 1024 bytes"));
     };
     let mut out = vec![0u8; n];
-    ring::pbkdf2::derive(alg, std::num::NonZeroU32::new(iters).unwrap(), &data(a[2], "pbkdf2")?, &data(a[3], "pbkdf2")?, &mut out);
+    ring::pbkdf2::derive(alg, iters, &data(a[2], "pbkdf2")?, &data(a[3], "pbkdf2")?, &mut out);
     Ok(bytes_new(m, &out))
 }
 

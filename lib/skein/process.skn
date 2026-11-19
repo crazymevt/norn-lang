@@ -81,7 +81,11 @@
     (try
       (let [out (spawn-detached (bytes->string (io/read-all (:out p)) true))
             err (spawn-detached (bytes->string (io/read-all (:err p)) true))]
-        (when-let [in (:in opts)] (io/write (:in p) in))
+        ;; (a child that ends, or stops reading, before taking all of :in
+        ;; isn't an error: head, say, or a program that reads no input)
+        (when-let [in (:in opts)]
+          (handler-case (io/write (:in p) in)
+            (ConnectionError [e] (when-not (= :broken-pipe (:reason (ex-data e))) (throw e)))))
         (io/close (:in p))
         (let [r (wait p)
               o (await out)

@@ -632,17 +632,28 @@ impl Compiler<'_> {
         };
         // (an anonymous one's code is named for where it is, outer/fn, for
         // backtraces and profiles; the function itself still prints as fn)
-        let outer = self.fns.last().map(|f| f.fname).filter(|n| !n.is_nil()).unwrap_or(self.def_name);
+        // (a named one inside another function is named for it too,
+        // outer/name: its code isn't the var's of that name, which
+        // restarting its frame would run instead; it prints as ns/name)
+        let ns = self.vm.ns.name.sym_name().to_owned();
+        let enclosing = self.fns.last().map(|f| f.fname).filter(|n| !n.is_nil());
+        let outer = enclosing.unwrap_or(self.def_name);
+        let inside = enclosing;
+        let tname = if self_name.is_symbol() { rt().symbol(&mut self.vm.m, Some(&ns), self_name.sym_name()) } else { Value::NIL };
         let name = if self_name.is_symbol() {
-            let ns = self.vm.ns.name.sym_name().to_owned();
-            rt().symbol(&mut self.vm.m, Some(&ns), self_name.sym_name())
+            match inside {
+                Some(o) => {
+                    let o = skein_rt::print::pr_str(o, false);
+                    rt().symbol(&mut self.vm.m, Some(&o), self_name.sym_name())
+                }
+                None => tname,
+            }
         } else if outer.is_symbol() {
             let o = skein_rt::print::pr_str(outer, false);
             rt().symbol(&mut self.vm.m, Some(&o), "fn")
         } else {
             Value::NIL
         };
-        let tname = if self_name.is_symbol() { name } else { Value::NIL };
         self.fns.push(FnCtx { self_name, fname: name, upvals: Vec::new(), ar: Arity::default() });
         let mut protos = Vec::new();
         let mut seen_fixed = Vec::new();

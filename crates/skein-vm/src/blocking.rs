@@ -13,8 +13,8 @@
 
 use crate::sched;
 use crate::vm::{Error, Failure, Result, Vm};
-use skein_rt::conc::{claim_new, fiber, try_claim, waiter, waiter_new};
-use skein_rt::{Mutator, Value};
+use skein_rt::conc::{claim_new, fiber, handle, try_claim, waiter, waiter_new};
+use skein_rt::{Kind, Mutator, Value};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -108,8 +108,15 @@ fn worker() {
         let Some(p) = job else { break };
         let finish = (p.job)();
         let w = p.waiter;
-        sched::delivering(|| {
+        let orphan = sched::delivering(|| {
             let r = finish(&mut m);
+            // (a fiber cancelled while the job ran unwinds as it wakes,
+            // before it can see the result: a handle the job opened, which
+            // nothing else holds, is closed here instead of leaking)
+            let orphan = match &r {
+                Ok(v) if v.is(Kind::Handle) && w.field(waiter::FIBER).fiber_cancel() != 0 => Some(v.word(handle::ID)),
+                _ => None,
+            };
             if try_claim(w.field(waiter::CLAIM)) {
                 match r {
                     Ok(v) => sched::deliver(w, v, Value::NIL),
@@ -120,7 +127,11 @@ fn worker() {
                     }
                 }
             }
+            orphan
         });
+        if let Some(id) = orphan {
+            crate::reactor::close_id(id);
+        }
         IN_FLIGHT.lock().unwrap().retain(|&x| x != w);
         sched::unroot(p.root);
     }

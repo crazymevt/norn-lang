@@ -1029,6 +1029,12 @@ fn compile_inner(proto: Value) -> Option<usize> {
             let ra_v = b.ins().iconst(types::I64, ra as i64);
             let rb_v = b.ins().iconst(types::I64, rb as i64);
             let resume = b.ins().iconst(types::I64, (i + 1) as i64);
+            // (a primitive may let a collection run while it's in native
+            // code (Vm::native_region: the FFI, main-lane work): a moving
+            // one updates the frame, not these variables. The count of
+            // collections before the call, to tell.)
+            let gcp = b.ins().iconst(types::I64, skein_rt::heap::gc_count_ptr() as i64);
+            let gc_before = b.ins().load(types::I64, mf, gcp, 0);
             let call = b.ins().call_indirect(call_ref, f, &[ctx, regs, ra_v, rb_v, resume]);
             let status = b.inst_results(call)[0];
             let (pushed, value, pend, other) = (b.create_block(), b.create_block(), b.create_block(), b.create_block());
@@ -1049,6 +1055,18 @@ fn compile_inner(proto: Value) -> Option<usize> {
             b.switch_to_block(value);
             let v = b.ins().load(types::I64, mf, ctx, CTX_VALUE);
             set(b, ra, v);
+            // A collection ran during the call: what these variables hold
+            // may have moved. The frame was written back for the call and
+            // the collection updated it, so the interpreter goes on from
+            // there (ra's value stored for it first).
+            let gc_after = b.ins().load(types::I64, mf, gcp, 0);
+            let collected = b.ins().icmp(IntCC::NotEqual, gc_before, gc_after);
+            let (moved, same) = (b.create_block(), b.create_block());
+            b.ins().brif(collected, moved, &[], same, &[]);
+            b.switch_to_block(moved);
+            b.ins().store(mf, v, regs, ra * W);
+            stop_at(b, i + 1);
+            b.switch_to_block(same);
             // (the floats were boxed for the call: their f64s again from
             // their boxes, so that none is live across a call, which would
             // keep it in memory on the fast paths too: no float register is
@@ -2181,6 +2199,24 @@ fn fast_prims(
                     let (eq_blk, differ) = (b.create_block(), b.create_block());
                     b.ins().brif(same, eq_blk, &[], differ, &[]);
                     b.switch_to_block(eq_blk);
+                    // (but what = would realize a stream in first, a list,
+                    // a stream or a vector, by the slow path: tier 0's =
+                    // runs its thunk even comparing it with itself)
+                    let (same_true, same_obj, same_vec) = (b.create_block(), b.create_block(), b.create_block());
+                    let st = b.ins().band_imm_s(x, skein_rt::value::TAG_MASK as i64);
+                    let is_cons = b.ins().icmp_imm_s(IntCC::Equal, st, skein_rt::value::TAG_CONS as i64);
+                    let not_cons = b.create_block();
+                    b.ins().brif(is_cons, slow, &[], not_cons, &[]);
+                    b.switch_to_block(not_cons);
+                    let is_obj = b.ins().icmp_imm_s(IntCC::Equal, st, skein_rt::value::TAG_OBJ as i64);
+                    b.ins().brif(is_obj, same_obj, &[], same_true, &[]);
+                    b.switch_to_block(same_obj);
+                    is_kind(b, x, skein_rt::Kind::Stream, same_vec);
+                    b.ins().jump(slow, &[]);
+                    b.switch_to_block(same_vec);
+                    is_kind(b, x, skein_rt::Kind::Vector, same_true);
+                    b.ins().jump(slow, &[]);
+                    b.switch_to_block(same_true);
                     let t = b.ins().iconst(types::I8, 1);
                     bool_out(b, t);
                     b.switch_to_block(differ);

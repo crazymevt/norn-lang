@@ -20,7 +20,20 @@ fn eval(exe: &Path, c: &Path, expr: &str, env: &[(&str, &str)]) -> String {
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let o = cmd.output().unwrap();
+    // (a copy of skein just written can't be run for a moment on Linux:
+    // another test's child, forked meanwhile, holds the copy's descriptor
+    // open for writing until it execs, and exec refuses a file open for
+    // writing, ETXTBSY. Tried again until that child has gone on.)
+    let mut tries = 0;
+    let o = loop {
+        match cmd.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            r => break r.unwrap(),
+        }
+    };
     assert!(o.status.success(), "{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     String::from_utf8_lossy(&o.stdout).trim().to_owned()
 }

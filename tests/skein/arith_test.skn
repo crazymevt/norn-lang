@@ -10,6 +10,7 @@
 (ns arith-test
   (:require [skein.test :refer [is deftest testing]]
             [skein.io :as io]
+            [skein.buffer :as buf]
             [skein.process :as proc]
             [skein.string :as str]
             [skein.sys :as sys]))
@@ -130,3 +131,15 @@
       (is (= 0 (:exit r)) (:err r))
       (is (= "[1024.0 [:x 1.0] 1024.0]" (first (str/split-lines (:out r))))
           "the loop assumed * gave a float: it gives what the new * gives, and the old again after"))))
+
+;; integers at the edges of 64 bits, past a fixnum's range: kept whole (they
+;; wrapped through a 63-bit fixnum)
+(deftest sixty-four-bit-edges
+  (let [m (buf/mutable :i64 3)]
+    (buf/set! m 0 -9223372036854775808)
+    (buf/set! m 1 -4611686018427387905)
+    (buf/set! m 2 9223372036854775807)
+    (is (= [-9223372036854775808 -4611686018427387905 9223372036854775807] (buf/values m))))
+  (is (= 9223372036854775807 (count (range -4611686018427387904 4611686018427387903))))
+  (is (thrown? Error (char 4294967393)) "a code point past 32 bits isn't cut to its low bits")
+  (is (= \a (char 97))))

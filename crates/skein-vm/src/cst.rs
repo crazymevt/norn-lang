@@ -18,6 +18,7 @@
 //! (`(%cst-text nodes)`), which the tests check.
 
 use crate::prims::expect;
+use crate::reader::MAX_DEPTH;
 use crate::vm::{Error, Result, Vm};
 use skein_rt::runtime::rt;
 use skein_rt::string::str_new;
@@ -28,6 +29,9 @@ struct Cst<'a> {
     s: &'a str,
     b: &'a [u8],
     i: usize,
+    /// How deeply the form being read nests: the reader proper's limit,
+    /// as reading recurses here too.
+    depth: usize,
 }
 
 const DELIMS: &[u8] = b"()[]{}\";";
@@ -150,6 +154,16 @@ impl Cst<'_> {
     }
 
     fn form(&mut self, vm: &mut Vm) -> Result<Value> {
+        if self.depth >= MAX_DEPTH {
+            return Err(self.err(&format!("Nested more than {MAX_DEPTH} deep")));
+        }
+        self.depth += 1;
+        let r = self.form_nested(vm);
+        self.depth -= 1;
+        r
+    }
+
+    fn form_nested(&mut self, vm: &mut Vm) -> Result<Value> {
         let c = self.b[self.i];
         let coll = |me: &mut Self, vm: &mut Vm, open: &str, close: u8| -> Result<Value> {
             me.i += open.len();
@@ -234,7 +248,7 @@ impl Cst<'_> {
 pub(crate) fn read_cst(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     expect(a[0], Kind::String, "read-cst")?;
     let s = a[0].as_str();
-    let mut c = Cst { s, b: s.as_bytes(), i: 0 };
+    let mut c = Cst { s, b: s.as_bytes(), i: 0, depth: 0 };
     let nodes = c.seq(vm, None)?;
     Ok(vec_from_slice(&mut vm.m, &nodes))
 }

@@ -103,9 +103,12 @@
      (deref took))))
 
 (defn take-token!
-  "Take n tokens (default 1), sleeping until they're available."
+  "Take n tokens (default 1), sleeping until they're available. More than
+  the burst never are: that's an error."
   ([^RateLimiter rl] (take-token! rl 1))
   ([^RateLimiter rl ^Number n]
+   (when (> n (:burst rl))
+     (error (str "take-token!: " n " tokens is more than the limiter's burst of " (:burst rl) ", which it never holds")))
    (loop []
      (when-not (try-take! rl n)
        (let [missing (- n (:tokens (deref (:state rl))))]
@@ -128,10 +131,17 @@
       (let [mine (chan)
             [old _] (swap-vals! state (fn [s] (or s {:running mine})))]
         (cond (nil? old)
-              (let [r (try {:value (f)} (catch Error e {:error e}))]
-                (reset! state r)
-                (close! mine)
-                (if (contains? r :error) (throw (:error r)) (:value r)))
+              (let [stored (atom false)]
+                (try
+                  (let [r (try {:value (f)} (catch Error e {:error e}))]
+                    (reset! state r)
+                    (reset! stored true)
+                    (close! mine)
+                    (if (contains? r :error) (throw (:error r)) (:value r)))
+                  ;; (cancelled, or another exit that no catch sees: nothing
+                  ;; is stored, so the next caller runs f, and the waiters
+                  ;; wake to find out who)
+                  (finally (when-not @stored (reset! state nil) (close! mine)))))
               (:running old)
               (do (take! (:running old)) (recur))
               (contains? old :error) (throw (:error old))

@@ -124,17 +124,17 @@ prims! {
     // (apply hash-map x) gave, without apply, which stopped tier-1 code
     // each call; M10 part 6.5)
     "%as-map" 1 Some(1) => |vm, a| { let x = a[0]; let is_seq = x.is_cons() || (x.is_obj() && matches!(x.obj_kind(), Kind::EmptyList | Kind::VecSeq | Kind::Range)); if !is_seq { return Ok(x); } let items = to_vec(vm, x)?; hash_map(vm, &items) };
-    "hash-set" 0 VAR => |vm, a| Ok(a.iter().fold(set_empty(), |s, &x| set_conj(&mut vm.m, s, x)));
+    "hash-set" 0 VAR => |vm, a| { forced(a)?; Ok(a.iter().fold(set_empty(), |s, &x| set_conj(&mut vm.m, s, x))) };
     "vec" 1 Some(1) => |vm, a| { if a[0].is(Kind::Vector) { return Ok(a[0]); }
         if a[0].is(Kind::Instance) { return collection_op(vm, "vec", a); }
         let xs = to_vec(vm, a[0])?; Ok(vec_from_slice(&mut vm.m, &xs)) };
-    "set" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "set", a); } let xs = to_vec(vm, a[0])?; Ok(xs.into_iter().fold(set_empty(), |s, x| set_conj(&mut vm.m, s, x))) };
+    "set" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "set", a); } let xs = to_vec(vm, a[0])?; forced(&xs)?; Ok(xs.into_iter().fold(set_empty(), |s, x| set_conj(&mut vm.m, s, x))) };
     "cons" 2 Some(2) => |vm, a| Ok(seq::cons_onto(&mut vm.m, a[0], a[1])?);
     "first" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "first", a); } Ok(seq::first(&mut vm.m, a[0])?) };
     "rest" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "rest", a); } Ok(seq::rest(&mut vm.m, a[0])?) };
     "next" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "next", a); } Ok(seq::next(&mut vm.m, a[0])?) };
     "seq" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "seq", a); } Ok(seq::seq(&mut vm.m, a[0])?) };
-    "count" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "count", a); } Ok(Value::fix(seq::count(a[0])? as i64)) };
+    "count" 1 Some(1) => |vm, a| { if a[0].is(Kind::Instance) { return collection_op(vm, "count", a); } let n = seq::count(a[0])?; Ok(Value::fixnum(n as i64).filter(|_| n <= i64::MAX as usize).unwrap_or_else(|| skein_rt::numbers::int_value(&mut vm.m, &num_bigint::BigInt::from(n)))) };
     "nth" 2 Some(3) => nth;
     "get" 2 Some(3) => get_prim;
     // (a map pattern's key, without making a keyword-argument seq a map
@@ -154,9 +154,9 @@ prims! {
     "disj!" 2 Some(2) => |vm, a| transient_op(vm, a[0], TOp::Disj(a[1]));
     "pop!" 1 Some(1) => |vm, a| transient_op(vm, a[0], TOp::Pop);
     "assoc" 3 VAR => assoc;
-    "dissoc" 1 VAR => |vm, a| { let mut m = a[0]; if m.is_nil() { return Ok(m); } else if m.is(Kind::Sorted) { for &k in &a[1..] { m = crate::sorted::dissoc(&mut vm.m, m, k)?; } return Ok(m); } expect(m, Kind::Map, "dissoc")?; for &k in &a[1..] { m = map_dissoc(&mut vm.m, m, k); } Ok(m) };
+    "dissoc" 1 VAR => |vm, a| { let mut m = a[0]; if m.is_nil() { return Ok(m); } else if m.is(Kind::Sorted) { for &k in &a[1..] { m = crate::sorted::dissoc(&mut vm.m, m, k)?; } return Ok(m); } expect(m, Kind::Map, "dissoc")?; forced(&a[1..])?; for &k in &a[1..] { m = map_dissoc(&mut vm.m, m, k); } Ok(m) };
     "conj" 0 VAR => conj;
-    "disj" 1 VAR => |vm, a| { let mut s = a[0]; if s.is_nil() { return Ok(s); } else if s.is(Kind::Sorted) { for &k in &a[1..] { s = crate::sorted::dissoc(&mut vm.m, s, k)?; } return Ok(s); } expect(s, Kind::Set, "disj")?; for &k in &a[1..] { s = set_disj(&mut vm.m, s, k); } Ok(s) };
+    "disj" 1 VAR => |vm, a| { let mut s = a[0]; if s.is_nil() { return Ok(s); } else if s.is(Kind::Sorted) { for &k in &a[1..] { s = crate::sorted::dissoc(&mut vm.m, s, k)?; } return Ok(s); } expect(s, Kind::Set, "disj")?; forced(&a[1..])?; for &k in &a[1..] { s = set_disj(&mut vm.m, s, k); } Ok(s) };
     "contains?" 2 Some(2) => contains;
     "keys" 1 Some(1) => |vm, a| map_part(vm, a[0], true);
     "vals" 1 Some(1) => |vm, a| map_part(vm, a[0], false);
@@ -174,7 +174,7 @@ prims! {
     "symbol" 1 Some(2) => |vm, a| name_like(vm, a, false);
     "keyword" 1 Some(2) => |vm, a| name_like(vm, a, true);
     "gensym" 0 Some(1) => |vm, a| { let p = if a.is_empty() { "G__".to_owned() } else { text(a[0]) }; Ok(rt().symbol(&mut vm.m, None, &format!("{p}{}", crate::reader::next_id()))) };
-    "char" 1 Some(1) => |_, a| { let n = int(a[0], "char")?; char::from_u32(n as u32).map(Value::char).ok_or_else(|| Error::new(format!("Invalid code point: {n}"))) };
+    "char" 1 Some(1) => |_, a| { let n = int(a[0], "char")?; u32::try_from(n).ok().and_then(char::from_u32).map(Value::char).ok_or_else(|| Error::new(format!("Invalid code point: {n}"))) };
     // printing and I/O
     "pr-str" 0 VAR => |vm, a| { forced(a)?; let s = printed(vm, a, true)?; Ok(str_new(&mut vm.m, &s)) };
     "print" 0 VAR => |vm, a| { forced(a)?; let s = printed(vm, a, false)?; out_to(vm, &s, false) };
@@ -266,6 +266,8 @@ prims! {
         let n = match a.first() {
             Some(&v) => match int(v, "chan")? {
                 n if n < 0 => return Err(type_err("chan", "a buffer size of 0 or more", v)),
+                // (the buffer is made at once, a word a slot)
+                n if n > 1 << 26 => return Err(Error::new(format!("chan: a buffer of at most 67108864 slots, not {n}"))),
                 n => n as usize,
             },
             None => 0,
@@ -503,11 +505,11 @@ prims! {
     "%signal-listeners" 1 Some(1) => |_, a| { let n = signal_arg(a[0])?; Ok(Value::fix(crate::os::listeners(n) as i64)) };
     "%raise-signal" 1 Some(1) => |_, a| { let n = signal_arg(a[0])?; crate::platform::raise(n); Ok(Value::NIL) };
     "%now-nanos" 0 Some(0) => |_, _| Ok(Value::fix(crate::os::now_nanos()));
-    "%local-offset" 1 Some(1) => |_, a| Ok(Value::fix(crate::os::local_offset(int(a[0], "%local-offset")?)));
-    "%civil" 2 Some(2) => |vm, a| { let c = crate::os::civil(int(a[0], "civil")?, int(a[1], "civil")?); let vs: Vec<Value> = c.iter().map(|&x| Value::fix(x)).collect(); Ok(vec_from_slice(&mut vm.m, &vs)) };
-    "%from-civil" 2 Some(2) => |_, a| { let xs: Vec<i64> = seq::SeqIter::new(a[0]).map(|it| it.map(|v| if v.is_fixnum() { v.as_fixnum() } else { 0 }).collect()).unwrap_or_default(); if xs.len() != 7 { return Err(Error::new("%from-civil needs [y m d h mi s ns]")); } let f = [xs[0], xs[1], xs[2], xs[3], xs[4], xs[5], xs[6]]; Ok(Value::fix(crate::os::from_civil(f, int(a[1], "from-civil")?).map_err(Error::new)?)) };
-    "%format-iso" 2 Some(2) => |vm, a| Ok(str_new(&mut vm.m, &crate::os::format_iso(int(a[0], "format")?, int(a[1], "format")?)));
-    "%parse-iso" 1 Some(1) => |vm, a| { let (n, o) = crate::os::parse_iso(&text(a[0])).map_err(Error::new)?; Ok(vec_from_slice(&mut vm.m, &[Value::fix(n), Value::fix(o)])) };
+    "%local-offset" 1 Some(1) => |_, a| Ok(Value::fix(crate::os::local_offset(int64(a[0], "%local-offset")?)));
+    "%civil" 2 Some(2) => |vm, a| { let c = crate::os::civil(int64(a[0], "civil")?, int(a[1], "civil")?); let vs: Vec<Value> = c.iter().map(|&x| Value::fix(x)).collect(); Ok(vec_from_slice(&mut vm.m, &vs)) };
+    "%from-civil" 2 Some(2) => |vm, a| { let vs: Vec<Value> = seq::SeqIter::new(a[0]).map(|it| it.collect()).unwrap_or_default(); if vs.len() != 7 { return Err(Error::new("%from-civil needs [y m d h mi s ns]")); } let xs = vs.iter().map(|&v| int(v, "from-fields")).collect::<Result<Vec<i64>>>()?; let f = [xs[0], xs[1], xs[2], xs[3], xs[4], xs[5], xs[6]]; let n = crate::os::from_civil(f, int(a[1], "from-civil")?).map_err(Error::new)?; Ok(int64_value(vm, n)) };
+    "%format-iso" 2 Some(2) => |vm, a| Ok(str_new(&mut vm.m, &crate::os::format_iso(int64(a[0], "format")?, int(a[1], "format")?)));
+    "%parse-iso" 1 Some(1) => |vm, a| { let (n, o) = crate::os::parse_iso(&text(a[0])).map_err(Error::new)?; let n = int64_value(vm, n); Ok(vec_from_slice(&mut vm.m, &[n, Value::fix(o)])) };
     "fiber-dump" 0 Some(0) => |vm, _| crate::os::fiber_dump(vm);
     // test helpers: a native call that blocks its carrier, and one on the pool
     "%native-stall" 1 Some(1) => |vm, a| { let ms = int(a[0], "%native-stall")?.max(0) as u64; vm.native_region(&[], || std::thread::sleep(std::time::Duration::from_millis(ms))); Ok(Value::fix(ms as i64)) };
@@ -611,6 +613,24 @@ pub(crate) fn expect(v: Value, k: Kind, op: &str) -> Result<()> {
 
 pub(crate) fn int(v: Value, op: &str) -> Result<i64> {
     if v.is_fixnum() { Ok(v.as_fixnum()) } else { Err(type_err(op, "an integer", v)) }
+}
+
+/// An integer that fits 64 bits (a fixnum, or a bignum within i64: an
+/// instant's nanoseconds past 2116 are one).
+pub(crate) fn int64(v: Value, op: &str) -> Result<i64> {
+    use num_traits::ToPrimitive;
+    if v.is_fixnum() {
+        return Ok(v.as_fixnum());
+    }
+    match skein_rt::numbers::int_of(v) {
+        Some(n) => n.to_i64().ok_or_else(|| Error::new(format!("{op}: {} is out of range", pr_str(v, true)))),
+        None => Err(type_err(op, "an integer", v)),
+    }
+}
+
+/// An i64 as a value: a fixnum, or a bignum past a fixnum's range.
+pub(crate) fn int64_value(vm: &mut Vm, n: i64) -> Value {
+    Value::fixnum(n).unwrap_or_else(|| skein_rt::numbers::int_value(&mut vm.m, &num_bigint::BigInt::from(n)))
 }
 
 fn float_bytes(vm: &mut Vm, args: &[Value]) -> Result<Value> {
@@ -732,7 +752,9 @@ fn mbuf_load(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         6 => skein_rt::numbers::int_value(&mut vm.m, &num_bigint::BigInt::from(u)),
         _ if code % 2 == 1 => {
             let shift = 64 - 8 * width as u32;
-            Value::fix(((u << shift) as i64) >> shift)
+            let x = ((u << shift) as i64) >> shift;
+            // (an i64 past a fixnum's range is a bignum, as storing it took)
+            Value::fixnum(x).unwrap_or_else(|| skein_rt::numbers::int_value(&mut vm.m, &num_bigint::BigInt::from(x)))
         }
         _ => Value::fix(u as i64),
     })
@@ -1140,6 +1162,7 @@ pub(crate) fn hash_map(vm: &mut Vm, a: &[Value]) -> Result<Value> {
     }
     let mut m = map_empty();
     for kv in a.chunks(2) {
+        forced_key(kv[0])?;
         m = map_assoc(&mut vm.m, m, kv[0], kv[1]);
     }
     Ok(m)
@@ -1353,6 +1376,13 @@ fn forced(a: &[Value]) -> Result<()> {
         Some(s) => Err(Error::force(s, true)),
         None => Ok(()),
     }
+}
+
+/// A key about to be hashed into a map or set: an unrealized stream in it
+/// realized first (it would hash as the empty seq, beside an equal vector
+/// or list that doesn't).
+fn forced_key(k: Value) -> Result<()> {
+    forced(std::slice::from_ref(&k))
 }
 
 /// An unrealized stream anywhere a print or comparison would look (in a
@@ -1629,6 +1659,9 @@ fn get_prim(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         };
         return Ok(r.unwrap_or(a.get(2).copied().unwrap_or(Value::NIL)));
     }
+    if a[0].is(Kind::Map) || a[0].is(Kind::Set) {
+        forced_key(a[1])?;
+    }
     Ok(get(a[0], a[1]).unwrap_or(a.get(2).copied().unwrap_or(Value::NIL)))
 }
 
@@ -1669,6 +1702,7 @@ fn assoc(vm: &mut Vm, a: &[Value]) -> Result<Value> {
                 skein_rt::clos::instance_with(&mut vm.m, c, kv, vm.current)?
             }
         } else if c.is(Kind::Map) {
+            forced_key(kv[0])?;
             map_assoc(&mut vm.m, c, kv[0], kv[1])
         } else if c.is(Kind::Sorted) && !c.sorted_is_set() {
             crate::sorted::assoc(&mut vm.m, c, kv[0], kv[1])?
@@ -1709,9 +1743,11 @@ fn conj(vm: &mut Vm, a: &[Value]) -> Result<Value> {
         } else if c.is(Kind::Vector) {
             vec_conj(&mut vm.m, c, x)
         } else if c.is(Kind::Set) {
+            forced_key(x)?;
             set_conj(&mut vm.m, c, x)
         } else if c.is(Kind::Map) {
             if x.is(Kind::Vector) && x.vec_count() == 2 {
+                forced_key(x.vec_nth(0))?;
                 map_assoc(&mut vm.m, c, x.vec_nth(0), x.vec_nth(1))
             } else if x.is(Kind::Map) {
                 let mut acc = c;
@@ -1742,6 +1778,9 @@ fn contains(vm: &mut Vm, a: &[Value]) -> Result<Value> {
             return Ok(Value::bool(index_of(k).is_some_and(|i| i < c.word(skein_rt::colls::T_COUNT) as usize)));
         }
         return contains(vm, &[c.field(skein_rt::colls::T_DATA), k]);
+    }
+    if c.is(Kind::Map) || c.is(Kind::Set) {
+        forced_key(k)?;
     }
     Ok(Value::bool(if c.is_nil() {
         false

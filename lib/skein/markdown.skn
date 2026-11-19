@@ -23,7 +23,25 @@
 
 (declare inlines)
 
-(def ^:private entities {"&amp;" "&" "&lt;" "<" "&gt;" ">" "&quot;" "\"" "&#39;" "'" "&nbsp;" " "})
+(def ^:private entities
+  "Named character references, by name (the common ones; others stay text)."
+  {"amp" "&" "lt" "<" "gt" ">" "quot" "\"" "apos" "'" "nbsp" " " "copy" "©" "reg" "®"
+   "trade" "™" "hellip" "…" "mdash" "—" "ndash" "–" "lsquo" "‘" "rsquo" "’"
+   "ldquo" "“" "rdquo" "”" "laquo" "«" "raquo" "»" "deg" "°" "plusmn" "±"
+   "times" "×" "divide" "÷" "middot" "·" "bull" "•" "sect" "§" "para" "¶"
+   "euro" "€" "pound" "£" "yen" "¥" "cent" "¢" "shy" "­" "micro" "µ"
+   "frac12" "½" "frac14" "¼" "frac34" "¾" "larr" "←" "rarr" "→" "uarr" "↑"
+   "darr" "↓" "harr" "↔" "ne" "≠" "le" "≤" "ge" "≥" "infin" "∞"})
+
+(defn- entity
+  "[text length] for the character reference at the start of s (&copy;
+  &#65; &#x41;), or nil. A code point that isn't a character is U+FFFD."
+  [s]
+  (when-let [[whole dec hex nm] (re-find #"^&(?:#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z][A-Za-z0-9]{1,31}));" s)]
+    (if nm
+      (when-let [t (get entities nm)] [t (count whole)])
+      (let [cp (if dec (parse-long dec) (reduce (fn [acc c] (+ (* 16 acc) (str/index-of "0123456789abcdef" (str/lower-case (str c))))) 0 hex))]
+        [(if (or (zero? cp) (> cp 0x10FFFF) (<= 0xD800 cp 0xDFFF)) "�" (str (char cp))) (count whole)]))))
 
 (defn- slice "Elements from (inclusive) to (exclusive) of vector v." [v from to]
   (vec (take (- to from) (drop from v))))
@@ -40,15 +58,26 @@
   for _ it must also not be inside a word. cs is s as a vector of
   characters (indexing a string by character is slow when it isn't ASCII)."
   [s cs d from]
-  (let [n (count cs) k (count d)]
+  (let [n (count cs) k (count d) c (first d)]
     (loop [j from]
-      (let [j (str/index-of s d j)]
+      (let [j (str/index-of s d j)
+            ;; a double run that opens (the ** of *a **b** c*) is closed by
+            ;; its own run first: look past that
+            inner (when (and j (= k 1) (= c (nth cs (inc j) nil)) (not= c (nth cs (+ j 2) nil))
+                             (not (space? (nth cs (+ j 2) nil)))
+                             (or (= j 0)
+                                 (and (not= c (nth cs (dec j)))
+                                      (or (not= c \_) (space? (nth cs (dec j))) (punct? (nth cs (dec j)))))))
+                    (closing s cs (str c c) (+ j 3)))
+            ;; where j's run starts: a closing run follows a non-space
+            rs (when j (loop [r j] (if (and (> r from) (= c (nth cs (dec r)))) (recur (dec r)) r)))]
         (cond (nil? j) nil
-              (and (> j 0) (not (space? (nth cs (dec j))))
-                   (or (not= (first d) \_) (let [after (when (< (+ j k) n) (nth cs (+ j k)))] (or (space? after) (punct? after)))))
+              inner (recur (+ inner 2))
+              (and (> rs 0) (not (space? (nth cs (dec rs))))
+                   (or (not= c \_) (let [after (when (< (+ j k) n) (nth cs (+ j k)))] (or (space? after) (punct? after)))))
               ;; in a longer run (***), close with its end, so an inner
               ;; delimiter closes first
-              (loop [r (+ j k)] (if (and (< r n) (= (nth cs r) (first d))) (recur (inc r)) (- r k)))
+              (loop [r (+ j k)] (if (and (< r n) (= (nth cs r) c)) (recur (inc r)) (- r k)))
               :else (recur (inc j)))))))
 
 (defn- link-end
@@ -101,7 +130,11 @@
             (= c \`)
             (let [run (loop [j i] (if (and (< j n) (= (nth cs j) \`)) (recur (inc j)) j))
                   ticks (subs s i run)
-                  end (str/index-of s ticks run)]
+                  ;; (closed by a run just as long: `` a ``` b `` holds the three)
+                  end (loop [from run]
+                        (when-let [e (str/index-of s ticks from)]
+                          (let [e2 (loop [j e] (if (and (< j n) (= (nth cs j) \`)) (recur (inc j)) j))]
+                            (if (= (- e2 e) (count ticks)) e (recur e2)))))]
               (if end
                 (let [code (subs s run end)
                       code (if (and (> (count code) 1) (str/starts-with? code " ") (str/ends-with? code " ")) (subs code 1 (dec (count code))) code)]
@@ -121,9 +154,9 @@
             (let [[whole url] (re-find #"^<(https?://[^\s>]+|mailto:[^\s>]+)>" (subs s i))]
               (recur (+ i (count whole)) "" (conj (push-text out text) [:link {:href url} url])))
             ;; entities
-            (and (= c \&) (some (fn [[k _]] (str/starts-with? (subs s i (min n (+ i 6))) k)) entities))
-            (let [[k v] (some (fn [[k v]] (when (str/starts-with? (subs s i (min n (+ i 6))) k) [k v])) entities)]
-              (recur (+ i (count k)) (str text v) out))
+            (and (= c \&) (entity (subs s i (min n (+ i 40)))))
+            (let [[v k] (entity (subs s i (min n (+ i 40))))]
+              (recur (+ i k) (str text v) out))
             ;; emphasis: ** __ ~~ then * _
             (and (or (= c \*) (= c \_) (= c \~)) (= nxt c) (< (+ i 2) n) (not (space? (nth cs (+ i 2)))))
             (let [d (str c c)
@@ -147,7 +180,13 @@
 (defn- blank? [l] (str/blank? l))
 (defn- indent [l] (count (re-find #"^ *" l)))
 
-(defn- fence [l] (re-find #"^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)" l))
+(defn- fence
+  "[line marks info-word] when l opens (or closes) a code fence. A backtick
+  fence's info string has no backticks (```js`` isn't a fence)."
+  [l]
+  (when-let [[whole marks info] (re-find #"^ {0,3}(`{3,}|~{3,})(.*)" l)]
+    (when-not (and (= \` (first marks)) (str/includes? info "`"))
+      [whole marks (re-find #"^\S*" (str/trim info))])))
 (defn- atx [l] (re-find #"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$" l))
 (defn- hr? [l] (some? (re-matches #" {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})" l)))
 (defn- quote? [l] (some? (re-find #"^ {0,3}>" l)))
@@ -177,12 +216,36 @@
             (= (nth t i) \|) (recur (inc i) "" (conj out cell))
             :else (recur (inc i) (str cell (nth t i)) out)))))
 
-(defn- strip "l without up to n leading spaces." [l n]
-  (subs l (min n (indent l))))
+(defn- strip
+  "l without up to n columns of its leading spaces and tabs (a tab reaches
+  the next multiple of 4; the rest of one cut through stays as spaces)."
+  [l n]
+  (loop [i 0 col 0]
+    (let [c (nth l i nil)]
+      (cond (>= col n) (str (str/repeat-str (- col n) " ") (subs l i))
+            (= c \space) (recur (inc i) (inc col))
+            (= c \tab) (recur (inc i) (+ col (- 4 (mod col 4))))
+            :else (subs l i)))))
+
+(def ^:private markup-re #"^[ \t>]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+[ \t>]*)*")
+
+(defn- detab
+  "l with the tabs in its block markup (indentation, > and list markers) as
+  spaces, to tab stops of 4. Tabs in its text stay, as code needs them."
+  [l]
+  (let [lead (when (str/includes? l "\t") (re-find markup-re l))]
+    (if (and lead (str/includes? lead "\t"))
+      (str (loop [cs (seq lead) col 0 out ""]
+             (cond (empty? cs) out
+                   (= \tab (first cs)) (let [w (- 4 (mod col 4))] (recur (rest cs) (+ col w) (str out (str/repeat-str w " "))))
+                   :else (recur (rest cs) (inc col) (str out (first cs)))))
+           (subs l (count lead)))
+      l)))
 
 (defn- list-item
-  "The lines of the item starting at line i (marker width w): [lines next-i]."
-  [lines i w]
+  "The lines of the item starting at line i (marker width w): [lines next-i].
+  raw is lines before detab."
+  [lines raw i w]
   (let [n (count lines)
         first-line (let [l (nth lines i)] (if (blank? (subs l (min w (count l)))) "" (subs l (min w (count l)))))]
     (loop [j (inc i) acc [first-line] prev-blank (blank? first-line)]
@@ -190,23 +253,33 @@
         [acc j]
         (let [l (nth lines j)]
           (cond (blank? l) (recur (inc j) (conj acc "") true)
-                (>= (indent l) w) (recur (inc j) (conj acc (subs l w)) false)
+                (>= (indent l) w) (recur (inc j) (conj acc (strip (nth raw j) w)) false)
                 ;; lazy continuation of a paragraph
-                (and (not prev-blank) (not (starts-block? l)) (not (list-marker l))) (recur (inc j) (conj acc l) false)
+                (and (not prev-blank) (not (starts-block? l)) (not (list-marker l))) (recur (inc j) (conj acc (nth raw j)) false)
                 :else [acc j]))))))
+
+(defn- unquote-line
+  "Line l of a block quote without its > and the space after it; a tab
+  after the > counts one of its columns as that space."
+  [l]
+  (let [pre (re-find #"^ {0,3}>" l)
+        more (subs l (count pre))]
+    (if (str/starts-with? more "\t")
+      (str (str/repeat-str (- 3 (mod (count pre) 4)) " ") (subs more 1))
+      (str/replace-first more #"^ " ""))))
 
 (defn- trim-trailing-blanks [ls]
   (vec (reverse (drop-while blank? (reverse ls)))))
 
 (defn- parse-list
   "The list starting at line i: [block next-i]."
-  [lines i]
+  [lines raw i]
   (let [[_ ordered start ch] (list-marker (nth lines i))
         n (count lines)]
     (loop [j i items [] loose false]
       (let [m (when (< j n) (list-marker (nth lines j)))]
         (if (and m (= (second m) ordered) (= (nth m 3) ch))
-          (let [[item-lines nxt] (list-item lines j (first m))
+          (let [[item-lines nxt] (list-item lines raw j (first m))
                 body (trim-trailing-blanks item-lines)
                 ;; a task list item: [ ] or [x]
                 task (re-find #"^\[([ xX])\] " (or (first body) ""))
@@ -235,7 +308,10 @@
 (defn blocks
   "The blocks of a vector of lines."
   ^Vector [^Vector lines]
-  (let [n (count lines)]
+  (let [n (count lines)
+        ;; (code keeps the tabs of raw; the rest reads lines without them)
+        raw lines
+        lines (mapv detab lines)]
     (loop [i 0 starts [] out []]
       (if (>= i n)
         (do (when *starts* (reset! *starts* starts)) out)
@@ -248,7 +324,7 @@
                   ind (indent l)
                   close (re-pattern (str "^ {0,3}" marks (subs marks 0 1) "*\\s*$"))
                   end (loop [j (inc i)] (cond (>= j n) j (re-find close (nth lines j)) j :else (recur (inc j))))
-                  body (mapv (fn [x] (strip x ind)) (slice lines (inc i) end))]
+                  body (mapv (fn [x] (strip x ind)) (slice raw (inc i) end))]
               (recur (inc end) (conj starts i) (conj out [:code-block (if (str/blank? lang) {} {:lang lang}) (str/join "\n" body)])))
 
             (atx l)
@@ -260,19 +336,19 @@
             (quote? l)
             (let [[body nxt] (loop [j i acc []]
                                (cond (>= j n) [acc j]
-                                     (quote? (nth lines j)) (recur (inc j) (conj acc (str/replace-first (nth lines j) #"^ {0,3}> ?" "")))
+                                     (quote? (nth lines j)) (recur (inc j) (conj acc (unquote-line (nth raw j))))
                                      ;; lazy continuation
-                                     (and (seq acc) (not (blank? (peek acc))) (not (starts-block? (nth lines j)))) (recur (inc j) (conj acc (nth lines j)))
+                                     (and (seq acc) (not (blank? (peek acc))) (not (starts-block? (nth lines j)))) (recur (inc j) (conj acc (nth raw j)))
                                      :else [acc j]))]
               (recur nxt (conj starts i) (conj out (into [:block-quote] (blocks body)))))
 
             (list-marker l)
-            (let [[b nxt] (parse-list lines i)] (recur nxt (conj starts i) (conj out b)))
+            (let [[b nxt] (parse-list lines raw i)] (recur nxt (conj starts i) (conj out b)))
 
             ;; indented code
             (>= (indent l) 4)
             (let [end (loop [j i] (if (and (< j n) (or (blank? (nth lines j)) (>= (indent (nth lines j)) 4))) (recur (inc j)) j))
-                  body (trim-trailing-blanks (mapv (fn [x] (strip x 4)) (slice lines i end)))]
+                  body (trim-trailing-blanks (mapv (fn [x] (strip x 4)) (slice raw i end)))]
               (recur end (conj starts i) (conj out [:code-block {} (str/join "\n" body)])))
 
             ;; a table: a header row, then a delimiter row
@@ -309,7 +385,7 @@
 (defn parse
   "Markdown text as Skein data: [:doc block…] (see the namespace docs)."
   ^Vector [text]
-  (into [:doc] (blocks (vec (str/split-lines (str/replace (str text) "\t" "    "))))))
+  (into [:doc] (blocks (vec (str/split-lines (str text))))))
 
 (defn parse-lines
   "[doc lines]: what parse gives, and the line (0-based) each top-level
@@ -322,6 +398,17 @@
 ;; ---- output ----------------------------------------------------------------------------------
 
 (defn- esc [s] (-> (str s) (str/replace "&" "&amp;") (str/replace "<" "&lt;") (str/replace ">" "&gt;") (str/replace "\"" "&quot;")))
+
+(defn- safe-url
+  "url, or \"\" when it would run script: a javascript:, vbscript: or data:
+  URL (but a data:image/ one of png, gif, jpeg or webp), as a browser reads
+  it (spaces and control characters in it ignored, any case)."
+  [url]
+  (let [u (str/lower-case (str/replace (str url) #"[\x00-\x20]" ""))]
+    (if (and (re-find #"^(?:javascript|vbscript|data):" u)
+             (not (re-find #"^data:image/(?:png|gif|jpeg|webp)[;,]" u)))
+      ""
+      url)))
 
 (declare html*)
 
@@ -371,8 +458,8 @@
         (= tag :strike) (tagged "del")
         (= tag :code) (str "<code>" (esc (first kids)) "</code>")
         (= tag :break) "<br />\n"
-        (= tag :link) (str "<a href=\"" (esc (:href attrs)) "\"" (when (:title attrs) (str " title=\"" (esc (:title attrs)) "\"")) ">" (html-all kids) "</a>")
-        (= tag :image) (str "<img src=\"" (esc (:src attrs)) "\" alt=\"" (esc (:alt attrs)) "\""
+        (= tag :link) (str "<a href=\"" (esc (safe-url (:href attrs))) "\"" (when (:title attrs) (str " title=\"" (esc (:title attrs)) "\"")) ">" (html-all kids) "</a>")
+        (= tag :image) (str "<img src=\"" (esc (safe-url (:src attrs))) "\" alt=\"" (esc (:alt attrs)) "\""
                             (when (:title attrs) (str " title=\"" (esc (:title attrs)) "\"")) " />")
         :else (html-all kids)))))
 

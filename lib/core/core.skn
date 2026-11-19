@@ -492,7 +492,7 @@
    (let [v (vec coll)]
      (if (identical? cmp compare)
        (%sort-keyed (vec (map keyfn v)) v)
-       (merge-sort (fn [a b] (cmp (keyfn a) (keyfn b))) v)))))
+       (mapv second (merge-sort (fn [a b] (cmp (first a) (first b))) (mapv (fn [x] [(keyfn x) x]) v)))))))
 
 ;;; ---- loading code ------------------------------------------------------------------
 
@@ -1706,7 +1706,8 @@
          ~r))))
 
 (defmacro try
-  "Clojure-style: (try body… (catch Class e handler…)… (finally cleanup…))."
+  "Clojure-style: (try body… (catch Class e handler…)… (finally cleanup…)).
+  A recur can't cross it (to a loop or fn around it): loop inside it."
   [& forms]
   ;; Clauses match by name in any namespace: a macro's syntax-quote turns
   ;; catch and finally into ns/catch and ns/finally.
@@ -3201,13 +3202,15 @@
 
 (defn- %eager [xf coll] (persistent! (transduce xf %conj! (transient []) coll)))
 
+(def %stream-skip "What a %stream-of step gives for no item (nothing else is it)." (%uninterned-symbol "skip"))
+
 (defn- %stream-of [xf-step coll]
   ;; A lazy stream applying a stateless one-in/at-most-one-out step.
   (lazy-seq
     (loop [s (seq coll)]
       (when s
         (let [r (xf-step (first s))]
-          (if (= r ::skip) (recur (next s)) (cons r (%stream-of xf-step (rest s)))))))))
+          (if (identical? r %stream-skip) (recur (next s)) (cons r (%stream-of xf-step (rest s)))))))))
 
 ;; The one-collection sequence functions' loops (M10): by index over a
 ;; vector, range or string, else a walk of coll's seq, into a transient:
@@ -3262,16 +3265,24 @@
      (loop [a (seq c1) b (seq c2) acc []]
        (if (and a b) (recur (next a) (next b) (conj acc (f (first a) (first b)))) (%like-made c1 acc)))))
   ([f c1 c2 c3]
-   (loop [a (seq c1) b (seq c2) c (seq c3) acc []]
-     (if (and a b c)
-       (recur (next a) (next b) (next c) (conj acc (f (first a) (first b) (first c))))
-       (%like-made c1 acc))))
+   (if (or (stream? c1) (stream? c2) (stream? c3))
+     (lazy-seq (let [a (seq c1) b (seq c2) c (seq c3)]
+                 (when (and a b c) (cons (f (first a) (first b) (first c)) (map f (rest a) (rest b) (rest c))))))
+     (loop [a (seq c1) b (seq c2) c (seq c3) acc []]
+       (if (and a b c)
+         (recur (next a) (next b) (next c) (conj acc (f (first a) (first b) (first c))))
+         (%like-made c1 acc)))))
   ([f c1 c2 c3 & more]
-   ;; ((apply map vector rows) transposes any number of rows)
-   (loop [ss (into [(seq c1) (seq c2) (seq c3)] (%eager (map seq) more)) acc []]
-     (if (every? some? ss)
-       (recur (mapv next ss) (conj acc (apply f (mapv first ss))))
-       (%like-made c1 acc)))))
+   (if (or (stream? c1) (stream? c2) (stream? c3) (some stream? more))
+     (let [step (fn step [cs]
+                  (lazy-seq (let [ss (mapv seq cs)]
+                              (when (every? some? ss) (cons (apply f (mapv first ss)) (step (mapv rest ss)))))))]
+       (step (into [c1 c2 c3] more)))
+     ;; ((apply map vector rows) transposes any number of rows)
+     (loop [ss (into [(seq c1) (seq c2) (seq c3)] (%eager (map seq) more)) acc []]
+       (if (every? some? ss)
+         (recur (mapv next ss) (conj acc (apply f (mapv first ss))))
+         (%like-made c1 acc))))))
 
 (defn mapv
   "map, always giving a vector."
@@ -3285,7 +3296,7 @@
   ([pred] (fn [rf] (fn ([] (rf)) ([acc] (rf acc)) ([acc x] (if (pred x) (rf acc x) acc)))))
   ([pred coll]
    (if (stream? coll)
-     (%stream-of (fn [x] (if (pred x) x ::skip)) coll)
+     (%stream-of (fn [x] (if (pred x) x %stream-skip)) coll)
      (%like coll (%filter-into pred coll)))))
 
 (defn filterv "filter, always giving a vector." [pred coll] (%filter-into pred coll))
@@ -3300,7 +3311,7 @@
   ([f] (fn [rf] (fn ([] (rf)) ([acc] (rf acc)) ([acc x] (let [y (f x)] (if (nil? y) acc (rf acc y)))))))
   ([f coll]
    (if (stream? coll)
-     (%stream-of (fn [x] (let [y (f x)] (if (nil? y) ::skip y))) coll)
+     (%stream-of (fn [x] (let [y (f x)] (if (nil? y) %stream-skip y))) coll)
      (%like-made coll (%keep-into f coll)))))
 
 (defn map-indexed
@@ -3376,15 +3387,24 @@
                   (apply concat (rest cs)))))
     (apply %concat colls)))
 
+(defn- %cat-of
+  "The items of the collections in rs, one after another: a stream if rs is
+  one (a stream of them: so lazily), else a vector."
+  [rs]
+  (if (stream? rs)
+    (lazy-seq (when-let [s (seq rs)] (seq (concat (first s) (%cat-of (rest s))))))
+    (%eager cat rs)))
+
 (defn mapcat
-  "map, then concatenate the results. (mapcat f) is a transducer."
+  "map, then concatenate the results (a stream, when any collection is
+  one). (mapcat f) is a transducer."
   ([f] (comp (map f) cat))
   ([f coll]
    (if (stream? coll)
      (lazy-seq (when-let [s (seq coll)] (seq (concat (f (first s)) (mapcat f (rest s))))))
      (%like-made coll (%eager (mapcat f) coll))))
-  ([f c1 c2] (%eager cat (map f c1 c2)))
-  ([f c1 c2 & more] (%eager cat (apply map f c1 c2 more))))
+  ([f c1 c2] (%cat-of (map f c1 c2)))
+  ([f c1 c2 & more] (%cat-of (apply map f c1 c2 more))))
 
 (defn distinct
   "Items without repeats, first occurrences kept. A transducer with no collection."
@@ -3402,20 +3422,22 @@
        (step coll #{}))
      (%like coll (%eager (distinct) coll)))))
 
+(def %dedupe-none "dedupe's item before the first (nothing else is it)." (%uninterned-symbol "none"))
+
 (defn dedupe
   "Items without consecutive repeats. A transducer with no collection."
   ([] (fn [rf]
-        (let [prev (atom ::none)]
+        (let [prev (atom %dedupe-none)]
           (fn ([] (rf)) ([acc] (rf acc))
-            ([acc x] (let [p @prev] (reset! prev x) (if (= p x) acc (rf acc x))))))))
+            ([acc x] (let [p @prev] (reset! prev x) (if (and (not (identical? p %dedupe-none)) (= p x)) acc (rf acc x))))))))
   ([coll]
    (if (stream? coll)
      (let [step (fn step [s prev]
                   (lazy-seq (loop [s (seq s)]
                               (when s
                                 (let [x (first s)]
-                                  (if (= x prev) (recur (next s)) (cons x (step (rest s) x))))))))]
-       (step coll ::none))
+                                  (if (and (not (identical? prev %dedupe-none)) (= x prev)) (recur (next s)) (cons x (step (rest s) x))))))))]
+       (step coll %dedupe-none))
      (%like coll (%eager (dedupe) coll)))))
 
 (defn interpose
@@ -4015,12 +4037,18 @@
 
 (defmacro condp
   "(condp pred e test1 r1 … default): the first ri whose (pred testi e)
-  holds."
+  holds. A clause test :>> f gives (f (pred test e)) instead. With no
+  default, an error if none holds."
   [pred e & clauses]
-  (let [p (gensym "pred") v (gensym "v")]
-    `(let [~p ~pred ~v ~e]
-       (cond ~@(mapcat (fn [[t r]] [`(~p ~t ~v) r]) (partition 2 clauses))
-             :else ~(if (odd? (count clauses)) (last clauses) `(error "No condp clause matches" ~v))))))
+  (let [p (gensym "pred") v (gensym "v")
+        emit (fn emit [cs]
+               (cond (empty? cs) `(error "No condp clause matches" ~v)
+                     (nil? (next cs)) (first cs)
+                     (and (= :>> (second cs)) (nnext cs))
+                     (let [r (gensym "r")]
+                       `(let* [~r (~p ~(first cs) ~v)] (if ~r (~(nth cs 2) ~r) ~(emit (drop 3 cs)))))
+                     :else `(if (~p ~(first cs) ~v) ~(second cs) ~(emit (nnext cs)))))]
+    `(let [~p ~pred ~v ~e] ~(emit (seq clauses)))))
 
 (defmacro cond->
   "Thread e through each step (as ->) whose test is true."
@@ -4099,11 +4127,11 @@
 
 (defn flatten
   "The items of nested sequential collections, as one seq (a stream, when
-  x is one)."
+  x is one); () when there are none, or x isn't sequential."
   [x]
-  (if (stream? x)
-    (mapcat (fn [y] (if (sequential? y) (flatten y) [y])) x)
-    (seq (reduce (fn [out y] (if (sequential? y) (into out (flatten y)) (conj out y))) [] (if (sequential? x) x [x])))))
+  (cond (stream? x) (mapcat (fn [y] (if (sequential? y) (flatten y) [y])) x)
+        (sequential? x) (or (seq (reduce (fn [out y] (if (sequential? y) (into out (flatten y)) (conj out y))) [] x)) ())
+        :else ()))
 
 (defn keep-indexed "The non-nil results of (f index x)." [f coll]
   (remove nil? (map-indexed f coll)))
@@ -4164,14 +4192,22 @@
 
 (defn reductions
   "The successive values of (reduce f init coll), init first, as a seq (a
-  stream, on a stream)."
+  stream, on a stream). A step giving (reduced v) gives v last, as reduce
+  stops there."
   ([f coll] (if (seq coll) (reductions f (first coll) (rest coll)) (list (f))))
   ([f init coll]
    (if (stream? coll)
      (let [step (fn step [acc s]
-                  (cons acc (lazy-seq (when-let [s (seq s)] (step (f acc (first s)) (rest s))))))]
+                  (if (reduced? acc)
+                    (list (unreduced acc))
+                    (cons acc (lazy-seq (when-let [s (seq s)] (step (f acc (first s)) (rest s)))))))]
        (lazy-seq (step init coll)))
-     (seq (reduce (fn [out x] (conj out (f (peek out) x))) [init] coll)))))
+     (if (reduced? init)
+       (list (unreduced init))
+       (seq (reduce (fn [out x]
+                      (let [y (f (peek out) x)]
+                        (if (reduced? y) (reduced (conj out (unreduced y))) (conj out y))))
+                    [init] coll))))))
 
 (defn eduction
   "The items of coll through transducer xform, as a vector (as sequence
@@ -4285,30 +4321,51 @@
   (:doc "The class of delays, as delay makes: deref, force and realized? work on
   one. Its slots are internal."))
 
-(defn %delay [thunk] (make Delay :thunk thunk :claimed (atom nil) :result (promise)))
+;; (:claimed d) is an atom of [the fiber computing it, or nil; the promise of
+;; its value], claimed and given a fresh promise together: so a fiber that
+;; leaves computing it without a value (cancelled, or unwound past it by a
+;; throw-tag or a restart) frees it, and whoever is waiting tries again.
+;; (result: unused since.)
+(defn %delay [thunk] (make Delay :thunk thunk :claimed (atom [nil (promise)])))
 
 (defmacro delay
   "(delay body…): body, computed the first time deref (or force) asks for
   it, and that value from then on. Fibers asking while it's computed wait
-  for it. If body fails, every deref signals that same condition."
+  for it. If body fails, every deref signals that same condition; if it's
+  left without a value (its fiber cancelled, say), the next deref computes
+  it again."
   [& body]
   `(%delay (fn* [] ~@body)))
 
 (defn delay? "Is x a delay?" [x] (instance? Delay x))
 
 (defmethod deref-object ((d Delay) _ms _timeout-value)
-  (let [me (current-fiber)]
-    (when (compare-and-set! (:claimed d) nil me)
-      ;; (this fiber computes it: the value, or the condition it failed with)
-      (deliver (:result d)
-               (handler-case [::value ((:thunk d))]
-                 (Error [c] [::failed c]))))
-    (when (and (identical? @(:claimed d) me) (not (realized? (:result d))))
-      (error "This delay needs its own value to compute it"))
-    (let [[how x] @(:result d)]
-      (if (= how ::failed) (error x) x))))
+  (let [me (current-fiber)
+        state (:claimed d)]
+    (loop []
+      (let [s @state
+            [owner p] s]
+        (cond (nil? owner)
+              (do (when (compare-and-set! state s [me p])
+                    ;; (this fiber computes it: the value, or the condition it failed with)
+                    (let [done (atom false)]
+                      (unwind-protect
+                        (do (deliver p (handler-case [::value ((:thunk d))]
+                                         (Error [c] [::failed c])))
+                            (reset! done true))
+                        (when-not @done
+                          (reset! state [nil (promise)])
+                          (deliver p [::retry])))))
+                  (recur))
+              (and (identical? owner me) (not (realized? p)))
+              (error "This delay needs its own value to compute it")
+              :else
+              (let [[how x] @p]
+                (cond (= how ::retry) (recur)
+                      (= how ::failed) (error x)
+                      :else x)))))))
 
-(defmethod realized?-object ((d Delay)) (realized? (:result d)))
+(defmethod realized?-object ((d Delay)) (realized? (second @(:claimed d))))
 
 (defn force "x's value if it's a delay (computing it the first time), else x." [x]
   (if (delay? x) @x x))
@@ -4636,6 +4693,8 @@
           :test (when t (fn [v] (or (nil? v) (t v))))
           :blamed (when b (fn [v fail giver user] (if (nil? v) v (b v fail giver user)))))))
 
+(def %any-of-failed "any-of's tag and value for a contract that didn't hold (nothing else is it)." (%uninterned-symbol "failed"))
+
 (defn any-of "A contract: what any of cs says (the first that holds)." [& cs]
   (let [cs (mapv ->contract cs)
         ;; (when each of cs has a plain test, as classes and predicates do,
@@ -4647,8 +4706,8 @@
                    (loop [cs (seq cs)]
                      (if (nil? cs)
                        (fail)
-                       (let [r (catch-tag ::failed (%check-blaming (first cs) v (fn [] (throw-tag ::failed ::failed)) giver user))]
-                         (if (= r ::failed) (recur (next cs)) r)))))]
+                       (let [r (catch-tag %any-of-failed (%check-blaming (first cs) v (fn [] (throw-tag %any-of-failed %any-of-failed)) giver user))]
+                         (if (identical? r %any-of-failed) (recur (next cs)) r)))))]
       (make Contract :name (apply str (interpose " or " (map :name cs)))
             :check (if test
                      (fn [v fail] (if (test v) v (fail)))

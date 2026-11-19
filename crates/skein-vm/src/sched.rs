@@ -1362,27 +1362,39 @@ fn start_carrier(slot: usize, restore: Option<crate::image::Restore>, boot: Opti
         .name(format!("skein-carrier-{slot}"))
         .stack_size(CARRIER_STACK)
         .spawn(move || {
-            CARRIER.with(|c| c.set(slot));
-            safepoint::register();
-            let mut vm = crate::eval::carrier_vm(slot);
-            if let Some(boot_tx) = boot {
-                let r = match restore {
-                    Some(r) => {
-                        crate::image::restore(&mut vm, r);
-                        Ok(())
+            // A panic on a carrier ends the process (the hook has printed
+            // it): the carrier stays registered for safepoints, so the next
+            // collection would wait for it forever, and the fibers it held
+            // with it.
+            let body = std::panic::AssertUnwindSafe(move || {
+                CARRIER.with(|c| c.set(slot));
+                safepoint::register();
+                let mut vm = crate::eval::carrier_vm(slot);
+                if let Some(boot_tx) = boot {
+                    let r = match restore {
+                        Some(r) => {
+                            crate::image::restore(&mut vm, r);
+                            Ok(())
+                        }
+                        None => crate::eval::boot(&mut vm).map_err(|e| e.to_string()),
+                    };
+                    let ok = r.is_ok();
+                    let _ = boot_tx.send(r);
+                    if !ok {
+                        safepoint::unregister();
+                        return;
                     }
-                    None => crate::eval::boot(&mut vm).map_err(|e| e.to_string()),
-                };
-                let ok = r.is_ok();
-                let _ = boot_tx.send(r);
-                if !ok {
-                    safepoint::unregister();
-                    return;
                 }
+                carrier_loop(&mut vm);
+                drop(vm);
+                safepoint::unregister();
+            });
+            if std::panic::catch_unwind(body).is_err() {
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                eprintln!("skein: carrier {slot} panicked; the process ends (an internal error: please report it)");
+                std::process::exit(101);
             }
-            carrier_loop(&mut vm);
-            drop(vm);
-            safepoint::unregister();
         })
         .expect("failed to start carrier thread");
 }

@@ -42,7 +42,23 @@
   (testing "a delay that needs its own value"
     (let [d (atom nil)]
       (reset! d (delay @@d))
-      (is (= "This delay needs its own value to compute it" (message (fn [] @@d)))))))
+      (is (= "This delay needs its own value to compute it" (message (fn [] @@d))))))
+  (testing "left without a value (its fiber cancelled, or a throw-tag out), it's computed again"
+    (let [runs (atom 0)
+          d (delay (when (= 1 (swap! runs inc)) (sleep 5000)) :computed)
+          f (future @d)]
+      (loop [] (when (zero? @runs) (sleep 1) (recur)))
+      (let [waiter (spawn-detached @d)]
+        (sleep 5)
+        (future-cancel f)
+        (is (= :computed (await waiter)) "a fiber waiting on it is woken, and computes it")
+        (is (= :computed @d))
+        (is (= 2 @runs))
+        (is (realized? d))))
+    (let [d (delay (throw-tag :out :thrown))]
+      (is (= :thrown (catch-tag :out @d)))
+      (is (not (realized? d)))
+      (is (= :thrown (catch-tag :out @d)) "not stuck: computed again"))))
 
 (deftest futures
   ;; (500 ms: still running when looked at, even on a loaded machine)

@@ -361,6 +361,12 @@ pub fn gc_count() -> u64 {
     GC_COUNT.load(Ordering::Relaxed)
 }
 
+/// Where the count of completed collections is kept (native code reads it
+/// around a call that may let a collection run: crate users' JITs).
+pub fn gc_count_ptr() -> *const u64 {
+    GC_COUNT.as_ptr()
+}
+
 /// The bytes of the objects the last collection found alive (0 before the
 /// first): what the heap's growth goes by, and beside `heap_bytes` how
 /// much of the heap is holes.
@@ -437,7 +443,11 @@ impl Mutator {
     /// objects don't). A large object doesn't move wherever it's asked for.
     #[inline]
     pub fn alloc_words_in(&mut self, words: usize, stays: bool) -> *mut u64 {
-        let bytes = words * 8;
+        // (a size from user code must not wrap into a small allocation that
+        // the caller then fills past its end)
+        let Some(bytes) = words.checked_mul(8).filter(|&b| b <= isize::MAX as usize) else {
+            panic!("out of memory allocating {words} words");
+        };
         let sem = if bytes > LOS_THRESHOLD.load(Ordering::Relaxed) {
             AllocationSemantics::Los
         } else if stays {

@@ -113,6 +113,17 @@ pub fn base_image() -> Option<std::path::PathBuf> {
 //   n, runnable fibers…
 //   n, then per timer: ms-left, wake?, target
 
+/// The gensym counter the next save records, plus one (0: the counter as it
+/// is then). The base image's is the counter just after booting: compiling
+/// the save itself uses a number, which a start from it would otherwise
+/// show (`G__445` where booting from source gives `G__444`).
+static SAVED_GENSYM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Have the next save record the gensym counter as it is now.
+pub fn save_gensym_as_now() {
+    SAVED_GENSYM.store(crate::reader::gensym_counter() + 1, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn fix(n: u64) -> Value {
     Value::fix(n as i64)
 }
@@ -191,7 +202,7 @@ fn collect_roots(entry: Value, keep_fibers: bool, timers: &[SavedTimer], shake: 
     let t = rt().tables();
     let mut r = vec![Value::fix(ROOTS_VERSION)];
     r.push(fix(skein_rt::object::identity_hash_counter()));
-    r.push(fix(crate::reader::gensym_counter()));
+    r.push(fix(SAVED_GENSYM.swap(0, std::sync::atomic::Ordering::Relaxed).checked_sub(1).unwrap_or_else(crate::reader::gensym_counter)));
     r.push(fix(skein_rt::clos::CLASS_EPOCH.load(std::sync::atomic::Ordering::Acquire)));
     r.push(fix(sched::fiber_id_counter()));
     r.extend(t.empties);

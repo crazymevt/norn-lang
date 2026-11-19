@@ -1443,6 +1443,11 @@ impl Vm {
                             return self.invoke(st, thunk, &[], dest);
                         }
                         // Stack surgery: these need the interpreter state.
+                        // (called here, not through call_prim: their arity
+                        // checked first, as it would have been)
+                        THROW | RESTART_FRAME | ABORT_FIBER if args.len() < f.prim_min() || args.len() > f.prim_max() => {
+                            return Err(arity_error(f, args.len()));
+                        }
                         THROW => {
                             let kw = rt().keyword(&mut self.m, None, "return");
                             return self.unwind(st, Target::Catch(args[0]), kw, args[1], Value::NIL);
@@ -1518,10 +1523,10 @@ impl Vm {
             (Suspend::Yield, Some(_)) => (fiber::DELIVER, Flow::Yield),
             (Suspend::Yield, None) => (fiber::RETURN, Flow::Yield),
         };
-        if dest.is_some() {
-            // SAFETY: st describes the current frame.
-            unsafe { st.set_resume(st.pc) };
-        }
+        // (a tail call's too: the frame is still there, and an error it's
+        // woken with is the TAILCALL's, which a retry runs again)
+        // SAFETY: st describes the current frame.
+        unsafe { st.set_resume(st.pc) };
         f.set_word(fiber::MODE, mode);
         flow
     }
@@ -2001,6 +2006,19 @@ impl Vm {
                 // Where the value of the operation the fiber parked in goes.
                 let dest = match mode {
                     fiber::DELIVER | fiber::DELIVER_PAIR => Some(Some(a(*st.code.add(st.pc - 1)))),
+                    // (a tail call that parked: its frame is still here, at
+                    // the `RETURN ra` after it (the compiler's pair), so an
+                    // error is handled as the TAILCALL's own failure is,
+                    // like a CALL's: a `retry` runs the call again, not this
+                    // frame's caller's call)
+                    fiber::RETURN | fiber::RETURN_PAIR
+                        if st.pc >= 1
+                            && op(*st.code.add(st.pc - 1)) == TAILCALL
+                            && op(*st.code.add(st.pc)) == RETURN
+                            && a(*st.code.add(st.pc)) == a(*st.code.add(st.pc - 1)) =>
+                    {
+                        Some(Some(a(*st.code.add(st.pc - 1))))
+                    }
                     fiber::RETURN | fiber::RETURN_PAIR => Some(None),
                     _ => None,
                 };

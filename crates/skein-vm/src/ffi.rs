@@ -766,10 +766,14 @@ pub(crate) fn function(vm: &mut Vm, lib: Value, name: Value, params: Value, ret:
 }
 
 fn int_arg(v: Value, t: CType) -> Result<u64> {
-    // A 64-bit unsigned value above the fixnum range arrives as a bignum.
-    if v.is(Kind::BigInt) && t == CType::U64 {
+    // A 64-bit value beyond the fixnum range (±2^62) arrives as a bignum.
+    if v.is(Kind::BigInt) && matches!(t, CType::U64 | CType::I64) {
         use num_traits::ToPrimitive;
-        return skein_rt::numbers::int_of(v).and_then(|b| b.to_u64()).ok_or_else(|| Error::new("The integer doesn't fit a C u64"));
+        let b = skein_rt::numbers::int_of(v);
+        return match t {
+            CType::U64 => b.and_then(|b| b.to_u64()).ok_or_else(|| Error::new("The integer doesn't fit a C u64")),
+            _ => b.and_then(|b| b.to_i64()).map(|n| n as u64).ok_or_else(|| Error::new("The integer doesn't fit a C i64")),
+        };
     }
     if !v.is_fixnum() {
         return Err(Error::new(format!("Expected an integer argument, got {}", v.type_name())));
@@ -820,7 +824,7 @@ fn prepare(f: &Foreign, args: &[Value]) -> Result<Prepared> {
             None => {
                 let (param, t) = if a.is_fixnum() || a.is(Kind::BigInt) {
                     (Param::Int(if a.is(Kind::BigInt) { CType::U64 } else { CType::I64 }), CType::I64)
-                } else if a.is(Kind::Float) {
+                } else if a.is(Kind::Float) || a.is(Kind::Ratio) {
                     (Param::Float(CType::F64), CType::F64)
                 } else if a.is(Kind::String) {
                     (Param::Str, CType::Ptr)
@@ -838,13 +842,9 @@ fn prepare(f: &Foreign, args: &[Value]) -> Result<Prepared> {
         let w = match param {
             Param::Int(t) => int_arg(a, t)?,
             Param::Float(t) => {
-                let x = if a.is_fixnum() {
-                    a.as_fixnum() as f64
-                } else if a.is(Kind::Float) {
-                    a.as_f64()
-                } else {
-                    return Err(Error::new("Expected a number argument"));
-                };
+                // (any real: a ratio or bignum too, as defcfun's number? says)
+                let x =
+                    crate::numeric::num(a).map_err(|_| Error::new(format!("Expected a number argument, got {}", a.type_name())))?.as_f64();
                 if t == CType::F32 { (x as f32).to_bits() as u64 } else { x.to_bits() }
             }
             Param::Pointer => {
@@ -1145,13 +1145,7 @@ fn to_c(v: Value, t: CType) -> Result<u64> {
     Ok(match t {
         CType::Void => 0,
         CType::F32 | CType::F64 => {
-            let x = if v.is_fixnum() {
-                v.as_fixnum() as f64
-            } else if v.is(Kind::Float) {
-                v.as_f64()
-            } else {
-                return Err(Error::new(format!("Expected a number, got {}", v.type_name())));
-            };
+            let x = crate::numeric::num(v).map_err(|_| Error::new(format!("Expected a number, got {}", v.type_name())))?.as_f64();
             if t == CType::F32 { (x as f32).to_bits() as u64 } else { x.to_bits() }
         }
         CType::Ptr => {

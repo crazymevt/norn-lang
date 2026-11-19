@@ -533,7 +533,7 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
     let path_words = path_bytes.div_ceil(8);
     let area_at = HEADER_WORDS + path_words;
     let bits_at = area_at.checked_add(area_len).ok_or_else(|| bad("sizes"))?;
-    let roots_at = bits_at + area_len.div_ceil(64);
+    let roots_at = bits_at.checked_add(area_len.div_ceil(64)).ok_or_else(|| bad("sizes"))?;
     if roots_at.checked_add(nroots) != Some(words.len()) {
         return Err(bad("section sizes don't match the file length"));
     }
@@ -625,9 +625,11 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
         Ok(())
     };
     off = 0;
+    let mut filled = Vec::with_capacity(new + patches);
     for &obj in &c.objs[first..first + new] {
         let (kind, n) = size_at(off)?;
         fill(off, n, kind, obj.ptr())?;
+        filled.push((obj, off, n, kind));
         // (filled word by word, with no set_field: an object that's old
         // from the start has to be remembered, M11 part 3)
         if kind != Kind::Cons {
@@ -654,6 +656,7 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
             return Err(bad("patch changes an object's shape"));
         }
         fill(off, n, kind, tp)?;
+        filled.push((target, off, n, kind));
         if kind != Kind::Cons {
             crate::heap::barrier(target);
         }
@@ -668,6 +671,50 @@ fn load_layer(m: &mut Mutator, path: &Path, build: u64, c: &mut Chain, fibers: &
     }
     for (id, at) in patched {
         c.locs[id] = layer_no << 48 | at as u64;
+    }
+
+    // 4. Every word the collector will read as a reference must be one the
+    // image marked as one (and so relocated): a damaged or made-up image
+    // could otherwise put any address in the heap. Checked once everything
+    // is filled in, a fiber by its own fields (not walking its segments,
+    // checked as themselves), a segment by all of its frame area, and its
+    // top frame then checked to lie within it.
+    for &(obj, at, n, kind) in &filled {
+        let p = obj.ptr();
+        let mut wild = false;
+        let mut check = |w: *const u64| {
+            let off = (w as usize).wrapping_sub(p as usize) / 8;
+            // SAFETY: off is within the object, which is filled in.
+            if off < n && is_ref(unsafe { *w }) && !is_ref_word(at + off) {
+                wild = true;
+            }
+        };
+        match kind {
+            Kind::Fiber => fiber::VALUE_FIELDS.iter().for_each(|&i| check(p.wrapping_add(2 + i))),
+            // SAFETY: the words are within the object.
+            Kind::Segment => (2 + crate::func::SEG_HEADER..n).for_each(|i| check(p.wrapping_add(i))),
+            _ => crate::heap::scan(p, &mut |s| check(s.0.to_ptr::<u64>())),
+        }
+        if kind == Kind::Segment {
+            check(p.wrapping_add(2 + 1));
+        }
+        if wild {
+            return Err(bad("a reference the image doesn't mark as one"));
+        }
+    }
+    for &(obj, _, n, kind) in &filled {
+        if kind != Kind::Segment || obj.seg_top() < 0 {
+            continue;
+        }
+        let frames = n - 2 - crate::func::SEG_HEADER;
+        let top = obj.seg_top() as usize;
+        // SAFETY: checked to be within the frame area first.
+        if top + crate::func::HDR > frames
+            || !unsafe { *obj.seg_data().add(top + crate::func::F_PROTO) }.is(Kind::Proto)
+            || obj.seg_live_words() > frames
+        {
+            return Err(bad("a stack segment's top frame"));
+        }
     }
 
     let roots =

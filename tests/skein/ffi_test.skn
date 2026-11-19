@@ -23,8 +23,20 @@
         (is (= v (ffi/mem-get p t 8)) (str t)))
       (ffi/mem-set! p :f32 0 1.5)
       (is (= 1.5 (ffi/mem-get p :f32 0))))
+    (testing "64 bits whole: past the fixnums (2^62) as bignums"
+      (doseq [[t v] [[:i64 (dec (bit-shift-left 1 63))] [:i64 (- (bit-shift-left 1 63))] [:u64 (dec (bit-shift-left 1 64))]]]
+        (ffi/mem-set! p t 8 v)
+        (is (= v (ffi/mem-get p t 8)) (str t " " v))))
+    (testing "any real for a float: a ratio, a bignum"
+      (ffi/mem-set! p :f64 0 1/4)
+      (is (= 0.25 (ffi/mem-get p :f64 0)))
+      (ffi/mem-set! p :f32 0 (bit-shift-left 1 70))
+      (is (= (double (bit-shift-left 1 70)) (ffi/mem-get p :f32 0))))
     (testing "out of range"
-      (is (some? (message (fn [] (ffi/mem-set! p :u8 0 256))))))
+      (is (some? (message (fn [] (ffi/mem-set! p :u8 0 256)))))
+      (is (some? (message (fn [] (ffi/mem-set! p :i64 0 (bit-shift-left 1 63))))))
+      (is (some? (message (fn [] (ffi/mem-set! p :u64 0 (bit-shift-left 1 64))))))
+      (is (some? (message (fn [] (ffi/mem-set! p :u64 0 (- (bit-shift-left 1 63))))))))
     (testing "bytes and strings"
       (ffi/write-bytes! p "hello")
       (ffi/mem-set! p :u8 5 0)
@@ -334,7 +346,19 @@
   (is (= 3.75 (sum-doubles 2 1.5 2.25)))
   (is (= 15.5 (sum-doubles 5 1.0 2.0 3.0 4.0 5.5)) "more than the registers hold")
   (is (= 101.5 (mixed "ilds" -3 100 0.5 "four")) "int, long, double and string, each call's own")
-  (is (some? (message (fn [] (sum-longs 1 :k)))) "a keyword isn't a C value"))
+  (is (some? (message (fn [] (sum-longs 1 :k)))) "a keyword isn't a C value")
+  (is (= 2.75 (sum-doubles 2 1/2 9/4)) "a ratio, as a double"))
+
+(deftest numbers-whole
+  (testing "any real for a :double, as number? says: a ratio, a bignum"
+    (is (= {:d 0.25 :l 4} (dl-make 1/4 4)))
+    (is (= (double (bit-shift-left 1 70)) (:d (dl-make (bit-shift-left 1 70) 0)))))
+  (when-not windows? ; (where a long is 32 bits)
+    (testing "a :long takes all 64 bits"
+      (is (= (dec (bit-shift-left 1 63)) (:l (dl-make 0 (dec (bit-shift-left 1 63))))))
+      (is (= (- (bit-shift-left 1 63)) (:l (dl-make 0 (- (bit-shift-left 1 63))))))
+      (is (some? (message (fn [] (dl-make 0 (bit-shift-left 1 63))))) "but no more")))
+  (is (= 0.75 (apply-many-floats (fn [a b c d e f g v h] 3/4))) "a callback's ratio, as a double"))
 
 (ffi/defcfun apply-pair fix "apply_pair" [f [:callback [pair :int] pair] p pair k :int] pair)
 (ffi/defcfun apply-v4 fix "apply_v4" [f [:callback [v4 :double] v4] v v4] v4)
