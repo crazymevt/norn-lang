@@ -6,7 +6,7 @@
 ;;;; every argument going to :main (see the launcher in crates/skein).
 ;;;;
 ;;;;   a command-line archive, NAME-VERSION-OS-ARCH.tar.gz:
-;;;;     bin/NAME                  the launcher (skein)
+;;;;     bin/NAME                  the launcher (skein; NAME.exe on Windows)
 ;;;;     lib/NAME/NAME.skimg        the image
 ;;;;     lib/NAME/…                resources, and native helpers
 ;;;;   a macOS app, Display Name.app (in a .zip):
@@ -164,7 +164,8 @@
         lib (io/path root "lib" (:name info))
         archive (io/path out (str base ".tar.gz"))]
     (io/mkdirs! (io/path root "bin"))
-    (io/copy! (:executable (sys/info)) (io/path root "bin" (:name info)))
+    ;; (Windows runs a program by its .exe)
+    (io/copy! (:executable (sys/info)) (io/path root "bin" (str (:name info) (when (= :windows os) ".exe"))))
     (io/mkdirs! lib)
     (io/copy! image (io/path lib (str (:name info) ".skimg")))
     (doseq [r (:resources info)] (copy-tree! r (io/path lib (io/file-name r))))
