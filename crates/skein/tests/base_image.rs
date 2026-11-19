@@ -116,7 +116,10 @@ fn a_rebuilt_skein_replaces_only_its_own_image() {
     let both = images(&c);
     assert_eq!(both.len(), 2, "{both:?}");
     // rebuilt (here: a newer file time), it saves a new one in place of its old
-    let f = std::fs::File::options().write(true).open(&other).unwrap();
+    // (read-only where that's enough to set a time, the owner's right: on
+    // Linux, opening for writing a program something still runs is ETXTBSY,
+    // which CI's arm64 runner hit. Windows needs write access for it.)
+    let f = std::fs::File::options().read(true).write(cfg!(windows)).open(&other).unwrap();
     f.set_modified(SystemTime::now() + Duration::from_secs(60)).unwrap();
     drop(f);
     eval(&other, &c, "nil", &[]);
