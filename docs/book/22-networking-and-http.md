@@ -249,6 +249,12 @@ this self-signed certificate isn't one of them:
 `TlsError` is a kind of `ConnectionError`, so code that handles connection
 failures handles this one too.
 
+By default `connect` waits as long as it takes. A server that accepts the
+connection but never answers the handshake would keep it waiting forever.
+`:timeout` sets a limit in milliseconds, for the connection and the
+handshake together, and past it `connect` signals a `TimeoutError`:
+`(net/connect host port :tls true :timeout 5000)`.
+
 ## URIs
 
 Before HTTP, a short look at the addresses it uses. `skein.uri` parses a URI

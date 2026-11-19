@@ -20,34 +20,60 @@
         (if (contains? r :ok) (:ok r) (recur (next as) (:error r))))
       (throw (or last (make SimpleError :message "No addresses to try"))))))
 
+(defn- finished
+  "h once (io/retry-io h f) has finished with it, else closed: on an error,
+  and when the fiber is cancelled (a timeout's), which runs finally but no
+  catch."
+  [h f]
+  (let [done (atom false)]
+    (try (io/retry-io h f)
+         (reset! done true)
+         (finally (when-not @done (%io-close h))))
+    h))
+
 (defn- start-tls [h opts]
   ;; The client finishes the handshake here, so an untrusted server fails
   ;; at connect. (A server handshakes on its first read or write, so one slow
   ;; client can't hold up an accept loop.)
   (let [ca (when (:ca-file opts) (io/read-bytes (:ca-file opts)))
         t (io/auto-close (%tls-client h (or (:server-name opts) (:host opts)) ca opts))]
-    (try (io/retry-io t (fn [] (%tls-handshake t)))
-         (catch Error e (%io-close t) (throw e)))
-    t))
+    (finished t (fn [] (%tls-handshake t)))))
+
+(defn- open-connection [info]
+  (let [h (try-addresses (resolve (:host info) (:port info))
+                         (fn [addr]
+                           (let [h (%tcp-connect addr info)]
+                             (finished h (fn [] (%tcp-check h))))))]
+    (if (:tls info) (start-tls h info) (io/auto-close h))))
+
+(defn- within
+  "(f), or a TimeoutError if it takes more than ms: it runs in a fiber of
+  its own, cancelled when the time runs out."
+  [ms what f]
+  (let [ch (chan 1)
+        w (spawn-detached (put! ch (try {:ok (f)} (catch Error e {:error e}))))
+        [v port] (alts! [ch (timeout ms)])]
+    (if (identical? port ch)
+      (if (contains? v :ok) (:ok v) (throw (:error v)))
+      (do (cancel! w) (error TimeoutError :message (str what " timed out after " ms " ms") :after ms)))))
 
 (defn connect
   "Connect to host:port: a stream. Options: :tls true (with :ca-file path to
-  trust a private CA, :server-name to check another name than host)."
-  ^Handle [^String host ^Integer port & {:keys [tls ca-file server-name]}]
-  (let [info {:host (str host) :port port :tls (if tls true false) :ca-file ca-file :server-name server-name}
-        h (try-addresses (resolve host port)
-                         (fn [addr]
-                           (let [h (%tcp-connect addr info)]
-                             (try (io/retry-io h (fn [] (%tcp-check h)))
-                                  (catch Error e (%io-close h) (throw e)))
-                             h)))]
-    (if tls (start-tls h info) (io/auto-close h))))
+  trust a private CA, :server-name to check another name than host), and
+  :timeout, ms for the connection and the TLS handshake together (none
+  without it): past it, a TimeoutError (a server that takes the connection
+  but never answers the handshake would otherwise be waited for forever)."
+  ^Handle [^String host ^Integer port & {:keys [tls ca-file server-name timeout]}]
+  (let [info {:host (str host) :port port :tls (if tls true false) :ca-file ca-file :server-name server-name :timeout timeout}]
+    (if timeout
+      (within timeout (str "Connecting to " host ":" port) (fn [] (open-connection info)))
+      (open-connection info))))
 
 (defn %reconnect
   "Open a new connection with the settings of socket handle h (after an image restore)."
   [h]
   (let [i (handle-info h)]
-    (connect (:host i) (:port i) :tls (:tls i) :ca-file (:ca-file i) :server-name (:server-name i))))
+    (connect (:host i) (:port i) :tls (:tls i) :ca-file (:ca-file i) :server-name (:server-name i) :timeout (:timeout i))))
 
 (defn listen
   "Listen for TCP connections on host:port (port 0 picks a free one; see

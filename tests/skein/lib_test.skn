@@ -417,6 +417,22 @@
   (is (= :error (fails (net/connect "localhost" port :tls true))))
   (io/close l))
 
+;; A listener whose backlog takes the connection, but which never accepts:
+;; the handshake is never answered, and :timeout gives up on it.
+(let [l (net/listen "127.0.0.1" 0)
+      port (net/port (net/local-address l))
+      t0 (nano-time)
+      e (try (net/connect "127.0.0.1" port :tls true :server-name "localhost" :ca-file (io/path certs "ca.pem") :timeout 300)
+             nil
+             (catch TimeoutError e e))]
+  (is (instance? TimeoutError e) "a TLS handshake nobody answers")
+  (is (= 300 (:after e)))
+  (is (< (- (nano-time) t0) 5000000000) "given up on soon after")
+  (let [c (net/connect "127.0.0.1" port :timeout 5000)]
+    (is (= :tcp (handle-kind c)) "a timeout not reached changes nothing")
+    (io/close c))
+  (io/close l))
+
 (let [a (net/udp "127.0.0.1" 0)
       b (net/udp "127.0.0.1" 0)]
   (net/send-to a "ping" "127.0.0.1" (net/port (net/local-address b)))
