@@ -125,7 +125,7 @@
 (deftest redefining-arithmetic-under-a-compiled-float-loop
   ;; (in a process of its own: redefining skein.core/* would reach the other
   ;; suites running beside this one)
-  (when (= "skein" (io/file-name (:executable (sys/info))))
+  (when (= "skein" (io/stem (:executable (sys/info))))
     (let [r (proc/sh (:executable (sys/info)) "-e" redefinition-script :env {"SKEIN_TIER" "1"})]
       (is (= 0 (:exit r)) (:err r))
       (is (= "[1024.0 [:x 1.0] 1024.0]" (first (str/split-lines (:out r))))

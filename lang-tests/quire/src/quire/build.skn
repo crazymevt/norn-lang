@@ -40,10 +40,16 @@
         (io/write-atomic! path data)
         true)))
 
+(defn- relative
+  "File f's path under folder root, with / between its parts on every
+  system, as a site's paths are."
+  [root f]
+  (str/replace (subs f (inc (count root))) "\\" "/"))
+
 (defn- static-files [dir]
   (let [root (io/path dir "static")]
     (into {} (for [f (fs/glob (str root "/**/*")) :when (io/file? f)]
-               [(subs f (inc (count root))) (io/read-bytes f)]))))
+               [(relative root f) (io/read-bytes f)]))))
 
 (def ^:private zip-time
   "When site.zip's entries say they were made: 2000-01-01, UTC (epoch ms)."
@@ -83,7 +89,7 @@
         written (vec (for [[path data] (sort-by key files) :when (write-if-changed! (io/path out path) data)] path))
         stale (for [f (if (io/directory? out) (fs/glob (str out "/**/*")) [])
                     :when (io/file? f)
-                    :let [rel (subs f (inc (count out)))]
+                    :let [rel (relative out f)]
                     :when (not (contains? files rel))]
                 (do (io/delete! f) rel))
         removed (vec stale)]

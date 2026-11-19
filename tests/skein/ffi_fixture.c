@@ -1,9 +1,22 @@
 // The C side of ffi_test.skn (M9 part 9.8b): structs passed and returned
 // by value, unions, bit fields, variadic functions, and callbacks taking
 // and returning structs, called from Skein and from a thread of C's own.
-// ffi_test.skn builds it with cc into a shared library.
+// ffi_test.skn builds it with cc (clang on Windows) into a shared library.
 
+#ifdef _WIN32
+#include <windows.h>
+// (a DLL exports only what it's told to)
+#pragma comment(linker, "/EXPORT:layout /EXPORT:flags_set /EXPORT:flags_get /EXPORT:any_float /EXPORT:any_set_int")
+#pragma comment(linker, "/EXPORT:any_double /EXPORT:pair_make /EXPORT:pair_sum /EXPORT:odd_make /EXPORT:odd_sum")
+#pragma comment(linker, "/EXPORT:v2_add /EXPORT:v4_scale /EXPORT:v4_sum /EXPORT:big_make /EXPORT:big_sum")
+#pragma comment(linker, "/EXPORT:padded_make /EXPORT:padded_sum /EXPORT:tagged_check /EXPORT:flags_sum")
+#pragma comment(linker, "/EXPORT:dl_make /EXPORT:dl_sum /EXPORT:if_make /EXPORT:if_sum /EXPORT:five_then_odd")
+#pragma comment(linker, "/EXPORT:many_ints /EXPORT:many_floats /EXPORT:apply_pair /EXPORT:apply_v4 /EXPORT:apply_big")
+#pragma comment(linker, "/EXPORT:apply_dl /EXPORT:apply_five_then_odd /EXPORT:apply_many /EXPORT:apply_many_floats")
+#pragma comment(linker, "/EXPORT:sum_longs /EXPORT:sum_doubles /EXPORT:mixed /EXPORT:call_from_thread")
+#else
 #include <pthread.h>
+#endif
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -163,6 +176,21 @@ double mixed(const char *kinds, ...) {
 
 struct job { int (*f)(int); int x; int r; };
 
+#ifdef _WIN32
+static DWORD WINAPI run_job(LPVOID p) {
+    struct job *j = p;
+    j->r = j->f(j->x);
+    return 0;
+}
+
+int call_from_thread(int (*f)(int), int x) {
+    struct job j = {f, x, 0};
+    HANDLE t = CreateThread(NULL, 0, run_job, &j, 0, NULL);
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+    return j.r;
+}
+#else
 static void *run_job(void *p) {
     struct job *j = p;
     j->r = j->f(j->x);
@@ -176,3 +204,4 @@ int call_from_thread(int (*f)(int), int x) {
     pthread_join(t, NULL);
     return j.r;
 }
+#endif

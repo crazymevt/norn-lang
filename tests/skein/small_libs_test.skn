@@ -17,7 +17,9 @@
   "Is program name on PATH? (Checks against the system's tools skip
   without them.)"
   [name]
-  (= 0 (:exit (proc/sh "sh" "-c" (str "command -v " name)))))
+  (= 0 (:exit (if (= :windows (sys/os))
+                (proc/sh "where" name)
+                (proc/sh "sh" "-c" (str "command -v " name))))))
 
 (deftest compression
   (let [s (apply str (repeat 1000 "hello skein "))]
@@ -28,10 +30,11 @@
     (testing "a limit on what comes out"
       (is (str/includes? (message (fn [] (z/decompress (z/compress s) :max-size 100))) "larger than :max-size")))
     (is (= "ParseError" (class-of-error (fn [] (z/gunzip (bytes [1 2 3]))))))
-    (testing "against the system's gzip"
-      (let [path (io/path dir "x.gz")]
-        (io/write-bytes path (z/gzip s))
-        (is (= s (:out (proc/sh "gzip" "-dc" path)))))))
+    (testing "against the system's gzip (where it's installed)"
+      (when (installed? "gzip")
+        (let [path (io/path dir "x.gz")]
+          (io/write-bytes path (z/gzip s))
+          (is (= s (:out (proc/sh "gzip" "-dc" path))))))))
   (is (= 0xcbf43926 (z/crc32 "123456789")) "the standard check value"))
 
 ;; Decompressing as it's read, and a stream of bytes in hand (loglens

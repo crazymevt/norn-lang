@@ -122,6 +122,50 @@
           (is (str/includes? (read-until p "read hello") "hello\r\nread hello") "echo and lines are back")
           (is (= 0 (:exit (proc/wait p)))))))))
 
+;; (On Windows, a console draws what a program writes, and has no suspending.)
+(def ^:private console-child
+  "(require '[skein.terminal :as t] '[skein.io :as io])
+(println \"tty\" (t/tty? :in) (t/tty? :out) (t/size))
+(t/with-raw-mode {}
+  (println \"raw\")
+  (loop []
+    (let [k (t/read-key)]
+      (prn k)
+      (when (not= k {:key \\q}) (recur)))))
+(println \"line mode\")
+(println \"read\" (io/read-line))
+")
+
+(defn- console-text
+  "s without the escape sequences a console draws with."
+  [s]
+  (str/replace s #"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[=>]" ""))
+
+(defn- read-console-until [p s]
+  (loop [acc ""]
+    (if (str/includes? (console-text acc) s)
+      (console-text acc)
+      (if-let [b (io/read (:out p) 4096)] (recur (str acc (bytes->string b true))) (console-text acc)))))
+
+(deftest raw-mode-on-a-console
+  (let [exe (:executable (sys/info))]
+    (when (and exe (= :windows (sys/os)) (= "skein" (io/stem exe)))
+      (io/with-temp-file [script :suffix ".skn"]
+        (io/write-text script console-child)
+        (let [p (proc/start-pty exe :args [script] :rows 30 :cols 100)]
+          (is (str/includes? (read-console-until p "raw") "tty true true {:rows 30, :cols 100}"))
+          (io/write (:in p) (str "a" esc "[A" (char 3) "é"))
+          (let [shown (read-console-until p "é}")]
+            (is (str/includes? shown "{:key \\a}"))
+            (is (str/includes? shown "{:key :up}"))
+            (is (str/includes? shown "{:key \\c, :ctrl true}") "Ctrl-C is a key, not a signal")
+            (is (str/includes? shown "{:key \\é}") "text comes as UTF-8"))
+          (io/write (:in p) "q")
+          (is (str/includes? (read-console-until p "line mode") "{:key \\q}"))
+          (io/write (:in p) "hello\r")
+          (is (str/includes? (read-console-until p "read hello") "read hello") "lines are back")
+          (is (= 0 (:exit (proc/wait p)))))))))
+
 (deftest suspending-under-a-shell
   (let [exe (:executable (sys/info))]
     (when (and exe (= "skein" (io/file-name exe)) (io/file? "/bin/zsh"))

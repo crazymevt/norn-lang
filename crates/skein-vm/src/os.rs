@@ -17,11 +17,14 @@ use skein_rt::{Kind, Mutator, Value};
 /// PermissionDenied…), with :path the program, or the directory when it's
 /// the directory that's missing.
 fn spawn_err(s: &Spawn, e: &std::io::Error) -> Error {
-    let path = match &s.dir {
-        Some(d) if !std::path::Path::new(d).is_dir() => d.clone(),
-        _ => s.cmd.clone(),
+    // (a missing directory is NotFound here whatever the system calls it:
+    // Windows says the name isn't a directory)
+    let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+    let (path, kind) = match &s.dir {
+        Some(d) if !std::path::Path::new(d).is_dir() => (d.clone(), &missing),
+        _ => (s.cmd.clone(), e),
     };
-    Error::io(format!("Can't start {}: {e}", s.cmd), e).with("path", crate::vm::ErrData::Str(path))
+    Error::io(format!("Can't start {}: {e}", s.cmd), kind).with("path", crate::vm::ErrData::Str(path))
 }
 
 fn kw(m: &mut Mutator, k: &str) -> Value {
@@ -104,6 +107,9 @@ pub(crate) fn start(vm: &mut Vm, s: Spawn) -> Result<Value> {
     let cmd = str_new(m, &s.cmd);
     let pidv = Value::fix(pid as i64);
     let info = map_of(m, &[("cmd", cmd), ("pid", pidv)]);
+    // (on Windows the platform's Child is a type of its own)
+    #[allow(clippy::useless_conversion)]
+    let child: platform::Child = child.into();
     let ph = reactor::register(m, Io::Child(child), "process", info).map_err(Error::new)?;
     Ok(map_of(m, &[("process", ph), ("pid", pidv), ("in", stdin), ("out", stdout), ("err", stderr)]))
 }
@@ -122,7 +128,7 @@ pub(crate) fn pty_start(vm: &mut Vm, s: Spawn, rows: u16, cols: u16) -> Result<V
         c.env_clear();
     }
     c.envs(s.env.iter().map(|(k, v)| (k, v)));
-    let (child, rx, tx) = platform::spawn_on_pty(&mut c, rows, cols).map_err(|e| match e {
+    let (child, rx, tx) = platform::spawn_on_pty(&mut c, s.clear_env, rows, cols).map_err(|e| match e {
         platform::PtyError::Open(e) => Error::new(format!("Can't open a pseudo-terminal: {e}")),
         platform::PtyError::Spawn(e) => spawn_err(&s, &e),
     })?;
@@ -228,6 +234,13 @@ pub(crate) fn listeners(n: i32) -> usize {
 /// interrupting the evaluation too.
 pub fn listening_for_interrupt() -> bool {
     LISTENERS[platform::SIGINT as usize].load(Ordering::SeqCst) > 0
+}
+
+/// Run `f` at each Ctrl-C no listener hears. (On Windows a signal this
+/// process raises itself has to reach it too, so the runtime keeps it.)
+#[cfg(windows)]
+pub fn on_interrupt(f: impl FnMut() + Send + 'static) {
+    platform::on_interrupt(f);
 }
 
 /// The signals whose disposition has been looked at (see `keep_default`).

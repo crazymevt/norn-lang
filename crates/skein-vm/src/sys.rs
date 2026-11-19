@@ -202,11 +202,7 @@ pub(crate) fn mkdir(vm: &mut Vm, path: String) -> Result<Value> {
 /// Flush a directory's entries to storage, so a rename or a new file in
 /// it survives a crash.
 pub(crate) fn sync_dir(vm: &mut Vm, path: String) -> Result<Value> {
-    pooled(
-        vm,
-        move || std::fs::File::open(&path).and_then(|d| d.sync_all()).map_err(|e| err("Can't sync the directory", &path, e)),
-        |_, ()| Value::NIL,
-    )
+    pooled(vm, move || platform::sync_dir(&path).map_err(|e| err("Can't sync the directory", &path, e)), |_, ()| Value::NIL)
 }
 
 pub(crate) fn copy(vm: &mut Vm, from: String, to: String) -> Result<Value> {
@@ -439,6 +435,16 @@ pub(crate) fn path_join(parts: &[String]) -> String {
     p.to_string_lossy().into_owned()
 }
 
+/// `p` as people write it: Windows' canonical paths start `\\?\`, which
+/// programs don't expect and in which a `/` is no separator.
+fn plain_path(p: &str) -> String {
+    match p.strip_prefix(r"\\?\") {
+        Some(rest) if rest.starts_with(r"UNC\") => format!(r"\\{}", &rest[4..]),
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_owned(),
+        _ => p.to_owned(),
+    }
+}
+
 /// :parent, :name, :ext, :stem, :absolute or :canonical of a path (nil where
 /// it has none; :canonical is nil if the path doesn't exist).
 pub(crate) fn path_part(m: &mut Mutator, p: &str, part: &str) -> Result<Value> {
@@ -449,7 +455,7 @@ pub(crate) fn path_part(m: &mut Mutator, p: &str, part: &str) -> Result<Value> {
         "ext" => path.extension().map(|x| x.to_string_lossy().into_owned()),
         "stem" => path.file_stem().map(|x| x.to_string_lossy().into_owned()),
         "absolute" => Some(std::path::absolute(path).map_err(|e| Error::new(format!("{p}: {e}")))?.to_string_lossy().into_owned()),
-        "canonical" => std::fs::canonicalize(path).ok().map(|x| x.to_string_lossy().into_owned()),
+        "canonical" => std::fs::canonicalize(path).ok().map(|x| plain_path(&x.to_string_lossy())),
         _ => return Err(Error::new(format!("Unknown path part :{part}"))),
     };
     Ok(s.map_or(Value::NIL, |s| str_new(m, &s)))
@@ -507,8 +513,11 @@ pub(crate) fn system(m: &mut Mutator) -> Value {
     let mem = platform::total_memory().map_or(Value::NIL, |n| Value::fix(n as i64));
     let pid = Value::fix(std::process::id() as i64);
     let tmp = str_new(m, &std::env::temp_dir().to_string_lossy());
-    let home = getenv(m, "HOME");
-    let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).map_or(Value::NIL, |u| str_new(m, &u));
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).map_or(Value::NIL, |h| str_new(m, &h));
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .or_else(|_| std::env::var("USERNAME"))
+        .map_or(Value::NIL, |u| str_new(m, &u));
     let host = platform::hostname().map_or(Value::NIL, |h| str_new(m, &h));
     let cwd = std::env::current_dir().map_or(Value::NIL, |d| str_new(m, &d.to_string_lossy()));
     let version = str_new(m, env!("CARGO_PKG_VERSION"));
@@ -539,9 +548,16 @@ pub(crate) fn system(m: &mut Mutator) -> Value {
 
 // ---- glob patterns --------------------------------------------------------------------------------
 
+/// `p` with its segments divided by `/`, as patterns are matched: on Windows
+/// a path has `\` between them, and a pattern may have either.
+fn glob_form(p: &str) -> String {
+    if cfg!(windows) { p.replace('\\', "/") } else { p.to_owned() }
+}
+
 /// Does `path` match `pattern`? `*` matches within one path segment, `**`
 /// matches any number of segments, `?` one character.
 pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
+    let (pattern, path) = (glob_form(pattern), glob_form(path));
     fn seg(p: &[char], s: &[char]) -> bool {
         match (p.first(), s.first()) {
             (None, None) => true,
@@ -570,16 +586,24 @@ pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
 /// The directory a glob pattern searches: its segments before the first
 /// one with a wildcard ("." if none).
 pub(crate) fn glob_base(pattern: &str) -> String {
+    let pattern = glob_form(pattern);
     let fixed: Vec<&str> = pattern.split('/').take_while(|s| !s.contains(['*', '?'])).collect();
     let n = fixed.len().min(pattern.split('/').count().saturating_sub(1));
     let base = fixed[..n].join("/");
-    if base.is_empty() && pattern.starts_with('/') {
-        "/".into()
+    let base = if base.is_empty() && pattern.starts_with('/') {
+        "/".to_owned()
     } else if base.is_empty() {
-        ".".into()
+        ".".to_owned()
     } else {
         base
+    };
+    if !cfg!(windows) {
+        return base;
     }
+    // (the paths found under it are to read as Windows writes them; "C:"
+    // alone would be the current directory on that drive, not its root)
+    let base = base.replace('/', "\\");
+    if base.ends_with(':') { base + "\\" } else { base }
 }
 
 // ---- the host terminal ------------------------------------------------------------------------

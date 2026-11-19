@@ -32,9 +32,9 @@
 //! **Memory** is addressed by integers, and struct layouts are Skein
 //! (`skein.ffi`). **Callbacks** are below.
 //!
-//! Structs by value and variadic functions are done for arm64 (Apple's and
-//! AAPCS64) and x86-64 System V (Linux, the BSDs); on other machines
-//! they're an error for now.
+//! Structs by value and variadic functions are done for arm64 (Apple's,
+//! AAPCS64 and Windows') and x86-64 System V (Linux, the BSDs); on other
+//! machines they're an error for now.
 
 use crate::reactor::{self, Io};
 use crate::vm::{Error, Result, Vm};
@@ -159,6 +159,7 @@ pub(crate) enum Ty {
 
 const APPLE_ARM64: bool = cfg!(all(target_arch = "aarch64", target_vendor = "apple"));
 const SYSV_X64: bool = cfg!(all(target_arch = "x86_64", not(windows)));
+const WINDOWS_ARM64: bool = cfg!(all(target_arch = "aarch64", windows));
 
 fn float_type(t: CType) -> cranelift_codegen::ir::Type {
     if t == CType::F32 { types::F32 } else { types::F64 }
@@ -243,6 +244,9 @@ fn lower(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Vec<Piece> {
     if SYSV_X64 {
         return lower_sysv(params, ret);
     }
+    if WINDOWS_ARM64 && variadic_from.is_some() {
+        return lower_windows_variadic(params);
+    }
     let (mut ngrn, mut nsrn) = (0u32, 0u32);
     let mut out = Vec::new();
     let fill_ints = |out: &mut Vec<Piece>, ngrn: &mut u32| {
@@ -305,6 +309,26 @@ fn lower(params: &[Ty], ret: Ty, variadic_from: Option<usize>) -> Vec<Piece> {
                 out.push(Piece::Ptr(i));
             }
             Ty::S(SAbi { agg: Agg::Eights(..), .. }) => unreachable!("System V structs are lowered by lower_sysv"),
+        }
+    }
+    out
+}
+
+/// The C signature's parameters for a variadic function on Windows arm64,
+/// whose every argument, the named ones too, goes in integer registers and
+/// then on the stack: a float as its bits, a struct of up to 16 bytes as words
+/// of its memory (which may end in x7 and go on in the stack), a larger one
+/// as a pointer to a copy.
+fn lower_windows_variadic(params: &[Ty]) -> Vec<Piece> {
+    let mut out = Vec::new();
+    for (i, &t) in params.iter().enumerate() {
+        match t {
+            Ty::C(c) if c.is_float() => out.push(Piece::Word(i, CType::U64)),
+            Ty::C(c) => out.push(Piece::Word(i, c)),
+            Ty::S(SAbi { size, .. }) if size <= 16 => {
+                out.extend((0..size.div_ceil(8).max(1)).map(|k| Piece::Part(i, k * 8, types::I64)));
+            }
+            Ty::S(_) => out.push(Piece::Ptr(i)),
         }
     }
     out

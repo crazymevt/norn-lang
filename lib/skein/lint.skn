@@ -601,7 +601,7 @@
   its source paths are known, not as part of dir.)"
   [dir f]
   (let [base (if (str/ends-with? dir "/") dir (str dir "/"))
-        parts (butlast (str/split (subs f (count base)) #"/"))]
+        parts (butlast (str/split (subs f (count base)) #"[/\\]"))]
     (loop [d base ps (seq parts)]
       (cond (empty? ps) false
             (%fs-info (str d (first ps) "/skein.edn")) true

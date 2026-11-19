@@ -37,7 +37,7 @@
 (defn- relative
   "Path p relative to the current folder when it's under it."
   [p]
-  (let [cwd (str (sys/cwd) "/")]
+  (let [cwd (str (sys/cwd) (if (= :windows (sys/os)) "\\" "/"))]
     (if (str/starts-with? p cwd) (subs p (count cwd)) p)))
 
 (defn counts

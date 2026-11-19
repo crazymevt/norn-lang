@@ -40,7 +40,7 @@ pub(crate) enum Io {
     #[allow(dead_code)] // held for its Drop
     Watch(Box<dyn std::any::Any + Send>),
     /// A child process (skein.process): waited for on the blocking pool.
-    Child(std::process::Child),
+    Child(crate::platform::Child),
     /// A loaded dynamic library (skein.ffi).
     Library(std::sync::Arc<libloading::Library>),
     /// A foreign function (skein.ffi).

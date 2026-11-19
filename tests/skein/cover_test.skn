@@ -29,4 +29,4 @@
     (is (= 2 (count (re-seq #"end_of_record" text))))
     (is (str/includes? text "DA:3,4\nDA:4,0\n"))
     (is (str/includes? text "LF:7\nLH:3\nend_of_record\n"))
-    (is (re-find #"SF:/.*/src/b\.skn\nDA:2,7\nLF:1\nLH:1\n" text) "paths absolute")))
+    (is (re-find #"SF:(/|[A-Za-z]:\\).*[/\\]src[/\\]b\.skn\nDA:2,7\nLF:1\nLH:1\n" text) "paths absolute")))

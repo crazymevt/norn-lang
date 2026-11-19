@@ -96,6 +96,9 @@ pub(crate) fn tcp_check(vm: &mut Vm, h: Value) -> Result<Value> {
             if let Some(e) = s.take_error()? {
                 return Err(e);
             }
+            if !crate::platform::connect_settled(s)? {
+                return Ok(false);
+            }
             match s.peer_addr() {
                 Ok(_) => Ok(true),
                 // (The connect may fail between the two questions: macOS
