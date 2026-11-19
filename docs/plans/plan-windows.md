@@ -34,8 +34,8 @@ What it took, beyond filling in `platform/windows.rs`:
 - **The FFI**: Windows arm64's variadic calls, and Microsoft's bit-field
   layout.
 
-**Decided on the VM, for the user to confirm or change** (the plan had
-left them open):
+**Decided on the VM, and confirmed by the user on 2026-11-19** (the
+plan had left them open):
 
 - **Signals**: `:int` Ctrl-C, `:break` Ctrl-Break (new), `:term` the
   console closing or the session ending, `:winch` the console's size,
@@ -48,18 +48,18 @@ left them open):
   pipes on our side: its private detail.
 - **`proc/sh` needed no decision**: it runs a program directly.
 
-**Still open:**
+**Open when the VM's work was done, and settled since where it says:**
 
-1. **How Skein depends on a patched MMTk.** For now, and so that CI
-   can build it: the patch is in the repository
-   (`tools/windows/mmtk-0.33.0.patch`), `tools/windows/mmtk.sh` makes
+1. **How Skein depends on a patched MMTk: decided 2026-11-19 (the
+   user), as it is.** The patch stays in this repository
+   (`tools/windows/mmtk-0.33.0.patch`) and is made again as needed: at
+   each MMTk upgrade, or when the layer needs a fix. Not a branch of
+   mmtk-core, and not sent upstream. `tools/windows/mmtk.sh` makes
    `target/mmtk-windows` from the MMTk on crates.io and it, and the
    build is told to use that (`cargo --config
    "patch.crates-io.mmtk.path='target/mmtk-windows'" build`). Skein's
    manifests and `Cargo.lock` are as they were, so that build can't be
-   `--locked`. Still to decide: whether this stays (and at each MMTk
-   upgrade the patch is made again), becomes a branch of mmtk-core, or
-   goes upstream.
+   `--locked`.
 2. **CI on Windows arm64** (part 7) is a job that can't fail the run
    yet (`.github/workflows/ci.yml`, `windows`): the suites, the suites
    with collections forced, the lang-tests, and `cargo test`, which had
@@ -93,7 +93,9 @@ left them open):
    console closing, the session ending.
 5. **A source file that begins with a byte-order mark doesn't load**
    (found there; Windows tools write one).
-6. **The oldest Windows supported.**
+6. **The oldest Windows supported: decided 2026-11-19 (the user),
+   Windows 10 version 1809**, ConPTY's own minimum (on ARM, Windows 11
+   in practice).
 
 ## The draft
 
@@ -270,7 +272,8 @@ of the three designs above, and they don't depend on each other.
 
 ## To decide
 
-(As drafted. Status, above, says which of these the VM's work settled.)
+(As drafted. Status, above, says how each was settled: by the VM's
+work, and by the user on 2026-11-19.)
 
 1. **How Skein depends on a patched MMTk**: a `[patch.crates-io]` on a
    path or a git branch, for Windows only or for every platform; and
