@@ -15,7 +15,7 @@
 
 (ns skein.uri
   (:refer-core :exclude [format resolve])
-  (:require [skein.string :as str]))
+  (:require [skein.io :as io] [skein.string :as str] [skein.sys :as sys]))
 
 (defn- index-of [s ch from]
   (loop [i from]
@@ -129,6 +129,41 @@
                      (error ParseError :message (str "A bad percent-encoding at the end of: " s) :source "URI"))
                    (and plus? (= c \+)) (recur (inc i) (conj out 32))
                    :else (recur (inc i) (into out (map (fn [b] (bit-and b 255)) (bytes (str c)))))))))))))
+
+;; ---- file: URIs ----
+
+(def ^:private windows? (= :windows (sys/os)))
+
+(defn file-uri
+  "The file: URI of path p, made absolute against the current folder:
+  file:///home/ada/a%20b.txt, or on Windows file:///C:/Users/ada/a%20b.txt
+  (and a network path, \\\\host\\share\\…, file://host/share/…)."
+  ^String [^String p]
+  (let [a (io/to-slash (io/absolute p))]
+    (cond (and windows? (str/starts-with? a "//")) (str "file:" (encode a "/"))
+          (str/starts-with? a "/") (str "file://" (encode a "/"))
+          :else (str "file:///" (encode a "/:")))))
+
+(defn file-path
+  "The path file: URI u names, its percent-encodings decoded and with this
+  system's separator; nil if u isn't a file: URI. On Windows
+  file:///C:/… and file:///c%3A/… (as VS Code writes one) are C:\\…, and
+  file://host/share/… is \\\\host\\share\\…; elsewhere a file on another
+  host is nil. A query or fragment is left out."
+  ^(? String) [^String u]
+  (let [u (str u)]
+    (when (str/starts-with? (str/lower-case (subs u 0 (min 5 (count u)))) "file:")
+      (let [r (subs u 5)
+            r (subs r 0 (or (first-of r "?#" 0) (count r)))
+            [host path] (if (str/starts-with? r "//")
+                          (let [i (or (index-of r \/ 2) (count r))] [(subs r 2 i) (subs r i)])
+                          ["" r])
+            path (decode path)]
+        (cond (and windows? (re-matches #"/[A-Za-z]:(/.*)?" path))
+              (io/from-slash (str (str/upper-case (subs path 1 2)) (subs path 2)))
+              (contains? #{"" "localhost"} (str/lower-case host)) (io/from-slash path)
+              windows? (io/from-slash (str "//" host path))
+              :else nil)))))
 
 ;; ---- queries ----
 

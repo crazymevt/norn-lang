@@ -64,7 +64,7 @@
       (is (= "ContractError" (name (class-name (class-of c)))))
       (is (= ["ct2.lib/add" "its 2nd argument" "Integer" "2"] [(:function c) (:position c) (:expected c) (:value c)]))
       (is (str/starts-with? (:blame c) "ct2.user ("))
-      (is (str/ends-with? (str/replace (:blame c) "\\" "/") "ct2/user.skn)"))
+      (is (str/ends-with? (io/to-slash (:blame c)) "ct2/user.skn)"))
       (is (str/starts-with? (condition-message c) "ct2.lib/add: its 2nd argument should be Integer, got \"2\", blaming ct2.user"))))
   (testing "a bad result blames the function's module"
     (is (= ["ContractError" "ct2.lib" "its result"] (blame '(ct2.user/bad-result)))))

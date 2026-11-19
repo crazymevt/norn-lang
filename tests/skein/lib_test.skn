@@ -87,6 +87,20 @@
 (is (nil? (io/canonical "/no/such/path/here")))
 (is (= (io/canonical (io/parent (sys/cwd))) (io/canonical (io/path (sys/cwd) "." "..")))
     "canonical resolves . and ..")
+;; between systems' paths
+(is (= (if (= :windows (sys/os)) "\\" "/") io/separator))
+(is (= "a/b/c" (io/to-slash (io/path "a" "b" "c"))))
+(is (= (io/path "a" "b" "c") (io/from-slash "a/b/c")))
+(is (= (io/path "sub" "b.bin") (io/relative-to (f "sub" "b.bin") dir)))
+(is (= ["" ""] [(io/relative-to dir dir) (io/relative-to dir (str dir io/separator))]) "the folder itself")
+(is (= [nil nil] [(io/relative-to (f "sub") (f "a.txt")) (io/relative-to (str dir "x") dir)])
+    "not under it, and a name's start isn't a folder")
+(is (= "a.txt" (io/relative-to (io/canonical (f "a.txt")) dir))
+    "the folder written another way (macOS's /private/var, Windows' long names for C:\\Users\\RUNNER~1)")
+(is (= [true false] [(io/under? (f "sub" "deeper") dir) (io/under? dir (f "sub"))]))
+(is (= [true true false]
+       [(io/same-file? (f "a.txt") (f "sub" ".." "a.txt")) (io/same-file? (f "a.txt") (io/canonical (f "a.txt")))
+        (io/same-file? (f "a.txt") (f "no-such"))]))
 ;; (not on Windows: there's no ln, and making a link takes a privilege)
 (when-not (= :windows (sys/os))
   (let [links (str dir "-links")]

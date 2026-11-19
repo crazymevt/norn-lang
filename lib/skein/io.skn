@@ -7,7 +7,7 @@
 ;;;; cleanup; close it yourself (or use with-open) to free it promptly.
 
 (ns skein.io
-  (:require [skein.bytes :as bytes] [skein.sys :as sys]))
+  (:require [skein.bytes :as bytes] [skein.string :as str] [skein.sys :as sys]))
 
 ;;; ---- whole files ----
 
@@ -60,6 +60,61 @@
   file-system events report it; nil if it doesn't exist."
   ^(? String) [^String p]
   (%path-part (str p) :canonical))
+
+(def ^:private windows? (= :windows (sys/os)))
+
+(def separator
+  "What's between a path's parts here: \\ on Windows (which takes / too), /
+  elsewhere."
+  (if windows? "\\" "/"))
+
+(defn to-slash
+  "Path p with / between its parts, as a URI, a recorded output or a site's
+  paths have it, on every system: on Windows its \\ made /; elsewhere,
+  where \\ is a character a name may hold, p as it is."
+  ^String [^String p]
+  (if windows? (str/replace (str p) "\\" "/") (str p)))
+
+(defn from-slash
+  "Path p, written with / between its parts, with this system's separator
+  (on Windows, / made \\; elsewhere p as it is)."
+  ^String [^String p]
+  (if windows? (str/replace (str p) "/" "\\") (str p)))
+
+(defn- past
+  "What's left of absolute path p past folder dir: \"\" for dir itself,
+  nil if p isn't under it."
+  [p dir]
+  (let [d (if (str/ends-with? dir separator) dir (str dir separator))]
+    (cond (= d (if (str/ends-with? p separator) p (str p separator))) ""
+          (str/starts-with? p d) (subs p (count d)))))
+
+(defn relative-to
+  "Path p relative to folder dir: what's left of it past dir (\"\" for dir
+  itself), with this system's separator; nil when p isn't under dir. Both
+  are made absolute against the current folder, and compared as written
+  and then, when both exist, canonical, so one folder written two ways is
+  one folder
+  (Windows' C:\\Users\\RUNNER~1 and C:\\Users\\runneradmin, macOS's /var and
+  /private/var)."
+  ^(? String) [^String p ^String dir]
+  (let [p (absolute p) dir (absolute dir)]
+    (or (past p dir)
+        (let [cp (canonical p) cd (canonical dir)]
+          (when (and cp cd) (past cp cd))))))
+
+(defn under?
+  "Is path p in folder dir, or below it, or dir itself? (As relative-to
+  compares them.)"
+  ^Boolean [^String p ^String dir]
+  (some? (relative-to p dir)))
+
+(defn same-file?
+  "Do paths a and b name the same file or folder? Compared canonical, so a
+  symbolic link, . and .., and another way to write a folder count; false
+  if either doesn't exist."
+  ^Boolean [^String a ^String b]
+  (let [ca (canonical a)] (and (some? ca) (= ca (canonical b)))))
 
 ;;; ---- streams ----
 
