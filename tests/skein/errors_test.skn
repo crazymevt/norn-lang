@@ -105,6 +105,11 @@
     (is (= ["ParseError" "<string>" 1 5] [(class-of-name c) (:source c) (:line c) (:column c)]) "where it stopped"))
   (let [c (caught (fn [] (read-string "[1\n  2 )")))]
     (is (= [2 5] [(:line c) (:column c)])))
+  (testing "a byte-order mark first, as Windows tools write one, isn't text"
+    (let [bom (str (char 0xFEFF))]
+      (is (= 3 (load-string (str bom "(+ 1 2)"))))
+      (let [c (caught (fn [] (read-string (str bom "(1 2"))))]
+        (is (= [1 5] [(:line c) (:column c)]) "columns count from after it"))))
   (is (= ["ParseError" "URI"] ((juxt class-of-name :source) (caught (fn [] (uri/parse "http://h:8x/"))))))
   (let [s (net/listen "127.0.0.1" 0)
         port (net/port (net/local-address s))]

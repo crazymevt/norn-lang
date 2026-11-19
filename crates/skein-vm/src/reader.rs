@@ -143,19 +143,33 @@ fn is_terminator(c: char) -> bool {
     c.is_whitespace() || matches!(c, ',' | '(' | ')' | '[' | ']' | '{' | '}' | '"' | ';' | '`' | '~' | '^' | '@' | '\\')
 }
 
+/// Where src's text begins: after a byte-order mark, which Windows tools
+/// write at the start of a file and which isn't part of the text.
+fn text_start(src: &str) -> usize {
+    if src.starts_with('\u{FEFF}') { '\u{FEFF}'.len_utf8() } else { 0 }
+}
+
+/// The place where src's text begins: line 1, column 1 (a byte-order mark
+/// before it is still a character of src).
+fn top(src: &str) -> (usize, Place) {
+    let b = text_start(src);
+    (b, Place { line: 1, col: 1, at: if b > 0 { 1 } else { 0 } })
+}
+
 impl<'a> Reader<'a> {
     pub fn new(src: &'a str) -> Self {
-        Reader { src, pos: 0, fn_args: None, locs: None, depth: 0 }
+        Reader { src, pos: text_start(src), fn_args: None, locs: None, depth: 0 }
     }
 
-    /// A reader starting at byte offset `pos`.
+    /// A reader starting at byte offset `pos` (past a byte-order mark, at
+    /// least).
     pub fn new_at(src: &'a str, pos: usize) -> Self {
-        Reader { src, pos: pos.min(src.len()), fn_args: None, locs: None, depth: 0 }
+        Reader { src, pos: pos.min(src.len()).max(text_start(src)), fn_args: None, locs: None, depth: 0 }
     }
 
     /// This reader, recording where each form comes from (`take_locations`).
     pub fn with_locations(mut self) -> Self {
-        self.locs = Some(Locs { frames: Vec::new(), done: None, cache: (0, Place { line: 1, col: 1, at: 0 }), meta: Vec::new() });
+        self.locs = Some(Locs { frames: Vec::new(), done: None, cache: top(self.src), meta: Vec::new() });
         self
     }
 
@@ -167,11 +181,12 @@ impl<'a> Reader<'a> {
     /// The place of byte offset `b`, going on from the last one asked for.
     fn place(&mut self, b: usize) -> Place {
         let src = self.src;
+        let b = b.max(text_start(src));
         let Some(l) = self.locs.as_mut() else { return Place::default() };
         let (from, mut p) = l.cache;
         if b < from {
             // (not expected: start again from the top)
-            l.cache = (0, Place { line: 1, col: 1, at: 0 });
+            l.cache = top(src);
             return self.place(b);
         }
         for c in src[from..b].chars() {
@@ -249,7 +264,7 @@ impl<'a> Reader<'a> {
 
     /// 1-based column (in characters) of the current position.
     pub fn column(&self) -> usize {
-        let start = self.src[..self.pos].rfind('\n').map_or(0, |i| i + 1);
+        let start = self.src[..self.pos].rfind('\n').map_or(text_start(self.src), |i| i + 1);
         self.src[start..self.pos].chars().count() + 1
     }
 
