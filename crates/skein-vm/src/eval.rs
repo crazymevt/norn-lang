@@ -61,6 +61,7 @@ pub const LIBS: &[(&str, &str)] = &[
     ("skein.bin", include_str!("../../../lib/skein/bin.skn")),
     ("skein.schedule", include_str!("../../../lib/skein/schedule.skn")),
     ("skein.zip", include_str!("../../../lib/skein/zip.skn")),
+    ("skein.pe", include_str!("../../../lib/skein/pe.skn")),
     ("skein.toml", include_str!("../../../lib/skein/toml.skn")),
     ("skein.csv", include_str!("../../../lib/skein/csv.skn")),
     ("skein.data", include_str!("../../../lib/skein/data.skn")),

@@ -107,9 +107,111 @@ plan had left them open):
    - **`skein package`'s helpers**: on Windows a helper's candidate is
      found as NAME.exe too, goes into the archive as NAME.exe, and the
      launcher finds `skein-ui-host.exe` beside its image.
-   - Not changed: the archive is a `.tar.gz` everywhere (Windows 10 1809
-     and later have `tar`), and there's no Windows layout like macOS's
-     `.app`.
+   - Not changed: the command-line archive is a `.tar.gz` everywhere
+     (Windows 10 1809 and later have `tar`). **A Windows layout came
+     2026-11-20**: `skein package --windows`, below.
+8. **`skein package --windows`** (2026-11-20, made and checked on the
+   Mac, not yet run on Windows): see [Packaging for
+   Windows](#packaging-for-windows).
+
+## Packaging for Windows
+
+`skein package --windows` (`lib/skein/package.skn`, documented in
+[tooling.md](../tooling.md#windows-apps)) makes
+`Display Name-VERSION-windows-ARCH.zip` on any OS. The zip holds
+`Display Name/bin/NAME.exe` and `Display Name/lib/NAME/`, laid out as the
+command-line archive is, because that's where the launcher looks
+(`find_app`, `../lib/NAME/NAME.skimg`). `NAME.exe` is a Windows `skein.exe`
+edited by **`skein.pe`** (`lib/skein/pe.skn`), a PE reader and editor
+written in Skein:
+
+- **The subsystem.** A windowed app's exe has the optional header's
+  Subsystem changed from 3 (console) to 2 (Windows GUI), so Explorer starts
+  it without a console window. The default is windowed when skein-ui's
+  renderer is bundled (`:package :windows :gui` decides otherwise).
+  `skein-ui-host.exe` is a console program too (no `windows_subsystem` in
+  its crate), and a console child of a process with no console gets a new
+  console window. So a windowed app's console helpers are marked windowed
+  as well. Pipes still work: Rust's `Command` always passes the child's
+  handles in `STARTUPINFO` (`STARTF_USESTDHANDLES`), and a GUI child gets
+  them from `GetStdHandle` like any other. skein-ui starts the renderer
+  with `:err :inherit`, so the renderer's standard error is the app's,
+  which in a windowed app is nothing. Rust's standard library treats a
+  missing standard handle as a sink.
+- **The resources.** The icon (`:windows :icon`, an `.ico`, or a PNG of
+  256 pixels or less) becomes `RT_ICON`s and an `RT_GROUP_ICON`. A
+  VERSIONINFO built from `:version` and `:display-name` becomes the
+  `RT_VERSION`. Resources the exe has already (a manifest) are kept.
+  `skein.pe` writes them as a new `.rsrc` section after the last one
+  (`.reloc`, in MSVC's output), in the free room the linker leaves after
+  the section table. If the old `.rsrc` is the last section, it's replaced
+  in place. Nothing else moves, so code, data, relocations and the
+  exception tables stay where the linker put them. The new section's
+  header is written, then NumberOfSections, SizeOfImage,
+  SizeOfInitializedData and the resource data directory are updated. A
+  signature (Authenticode) is dropped because it would no longer match. A
+  checksum is computed again if the exe had one (MSVC's linker writes 0
+  without `/RELEASE`, and Windows checks it only for drivers).
+- **Its tests** (`tests/skein/pe_test.skn`, `crates/skein/tests/package.rs`)
+  use three real PEs of a few kilobytes, linked by `rust-lld` with no
+  Windows SDK (`tests/skein/pe`, `build.sh` rebuilds them): ARM64 and x64
+  with `.reloc` last, and ARM64 with a manifest in a `.rsrc` before
+  `.reloc`. Among the checks: the resources read back as written; the old
+  sections' bytes are unchanged; a second edit replaces the `.rsrc`; and
+  removing the resources gives back the original byte for byte.
+
+**Checked on the Mac (2026-11-20):** an independent PE reader (Python
+stdlib, outside the repository) found no errors in the output: alignment,
+SizeOfImage, overlapping sections, the resource tree's order and offsets,
+data in its section, and each VERSIONINFO node's length. The checksum
+matches the one stored in a signed, MSVC-linked x64 program (VMware's
+`VMwareToolsUpgrader.exe`). Editing that program dropped its signature,
+appended a second `.rsrc` after its `.reloc`, kept its manifest and version
+resources, and gave a checksum that reader agrees with. The VERSIONINFO
+`skein.pe` writes for that program's strings is byte for byte the one
+`rc.exe` wrote. Linnet's sample (the ARM64 test program standing in for
+`skein.exe` and for `skein-ui-host.exe`, since there's no Windows build of
+either on the Mac) has subsystem 2, its nine icon images identical to
+`assets/linnet.ico`'s, the version strings, a windowed helper, and a zip
+that `unzip -t` passes.
+
+**Not checked: anything on Windows.** On the VM, check that:
+
+- a `skein package --windows` of Linnet starts with no console window,
+  either for itself or for `skein-ui-host.exe`;
+- Explorer shows the icon and Properties > Details shows the version;
+- the edited `hello-arm64.exe` still runs and prints its line;
+- an app built on the Mac loads its image in a `skein.exe` built on
+  Windows from the same commit. The build fingerprint (`image::build_id`)
+  hashes only sources and tables, nothing per OS, so it should, but that
+  hasn't been tried.
+
+The things to know:
+
+- **A windowed app's errors go nowhere.** If its image doesn't load (a
+  launcher from another build, say), `skein.exe` prints why to a standard
+  error that isn't there, and the app just doesn't open. To find out why,
+  run the same `NAME.exe` from a console. It prints nothing there either,
+  because a GUI program doesn't attach to its parent's console. Instead,
+  package with `:gui false`, or run `skein.exe` on the image. A later
+  improvement: the launcher shows a message box when it fails with no
+  console.
+- **Launcher and packaging `skein` must be the same build.** Nothing
+  checks this before Windows does.
+- **SmartScreen** asks before opening an unsigned program downloaded from
+  the internet (tooling.md says how to get past it). Code signing needs a
+  certificate and `signtool` on Windows. Signing after `skein.pe`'s edit
+  is fine, because the edit comes first.
+- **What `skein.pe` refuses**: a program with data after its sections
+  other than a signature (an installer's payload, a MinGW symbol table),
+  or with no room for another section header. Neither applies to
+  `skein.exe` from MSVC.
+- `skein.zip` writes no Unix permissions, so `unzip` on macOS or Linux
+  makes files with mode 000. Windows doesn't read those bits.
+
+The alternatives, not taken: a prebuilt launcher stub with an icon slot
+(one more binary to build and keep in step with `skein.exe`), and `rcedit`
+(Windows only, an external tool).
 
 ## The draft
 

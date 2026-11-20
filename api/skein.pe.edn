@@ -1,0 +1,18 @@
+;; skein.pe's public interface, recorded by skein api-diff --record.
+{
+ "checksum" {:arglists ["[bs]"], :kind :function, :signature [{:result "Integer", :args ["Bytes"]}]}
+ "icon-groups" {:arglists ["[tree]"], :kind :function, :signature [{:result "Vector", :args ["Map"]}]}
+ "icon-resources" {:arglists ["[ico & {:or {name 1, language english}, :keys [name language]}]"], :kind :function, :signature [{:result "Map", :args ["Bytes"], :rest "Any"}]}
+ "info" {:arglists ["[bs]"], :kind :function, :signature [{:result "Map", :args ["Bytes"]}]}
+ "pe?" {:arglists ["[bs]"], :kind :function, :signature [{:result "Boolean", :args ["Any"]}]}
+ "png->ico" {:arglists ["[png]"], :kind :function, :signature [{:result "Bytes", :args ["Bytes"]}]}
+ "read-version-info" {:arglists ["[bs]"], :kind :function, :signature [{:result "Map", :args ["Bytes"]}]}
+ "resources" {:arglists ["[bs]"], :kind :function, :signature [{:result "Map", :args ["Bytes"]}]}
+ "rt-group-icon" {:kind :var}
+ "rt-icon" {:kind :var}
+ "rt-manifest" {:kind :var}
+ "rt-version" {:kind :var}
+ "version-resources" {:arglists ["[info]"], :kind :function, :signature [{:result "Map", :args ["Map"]}]}
+ "with-resources" {:arglists ["[bs tree]"], :kind :function, :signature [{:result "Bytes", :args ["Bytes" "Map"]}]}
+ "with-subsystem" {:arglists ["[bs subsystem]"], :kind :function, :signature [{:result "Bytes", :args ["Bytes" "Keyword"]}]}
+}
