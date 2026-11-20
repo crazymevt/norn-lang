@@ -154,7 +154,7 @@
   "The libraries whose public functions carry checked signatures: all but\n  core, the tools, skein.syntax, and skein.string, math, regex and bytes\n  (hot and thin, their primitives checking types: signed when M10 inlines\n  the checks)."
   '[skein.actor skein.async skein.bin skein.buffer skein.cache skein.cbor skein.cli skein.compress skein.crypto
     skein.csv skein.data skein.decimal skein.edn skein.ffi skein.format skein.fs skein.http skein.io skein.json
-    skein.log skein.markdown skein.ndjson skein.net skein.pprint skein.process skein.property skein.random
+    skein.log skein.markdown skein.ndjson skein.net skein.pe skein.pprint skein.process skein.property skein.random
     skein.rope skein.schedule skein.set skein.signal skein.sqlite skein.stm skein.sync skein.sys skein.terminal
     skein.time skein.toml skein.uri skein.uuid skein.walk skein.xml skein.yaml skein.zip])
 

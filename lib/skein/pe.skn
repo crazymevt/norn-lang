@@ -1,0 +1,448 @@
+;;;; skein.pe — Windows programs (PE files, .exe and .dll): what they are,
+;;;; their subsystem, and their resources (an icon, version information).
+;;;; `skein package --windows` makes an app's .exe with it, on any OS.
+;;;;
+;;;;   (def exe (io/read-bytes "skein.exe"))
+;;;;   (info exe)                ; {:machine :aarch64 :subsystem :console …}
+;;;;   (with-subsystem exe :gui) ; started with no console window
+;;;;   (resources exe)           ; {type {name {language data}}}
+;;;;   (with-resources exe (merge (resources exe)
+;;;;                              (icon-resources (io/read-bytes "app.ico"))
+;;;;                              (version-resources {:file-version "1.2.0" :strings {"FileDescription" "App"}})))
+;;;;
+;;;; Programs are Bytes, and each with- function gives a new one. Resources
+;;;; are a map of type (rt-icon, rt-group-icon, rt-version, rt-manifest… or
+;;;; a name) to name (an integer id or a string) to language (1033 is U.S.
+;;;; English) to the resource's bytes. with-resources writes them as a new
+;;;; .rsrc section after the program's last one (or in place of the old
+;;;; one, when that's the last): nothing else in the program moves, so code
+;;;; and data stay where the linker put them. An older .rsrc that isn't last
+;;;; stays, unused. An edited program loses its signature (Authenticode, at
+;;;; the file's end): it would no longer match. Its checksum is computed
+;;;; again when it had one (Windows checks it only for drivers and system
+;;;; DLLs; linkers leave it 0 unless asked).
+;;;;
+;;;; Bad input is a ParseError. Not done: a program with other data after
+;;;; its last section (an installer's payload, a MinGW symbol table), or
+;;;; without room in its headers for one more section (linkers leave room).
+
+(ns skein.pe (:require [skein.bytes :as b] [skein.buffer :as buf] [skein.string :as str]))
+
+(def rt-icon "The resource type of an icon's image (RT_ICON)." 3)
+(def rt-group-icon "The resource type of an icon, its images listed (RT_GROUP_ICON)." 14)
+(def rt-version "The resource type of version information (RT_VERSION)." 16)
+(def rt-manifest "The resource type of an application manifest (RT_MANIFEST)." 24)
+
+(def ^:private english 1033)
+
+(defn- bad! [& parts]
+  (error ParseError :message (str "Not a Windows program (or one skein.pe reads): " (apply str parts)) :source "pe"))
+
+(defn- need! [bs end what] (when (> end (count bs)) (bad! what " runs past the end")))
+(defn- u8 [bs i] (nth bs i))
+(defn- u16 [bs i] (+ (nth bs i) (* 256 (nth bs (inc i)))))
+(defn- u32 [bs i] (+ (u16 bs i) (* 65536 (u16 bs (+ i 2)))))
+(defn- le [n width] (b/uint-bytes n width :le))
+(defn- zeros [n] (bytes (repeat n 0)))
+(defn- align [n a] (* a (quot (+ n (dec a)) a)))
+(defn- pad-to [bs a] (b/concat-bytes bs (zeros (- (align (count bs) a) (count bs)))))
+
+;; ---- headers ----
+
+(def ^:private machines {0xAA64 :aarch64 0x8664 :x86_64 0x14C :x86 0x1C4 :arm})
+(def ^:private subsystems {2 :gui 3 :console})
+
+(defn- section-at [bs at]
+  {:name (str/replace (bytes->string (b/slice bs at (+ at 8)) true) #"\x00+$" "")
+   :virtual-size (u32 bs (+ at 8)) :virtual-address (u32 bs (+ at 12))
+   :raw-size (u32 bs (+ at 16)) :raw-offset (u32 bs (+ at 20)) :characteristics (u32 bs (+ at 36))})
+
+(defn- headers
+  "Where everything is in program bs: offsets of the headers' fields, and
+  the sections."
+  [bs]
+  (when-not (bytes? bs) (error "A Windows program is Bytes"))
+  (need! bs 64 "the DOS header")
+  (when-not (= [77 90] [(u8 bs 0) (u8 bs 1)]) (bad! "no MZ at its start"))
+  (let [pe (u32 bs 60)
+        _ (need! bs (+ pe 24) "the PE header")
+        _ (when-not (= (u32 bs pe) 0x4550) (bad! "no PE signature"))
+        coff (+ pe 4)
+        nsec (u16 bs (+ coff 2))
+        opt-size (u16 bs (+ coff 16))
+        opt (+ coff 20)
+        _ (need! bs (+ opt opt-size) "the optional header")
+        magic (u16 bs opt)
+        plus (case magic 0x20B true 0x10B false (bad! "an optional header of magic " magic))
+        nrva-at (+ opt (if plus 108 92))
+        dirs (+ opt (if plus 112 96))
+        nrva (u32 bs nrva-at)
+        _ (when (or (< nrva 5) (> (+ dirs (* 8 nrva)) (+ opt opt-size))) (bad! "too few data directories"))
+        table (+ opt opt-size)
+        _ (need! bs (+ table (* 40 nsec)) "the section table")
+        sections (mapv (fn [i] (section-at bs (+ table (* 40 i)))) (range nsec))]
+    {:coff coff :opt opt :plus plus :nsec nsec :table table :sections sections :dirs dirs :nrva nrva
+     :section-align (u32 bs (+ opt 32)) :file-align (u32 bs (+ opt 36)) :size-of-headers (u32 bs (+ opt 60))
+     :checksum-at (+ opt 64) :subsystem-at (+ opt 68)}))
+
+(defn- dir [bs h i] (if (< i (:nrva h)) [(u32 bs (+ (:dirs h) (* 8 i))) (u32 bs (+ (:dirs h) (* 8 i) 4))] [0 0]))
+
+(defn pe?
+  "Is bs a Windows program (a PE file: an .exe or a .dll)?"
+  ^Boolean [bs]
+  (and (bytes? bs) (try (headers bs) true (catch ParseError _ false))))
+
+(defn info
+  "What program bs is: {:machine (:aarch64, :x86_64, :x86, :arm, or the
+  number) :pe32+ :dll :subsystem (:gui, :console or the number) :checksum
+  :sections [{:name :virtual-address :virtual-size :raw-offset :raw-size
+  :characteristics}] :resources [rva size] :signed}."
+  ^Map [^Bytes bs]
+  (let [h (headers bs)
+        m (u16 bs (:coff h))
+        s (u16 bs (:subsystem-at h))]
+    {:machine (get machines m m) :pe32+ (:plus h) :dll (not= 0 (bit-and (u16 bs (+ (:coff h) 18)) 0x2000))
+     :subsystem (get subsystems s s) :checksum (u32 bs (:checksum-at h)) :sections (:sections h)
+     :resources (dir bs h 2) :signed (not= 0 (first (dir bs h 4)))}))
+
+(defn checksum
+  "The checksum of program bs as Windows computes it (its own checksum
+  field counted as 0)."
+  ^Integer [^Bytes bs]
+  (let [at (:checksum-at (headers bs))
+        even (if (odd? (count bs)) (b/concat-bytes bs (zeros 1)) bs)
+        sum (- (reduce + (buf/values (buf/from-bytes :u16 even))) (u16 bs at) (u16 bs (+ at 2)))
+        fold (fn [s] (if (> s 0xFFFF) (recur (+ (bit-and s 0xFFFF) (bit-shift-right s 16))) s))]
+    (+ (fold sum) (count bs))))
+
+;; ---- editing ----
+
+(defn- put
+  "Header bytes v (a vector) with n written at offset at, width bytes."
+  [v at n width]
+  (reduce (fn [v k] (assoc v (+ at k) (bit-and (bit-shift-right n (* 8 k)) 255))) v (range width)))
+
+(defn- data-end
+  "Where program bs's section data ends, and where its certificate (the
+  signature) begins, if it has one: [end cert-at]. Other data after the
+  sections is an error."
+  [bs h]
+  (let [end (reduce max (:size-of-headers h) (for [s (:sections h) :when (pos? (:raw-size s))] (+ (:raw-offset s) (:raw-size s))))
+        [cert-at cert-size] (dir bs h 4)
+        tail-end (if (pos? cert-at) cert-at (count bs))]
+    (when (> end (count bs)) (bad! "a section"))
+    (when (and (pos? cert-at) (or (< cert-at end) (> (+ cert-at cert-size) (count bs))))
+      (bad! "its certificate isn't after its sections"))
+    (when (some pos? (b/slice bs end (max end tail-end)))
+      (error (str "skein.pe: this program has " (- tail-end end) " bytes of other data after its sections"
+                  " (an installer's payload or a symbol table?), which it doesn't move")))
+    [end cert-at]))
+
+(defn- finish
+  "Program bs edited: header bytes v (for its first (count v) bytes), then
+  the rest of bs up to keep, then more: Bytes. Without its certificate,
+  and its checksum done again when it had one."
+  [bs h v keep more]
+  (let [v (-> v (put (+ (:dirs h) 32) 0 4) (put (+ (:dirs h) 36) 0 4)) ; (the certificate: none)
+        out (b/concat-bytes (bytes v) (b/slice bs (count v) keep) more)]
+    (if (zero? (u32 bs (:checksum-at h)))
+      out
+      (b/concat-bytes (b/slice out 0 (:checksum-at h)) (le (checksum out) 4) (b/slice out (+ 4 (:checksum-at h)))))))
+
+(defn- header-end [h]
+  (reduce min (:size-of-headers h) (for [s (:sections h) :when (pos? (:raw-size s))] (:raw-offset s))))
+
+(defn with-subsystem
+  "Program bs, marked to run as subsystem: :gui (Windows makes no console
+  for it: started from Explorer, it opens no console window) or :console."
+  ^Bytes [^Bytes bs ^Keyword subsystem]
+  (let [h (headers bs)
+        n (or (get {:gui 2 :console 3} subsystem) (error "with-subsystem: :gui or :console, not" subsystem))
+        [end] (data-end bs h)
+        v (vec (b/slice bs 0 (header-end h)))]
+    (finish bs h (put v (:subsystem-at h) n 2) end (bytes []))))
+
+;; ---- resources: reading ----
+
+(defn- utf16le [s]
+  (bytes (mapcat (fn [c] (let [cp (int c)]
+                           (if (> cp 0xFFFF)
+                             (let [x (- cp 0x10000) hi (+ 0xD800 (bit-shift-right x 10)) lo (+ 0xDC00 (bit-and x 0x3FF))]
+                               [(bit-and hi 255) (bit-shift-right hi 8) (bit-and lo 255) (bit-shift-right lo 8)])
+                             [(bit-and cp 255) (bit-shift-right cp 8)])))
+                 (str s))))
+
+(defn- from-utf16le [bs] (b/decode-text bs :utf-16le))
+
+(defn- rva->offset [h rva n]
+  (or (some (fn [s] (when (and (<= (:virtual-address s) rva)
+                               (<= (+ rva n) (+ (:virtual-address s) (:raw-size s))))
+                      (+ (:raw-offset s) (- rva (:virtual-address s)))))
+            (:sections h))
+      (bad! "resource data at " (format "%x" rva) " that isn't in the file")))
+
+(defn resources
+  "The resources of program bs: {type {name {language bytes}}}, a type or
+  name an integer id or a string ({} when it has none)."
+  ^Map [^Bytes bs]
+  (let [h (headers bs)
+        [rva] (dir bs h 2)]
+    (if (zero? rva)
+      {}
+      (let [base (rva->offset h rva 16)
+            name-of (fn [e] (if (>= e 0x80000000)
+                              (let [o (+ base (bit-and e 0x7FFFFFFF)) _ (need! bs (+ o 2) "a resource name") n (u16 bs o)]
+                                (need! bs (+ o 2 (* 2 n)) "a resource name")
+                                (from-utf16le (b/slice bs (+ o 2) (+ o 2 (* 2 n)))))
+                              e))
+            walk (fn walk [o depth]
+                   (need! bs (+ o 16) "a resource directory")
+                   (let [n (+ (u16 bs (+ o 12)) (u16 bs (+ o 14)))]
+                     (need! bs (+ o 16 (* 8 n)) "a resource directory")
+                     (into {} (for [i (range n)]
+                                (let [e (+ o 16 (* 8 i)) to (u32 bs (+ e 4))]
+                                  [(name-of (u32 bs e))
+                                   (if (>= to 0x80000000)
+                                     (if (< depth 2) (walk (+ base (bit-and to 0x7FFFFFFF)) (inc depth)) (bad! "resources nested too deep"))
+                                     (let [d (+ base to) _ (need! bs (+ d 16) "a resource")
+                                           drva (u32 bs d) dsize (u32 bs (+ d 4))
+                                           at (rva->offset h drva dsize)]
+                                       (if (= depth 2) (b/slice bs at (+ at dsize)) (bad! "a resource where a directory belongs"))))])))))]
+        (walk base 0)))))
+
+;; ---- resources: writing ----
+
+(defn- key-order [k] (if (string? k) [0 (str/upper-case k) k] [1 "" k]))
+(defn- sorted-keys [m] (sort-by key-order (keys m)))
+
+(defn- rsrc-section
+  "The .rsrc section of resources tree, at rva: Bytes."
+  [tree rva]
+  (let [types (sorted-keys tree)
+        type-dirs (mapv (fn [t] [t (sorted-keys (get tree t))]) types)
+        name-dirs (vec (for [[t ns] type-dirs n ns] [t n (sort (keys (get-in tree [t n])))]))
+        leaves (vec (for [[t n ls] name-dirs l ls] [t n l (get-in tree [t n l])]))
+        dir-size (fn [n] (+ 16 (* 8 n)))
+        type-at (vec (butlast (reductions + (dir-size (count types)) (map (comp dir-size count second) type-dirs))))
+        names-start (+ (dir-size (count types)) (reduce + (map (comp dir-size count second) type-dirs)))
+        name-at (vec (butlast (reductions + names-start (map (fn [[_ _ ls]] (dir-size (count ls))) name-dirs))))
+        leaves-start (+ names-start (reduce + (map (fn [[_ _ ls]] (dir-size (count ls))) name-dirs)))
+        strings-start (+ leaves-start (* 16 (count leaves)))
+        strings (distinct (filter string? (concat types (map second name-dirs))))
+        string-bytes (mapv (fn [s] (let [u (utf16le s)] (b/concat-bytes (le (quot (count u) 2) 2) u))) strings)
+        string-at (zipmap strings (reductions + strings-start (map count string-bytes)))
+        data-start (align (+ strings-start (reduce + (map count string-bytes))) 8)
+        data-at (vec (butlast (reductions (fn [at d] (align (+ at (count d)) 8)) data-start (map #(nth % 3) leaves))))
+        index (fn [coll] (zipmap coll (range)))
+        name-index (index (map (fn [[t n]] [t n]) name-dirs))
+        leaf-index (index (map (fn [[t n l]] [t n l]) leaves))
+        type-index (index types)
+        ident (fn [k] (if (string? k) (bit-or 0x80000000 (get string-at k)) k))
+        directory (fn [ks child-at]
+                    (apply b/concat-bytes (le 0 12) (le (count (filter string? ks)) 2) (le (count (remove string? ks)) 2)
+                           (map (fn [k] (b/concat-bytes (le (ident k) 4) (le (child-at k) 4))) ks)))
+        sub (fn [at] (bit-or 0x80000000 at))]
+    (doseq [[t ns] type-dirs n ns l (keys (get-in tree [t n]))]
+      (when-not (and (or (integer? t) (string? t)) (or (integer? n) (string? n)) (integer? l) (bytes? (get-in tree [t n l])))
+        (error "with-resources: resources are {type {name {language bytes}}}, types and names integers or strings")))
+    (let [dirs (concat [(directory types (fn [t] (sub (nth type-at (type-index t)))))]
+                       (for [[t ns] type-dirs] (directory ns (fn [n] (sub (nth name-at (name-index [t n]))))))
+                       (for [[t n ls] name-dirs] (directory ls (fn [l] (+ leaves-start (* 16 (leaf-index [t n l])))))))
+          entries (map (fn [[_ _ _ d] at] (b/concat-bytes (le (+ rva at) 4) (le (count d) 4) (le 0 8))) leaves data-at)
+          head (apply b/concat-bytes (concat dirs entries string-bytes))]
+      (apply b/concat-bytes (pad-to head 8) (map (fn [[_ _ _ d]] (pad-to d 8)) leaves)))))
+
+(defn with-resources
+  "Program bs with resources tree ({type {name {language bytes}}}) as all
+  its resources, in place of what it had ({} for none)."
+  ^Bytes [^Bytes bs ^Map tree]
+  (let [h (headers bs)
+        [end] (data-end bs h)
+        secs (:sections h)
+        [old-rva] (dir bs h 2)
+        last-sec (peek secs)
+        ;; (the old .rsrc's place is reused when it's the last section, in
+        ;; memory and in the file)
+        replace (and (pos? old-rva) last-sec
+                     (<= (:virtual-address last-sec) old-rva)
+                     (< old-rva (+ (:virtual-address last-sec) (max 1 (:virtual-size last-sec))))
+                     (every? (fn [s] (<= (+ (:virtual-address s) (max (:virtual-size s) (:raw-size s))) (:virtual-address last-sec)))
+                             (pop secs))
+                     (every? (fn [s] (<= (+ (:raw-offset s) (:raw-size s)) (:raw-offset last-sec))) (pop secs)))
+        kept (if replace (pop secs) secs)
+        mem-end (reduce max (:size-of-headers h) (map (fn [s] (+ (:virtual-address s) (max (:virtual-size s) (:raw-size s)))) kept))
+        file-end (if replace (:raw-offset last-sec) end)
+        va (align mem-end (:section-align h))
+        raw-at (align file-end (:file-align h))
+        data (when (seq tree) (rsrc-section tree va))
+        raw-size (if data (align (count data) (:file-align h)) 0)
+        nsec (+ (count kept) (if data 1 0))
+        slot (+ (:table h) (* 40 (count kept)))
+        hend (header-end h)
+        [bound-rva] (dir bs h 11)]
+    (when (and data (> (+ slot 40) hend))
+      (error "skein.pe: this program's headers have no room for another section"))
+    ;; (a new slot must be free; bound imports, an old optimization, may sit
+    ;; there, and are dropped: Windows binds at load time without them)
+    (when (and data (not replace) (zero? bound-rva) (some pos? (b/slice bs slot (+ slot 40))))
+      (error "skein.pe: the room after this program's section table isn't free"))
+    (let [v (vec (b/slice bs 0 hend))
+          v (if (pos? bound-rva) (-> v (put (+ (:dirs h) 88) 0 4) (put (+ (:dirs h) 92) 0 4)) v)
+          ;; the section table: the kept sections, then .rsrc, then zeros
+          v (reduce (fn [v i] (put v i 0 1)) v (range slot (+ (:table h) (* 40 (count secs)))))
+          v (if data
+              (-> v (put slot 0x7273722E 4) (put (+ slot 4) 0x63 4) ; ".rsrc"
+                  (put (+ slot 8) (count data) 4) (put (+ slot 12) va 4)
+                  (put (+ slot 16) raw-size 4) (put (+ slot 20) raw-at 4)
+                  (put (+ slot 36) 0x40000040 4)) ; initialized data, read
+              v)
+          init (+ (- (u32 bs (+ (:opt h) 8)) (if replace (:raw-size last-sec) 0)) raw-size)
+          image (align (if data (+ va (count data)) mem-end) (:section-align h))
+          v (-> v (put (+ (:coff h) 2) nsec 2) (put (+ (:opt h) 8) init 4) (put (+ (:opt h) 56) image 4)
+                (put (+ (:dirs h) 16) (if data va 0) 4) (put (+ (:dirs h) 20) (if data (count data) 0) 4))
+          more (if data (b/concat-bytes (zeros (- raw-at file-end)) (pad-to data (:file-align h))) (bytes []))]
+      (finish bs h v file-end more))))
+
+;; ---- icons ----
+
+(defn- png-size [png]
+  (when (and (>= (count png) 24) (= (vec (b/slice png 0 8)) [137 80 78 71 13 10 26 10]))
+    [(b/read-uint png 16 4 :be) (b/read-uint png 20 4 :be)]))
+
+(defn- ico-images
+  "The images of icon file ico: [{:entry (its 12 bytes but the offset)
+  :data}]."
+  [ico]
+  (when-not (bytes? ico) (error "An icon file is Bytes"))
+  (when-not (and (>= (count ico) 6) (= 0 (u16 ico 0)) (= 1 (u16 ico 2)) (pos? (u16 ico 4)))
+    (error ParseError :message "Not an icon file (.ico)" :source "pe"))
+  (let [n (u16 ico 4)]
+    (when (> (+ 6 (* 16 n)) (count ico)) (error ParseError :message "An icon file's directory runs past its end" :source "pe"))
+    (mapv (fn [i]
+            (let [e (+ 6 (* 16 i)) size (u32 ico (+ e 8)) at (u32 ico (+ e 12))]
+              (when (> (+ at size) (count ico)) (error ParseError :message "An icon's image runs past the file's end" :source "pe"))
+              (let [data (b/slice ico at (+ at size))
+                    png (png-size data)]
+                ;; (a PNG image may say 0 planes and bits; Windows picks
+                ;; images by them, so they're filled in)
+                {:width (u8 ico e) :height (u8 ico (inc e)) :colors (u8 ico (+ e 2))
+                 :planes (if (and png (zero? (u16 ico (+ e 4)))) 1 (u16 ico (+ e 4)))
+                 :bits (if (and png (zero? (u16 ico (+ e 6)))) 32 (u16 ico (+ e 6)))
+                 :data data})))
+          (range n))))
+
+(defn png->ico
+  "An icon file (.ico) of one PNG image, at most 256 pixels square
+  (Windows scales it for smaller sizes; an .ico with an image drawn for each
+  size looks better)."
+  ^Bytes [^Bytes png]
+  (let [[w h] (or (png-size png) (error "png->ico: not a PNG"))]
+    (when (or (> w 256) (> h 256)) (error (str "png->ico: a Windows icon is at most 256 pixels square, and this PNG is " w "x" h)))
+    (b/concat-bytes (le 0 2) (le 1 2) (le 1 2)
+                    (le (mod w 256) 1) (le (mod h 256) 1) (le 0 2) (le 1 2) (le 32 2) (le (count png) 4) (le 22 4)
+                    png)))
+
+(defn icon-resources
+  "Resources for icon file ico (an .ico's Bytes): an RT_GROUP_ICON named
+  name (default 1; Explorer shows a program's first) listing its images,
+  each an RT_ICON numbered from 1. Options :name, :language (1033)."
+  ^Map [^Bytes ico & {:keys [name language] :or {name 1 language english}}]
+  (let [images (ico-images ico)
+        group (apply b/concat-bytes (le 0 2) (le 1 2) (le (count images) 2)
+                     (map-indexed (fn [i m] (b/concat-bytes (le (:width m) 1) (le (:height m) 1) (le (:colors m) 1) (le 0 1)
+                                                            (le (:planes m) 2) (le (:bits m) 2) (le (count (:data m)) 4) (le (inc i) 2)))
+                                  images))]
+    {rt-icon (into {} (map-indexed (fn [i m] [(inc i) {language (:data m)}]) images))
+     rt-group-icon {name {language group}}}))
+
+(defn icon-groups
+  "The icons in resources tree: [{:name :language :images [{:width
+  :height :bits :id :size :png}]}], each image's :size what its RT_ICON
+  holds (nil when it's missing)."
+  ^Vector [^Map tree]
+  (vec (for [n (sorted-keys (get tree rt-group-icon {}))
+             [l g] (sort (get-in tree [rt-group-icon n]))]
+         {:name n :language l
+          :images (mapv (fn [i] (let [e (+ 6 (* 14 i)) id (u16 g (+ e 12))
+                                      img (first (vals (get-in tree [rt-icon id])))]
+                                  {:width (let [w (u8 g e)] (if (zero? w) 256 w)) :height (let [w (u8 g (inc e))] (if (zero? w) 256 w))
+                                   :bits (u16 g (+ e 6)) :id id :size (when img (count img)) :png (boolean (and img (png-size img)))}))
+                        (range (u16 g 4)))})))
+
+;; ---- version information ----
+
+(defn- version-numbers [v]
+  (let [s (or (re-find #"^\d+(?:\.\d+){0,3}" (str v)) (error (str "version-resources: " (pr-str v) " doesn't begin with a number")))
+        ns (mapv parse-long (str/split s #"\."))]
+    (when (some #(> % 65535) ns) (error (str "version-resources: each part of a Windows version is at most 65535: " v)))
+    (into ns (repeat (- 4 (count ns)) 0))))
+
+(defn- node
+  "A VERSIONINFO block: key, its value (Bytes) and whether it's text (its
+  length then counted in characters), then its children, each at a
+  multiple of 4 bytes from the block's start."
+  [key value text children]
+  (let [start (b/concat-bytes (zeros 6) (utf16le key) (zeros 2))
+        body (reduce (fn [acc c] (b/concat-bytes (pad-to acc 4) c)) (b/concat-bytes (pad-to start 4) value) children)]
+    (b/concat-bytes (le (count body) 2) (le (if text (quot (count value) 2) (count value)) 2) (le (if text 1 0) 2)
+                    (b/slice body 6))))
+
+(defn version-resources
+  "Resources for version information (what Explorer's Properties > Details
+  and Task Manager show): an RT_VERSION. info: {:file-version
+  :product-version (\"1.2.0\": up to four numbers, a suffix such as -beta
+  left out of the numbers; the product's is the file's unless given)
+  :strings {\"FileDescription\" \"App\" …} :language (1033)}. Strings
+  FileVersion and ProductVersion are the versions as given, unless set."
+  ^Map [^Map info]
+  (let [{:keys [file-version product-version strings language] :or {language english}} info
+        file-version (or file-version (error "version-resources: a :file-version"))
+        product-version (or product-version file-version)
+        [a b c d] (version-numbers file-version)
+        [pa pb pc pd] (version-numbers product-version)
+        strings (merge {"FileVersion" (str file-version) "ProductVersion" (str product-version)} strings)
+        fixed (b/concat-bytes (le 0xFEEF04BD 4) (le 0x10000 4)
+                              (le (+ (* a 65536) b) 4) (le (+ (* c 65536) d) 4) (le (+ (* pa 65536) pb) 4) (le (+ (* pc 65536) pd) 4)
+                              (le 0x3F 4) (le 0 4) (le 0x40004 4) (le 1 4) (le 0 4) (le 0 4) (le 0 4))
+        table (str (format "%04x" language) "04b0") ; (as rc.exe writes it)
+        text (fn [s] (b/concat-bytes (utf16le s) (zeros 2)))]
+    {rt-version
+     {1 {language
+         (node "VS_VERSION_INFO" fixed false
+               [(node "StringFileInfo" (bytes []) true
+                      [(node table (bytes []) true
+                             (mapv (fn [[k v]] (node k (text (str v)) true [])) (sort strings)))])
+                (node "VarFileInfo" (bytes []) true
+                      [(node "Translation" (b/concat-bytes (le language 2) (le 1200 2)) false [])])])}}}))
+
+(defn read-version-info
+  "The version information in RT_VERSION resource bs: {:file-version
+  :product-version (each four numbers, \"1.2.0.0\") :strings {name value}
+  :translations [[language codepage]]}."
+  ^Map [^Bytes bs]
+  (let [parse (fn parse [o]
+                (when (> (+ o 6) (count bs)) (error ParseError :message "A broken VERSIONINFO" :source "pe"))
+                (let [len (u16 bs o) vlen (u16 bs (+ o 2)) text (= 1 (u16 bs (+ o 4)))
+                      kend (loop [e (+ o 6)] (cond (>= (inc e) (count bs)) (error ParseError :message "A broken VERSIONINFO" :source "pe")
+                                                   (zero? (u16 bs e)) e
+                                                   :else (recur (+ e 2))))
+                      key (from-utf16le (b/slice bs (+ o 6) kend))
+                      vat (align (+ kend 2) 4)
+                      vbytes (if text (* 2 vlen) vlen)
+                      end (+ o len)]
+                  (when (or (< len 6) (> end (count bs))) (error ParseError :message "A broken VERSIONINFO" :source "pe"))
+                  {:key key :value (b/slice bs (min vat end) (min (+ vat vbytes) end)) :text text
+                   :children (loop [c (align (+ vat vbytes) 4) out []]
+                               (if (< c end) (let [k (parse c)] (recur (align (+ c (:len k)) 4) (conj out k))) out))
+                   :len len}))
+        root (parse 0)
+        f (:value root)
+        _ (when-not (and (>= (count f) 52) (= 0xFEEF04BD (u32 f 0))) (error ParseError :message "No VS_FIXEDFILEINFO" :source "pe"))
+        ver (fn [ms ls] (str/join "." [(bit-shift-right ms 16) (bit-and ms 0xFFFF) (bit-shift-right ls 16) (bit-and ls 0xFFFF)]))
+        kids (fn [k n] (mapcat :children (filter #(= n (:key %)) (:children k))))
+        strip (fn [s] (str/replace s #"\x00+$" ""))]
+    {:file-version (ver (u32 f 8) (u32 f 12)) :product-version (ver (u32 f 16) (u32 f 20))
+     :strings (into {} (for [t (kids root "StringFileInfo") s (:children t)] [(:key s) (strip (from-utf16le (:value s)))]))
+     :translations (vec (for [v (kids root "VarFileInfo") :when (= "Translation" (:key v))
+                              i (range 0 (count (:value v)) 4)]
+                          [(u16 (:value v) i) (u16 (:value v) (+ i 2))]))}))

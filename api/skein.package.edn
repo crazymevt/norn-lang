@@ -1,10 +1,16 @@
 ;; skein.package's public interface, recorded by skein api-diff --record.
 {
  "build-image!" {:arglists ["[info out]"], :kind :function}
- "cli-archive!" {:arglists ["[info image out]"], :kind :function}
+ "cli-archive!" {:arglists ["[info image out]" "[info image out helpers]"], :kind :function}
+ "helper-variable" {:arglists ["[h]"], :kind :function}
+ "helpers" {:arglists ["[info platform & {:keys [given]}]"], :kind :function}
  "info-plist" {:arglists ["[info]"], :kind :function}
- "mac-app!" {:arglists ["[info image out]"], :kind :function}
+ "mac-app!" {:arglists ["[info image out]" "[info image out helpers]"], :kind :function}
  "main" {:arglists ["[& args]"], :kind :function}
- "package!" {:arglists ["[dir & {:keys [out targets]}]"], :kind :function}
+ "package!" {:arglists ["[dir & {:keys [out targets launcher], given :helpers}]"], :kind :function}
  "package-info" {:arglists ["[dir]"], :kind :function}
+ "windows-app!" {:arglists ["[info image out launcher helpers]"], :kind :function}
+ "windows-exe" {:arglists ["[info exe subsystem ico]"], :kind :function}
+ "windows-gui?" {:arglists ["[info helpers]"], :kind :function}
+ "windows-launcher" {:arglists ["[info launcher]"], :kind :function}
 }

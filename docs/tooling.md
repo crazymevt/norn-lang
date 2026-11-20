@@ -22,7 +22,7 @@ also substitute `./target/release/skein` after [building it](getting-started.md#
 | `skein run [ARGS…]` | Call the project's `:main` with the arguments. Its integer result is the exit status. |
 | `skein dev [ARGS…]` | Run the project's `:main`, and reload each module that's saved while it runs. See [Live reloading](#live-reloading). |
 | `skein api-diff [--record] [MODULE…]` | Compare each sealed module's public interface with the one recorded under `api/`: breaking changes, and compatible ones. `--record` records them. See [Sealed modules](#sealed-modules). |
-| `skein package [--cli] [--app] [--out DIR]` | Package the project for release: a command-line archive and, on macOS, an app. See [Packaging](#packaging). |
+| `skein package [--cli] [--app] [--windows] [--launcher FILE] [--helper NAME=FILE] [--out DIR]` | Package the project for release: a command-line archive, on macOS a macOS app, and from any OS a Windows app. See [Packaging](#packaging). |
 
 ## Write and run a test
 
@@ -229,6 +229,10 @@ native helpers its packages declare into the `dist/` folder.
   and `lib/NAME/`, which contains the image, the resources, and the helpers.
 - A macOS app, `Display Name.app`, comes zipped for sharing. Its
   `Info.plist` and icon come from `skein.edn`.
+- A Windows app, `Display Name-VERSION-windows-ARCH.zip`, holds a
+  `Display Name` folder with `bin/NAME.exe` and `lib/NAME/`, laid out as
+  the archive is. `NAME.exe` has the app's icon and version information,
+  and a windowed app opens no console window. It can be made on any OS.
 
 The app's program is a copy of `skein` itself. When `skein` runs under another
 name and finds an image of that name beside it, it runs that image. Every
@@ -254,8 +258,8 @@ renderer.
            :keep []}}                     ; …and --keep each of these
 ```
 
-`--cli` and `--app` choose what to make instead of `:targets`, and `--out`
-sets the output folder. A package that needs a native program declares it
+`--cli`, `--app` and `--windows` choose what to make instead of
+`:targets`, and `--out` sets the output folder. A package that needs a native program declares it
 under `:helpers`, with candidate paths in its folder. `{os}` and `{arch}`
 in a path are filled in, and the first file that exists is bundled. Skein UI
 declares its renderer this way:
@@ -264,6 +268,23 @@ declares its renderer this way:
 :helpers {"skein-ui-host" ["target/release/skein-ui-host" "bin/{os}-{arch}/skein-ui-host"]}
 ```
 
+A helper can also be named by an environment variable: its name in
+capitals, with `_` for each `-`. For Skein UI's renderer that's
+`SKEIN_UI_HOST`, the variable Skein UI itself reads to find the renderer. A
+package fetched from git has no renderer built in its folder, so set it to
+the one you built, for example:
+
+```sh
+SKEIN_UI_HOST=../skein-libs/skein-ui/target/release/skein-ui-host skein package
+```
+
+`--helper NAME=FILE` bundles FILE as helper NAME in each package the
+command makes. Use it for a helper built somewhere else, such as a Windows
+build of `skein-ui-host`. The order is `--helper`, then the variable, then
+the package's own paths. For a Windows app made on another OS, a variable
+that names something other than a Windows program for the launcher's CPU
+is passed over, because on a Mac `SKEIN_UI_HOST` names the Mac renderer.
+
 The app is signed ad hoc, which needs no Apple Developer account. It runs
 on the Mac that built it. Another Mac blocks a downloaded copy the first
 time it opens. To open it there, try to open the app, then go to System
@@ -271,4 +292,57 @@ Settings > Privacy & Security and choose **Open Anyway**. Alternatively,
 run `xattr -dr com.apple.quarantine "Mandelbrot.app"` before opening it.
 Public releases need a Developer ID signature and notarization so that
 macOS opens them without asking.
+
+### Windows apps
+
+A Windows app's program is a Windows `skein.exe`, copied and edited with
+`skein.pe`. On Windows, `skein package --windows` uses the `skein.exe` it
+runs. Elsewhere, give it one with `--launcher FILE` or
+`:package {:windows {:launcher "path"}}`. Build that `skein.exe` from the
+same Skein source as the `skein` that packages, because the image is built
+by the packaging `skein`. An image saved by a different build of Skein
+doesn't load. The launcher's CPU, ARM64 or x64, is the app's.
+
+`skein.edn` describes the Windows parts under `:package :windows`:
+
+```clojure
+:package {:display-name "Linnet"
+          :windows {:icon "assets/linnet.ico"  ; default: :package :icon
+                    :gui true             ; default: if it bundles skein-ui-host
+                    :launcher "../skein.exe"
+                    :company "…"          ; CompanyName in its version information
+                    :copyright "…"}}      ; LegalCopyright
+```
+
+- **The icon** goes into `NAME.exe` as Windows resources, so Explorer, the
+  taskbar's pinned button and shortcuts show it. Give an `.ico` with an
+  image drawn for each size (16, 20, 24, 32, 40, 48, 64 and 256 pixels).
+  A PNG of 256 pixels or less works too, scaled by Windows for the small
+  sizes. On macOS, a larger PNG is first scaled to 256 with `sips`. Without
+  `:windows :icon`, the package's `:icon` is used. A window's title bar
+  and taskbar button show the icon the window is given by the program that
+  makes it, which for a skein-ui app is the renderer.
+- **Version information** comes from `:version` and `:display-name`. It
+  is what Properties > Details and Task Manager show: FileDescription and
+  ProductName are the display name, FileVersion and ProductVersion the
+  version. Windows reads the version as up to four numbers, so a suffix
+  such as `-beta` stays only in the strings.
+- **A windowed app** (`:gui true`) is marked as a Windows GUI program, so
+  Explorer starts it without a console window. Its console helpers are
+  marked windowed too, so starting one doesn't open a console window
+  either. The pipes between them work the same way. A windowed app has no
+  console to print to: what it writes to standard output or standard
+  error goes nowhere. `:gui false` makes a console program, for an app
+  run from a command prompt. The default is windowed when the app bundles
+  skein-ui's renderer.
+- **Helpers** for a Windows app are found as on Windows: `{os}` is
+  `windows`, `{arch}` is the launcher's CPU, and only a Windows program
+  for that CPU counts. So a macOS build in `target/release` is passed over
+  for `bin/windows-aarch64/skein-ui-host.exe`.
+
+The zip isn't signed. Windows SmartScreen asks before it opens a program
+downloaded from the internet that has no signature with a reputation. To
+open it anyway, choose **More info**, then **Run anyway**. Alternatively,
+right-click the zip before extracting it, choose Properties, and select
+**Unblock**.
 

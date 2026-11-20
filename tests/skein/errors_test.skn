@@ -150,7 +150,7 @@
     skein.check skein.cli skein.compress skein.cover skein.crypto skein.csv skein.data skein.decimal skein.deps
     skein.dev skein.doc skein.edn skein.expand skein.ffi skein.fmt skein.format skein.fs skein.http
     skein.image skein.io skein.json skein.lint skein.log skein.lsp skein.markdown skein.math skein.ndjson
-    skein.net skein.new skein.package skein.pprint skein.process skein.prof skein.property skein.random
+    skein.net skein.new skein.package skein.pe skein.pprint skein.process skein.prof skein.property skein.random
     skein.regex skein.rope skein.run skein.schedule skein.set skein.shake skein.signal skein.sqlite skein.stm
     skein.string skein.sync skein.syntax skein.sys skein.terminal skein.test skein.time skein.toml
     skein.uri skein.uuid skein.validate skein.walk skein.xml skein.xref skein.yaml skein.zip])

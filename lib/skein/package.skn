@@ -13,35 +13,56 @@
 ;;;;     Contents/Info.plist
 ;;;;     Contents/MacOS/NAME       the launcher, and native helpers
 ;;;;     Contents/Resources/NAME.skimg, NAME.icns, resources
+;;;;   a Windows app, Display Name-VERSION-windows-ARCH.zip, made on any OS
+;;;;   from a Windows skein.exe (the running one on Windows):
+;;;;     Display Name/bin/NAME.exe          the launcher, with the app's icon
+;;;;                                        and version (skein.pe), and for
+;;;;                                        a windowed app no console
+;;;;     Display Name/lib/NAME/…            as the archive's, helpers NAME.exe
 ;;;;
 ;;;; skein.edn says what goes in, beside :name, :version and :main:
 ;;;;   :package {:id "org.example.app"   the app's identifier (macOS)
 ;;;;             :display-name "App"     its name in Finder and the Dock
 ;;;;             :icon "icon.png"        a PNG (made into .icns) or .icns
 ;;;;             :resources ["assets"]   files and folders to include
-;;;;             :targets [:cli :app]    what to make (default [:cli])
+;;;;             :targets [:cli :app]    what to make (default [:cli]; :windows)
 ;;;;             :shake true             leave out what :main doesn't reach
-;;;;             :keep [app.plugins/x]}  …but keep these (vars, namespaces)
+;;;;             :keep [app.plugins/x]   …but keep these (vars, namespaces)
+;;;;             :windows {:icon "app.ico"      the Windows icon (default :icon:
+;;;;                                            an .ico, or a PNG of 256 px or
+;;;;                                            less; larger made so with sips)
+;;;;                       :gui true            a windowed app: no console
+;;;;                                            (default: when it bundles
+;;;;                                            skein-ui-host)
+;;;;                       :launcher "skein.exe" the Windows skein to copy
+;;;;                       :company "…" :copyright "…"}}  in its version info
 ;;;; and a package may declare native helpers its code runs, found in its
 ;;;; folder, the first candidate that exists ({os} and {arch} filled in;
 ;;;; on Windows a candidate's .exe too, and the helper goes in as NAME.exe):
 ;;;;   :helpers {"skein-ui-host" ["target/release/skein-ui-host"
 ;;;;                             "bin/{os}-{arch}/skein-ui-host"]}
+;;;; Before them come --helper NAME=FILE, then the environment variable of
+;;;; the helper's name in capitals, - as _ (SKEIN_UI_HOST), when it's set.
+;;;; For a Windows app {os} is windows and {arch} the launcher's, and a
+;;;; candidate counts only if it's a Windows program for that CPU. A
+;;;; windowed app's console helpers are marked windowed too: Windows would
+;;;; open a console window for each when the app starts it (their pipes
+;;;; work the same either way).
 ;;;;
 ;;;; The app is signed ad hoc (no Developer ID): it runs on this Mac; on
 ;;;; another, macOS asks before it opens a downloaded one the first time.
 
 (ns skein.package
-  (:require [skein.deps :as deps] [skein.io :as io] [skein.process :as proc] [skein.string :as str]
-            [skein.sys :as sys]))
+  (:require [skein.deps :as deps] [skein.io :as io] [skein.pe :as pe] [skein.process :as proc] [skein.string :as str]
+            [skein.sys :as sys] [skein.zip :as zip]))
 
 (defn- fail [& parts] (error (str "skein package: " (apply str parts))))
 
 (defn- program-files
-  "The files program path p may be: p, and on Windows p.exe after it (a
-  helper's candidates name it as Unix does: target/release/skein-ui-host)."
-  [p]
-  (if (and (= :windows (sys/os)) (not (str/ends-with? (str/lower-case p) ".exe"))) [p (str p ".exe")] [p]))
+  "The files program path p may be on os: p, and on Windows p.exe after it
+  (a helper's candidates name it as Unix does: target/release/skein-ui-host)."
+  [p os]
+  (if (and (= :windows os) (not (str/ends-with? (str/lower-case p) ".exe"))) [p (str p ".exe")] [p]))
 
 (defn- helper-file
   "Helper h's file name in a package, its file being f: h, or h.exe when f
@@ -65,8 +86,9 @@
 
 (defn package-info
   "What `skein package` makes of the project in folder dir: {:dir :name
-  :version :main :id :display-name :icon :resources :targets :helpers
-  :shake :keep}, paths absolute. An error says what's missing."
+  :version :main :id :display-name :icon :resources :targets :helper-specs
+  :shake :keep :windows}, paths absolute (helpers are found by helpers).
+  An error says what's missing."
   [dir]
   (let [dir (io/canonical dir)
         project (deps/read-project dir)
@@ -77,6 +99,7 @@
       (fail "the :name " pname " can't name a program: letters, digits, . _ -"))
     (when-not (:main project) (fail (io/path dir "skein.edn") " needs a :main, the entry function (ns/name)"))
     (when-not (map? p) (fail ":package is a map"))
+    (when-not (map? (or (:windows p) {})) (fail ":package :windows is a map"))
     (when-not (every? symbol? (or (:keep p) []))
       (fail ":package :keep is a vector of names: vars (ns/name) and namespaces"))
     (let [res (mapv (fn [r] (let [f (io/path dir r)]
@@ -87,22 +110,63 @@
                  (let [f (io/path dir i)]
                    (when-not (io/file? f) (fail "the icon " i " isn't there"))
                    f))
+          w (or (:windows p) {})
+          win-icon (when-let [i (:icon w)]
+                     (let [f (io/path dir i)]
+                       (when-not (io/file? f) (fail "the Windows icon " i " isn't there"))
+                       f))
           r (deps/resolve-project dir)
-          {:keys [os arch]} (sys/info)
-          fill (fn [s] (-> s (str/replace "{os}" (name os)) (str/replace "{arch}" (name arch))))
-          helpers (into (sorted-map)
-                        (for [pkg (cons {:name pname :dir dir} (:packages r))
-                              [h candidates] (:helpers (deps/read-project (:dir pkg)))]
-                          (let [found (some (fn [c] (some (fn [f] (when (io/file? f) f)) (program-files (io/path (:dir pkg) (fill c)))))
-                                            candidates)]
-                            (when-not found
-                              (fail (:name pkg) " needs its helper " h ", and none of " (pr-str (mapv fill candidates))
-                                    " is in " (:dir pkg) ": build it first"))
-                            [h found])))]
+          specs (vec (for [pkg (cons {:name pname :dir dir} (:packages r))
+                           [h candidates] (sort-by first (:helpers (deps/read-project (:dir pkg))))]
+                       {:package (:name pkg) :dir (:dir pkg) :name h :candidates candidates}))]
       {:dir dir :name (str pname) :version (or (:version project) "0.0.0") :main (:main project)
        :id (or (:id p) (str "dev.skn." pname)) :display-name (or (:display-name p) (default-display-name pname))
-       :icon icon :resources res :targets (vec (or (:targets p) [:cli])) :helpers helpers
-       :shake (boolean (:shake p)) :keep (vec (or (:keep p) []))})))
+       :icon icon :resources res :targets (vec (or (:targets p) [:cli])) :helper-specs specs
+       :shake (boolean (:shake p)) :keep (vec (or (:keep p) []))
+       :windows {:icon win-icon :gui (:gui w) :launcher (when-let [l (:launcher w)] (io/path dir l))
+                 :company (:company w) :copyright (:copyright w)}})))
+
+(defn- windows-program-for
+  "f, if it's a Windows program for CPU arch; else nil."
+  [f arch]
+  (when (io/file? f)
+    (let [bs (io/read-bytes f)]
+      (when (and (pe/pe? bs) (= arch (:machine (pe/info bs)))) f))))
+
+(defn helper-variable
+  "The environment variable that can name helper h's file: h upper-cased,
+  each - a _ (skein-ui-host's is SKEIN_UI_HOST, which skein-ui reads too)."
+  [h]
+  (str/replace (str/upper-case h) "-" "_"))
+
+(defn helpers
+  "The native helpers the project info describes, for platform {:os
+  :arch}: {name file}. A helper's file is the one given ({name file}), else
+  the one its environment variable names (helper-variable), else the first
+  of its package's candidates there is. For Windows, only a Windows program
+  for the CPU counts. For another OS than this one, a variable naming what
+  isn't a helper there is passed over (on a Mac, SKEIN_UI_HOST is the Mac
+  renderer). An error names a helper none of whose candidates is there."
+  [info platform & {:keys [given]}]
+  (let [{:keys [os arch]} platform
+        fill (fn [s] (-> s (str/replace "{os}" (name os)) (str/replace "{arch}" (name arch))))
+        usable (if (= :windows os) (fn [f] (windows-program-for f arch)) (fn [f] (when (io/file? f) f)))]
+    (into (sorted-map)
+          (for [{:keys [package dir candidates] h :name} (:helper-specs info)]
+            (if-let [g (or (get given h) (when (= os (sys/os)) (not-empty (sys/getenv (helper-variable h)))))]
+              (do (when-not (usable g)
+                    (fail "the helper file " g " for " h (when-not (get given h) (str " (" (helper-variable h) ")"))
+                          (if (and (= :windows os) (io/file? g)) (str " isn't a Windows program for " (name arch)) " isn't there")))
+                  [h (io/absolute g)])
+              (let [env (when (not= os (sys/os)) (some-> (not-empty (sys/getenv (helper-variable h))) usable))
+                    found (or env (some (fn [c] (some usable (program-files (io/path dir (fill c)) os))) candidates))]
+                (when-not found
+                  (fail package " needs its helper " h (when (= :windows os) (str " for windows-" (name arch)))
+                        ", and none of " (pr-str (mapv fill candidates)) " is in " dir
+                        (if (= :windows os)
+                          ": build it for Windows, or give one with --helper NAME=FILE"
+                          (str ": build it first, or give one with " (helper-variable h) "=FILE or --helper NAME=FILE"))))
+                [h found]))))))
 
 ;; ---- pieces ----
 
@@ -170,82 +234,203 @@
 
 (defn cli-archive!
   "The command-line archive of the project info describes, in folder out,
-  from image: its path."
-  [info image out]
-  (let [{:keys [os arch]} (sys/info)
-        base (str (:name info) "-" (:version info) "-" (name os) "-" (name arch))
-        root (fresh-dir! (io/path out base))
-        lib (io/path root "lib" (:name info))
-        archive (io/path out (str base ".tar.gz"))]
-    (io/mkdirs! (io/path root "bin"))
-    ;; (Windows runs a program by its .exe)
-    (io/copy! (:executable (sys/info)) (io/path root "bin" (str (:name info) (when (= :windows os) ".exe"))))
-    (io/mkdirs! lib)
-    (io/copy! image (io/path lib (str (:name info) ".skimg")))
-    (doseq [r (:resources info)] (copy-tree! r (io/path lib (io/file-name r))))
-    (doseq [[h f] (:helpers info)] (io/copy! f (io/path lib (helper-file h f))))
-    (when (io/exists? archive) (io/delete! archive))
-    (sh! "tar" "-czf" archive "-C" out base)
-    archive))
+  from image, with helpers ({name file}; by default those found for this
+  system): its path."
+  ([info image out] (cli-archive! info image out (helpers info (select-keys (sys/info) [:os :arch]))))
+  ([info image out helpers]
+   (let [{:keys [os arch]} (sys/info)
+         base (str (:name info) "-" (:version info) "-" (name os) "-" (name arch))
+         root (fresh-dir! (io/path out base))
+         lib (io/path root "lib" (:name info))
+         archive (io/path out (str base ".tar.gz"))]
+     (io/mkdirs! (io/path root "bin"))
+     ;; (Windows runs a program by its .exe)
+     (io/copy! (:executable (sys/info)) (io/path root "bin" (str (:name info) (when (= :windows os) ".exe"))))
+     (io/mkdirs! lib)
+     (io/copy! image (io/path lib (str (:name info) ".skimg")))
+     (doseq [r (:resources info)] (copy-tree! r (io/path lib (io/file-name r))))
+     (doseq [[h f] helpers] (io/copy! f (io/path lib (helper-file h f))))
+     (when (io/exists? archive) (io/delete! archive))
+     (sh! "tar" "-czf" archive "-C" out base)
+     archive)))
 
 (defn mac-app!
   "The macOS app of the project info describes, in folder out, from image,
+  with helpers ({name file}; by default those found for this system),
   signed ad hoc and zipped: [app zip]."
-  [info image out]
-  (when-not (= :macos (sys/os)) (fail "a macOS app is made on macOS"))
-  (let [app (io/path out (str (:display-name info) ".app"))
-        zip (io/path out (str (:display-name info) "-" (:version info) "-macos-" (name (sys/arch)) ".zip"))
-        contents (io/path app "Contents")
-        macos (io/path contents "MacOS")
-        res (io/path contents "Resources")]
-    (fresh-dir! app)
-    (io/mkdirs! macos)
-    (io/mkdirs! res)
-    (io/write-text (io/path contents "Info.plist") (info-plist info))
-    (io/write-text (io/path contents "PkgInfo") "APPL????")
-    (io/copy! (:executable (sys/info)) (io/path macos (:name info)))
-    (doseq [[h f] (:helpers info)] (io/copy! f (io/path macos h)))
-    (io/copy! image (io/path res (str (:name info) ".skimg")))
-    (when-let [i (:icon info)] (make-icns! i (io/path res (str (:name info) ".icns")) (io/path out ".build")))
-    (doseq [r (:resources info)] (copy-tree! r (io/path res (io/file-name r))))
-    ;; ad hoc: the helpers, then the app (its seal covers the rest)
-    (doseq [[h _] (:helpers info)] (sh! "codesign" "--force" "--sign" "-" (io/path macos h)))
-    (sh! "codesign" "--force" "--sign" "-" app)
-    (sh! "codesign" "--verify" "--strict" app)
-    (when (io/exists? zip) (io/delete! zip))
-    (sh! "ditto" "-c" "-k" "--sequesterRsrc" "--keepParent" app zip)
-    [app zip]))
+  ([info image out] (mac-app! info image out (helpers info (select-keys (sys/info) [:os :arch]))))
+  ([info image out helpers]
+   (when-not (= :macos (sys/os)) (fail "a macOS app is made on macOS"))
+   (let [app (io/path out (str (:display-name info) ".app"))
+         zip (io/path out (str (:display-name info) "-" (:version info) "-macos-" (name (sys/arch)) ".zip"))
+         contents (io/path app "Contents")
+         macos (io/path contents "MacOS")
+         res (io/path contents "Resources")]
+     (fresh-dir! app)
+     (io/mkdirs! macos)
+     (io/mkdirs! res)
+     (io/write-text (io/path contents "Info.plist") (info-plist info))
+     (io/write-text (io/path contents "PkgInfo") "APPL????")
+     (io/copy! (:executable (sys/info)) (io/path macos (:name info)))
+     (doseq [[h f] helpers] (io/copy! f (io/path macos h)))
+     (io/copy! image (io/path res (str (:name info) ".skimg")))
+     (when-let [i (:icon info)] (make-icns! i (io/path res (str (:name info) ".icns")) (io/path out ".build")))
+     (doseq [r (:resources info)] (copy-tree! r (io/path res (io/file-name r))))
+     ;; ad hoc: the helpers, then the app (its seal covers the rest)
+     (doseq [[h _] helpers] (sh! "codesign" "--force" "--sign" "-" (io/path macos h)))
+     (sh! "codesign" "--force" "--sign" "-" app)
+     (sh! "codesign" "--verify" "--strict" app)
+     (when (io/exists? zip) (io/delete! zip))
+     (sh! "ditto" "-c" "-k" "--sequesterRsrc" "--keepParent" app zip)
+     [app zip])))
+
+(defn- windows-icon
+  "The Windows icon of the project info describes, as an .ico's Bytes (nil
+  for none): :windows :icon, else :icon; an .ico as it is, a PNG made one
+  (one larger than 256 pixels made 256 first, with sips on macOS)."
+  [info tmp]
+  (when-let [f (or (:icon (:windows info)) (:icon info))]
+    (let [lower (str/lower-case f)]
+      (cond (str/ends-with? lower ".ico") (io/read-bytes f)
+            (str/ends-with? lower ".png")
+            (let [png (io/read-bytes f)]
+              (try (pe/png->ico png)
+                   (catch Error e
+                     (when-not (= :macos (sys/os))
+                       (fail "the icon " f " is larger than a Windows icon (256 pixels): give :package :windows :icon an .ico"
+                             " (or a PNG of 256 pixels or less)"))
+                     (let [small (io/path (fresh-dir! tmp) "icon-256.png")]
+                       (sh! "sips" "-z" "256" "256" f "--out" small)
+                       (pe/png->ico (io/read-bytes small))))))
+            :else (fail "the icon " f " isn't an .ico or a PNG, as a Windows icon is made from")))))
+
+(defn windows-gui?
+  "Does the Windows app of the project info describes, with helpers, run
+  windowed (no console)? :package :windows :gui, else whether it bundles
+  skein-ui's renderer."
+  [info helpers]
+  (let [g (:gui (:windows info))]
+    (if (nil? g) (contains? helpers "skein-ui-host") (boolean g))))
+
+(defn windows-exe
+  "Windows skein exe (Bytes) as the program of the project info describes:
+  subsystem :gui or :console, and its icon (ico, Bytes, or nil) and
+  version information in its resources."
+  [info exe subsystem ico]
+  (let [w (:windows info)
+        strings (cond-> {"FileDescription" (:display-name info) "ProductName" (:display-name info)
+                         "InternalName" (:name info) "OriginalFilename" (str (:name info) ".exe")}
+                        (:company w) (assoc "CompanyName" (str (:company w)))
+                        (:copyright w) (assoc "LegalCopyright" (str (:copyright w))))
+        tree (cond-> (merge (pe/resources exe) (pe/version-resources {:file-version (:version info) :strings strings}))
+                     ico (-> (dissoc pe/rt-icon pe/rt-group-icon) (merge (pe/icon-resources ico))))]
+    (-> exe (pe/with-subsystem subsystem) (pe/with-resources tree))))
+
+(defn windows-launcher
+  "The Windows skein.exe to make the app of the project info describes
+  from: launcher if given, else :package :windows :launcher, else on
+  Windows this one. An error says what's needed."
+  [info launcher]
+  (let [f (or launcher (:launcher (:windows info)) (when (= :windows (sys/os)) (:executable (sys/info))))]
+    (when-not f
+      (fail "a Windows app is made from a Windows skein.exe, built from the same Skein as this skein ("
+            (:skein-version (sys/info)) "): give it with --launcher FILE or :package :windows :launcher"))
+    (when-not (io/file? f) (fail "the launcher " f " isn't there"))
+    (let [i (try (pe/info (io/read-bytes f)) (catch Error _ nil))]
+      (when-not (and i (not (:dll i)) (#{:aarch64 :x86_64} (:machine i)))
+        (fail "the launcher " f " isn't a Windows skein.exe for ARM64 or x64")))
+    f))
+
+(defn- files-under
+  "Every file under folder dir: [[path-within-dir path]], paths within
+  joined with /."
+  [dir]
+  (letfn [(walk [d prefix]
+                (mapcat (fn [n] (let [f (io/path d n) rel (str prefix n)]
+                                  (if (io/directory? f) (walk f (str rel "/")) [[rel f]])))
+                        (sort (io/list-dir d))))]
+    (vec (walk dir ""))))
+
+(defn windows-app!
+  "The Windows app of the project info describes, in folder out, from
+  image and Windows skein.exe launcher, with helpers ({name file}, Windows
+  programs), zipped: [folder zip]."
+  [info image out launcher helpers]
+  (let [exe (io/read-bytes launcher)
+        arch (:machine (pe/info exe))
+        gui (windows-gui? info helpers)
+        stage (fresh-dir! (io/path out (str "windows-" (name arch))))
+        root (io/path stage (:display-name info))
+        lib (io/path root "lib" (:name info))
+        zip-file (io/path out (str (:display-name info) "-" (:version info) "-windows-" (name arch) ".zip"))]
+    (io/mkdirs! (io/path root "bin"))
+    (io/mkdirs! lib)
+    (io/write-bytes (io/path root "bin" (str (:name info) ".exe"))
+                    (windows-exe info exe (if gui :gui :console) (windows-icon info (io/path out ".build" "windows-icon"))))
+    (io/copy! image (io/path lib (str (:name info) ".skimg")))
+    (doseq [r (:resources info)] (copy-tree! r (io/path lib (io/file-name r))))
+    (doseq [[h f] helpers]
+      (let [bs (io/read-bytes f)
+            to (io/path lib (if (str/ends-with? (str/lower-case h) ".exe") h (str h ".exe")))]
+        ;; (a console helper of a windowed app would get a console window)
+        (io/write-bytes to (if (and gui (= :console (:subsystem (pe/info bs)))) (pe/with-subsystem bs :gui) bs))))
+    (when (io/exists? zip-file) (io/delete! zip-file))
+    (io/write-bytes zip-file (zip/zip (mapv (fn [[rel f]] [rel (io/read-bytes f)]) (files-under stage))))
+    [root zip-file]))
 
 (defn package!
-  "Package the project in folder dir: what it made, {:image :cli :app :zip}.
-  Options: :out (default dir/dist), :targets (default the project's)."
-  [dir & {:keys [out targets]}]
+  "Package the project in folder dir: what it made, {:image :cli :app :zip
+  :windows :windows-zip}. Options: :out (default dir/dist), :targets
+  (default the project's), :launcher (the Windows skein.exe), :helpers
+  ({name file}, used in place of what's found)."
+  [dir & {:keys [out targets launcher] given :helpers}]
   (let [info (package-info dir)
         out (io/absolute (or out (io/path (:dir info) "dist")))
         targets (or targets (:targets info))
+        _ (when-let [bad (seq (remove #{:cli :app :windows} targets))]
+            (fail "no such target as " (str/join ", " (map pr-str bad)) ": :cli, :app or :windows"))
+        _ (when-let [unknown (seq (remove (set (map :name (:helper-specs info))) (keys given)))]
+            (fail "no package declares a helper " (str/join ", " unknown)))
+        host (select-keys (sys/info) [:os :arch])
+        host-helpers (when (some #{:cli :app} targets) (helpers info host :given given))
+        win (when (some #{:windows} targets)
+              (let [l (windows-launcher info launcher)]
+                {:launcher l :helpers (helpers info {:os :windows :arch (:machine (pe/info (io/read-bytes l)))} :given given)}))
         image (build-image! info (io/path out ".build" (str (:name info) ".skimg")))]
     (cond-> {:image image}
-            (some #{:cli} targets) (assoc :cli (cli-archive! info image out))
-            (some #{:app} targets) (merge (let [[app zip] (mac-app! info image out)] {:app app :zip zip})))))
+            (some #{:cli} targets) (assoc :cli (cli-archive! info image out host-helpers))
+            (some #{:app} targets) (merge (let [[app zip] (mac-app! info image out host-helpers)] {:app app :zip zip}))
+            win (merge (let [[app zip] (windows-app! info image out (:launcher win) (:helpers win))]
+                         {:windows app :windows-zip zip})))))
 
 (defn main
-  "`skein package [--cli] [--app] [--out DIR] [FOLDER]`: package the project
-  (default the current folder). --cli and --app choose what to make
-  instead of skein.edn's :package :targets."
+  "`skein package [--cli] [--app] [--windows] [--launcher FILE] [--helper
+  NAME=FILE]… [--out DIR] [FOLDER]`: package the project (default the
+  current folder). --cli, --app and --windows choose what to make instead
+  of skein.edn's :package :targets; --launcher is the Windows skein.exe a
+  Windows app is made from (on Windows, by default, this one), --helper a
+  native helper's file in place of the one its package names."
   [& args]
-  (let [opts (loop [args args o {:targets []}]
+  (let [opts (loop [args args o {:targets [] :helpers {}}]
                (if-let [a (first args)]
                  (cond (= a "--cli") (recur (next args) (update o :targets conj :cli))
                        (= a "--app") (recur (next args) (update o :targets conj :app))
+                       (= a "--windows") (recur (next args) (update o :targets conj :windows))
                        (= a "--out") (recur (nnext args) (assoc o :out (second args)))
+                       (= a "--launcher") (recur (nnext args) (assoc o :launcher (some-> (second args) io/absolute)))
+                       (= a "--helper") (if-let [[_ h f] (re-matches #"([^=]+)=(.+)" (or (second args) ""))]
+                                          (recur (nnext args) (assoc-in o [:helpers h] (io/absolute f)))
+                                          (do (println "skein package: --helper NAME=FILE") ::bad))
                        (str/starts-with? a "-") (do (println "skein package: unknown option" a) ::bad)
                        :else (recur (next args) (assoc o :dir a)))
                  o))]
     (if (= ::bad opts)
       2
       (try
-        (let [r (package! (or (:dir opts) (sys/cwd)) :out (:out opts) :targets (not-empty (:targets opts)))]
+        (let [r (package! (or (:dir opts) (sys/cwd)) :out (:out opts) :targets (not-empty (:targets opts))
+                          :launcher (:launcher opts) :helpers (:helpers opts))]
           (when (:cli r) (println "made" (:cli r)))
           (when (:app r) (println "made" (:app r) "\n     " (:zip r)))
+          (when (:windows r) (println "made" (:windows r) "\n     " (:windows-zip r)))
           0)
         (catch Error e (println (condition-message e)) 1)))))

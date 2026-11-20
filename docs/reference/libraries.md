@@ -632,6 +632,7 @@ transaction example.
 | `skein.lsp` | `skein lsp`, a Language Server Protocol server over the editor protocol's ops (see [Editors](../editors.md)). |
 | `skein.deps` | Read project manifests and resolve dependencies. |
 | `skein.image` | Inspect and compare saved images. |
+| `skein.pe` | Read Windows programs (.exe and .dll), mark one windowed or console, and set its resources: an icon from an .ico, version information. `skein package --windows` uses it, on any OS. |
 | `skein.shake` | What shaking an image leaves out (`save-image :shake`, `skein build --shake`): `shake-plan`, `shake-report`. |
 
 See [command-line tools](../tooling.md) for the corresponding shell commands.

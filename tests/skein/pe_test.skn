@@ -1,0 +1,214 @@
+;;;; skein.pe: Windows programs' headers, subsystem and resources, on real
+;;;; programs (tests/skein/pe, linked by rust-lld: see its README).
+(ns pe-test
+  (:require [skein.test :refer [deftest is testing]] [skein.pe :as pe] [skein.bytes :as b] [skein.io :as io]
+            [skein.string :as str]))
+
+;; This file's folder (the test programs are under it, in pe/).
+(def here (let [loc (%location)]
+            (io/parent (subs loc 0 (str/last-index-of loc ":")))))
+
+(defn- program [name] (io/read-bytes (io/path here "pe" name)))
+(defn- parse-error? [f] (try (f) false (catch ParseError _ true)))
+(defn- raises? [f] (try (f) false (catch Error _ true)))
+(defn- u16 [bs i] (b/read-uint bs i 2 :le))
+(defn- u32 [bs i] (b/read-uint bs i 4 :le))
+
+(defn- png
+  "The start of a PNG of w by h pixels: its signature and header, which is
+  all skein.pe reads of one (an icon's image is copied as it is)."
+  [w h]
+  (b/concat-bytes (b/unhex "89504e470d0a1a0a0000000d49484452") (b/uint-bytes w 4 :be) (b/uint-bytes h 4 :be)
+                  (b/unhex "0806000000") (bytes (range 40))))
+
+(defn- ico
+  "An icon file of images (PNGs), as tools write one: 256 as 0."
+  [images]
+  (let [first-at (+ 6 (* 16 (count images)))
+        ats (reductions + first-at (map count images))
+        size (fn [p] (let [w (b/read-uint p 16 4 :be)] (if (= 256 w) 0 w)))]
+    (apply b/concat-bytes (b/uint-bytes 0 2 :le) (b/uint-bytes 1 2 :le) (b/uint-bytes (count images) 2 :le)
+           (concat (map (fn [p at] (b/concat-bytes (bytes [(size p) (size p) 0 0]) (b/uint-bytes 1 2 :le) (b/uint-bytes 32 2 :le)
+                                                   (b/uint-bytes (count p) 4 :le) (b/uint-bytes at 4 :le)))
+                        images ats)
+                   images))))
+
+(def icon (ico [(png 16 16) (png 32 32) (png 256 256)]))
+(def version (pe/version-resources {:file-version "1.2.3-beta" :strings {"FileDescription" "Hello" "ProductName" "Hello"}}))
+
+(deftest what-a-program-is
+  (let [arm (pe/info (program "hello-arm64.exe"))
+        x64 (pe/info (program "hello-x64.exe"))
+        man (pe/info (program "hello-manifest-arm64.exe"))]
+    (is (= :aarch64 (:machine arm)))
+    (is (= :x86_64 (:machine x64)))
+    (is (= [:console :console :console] (mapv :subsystem [arm x64 man])))
+    (is (:pe32+ arm))
+    (is (not (:dll arm)))
+    (is (not (:signed arm)))
+    (is (= [".text" ".rdata" ".pdata" ".reloc"] (mapv :name (:sections arm))))
+    (is (= [".text" ".rdata" ".pdata" ".rsrc" ".reloc"] (mapv :name (:sections man))))
+    (is (= [0 0] (:resources arm)))
+    (is (= {} (pe/resources (program "hello-arm64.exe"))))
+    (is (= [pe/rt-manifest] (keys (pe/resources (program "hello-manifest-arm64.exe")))))
+    (is (str/includes? (bytes->string (get-in (pe/resources (program "hello-manifest-arm64.exe")) [pe/rt-manifest 1 1033]))
+                       "activeCodePage")))
+  (testing "what isn't one"
+    (is (pe/pe? (program "hello-x64.exe")))
+    (is (not (pe/pe? (bytes "MZ, but no more"))))
+    (is (not (pe/pe? icon)))
+    (is (not (pe/pe? "a string")))
+    (is (parse-error? #(pe/info (b/slice (program "hello-arm64.exe") 0 200))))
+    (is (parse-error? #(pe/info (bytes (repeat 512 0)))))))
+
+(deftest the-checksum-is-windows-own
+  ;; (the values of an independent implementation, which gives a signed
+  ;; Microsoft-linked program's stored checksum)
+  (is (= 0x514B (pe/checksum (program "hello-arm64.exe"))))
+  (is (= 0x4BFC (pe/checksum (program "hello-x64.exe"))))
+  (is (= 0xB457 (pe/checksum (program "hello-manifest-arm64.exe"))))
+  (testing "a program with a checksum gets a right one when edited"
+    (let [exe (program "hello-arm64.exe")
+          at (+ (u32 exe 60) 24 64)
+          summed (b/concat-bytes (b/slice exe 0 at) (b/uint-bytes (pe/checksum exe) 4 :le) (b/slice exe (+ at 4)))
+          gui (pe/with-subsystem summed :gui)
+          rsrc (pe/with-resources summed version)]
+      (is (= (pe/checksum summed) (:checksum (pe/info summed))))
+      (is (= (pe/checksum gui) (:checksum (pe/info gui))))
+      (is (not= (:checksum (pe/info summed)) (:checksum (pe/info gui))))
+      (is (= (pe/checksum rsrc) (:checksum (pe/info rsrc))))))
+  (testing "one without stays without (as linkers leave it)"
+    (is (= 0 (:checksum (pe/info (pe/with-subsystem (program "hello-arm64.exe") :gui)))))))
+
+(deftest the-subsystem
+  (let [exe (program "hello-arm64.exe")
+        gui (pe/with-subsystem exe :gui)]
+    (is (= :gui (:subsystem (pe/info gui))))
+    (is (= (count exe) (count gui)))
+    (testing "only the subsystem's two bytes change"
+      (let [at (+ (u32 exe 60) 24 68)]
+        (is (= [3 0] [(nth exe at) (nth exe (inc at))]))
+        (is (= [2 0] [(nth gui at) (nth gui (inc at))]))
+        (is (= (b/slice exe 0 at) (b/slice gui 0 at)))
+        (is (= (b/slice exe (+ at 2)) (b/slice gui (+ at 2))))))
+    (is (= exe (pe/with-subsystem gui :console)))
+    (is (raises? #(pe/with-subsystem exe :windows)))))
+
+(deftest resources-round-trip
+  (doseq [name ["hello-arm64.exe" "hello-x64.exe"]]
+    (let [exe (program name)
+          tree (merge (pe/icon-resources icon) version)
+          out (pe/with-resources exe tree)
+          i (pe/info out)
+          rsrc (last (:sections i))]
+      (testing name
+        (is (= tree (pe/resources out)))
+        (is (= [".text" ".rdata" ".pdata" ".reloc" ".rsrc"] (mapv :name (:sections i))))
+        (testing "the old sections, their headers and their bytes, are as they were"
+          (is (= (butlast (:sections i)) (:sections (pe/info exe))))
+          (is (= (b/slice exe 0x400) (b/slice out 0x400 (count exe)))))
+        (testing "the new section follows the last, aligned"
+          (is (= 0x5000 (:virtual-address rsrc)))
+          (is (= (count exe) (:raw-offset rsrc)))
+          (is (= 0 (mod (:raw-size rsrc) 0x200)))
+          (is (= (+ (:raw-offset rsrc) (:raw-size rsrc)) (count out)))
+          (is (= [(:virtual-address rsrc) (:virtual-size rsrc)] (:resources i)))
+          (let [opt (+ (u32 out 60) 24)]
+            (is (= (+ 0x5000 (* 0x1000 (quot (+ (:virtual-size rsrc) 0xFFF) 0x1000))) (u32 out (+ opt 56))) "SizeOfImage")
+            (is (= (+ (u32 exe (+ opt 8)) (:raw-size rsrc)) (u32 out (+ opt 8))) "SizeOfInitializedData")))
+        (testing "again: the last .rsrc is replaced, not another added"
+          (let [again (pe/with-resources out (merge tree (pe/version-resources {:file-version "2.0"})))]
+            (is (= 5 (count (:sections (pe/info again)))))
+            (is (= "2.0.0.0" (:file-version (pe/read-version-info (get-in (pe/resources again) [pe/rt-version 1 1033])))))
+            (is (= out (pe/with-resources again tree)))))
+        (testing "none: the program as it was, byte for byte"
+          (is (= exe (pe/with-resources out {}))))))))
+
+(deftest resources-a-program-has-already
+  (let [exe (program "hello-manifest-arm64.exe")
+        old (pe/resources exe)
+        out (pe/with-resources exe (merge old (pe/icon-resources icon)))
+        i (pe/info out)]
+    (is (= (merge old (pe/icon-resources icon)) (pe/resources out)))
+    (testing "the old .rsrc isn't last, so it stays (unused) and a new one follows .reloc"
+      (is (= [".text" ".rdata" ".pdata" ".rsrc" ".reloc" ".rsrc"] (mapv :name (:sections i))))
+      (is (= (:virtual-address (last (:sections i))) (first (:resources i)))))
+    (is (= {} (pe/resources (pe/with-resources exe {}))))))
+
+(deftest named-resources-come-first
+  (let [tree {"BLOB" {"ZETA" {1033 (bytes "z")} "alpha" {1033 (bytes "a")} 7 {0 (bytes "seven")}}
+              pe/rt-manifest {1 {1033 (bytes "<assembly/>") 1031 (bytes "<assembly lang='de'/>")}}}
+        out (pe/with-resources (program "hello-arm64.exe") tree)
+        at (- (count out) (:raw-size (last (:sections (pe/info out)))))]
+    (is (= tree (pe/resources out)))
+    (testing "the root directory: one named type, then one numbered"
+      (is (= [1 1] [(u16 out (+ at 12)) (u16 out (+ at 14))]))
+      (is (>= (u32 out (+ at 16)) 0x80000000) "the first is named")
+      (is (= pe/rt-manifest (u32 out (+ at 24)))))
+    (is (raises? #(pe/with-resources (program "hello-arm64.exe") {pe/rt-manifest {1 {:en (bytes "x")}}})))))
+
+(deftest a-signature-goes
+  (let [exe (program "hello-arm64.exe")
+        dirs (+ (u32 exe 60) 24 112)
+        cert (b/concat-bytes (b/uint-bytes 16 4 :le) (b/uint-bytes 0x200 2 :le) (b/uint-bytes 2 2 :le) (bytes (range 8)))
+        signed (b/concat-bytes (b/slice exe 0 (+ dirs 32)) (b/uint-bytes (count exe) 4 :le) (b/uint-bytes 16 4 :le)
+                               (b/slice exe (+ dirs 40)) cert)]
+    (is (:signed (pe/info signed)))
+    (is (= exe (pe/with-subsystem (pe/with-subsystem signed :gui) :console)))
+    (is (not (:signed (pe/info (pe/with-resources signed version)))))
+    (testing "other data after the sections isn't moved, so it's refused"
+      (is (raises? #(pe/with-subsystem (b/concat-bytes exe (bytes "an installer's payload")) :gui)))
+      (testing "but zeros are padding"
+        (is (= exe (pe/with-subsystem (pe/with-subsystem (b/concat-bytes exe (bytes (repeat 512 0))) :gui) :console)))))))
+
+(deftest icons
+  (let [r (pe/icon-resources icon)
+        group (get-in r [pe/rt-group-icon 1 1033])]
+    (is (= #{pe/rt-icon pe/rt-group-icon} (set (keys r))))
+    (is (= [1 2 3] (sort (keys (get r pe/rt-icon)))))
+    (is (= (png 32 32) (get-in r [pe/rt-icon 2 1033])))
+    (testing "the group: an icon file's directory, each image's offset its number instead"
+      (is (= (+ 6 (* 3 14)) (count group)))
+      (is (= [0 1 3] [(u16 group 0) (u16 group 2) (u16 group 4)]))
+      (is (= [0 0 1 32 (count (png 256 256)) 3]
+             (let [e (+ 6 28)] [(nth group e) (nth group (inc e)) (u16 group (+ e 4)) (u16 group (+ e 6)) (u32 group (+ e 8)) (u16 group (+ e 12))]))))
+    (is (= [{:name 1 :language 1033
+             :images [{:width 16 :height 16 :bits 32 :id 1 :size (count (png 16 16)) :png true}
+                      {:width 32 :height 32 :bits 32 :id 2 :size (count (png 32 32)) :png true}
+                      {:width 256 :height 256 :bits 32 :id 3 :size (count (png 256 256)) :png true}]}]
+           (pe/icon-groups (pe/resources (pe/with-resources (program "hello-arm64.exe") r)))))
+    (is (= 2 (:name (first (pe/icon-groups (pe/icon-resources icon :name 2)))))))
+  (testing "a PNG as an icon file"
+    (let [one (pe/png->ico (png 256 256))]
+      (is (= [{:width 256 :height 256 :bits 32 :id 1 :size (count (png 256 256)) :png true}]
+             (:images (first (pe/icon-groups (pe/icon-resources one)))))))
+    (is (raises? #(pe/png->ico (png 512 512))))
+    (is (raises? #(pe/png->ico (bytes "not a png")))))
+  (is (parse-error? #(pe/icon-resources (bytes "not an icon"))))
+  (is (parse-error? #(pe/icon-resources (b/slice icon 0 40)))))
+
+(deftest version-information
+  (let [v (get-in version [pe/rt-version 1 1033])
+        info (pe/read-version-info v)]
+    (is (= "1.2.3.0" (:file-version info)))
+    (is (= "1.2.3.0" (:product-version info)))
+    (is (= {"FileDescription" "Hello" "ProductName" "Hello" "FileVersion" "1.2.3-beta" "ProductVersion" "1.2.3-beta"}
+           (:strings info)))
+    (is (= [[1033 1200]] (:translations info)))
+    (testing "its layout: VS_VERSION_INFO's length is the whole, its value VS_FIXEDFILEINFO"
+      (is (= (count v) (u16 v 0)))
+      (is (= 52 (u16 v 2)))
+      (is (= "VS_VERSION_INFO" (b/decode-text (b/slice v 6 36) :utf-16le)))
+      (is (= 0xFEEF04BD (u32 v 40)))
+      (is (= [0x10002 0x30000] [(u32 v 48) (u32 v 52)]) "1.2 and 3.0"))
+    (is (= {"CompanyName" "Example, Inc." "FileVersion" "4" "ProductVersion" "5.6.7.8"}
+           (:strings (pe/read-version-info (get-in (pe/version-resources {:file-version "4" :product-version "5.6.7.8"
+                                                                          :strings {"CompanyName" "Example, Inc."}})
+                                                   [pe/rt-version 1 1033])))))
+    (is (= "Linnet ♫ 🐦" (get-in (pe/read-version-info (get-in (pe/version-resources {:file-version "1" :strings {"ProductName" "Linnet ♫ 🐦"}})
+                                                              [pe/rt-version 1 1033]))
+                                [:strings "ProductName"])))
+    (is (= [1031] (keys (get-in (pe/version-resources {:file-version "1" :language 1031}) [pe/rt-version 1]))))
+    (is (raises? #(pe/version-resources {:file-version "1.70000"})))
+    (is (raises? #(pe/version-resources {:file-version "beta"})))
+    (is (parse-error? #(pe/read-version-info (b/slice v 0 30))))))
