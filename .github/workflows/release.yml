@@ -103,7 +103,13 @@ jobs:
           fi
 
       - name: Build
-        # (no rust-cache: a release builds from nothing)
+        # (no rust-cache: a release builds from nothing. No debug info, the
+        # standard library's either: on Linux it made the archive 18-23 MB
+        # where it's 5 MB without; the symbols stay, for backtraces and
+        # gdb's stacks)
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: "0"
+          CARGO_PROFILE_RELEASE_STRIP: debuginfo
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             tools/windows/mmtk.sh
