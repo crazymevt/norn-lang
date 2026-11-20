@@ -52,8 +52,10 @@ in one file. Put it on your PATH and run `skein --version`. On macOS, a copy
 downloaded in a browser is quarantined until
 `xattr -d com.apple.quarantine bin/skein`.
 
-In a GitHub Actions workflow, `uses: crazymevt/skein-lang@v0.1.0` installs
-that release and puts `skein` on the PATH ([action.yml](action.yml)).
+In a GitHub Actions workflow, `uses: crazymevt/skein-lang@v0.1.0` with
+`version: 0.1.0` installs that release and puts `skein` on the PATH
+([action.yml](action.yml)). (0.1.0's action needs the version given inside
+a composite action; later ones take it from the ref.)
 
 ## Build and run
 

@@ -40,8 +40,11 @@ runs:
         set -euo pipefail
         version=${VERSION#v}
         if [ -z "$version" ]; then
-          case "$ACTION_REF" in
-            v[0-9]*) version=${ACTION_REF#v} ;;
+          # (github.action_ref is empty inside a composite action; the
+          # action's folder is named for its ref everywhere)
+          ref=${ACTION_REF:-$(basename "$GITHUB_ACTION_PATH")}
+          case "$ref" in
+            v[0-9]*) version=${ref#v} ;;
             *) echo "::error::Say which Skein: with: {version: X.Y.Z}, or use the action at a release tag"; exit 1 ;;
           esac
         fi
