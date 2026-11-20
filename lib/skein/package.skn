@@ -143,27 +143,28 @@
   "The native helpers the project info describes, for platform {:os
   :arch}: {name file}. A helper's file is the one given ({name file}), else
   the one its environment variable names (helper-variable), else the first
-  of its package's candidates there is. For Windows, only a Windows program
-  for the CPU counts. For another OS than this one, a variable naming what
-  isn't a helper there is passed over (on a Mac, SKEIN_UI_HOST is the Mac
-  renderer). An error names a helper none of whose candidates is there."
-  [info platform & {:keys [given]}]
+  of its package's candidates there is. With :programs (a Windows app's
+  helpers), only a Windows program for the CPU counts. For another OS than
+  this one, a variable naming what isn't a helper there is passed over (on
+  a Mac, SKEIN_UI_HOST is the Mac renderer). An error names a helper none
+  of whose candidates is there."
+  [info platform & {:keys [given programs]}]
   (let [{:keys [os arch]} platform
         fill (fn [s] (-> s (str/replace "{os}" (name os)) (str/replace "{arch}" (name arch))))
-        usable (if (= :windows os) (fn [f] (windows-program-for f arch)) (fn [f] (when (io/file? f) f)))]
+        usable (if programs (fn [f] (windows-program-for f arch)) (fn [f] (when (io/file? f) f)))]
     (into (sorted-map)
           (for [{:keys [package dir candidates] h :name} (:helper-specs info)]
             (if-let [g (or (get given h) (when (= os (sys/os)) (not-empty (sys/getenv (helper-variable h)))))]
               (do (when-not (usable g)
                     (fail "the helper file " g " for " h (when-not (get given h) (str " (" (helper-variable h) ")"))
-                          (if (and (= :windows os) (io/file? g)) (str " isn't a Windows program for " (name arch)) " isn't there")))
+                          (if (and programs (io/file? g)) (str " isn't a Windows program for " (name arch)) " isn't there")))
                   [h (io/absolute g)])
               (let [env (when (not= os (sys/os)) (some-> (not-empty (sys/getenv (helper-variable h))) usable))
                     found (or env (some (fn [c] (some usable (program-files (io/path dir (fill c)) os))) candidates))]
                 (when-not found
-                  (fail package " needs its helper " h (when (= :windows os) (str " for windows-" (name arch)))
+                  (fail package " needs its helper " h (when programs (str " for windows-" (name arch)))
                         ", and none of " (pr-str (mapv fill candidates)) " is in " dir
-                        (if (= :windows os)
+                        (if (and programs (not= os (sys/os)))
                           ": build it for Windows, or give one with --helper NAME=FILE"
                           (str ": build it first, or give one with " (helper-variable h) "=FILE or --helper NAME=FILE"))))
                 [h found]))))))
@@ -395,7 +396,7 @@
         host-helpers (when (some #{:cli :app} targets) (helpers info host :given given))
         win (when (some #{:windows} targets)
               (let [l (windows-launcher info launcher)]
-                {:launcher l :helpers (helpers info {:os :windows :arch (:machine (pe/info (io/read-bytes l)))} :given given)}))
+                {:launcher l :helpers (helpers info {:os :windows :arch (:machine (pe/info (io/read-bytes l)))} :given given :programs true)}))
         image (build-image! info (io/path out ".build" (str (:name info) ".skimg")))]
     (cond-> {:image image}
             (some #{:cli} targets) (assoc :cli (cli-archive! info image out host-helpers))
