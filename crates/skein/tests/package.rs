@@ -202,17 +202,16 @@ fn a_windows_app_is_made_on_any_os() {
         std::fs::create_dir_all(proj.join("build").join(cpu)).unwrap();
         std::fs::copy(test_program(program), proj.join("build").join(cpu).join("skein-ui-host.exe")).unwrap();
     }
-    // (SKEIN_UI_HOST naming a program for another system is passed over:
-    // on a Mac, it's the Mac renderer)
-    let mac_host = dir.join("mac/skein-ui-host");
-    write(&mac_host, "not a Windows program\n");
-    let made = run_ok(
-        skein()
-            .args(["package", "--windows", "--launcher"])
-            .arg(test_program("hello-arm64.exe"))
-            .env("SKEIN_UI_HOST", &mac_host)
-            .current_dir(&proj),
-    );
+    // (made elsewhere than Windows, SKEIN_UI_HOST naming a program for that
+    // system is passed over: on a Mac, it's the Mac renderer)
+    let mut c = skein();
+    c.args(["package", "--windows", "--launcher"]).arg(test_program("hello-arm64.exe")).current_dir(&proj);
+    if !cfg!(windows) {
+        let mac_host = dir.join("mac/skein-ui-host");
+        write(&mac_host, "not a Windows program\n");
+        c.env("SKEIN_UI_HOST", &mac_host);
+    }
+    let made = run_ok(&mut c);
     let zip = proj.join("dist/Echo App-1.2.0-windows-aarch64.zip");
     assert!(made.contains(&canonical(&zip)), "{made}");
     let root = proj.join("dist/windows-aarch64/Echo App");

@@ -3,7 +3,7 @@
  "build-image!" {:arglists ["[info out]"], :kind :function}
  "cli-archive!" {:arglists ["[info image out]" "[info image out helpers]"], :kind :function}
  "helper-variable" {:arglists ["[h]"], :kind :function}
- "helpers" {:arglists ["[info platform & {:keys [given]}]"], :kind :function}
+ "helpers" {:arglists ["[info platform & {:keys [given programs]}]"], :kind :function}
  "info-plist" {:arglists ["[info]"], :kind :function}
  "mac-app!" {:arglists ["[info image out]" "[info image out helpers]"], :kind :function}
  "main" {:arglists ["[& args]"], :kind :function}
