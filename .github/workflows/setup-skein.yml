@@ -1,0 +1,39 @@
+# A check of action.yml (Set up Skein) on each platform a release has, run
+# by hand once a release is published: it installs that release and runs it.
+name: Set up Skein
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The published release to install, as 0.1.0
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04-arm, ubuntu-24.04, windows-11-arm, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: skein
+        uses: ./
+        with:
+          version: ${{ inputs.version }}
+
+      - name: Run it
+        run: |
+          skein --version
+          "$SKEIN" -e '(reduce + (range 1000))'
+          [ "$(skein -e '(+ 1 2)')" = 3 ]
+          echo "${{ steps.skein.outputs.skein }} ${{ steps.skein.outputs.version }}"

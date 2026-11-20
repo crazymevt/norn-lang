@@ -4,7 +4,7 @@ members = ["crates/skein-rt", "crates/skein-vm", "crates/skein", "spikes/jit-spi
 default-members = ["crates/skein-rt", "crates/skein-vm", "crates/skein"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 

@@ -10,6 +10,7 @@ also substitute `./target/release/skein` after [building it](getting-started.md#
 | `skein` | Start the REPL in `user`. |
 | `skein -e 'EXPR'` | Evaluate forms and print the last result. |
 | `skein FILE.skn [ARGS…]` | Run a source file. `skein.sys/program-args` returns the arguments after the file, and `skein.sys/args` returns the full process argument vector, starting with the program name. Use [`skein.cli`](reference/libraries.md#command-line-programs) to parse them. |
+| `skein --version` | Print the version, and the commit for a release build. `-V` is the same. |
 | `skein --server [PORT]` | Start the REPL and listen on loopback for [editor protocol](internals/design.md#51-the-repl-decided) clients. The default port is 7888. |
 | `skein lsp` | Serve the Language Server Protocol on standard input and output, for the project in the current folder: diagnostics, hover, completion, definition, references, outline, formatting. See [Editors](editors.md). |
 | `skein doc NAME…` | List a namespace, look up a qualified symbol, or look up an unqualified name in `skein.core`. |

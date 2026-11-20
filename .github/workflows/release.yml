@@ -1,0 +1,194 @@
+# A release: pushing a tag vX.Y.Z builds skein on each platform, runs every
+# Skein suite and the lang-tests with the build, and drafts a GitHub release
+# with an archive per platform and their SHA-256 sums. Nothing is public
+# until the draft is published by hand.
+#
+#   skein-VERSION-OS-ARCH.tar.gz   skein-VERSION-OS-ARCH/bin/skein
+#   skein-VERSION-windows-ARCH.zip skein-VERSION-windows-ARCH/bin/skein.exe
+#
+# (OS and ARCH as (sys/info) names them, as skein package does.) The tag
+# must be the workspace's version (Cargo.toml) with a v before it.
+#
+# Run by hand (Actions > Release > Run workflow), it builds and tests the
+# chosen branch and keeps the archives as the run's artifacts, with no
+# release: a check of a release before tagging it.
+#
+# Windows builds against MMTk with its Windows layer (tools/windows/mmtk.sh),
+# as CI's Windows jobs do: so not --locked there.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SKEIN_UI_HEADLESS: "1"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-15
+            platform: macos-aarch64
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+            platform: linux-aarch64
+          - name: Linux x86-64
+            os: ubuntu-24.04
+            platform: linux-x86_64
+          - name: Windows arm64
+            os: windows-11-arm
+            platform: windows-aarch64
+          - name: Windows x86-64
+            os: windows-latest
+            platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Files as they are in the repository
+        # (Git on Windows would give every text file \r\n line ends: the
+        # shell script, the patch, and the outputs the lang-tests compare)
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v5
+
+      - name: The version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ -n "$version" ] || { echo "::error::No version in Cargo.toml"; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME isn't v$version, Cargo.toml's version"
+            exit 1
+          fi
+          exe=""; [ "$RUNNER_OS" = Windows ] && exe=".exe"
+          {
+            echo "VERSION=$version"
+            echo "EXE=$exe"
+            echo "BASE=skein-$version-${{ matrix.platform }}"
+            # (skein --version shows it)
+            echo "SKEIN_COMMIT=${GITHUB_SHA::12}"
+          } >> "$GITHUB_ENV"
+
+      - name: macOS file limits
+        if: runner.os == 'macOS'
+        run: sudo sysctl -w kern.maxfiles=122880 kern.maxfilesperproc=61440
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-0 zsh gdb
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: clang on the PATH
+        # (ring and ffi_test's fixture build C with clang on Windows)
+        if: runner.os == 'Windows'
+        run: |
+          if [ -x "/c/Program Files/LLVM/bin/clang.exe" ]; then
+            echo "C:\\Program Files\\LLVM\\bin" >> "$GITHUB_PATH"
+          else
+            echo "::warning::No LLVM in C:\\Program Files\\LLVM: clang must already be on the PATH"
+          fi
+
+      - name: Build
+        # (no rust-cache: a release builds from nothing)
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            tools/windows/mmtk.sh
+            cargo --config "patch.crates-io.mmtk.path='target/mmtk-windows'" build --release
+          else
+            cargo build --locked --release
+          fi
+          "target/release/skein$EXE" --version
+
+      - name: Every Skein suite
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            target/release/skein.exe test tests/skein
+          else
+            tools/ci/watchdog.sh 600 target/release/skein test tests/skein
+          fi
+
+      - name: lang-tests
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            target/release/skein.exe lang-tests/run.skn
+          else
+            tools/ci/watchdog.sh 1200 target/release/skein lang-tests/run.skn
+          fi
+
+      - name: The archive
+        run: |
+          mkdir -p "dist/$BASE/bin"
+          cp "target/release/skein$EXE" "dist/$BASE/bin/"
+          cp LICENSE README.md "dist/$BASE/"
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '$BASE' -DestinationPath '$BASE.zip'"
+          else
+            tar -czf "$BASE.tar.gz" "$BASE"
+          fi
+          rm -rf "$BASE"
+          ls -l
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BASE }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Draft the release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Draft it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          version=${TAG#v}
+          cat > ../notes.md <<EOF
+          Skein $version, built from $(echo "$GITHUB_SHA" | cut -c1-12).
+
+          Each archive holds \`bin/skein\` (\`bin/skein.exe\` on Windows), the whole runtime and standard library in one file. Put it on your PATH and check it with \`skein --version\`.
+
+          | Platform | Archive |
+          |---|---|
+          | macOS, Apple silicon | \`skein-$version-macos-aarch64.tar.gz\` |
+          | Linux, arm64 | \`skein-$version-linux-aarch64.tar.gz\` |
+          | Linux, x86-64 | \`skein-$version-linux-x86_64.tar.gz\` |
+          | Windows, arm64 (preview) | \`skein-$version-windows-aarch64.zip\` |
+          | Windows, x86-64 (preview) | \`skein-$version-windows-x86_64.zip\` |
+
+          - **macOS:** the binary isn't signed with a Developer ID or notarized yet. One downloaded in a browser is quarantined; clear that with \`xattr -d com.apple.quarantine bin/skein\`. (\`curl\` doesn't set it.)
+          - **Linux:** built on Ubuntu 24.04, so it needs glibc 2.39 or later.
+          - **Windows:** a preview. It's built against MMTk with Skein's Windows layer (\`tools/windows/mmtk.sh\`), new in this release.
+
+          \`SHA256SUMS\` has every archive's sum.
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "Skein $version" --notes-file ../notes.md --verify-tag -- ./*

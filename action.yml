@@ -1,0 +1,79 @@
+# Skein for another repository's workflow: downloads a release's archive
+# for the runner (macOS arm64, Linux arm64 or x86-64, Windows arm64 or
+# x86-64), checks it against the release's SHA256SUMS, and puts skein on
+# the PATH. SKEIN is set to its full path.
+#
+#   - uses: crazymevt/skein-lang@v0.1.0        (that release)
+#   - uses: crazymevt/skein-lang@main
+#     with: {version: 0.1.0}                   (any one)
+name: Set up Skein
+description: Install a released skein and put it on the PATH
+
+inputs:
+  version:
+    description: >
+      The release, as 0.1.0. By default the one the action is used at
+      (crazymevt/skein-lang@v0.1.0 installs 0.1.0).
+    default: ""
+  github-token:
+    description: For downloading the release (the API's rate limits)
+    default: ${{ github.token }}
+
+outputs:
+  skein:
+    description: The full path of skein
+    value: ${{ steps.install.outputs.skein }}
+  version:
+    description: The version installed
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+        version=${VERSION#v}
+        if [ -z "$version" ]; then
+          case "$ACTION_REF" in
+            v[0-9]*) version=${ACTION_REF#v} ;;
+            *) echo "::error::Say which Skein: with: {version: X.Y.Z}, or use the action at a release tag"; exit 1 ;;
+          esac
+        fi
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          macOS-ARM64) platform=macos-aarch64 ext=tar.gz ;;
+          Linux-ARM64) platform=linux-aarch64 ext=tar.gz ;;
+          Linux-X64) platform=linux-x86_64 ext=tar.gz ;;
+          Windows-ARM64) platform=windows-aarch64 ext=zip ;;
+          Windows-X64) platform=windows-x86_64 ext=zip ;;
+          *) echo "::error::No Skein release for $RUNNER_OS $RUNNER_ARCH"; exit 1 ;;
+        esac
+        base="skein-$version-$platform"
+        dir="$RUNNER_TEMP/skein-$version"
+        rm -rf "$dir" && mkdir -p "$dir"
+        cd "$dir"
+        gh release download "v$version" --repo crazymevt/skein-lang \
+          --pattern "$base.$ext" --pattern SHA256SUMS
+        grep " $base\.$ext\$" SHA256SUMS > sum || { echo "::error::$base.$ext isn't in SHA256SUMS"; exit 1; }
+        if command -v sha256sum > /dev/null; then sha256sum -c sum; else shasum -a 256 -c sum; fi
+        if [ "$ext" = zip ]; then
+          powershell -NoProfile -Command "Expand-Archive -Path '$base.zip' -DestinationPath '.'"
+          exe="$dir/$base/bin/skein.exe"
+        else
+          tar -xzf "$base.tar.gz"
+          exe="$dir/$base/bin/skein"
+        fi
+        "$exe" --version
+        if [ "$RUNNER_OS" = Windows ]; then
+          bin=$(cygpath -w "$dir/$base/bin"); exe=$(cygpath -w "$exe")
+        else
+          bin="$dir/$base/bin"
+        fi
+        echo "$bin" >> "$GITHUB_PATH"
+        echo "SKEIN=$exe" >> "$GITHUB_ENV"
+        { echo "skein=$exe"; echo "version=$version"; } >> "$GITHUB_OUTPUT"

@@ -49,7 +49,17 @@ const USAGE: &str = "usage: skein [--image IMG.skimg] [FILE.skn | -e EXPR | --se
        skein dev [ARGS…]   (the project's :main, reloading what's saved)
        skein api-diff [--record] [MODULE…]   (sealed modules' interfaces against api/)
        skein doc NAMESPACE | NAME | NS/NAME …
-       skein image info IMG.skimg | skein image diff A.skimg B.skimg";
+       skein image info IMG.skimg | skein image diff A.skimg B.skimg
+       skein --version";
+
+/// `skein --version`: the version, and the commit when the build was told it
+/// (SKEIN_COMMIT, as the release workflow sets it).
+fn version_line() -> String {
+    match option_env!("SKEIN_COMMIT") {
+        Some(c) if !c.is_empty() => format!("skein {} ({c})", env!("CARGO_PKG_VERSION")),
+        _ => format!("skein {}", env!("CARGO_PKG_VERSION")),
+    }
+}
 
 /// Ticket of the root fiber the REPL is waiting on (0 = none), for Ctrl-C;
 /// SUBMITTING while one is being submitted, PENDING if Ctrl-C came then.
@@ -242,6 +252,13 @@ pub fn run() {
         run_app(app);
     }
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // (before booting: it needs nothing of the runtime)
+    if let [flag] = args.as_slice()
+        && (flag == "--version" || flag == "-V")
+    {
+        println!("{}", version_line());
+        return;
+    }
     if args.first().map(String::as_str) == Some("build") {
         exit(build(&args[1..]));
     }

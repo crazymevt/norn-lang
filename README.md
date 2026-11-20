@@ -43,6 +43,18 @@ REPL.
 See [runtime.md §12](docs/internals/runtime.md#12-revised-milestones) for what exists
 and what's next.
 
+## Install a release
+
+Each [release](https://github.com/crazymevt/skein-lang/releases) has an
+archive per platform (macOS on Apple silicon, Linux arm64 and x86-64, and a
+Windows preview), with `bin/skein` inside: the runtime and standard library
+in one file. Put it on your PATH and run `skein --version`. On macOS, a copy
+downloaded in a browser is quarantined until
+`xattr -d com.apple.quarantine bin/skein`.
+
+In a GitHub Actions workflow, `uses: crazymevt/skein-lang@v0.1.0` installs
+that release and puts `skein` on the PATH ([action.yml](action.yml)).
+
 ## Build and run
 
 Requires Rust (stable, edition 2024).

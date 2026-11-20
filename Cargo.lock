@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "jit-spike"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1537,7 +1537,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "skein"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ctrlc",
  "rustyline",
@@ -1547,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "skein-rt"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "mmtk",
  "num-bigint",
@@ -1558,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "skein-vm"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
