@@ -557,6 +557,15 @@ that is only the seed compiler holding forms while it calls a macro.
   - each carrier has a mutex-guarded run queue, and there is one global queue;
   - a carrier takes from its own queue first, then the global one, then
     steals from other carriers;
+  - a fiber woken by another (a `put!` to a parked taker) goes on the
+    waker's queue, and for 100 µs only that carrier takes it, unless it's in
+    native code (`STEAL_AFTER`, 2026-11-21). A carrier looking for work waits
+    that out without the queues' locks, and one going to sleep sleeps only
+    until then. New fibers and the global queue's can be stolen at once. Taken
+    at once, a woken fiber ran elsewhere for a microsecond and parked again,
+    with the channel's and the queue's locks passed between cores: a fan-out
+    through channels took 7 times as long on ten carriers as on one;
+    now 1.7 times as long;
   - every 61st pick checks the global queue first, as Go does, and fibers
     preempted at the end of a time slice go to the global queue, so a busy
     carrier can't starve fibers woken by the timer thread. (This was a real

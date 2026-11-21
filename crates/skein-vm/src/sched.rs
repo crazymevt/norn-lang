@@ -122,7 +122,10 @@ pub struct Sched {
     active: Vec<AtomicBool>,
     /// Values native code is using (tail-call arguments live only in Rust).
     native_keep: Mutex<HashMap<u64, Vec<Value>>>,
-    locals: Vec<Mutex<VecDeque<Value>>>,
+    /// Per slot: its run queue, each fiber with when it was woken there
+    /// (`now_ns`; 0 for a new one), which says when another carrier may
+    /// take it (`STEAL_AFTER`).
+    locals: Vec<Mutex<VecDeque<(Value, u64)>>>,
     injector: Mutex<VecDeque<Value>>,
     idle: Mutex<()>,
     idle_cv: Condvar,
@@ -135,6 +138,10 @@ pub struct Sched {
     /// before each is pushed: zero means there's nothing to look for, with
     /// no queue's lock taken.
     queued: AtomicUsize,
+    /// Pushes of fibers any carrier may take at once (new ones, the global
+    /// queue's): a spinner waiting out a woken fiber's moment looks again
+    /// when this changes, and touches no queue's lock until then.
+    free_pushes: AtomicU64,
     timers: Mutex<Timers>,
     timer_cv: Condvar,
     external: Mutex<VecDeque<Job>>,
@@ -179,6 +186,7 @@ impl Sched {
             idle_count: AtomicUsize::new(0),
             spinning: AtomicUsize::new(0),
             queued: AtomicUsize::new(0),
+            free_pushes: AtomicU64::new(0),
             timers: Mutex::new(Timers { heap: BinaryHeap::new(), entries: HashMap::new(), seq: 0 }),
             timer_cv: Condvar::new(),
             external: Mutex::new(VecDeque::new()),
@@ -214,7 +222,7 @@ impl Sched {
     /// Visit every GC root held outside the heap. Called with the world stopped.
     pub fn for_each_root(&self, f: &mut dyn FnMut(Value)) {
         for q in &self.locals {
-            q.lock().unwrap().iter().for_each(|&v| f(v));
+            q.lock().unwrap().iter().for_each(|&(v, _)| f(v));
         }
         self.injector.lock().unwrap().iter().for_each(|&v| f(v));
         self.timers.lock().unwrap().entries.values().for_each(|(_, v)| f(*v));
@@ -245,13 +253,27 @@ impl Sched {
     }
 }
 
-/// Make a fiber runnable (its state is already QUEUED).
+/// Make a fiber runnable (its state is already QUEUED): a new one, which
+/// any carrier may take at once.
 pub fn schedule(f: Value) {
+    schedule_stamped(f, 0);
+}
+
+/// Make a woken fiber runnable: for a moment, only its waker's carrier
+/// takes it (`STEAL_AFTER`).
+fn schedule_woken(f: Value) {
+    schedule_stamped(f, now_ns());
+}
+
+fn schedule_stamped(f: Value, stamp: u64) {
     let s = sched();
     let me = CARRIER.with(|c| c.get());
     s.queued.fetch_add(1, Ordering::SeqCst);
+    if stamp == 0 || me >= s.slots {
+        s.free_pushes.fetch_add(1, Ordering::SeqCst);
+    }
     if me < s.slots {
-        s.locals[me].lock().unwrap().push_back(f);
+        s.locals[me].lock().unwrap().push_back((f, stamp));
     } else {
         s.injector.lock().unwrap().push_back(f);
     }
@@ -264,6 +286,7 @@ pub fn schedule(f: Value) {
 fn requeue(f: Value) {
     let s = sched();
     s.queued.fetch_add(1, Ordering::SeqCst);
+    s.free_pushes.fetch_add(1, Ordering::SeqCst);
     s.injector.lock().unwrap().push_back(f);
     s.wake_idle();
 }
@@ -274,6 +297,7 @@ thread_local! {
 
 fn next_fiber(me: usize) -> Option<Value> {
     let s = sched();
+    GATED_UNTIL.with(|g| g.set(0));
     // (the count is raised before a push, so zero is nothing queued; and
     // whoever pushes next wakes a sleeper or leaves it to a spinner)
     if s.queued.load(Ordering::SeqCst) == 0 {
@@ -299,19 +323,55 @@ fn take_fiber(s: &Sched, me: usize) -> Option<Value> {
     {
         return Some(f);
     }
-    if let Some(f) = s.locals[me].lock().unwrap().pop_front() {
+    if let Some((f, _)) = s.locals[me].lock().unwrap().pop_front() {
         return Some(f);
     }
     if let Some(f) = s.injector.lock().unwrap().pop_front() {
         return Some(f);
     }
+    // Another carrier's: the oldest it may take. A fiber woken there in the
+    // last STEAL_AFTER is that carrier's alone, unless it's in native code
+    // (or retired).
+    let now = now_ns();
+    let mut until = u64::MAX;
     for k in 1..s.slots {
         let victim = (me + k) % s.slots;
-        if let Some(f) = s.locals[victim].lock().unwrap().pop_back() {
-            return Some(f);
+        let mut q = s.locals[victim].lock().unwrap();
+        if q.is_empty() {
+            continue;
         }
+        let free = s.native_since[victim].load(Ordering::Acquire) != 0 || !s.active[victim].load(Ordering::Acquire);
+        if let Some(i) = q.iter().position(|&(_, t)| free || t == 0 || now.saturating_sub(t) >= STEAL_AFTER) {
+            return q.remove(i).map(|(f, _)| f);
+        }
+        until = until.min(q.iter().map(|&(_, t)| t + STEAL_AFTER).min().unwrap_or(u64::MAX));
     }
+    GATED_UNTIL.with(|g| g.set(if until == u64::MAX { 0 } else { until }));
     None
+}
+
+/// How long a fiber woken on a carrier is that carrier's alone, in ns. A
+/// `put!` that wakes a taker queues it on the putter's carrier; taken at
+/// once by another, it ran there for a microsecond and parked again, with
+/// the channel's and the queue's locks passed between cores: a fan-out of
+/// 500 lines to 40 fibers took 7 times as long on ten carriers as on one.
+/// Left a moment, the waker's carrier runs it after the waker parks or its
+/// slice ends, and finds more in its channel by then (18 → 4.4 ms on ten
+/// carriers). New fibers are free to take at once, as are the global
+/// queue's.
+const STEAL_AFTER: u64 = 100_000;
+
+thread_local! {
+    /// After a look that found only woken fibers not yet free to take: when
+    /// the first of them will be (`now_ns`), or 0.
+    static GATED_UNTIL: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Nanoseconds since the scheduler's first look at the clock, plus one (0
+/// is a new fiber's stamp).
+fn now_ns() -> u64 {
+    static T0: OnceLock<Instant> = OnceLock::new();
+    T0.get_or_init(Instant::now).elapsed().as_nanos() as u64 + 1
 }
 
 /// Is anything else waiting to run? (Decides whether a time slice yields.)
@@ -489,7 +549,7 @@ pub(crate) fn queued_fibers() -> Vec<Value> {
     let s = sched();
     let mut v: Vec<Value> = Vec::new();
     for q in &s.locals {
-        v.extend(q.lock().unwrap().iter().copied());
+        v.extend(q.lock().unwrap().iter().map(|&(f, _)| f));
     }
     v.extend(s.injector.lock().unwrap().iter().copied());
     v
@@ -664,7 +724,7 @@ fn wake_fiber(f: Value) {
             }
             fiber::PARKED => {
                 if st.compare_exchange(fiber::PARKED, fiber::QUEUED, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                    schedule(f);
+                    schedule_woken(f);
                     return;
                 }
             }
@@ -1306,7 +1366,8 @@ fn spin_for_work(s: &Sched, me: usize) -> Option<Value> {
         s.spinning.fetch_sub(1, Ordering::SeqCst);
         return None;
     }
-    let deadline = Instant::now() + SPIN;
+    let mut deadline = Instant::now() + SPIN;
+    let mut extended = false;
     let mut found = None;
     loop {
         // (a collection, an image save or an outside job: the idle path's)
@@ -1318,11 +1379,33 @@ fn spin_for_work(s: &Sched, me: usize) -> Option<Value> {
             break;
         }
         end_work(s);
+        // (only woken fibers not yet ours to take: wait for the first, or
+        // for one free to take at once, without the queues' locks)
+        let until = GATED_UNTIL.with(|g| g.replace(0));
+        if until != 0 {
+            let fp = s.free_pushes.load(Ordering::SeqCst);
+            while now_ns() < until
+                && s.free_pushes.load(Ordering::SeqCst) == fp
+                && !safepoint::stop_requested()
+                && s.external_len.load(Ordering::Acquire) == 0
+            {
+                for _ in 0..32 {
+                    std::hint::spin_loop();
+                }
+            }
+        }
         for _ in 0..32 {
             std::hint::spin_loop();
         }
-        if Instant::now() >= deadline {
-            break;
+        let now = Instant::now();
+        if now >= deadline {
+            // (a fiber woken on another carrier may become ours to take
+            // only a little later: wait for that, once)
+            if extended || s.queued.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            extended = true;
+            deadline = now + Duration::from_nanos(STEAL_AFTER);
         }
     }
     s.spinning.fetch_sub(1, Ordering::SeqCst);
@@ -1430,13 +1513,23 @@ fn carrier_loop(vm: &mut Vm) {
         // submit, resume_all), so a regular carrier sleeps until woken: an
         // idle process doesn't wake 10 times a second per carrier. A spare
         // wakes now and then, to see whether it should retire.
-        let g = if me < s.n { s.idle_cv.wait(g).unwrap() } else { s.idle_cv.wait_timeout(g, Duration::from_millis(100)).unwrap().0 };
+        // (but while a woken fiber on another carrier waits out its moment
+        // there, only until it's free to take: nothing else will wake us
+        // for it)
+        let gated = GATED_UNTIL.with(|g| g.replace(0));
+        let g = if gated != 0 {
+            s.idle_cv.wait_timeout(g, Duration::from_nanos(gated.saturating_sub(now_ns()).max(1_000))).unwrap().0
+        } else if me < s.n {
+            s.idle_cv.wait(g).unwrap()
+        } else {
+            s.idle_cv.wait_timeout(g, Duration::from_millis(100)).unwrap().0
+        };
         s.idle_count.fetch_sub(1, Ordering::AcqRel);
         drop(g);
         safepoint::leave_safe();
         if should_retire(s, me) {
             // Hand back anything queued here, then stop.
-            let left: Vec<Value> = s.locals[me].lock().unwrap().drain(..).collect();
+            let left: Vec<Value> = s.locals[me].lock().unwrap().drain(..).map(|(f, _)| f).collect();
             s.injector.lock().unwrap().extend(left);
             s.active[me].store(false, Ordering::Release);
             s.wake_idle();
