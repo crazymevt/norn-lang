@@ -232,7 +232,13 @@ pub(crate) fn open(vm: &mut Vm, path: String, mode: &str) -> Result<Value> {
             let p = str_new(m, &path);
             let md = kw(m, &mode);
             let info = map_of(m, &[("path", p), ("mode", md)]);
-            reactor::register(m, Io::File(f), "file", info).unwrap_or(Value::NIL)
+            // (closed once unreachable from the start, where `auto-close`
+            // after the open left a moment it could be lost in)
+            let h = reactor::register(m, Io::File(f), "file", info).unwrap_or(Value::NIL);
+            if !h.is_nil() {
+                reactor::close_when_unreachable(m, h);
+            }
+            h
         },
     )
 }

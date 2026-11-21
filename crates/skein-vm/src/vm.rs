@@ -557,6 +557,9 @@ pub struct Vm {
     budget: i64,
     /// When the running fiber's time slice began (sched::run_one).
     pub(crate) slice_start: std::time::Instant,
+    /// The running fiber resumes from a wait whose value is its alone
+    /// (`waiter::OWNS_RESULT`, sched::run_one).
+    pub(crate) wake_owned: bool,
     seen_attention: u64,
     /// The profiler's sample epoch this carrier last sampled at.
     prof_seen: u64,
@@ -899,6 +902,7 @@ impl Vm {
             key_buf: Vec::new(),
             budget: BUDGET,
             slice_start: std::time::Instant::now(),
+            wake_owned: false,
             seen_attention: 0,
             prof_seen: 0,
             cur_st: std::ptr::null_mut(),
@@ -2018,6 +2022,7 @@ impl Vm {
                 let err = f.field(fiber::WAKE_ERR);
                 f.set_field(fiber::WAKE_ERR, Value::NIL);
                 let cancel = f.fiber_cancel();
+                let owned = std::mem::take(&mut self.wake_owned);
                 // Where the value of the operation the fiber parked in goes.
                 let dest = match mode {
                     fiber::DELIVER | fiber::DELIVER_PAIR => Some(Some(a(*st.code.add(st.pc - 1)))),
@@ -2038,6 +2043,12 @@ impl Vm {
                     _ => None,
                 };
                 pending = if cancel != 0 {
+                    // (a handle the blocking pool opened for this fiber,
+                    // which it won't see now: nothing else holds it)
+                    let v = f.field(fiber::WAKE_VALUE);
+                    if owned && v.is(Kind::Handle) {
+                        crate::reactor::close_id(v.word(skein_rt::conc::handle::ID));
+                    }
                     Some((cancel_error(cancel as i64), None))
                 } else if !err.is_nil() {
                     Some((crate::sched::wake_error(err), dest))

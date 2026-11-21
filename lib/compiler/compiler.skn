@@ -328,10 +328,15 @@
          ;; function itself still prints as fn)
          ;; (a named one inside another function is named for it too,
          ;; outer/name: its code isn't the var's of that name, which
-         ;; restarting its frame would run instead; it prints as ns/name)
+         ;; restarting its frame would run instead; it prints as ns/name.
+         ;; Inside an anonymous function that has no name of its own (a
+         ;; top-level form's, with no def), it's ns/fn/name, for the same
+         ;; reason)
          inside (:fname (peek (:frames env)))
+         nested (> (count (:frames env)) 1)
          outer (or inside (:def-name env))
          fname (cond (and named inside) (symbol (str inside) (name self-name))
+                     (and named nested) (symbol (str (name (current-ns)) "/fn") (name self-name))
                      named (symbol (name (current-ns)) (name self-name))
                      outer (symbol (str outer) "fn"))
          self (when named (new-binding self-name))

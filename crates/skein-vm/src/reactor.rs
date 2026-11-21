@@ -146,6 +146,20 @@ fn lookup(id: u64) -> Option<Arc<Entry>> {
 
 /// Register `io` with the reactor and make its Handle (`kind` names it, as
 /// in `#<tcp 3>`).
+/// Close handle `h` once it's unreachable, as `skein.io/auto-close` does,
+/// for a handle made where Skein code can't do it before it could be lost
+/// (a file the blocking pool opened: a cancel landing between the open and
+/// auto-close left the handle open for good).
+pub(crate) fn close_when_unreachable(m: &mut Mutator, h: Value) {
+    let core = rt().symbol(m, None, "skein.core");
+    let name = rt().symbol(m, None, "%io-close-id");
+    if let Some(var) = rt().find_ns(core).and_then(|ns| ns.lookup(name)) {
+        // (a cleanup is a fiber's thunk: here a call spec, [f arg])
+        let spec = skein_rt::array::array_from(m, &[var, Value::fix(h.word(handle::ID) as i64)]);
+        skein_rt::weak::weak_new(m, h, spec);
+    }
+}
+
 pub(crate) fn register(m: &mut Mutator, mut io: Io, kind: &str, info: Value) -> std::result::Result<Value, String> {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     if let Some((src, interest)) = io.source() {

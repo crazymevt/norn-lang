@@ -57,7 +57,9 @@ pub(crate) fn run(vm: &mut Vm, job: impl FnOnce() -> Finish + Send + 'static) ->
     let me = vm.current;
     let claim = claim_new(&mut vm.m);
     // The job can't be interrupted: a cancel takes effect when it finishes.
-    let w = waiter_new(&mut vm.m, me, Value::NIL, claim, Value::NIL, waiter::NO_CANCEL_WAKE);
+    // (and a handle it opens is the fiber's alone: closed if the fiber
+    // resumes cancelled, and can't use it)
+    let w = waiter_new(&mut vm.m, me, Value::NIL, claim, Value::NIL, waiter::NO_CANCEL_WAKE | waiter::OWNS_RESULT);
     sched::park_on(vm, w, false);
     let root = sched::root(me);
     IN_FLIGHT.lock().unwrap().push(w);
@@ -111,23 +113,25 @@ fn worker() {
         let orphan = sched::delivering(|| {
             let r = finish(&mut m);
             // (a fiber cancelled while the job ran unwinds as it wakes,
-            // before it can see the result: a handle the job opened, which
-            // nothing else holds, is closed here instead of leaking)
+            // before it can see the result, and closes a handle the job
+            // opened then (`waiter::OWNS_RESULT`, vm.rs). One nobody is
+            // woken for, nothing else holds: it's closed here)
             let orphan = match &r {
-                Ok(v) if v.is(Kind::Handle) && w.field(waiter::FIBER).fiber_cancel() != 0 => Some(v.word(handle::ID)),
+                Ok(v) if v.is(Kind::Handle) => Some(v.word(handle::ID)),
                 _ => None,
             };
-            if try_claim(w.field(waiter::CLAIM)) {
-                match r {
-                    Ok(v) => sched::deliver(w, v, Value::NIL),
-                    Err(e) => {
-                        let err = crate::vm::failure_value(&mut m, &e);
-                        crate::sched::aset(w.field(waiter::FIBER), fiber::WAKE_ERR, err);
-                        sched::deliver(w, Value::NIL, Value::NIL);
-                    }
+            if !try_claim(w.field(waiter::CLAIM)) {
+                return orphan;
+            }
+            match r {
+                Ok(v) => sched::deliver(w, v, Value::NIL),
+                Err(e) => {
+                    let err = crate::vm::failure_value(&mut m, &e);
+                    crate::sched::aset(w.field(waiter::FIBER), fiber::WAKE_ERR, err);
+                    sched::deliver(w, Value::NIL, Value::NIL);
                 }
             }
-            orphan
+            None
         });
         if let Some(id) = orphan {
             crate::reactor::close_id(id);

@@ -1283,6 +1283,8 @@ fn run_one(vm: &mut Vm, f: Value) {
         if !sc.is_nil() && sc.field(scope::BODY) == f { sc } else { Value::NIL }
     };
     loop {
+        let w = aget(f, fiber::PARK);
+        vm.wake_owned = !w.is_nil() && w.word(waiter::FLAGS) & waiter::OWNS_RESULT != 0;
         aset(f, fiber::PARK, Value::NIL);
         aset(f, fiber::JOINING, Value::NIL);
         if !body_of.is_nil() {

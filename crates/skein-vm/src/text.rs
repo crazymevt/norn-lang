@@ -516,6 +516,12 @@ impl JsonReader<'_> {
         let text = &self.src[start..self.i];
         if float {
             let f: f64 = text.parse().map_err(|_| self.err("bad number"))?;
+            // (`1e400`: past a float's range it would be ##Inf, which no
+            // JSON can say and the writer refuses; serde_json and Go's
+            // encoding/json refuse it too)
+            if f.is_infinite() {
+                return Err(self.err("number out of range"));
+            }
             Ok(float_new(&mut vm.m, f))
         } else {
             match text.parse::<i64>().ok().and_then(Value::fixnum) {

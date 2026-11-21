@@ -12,6 +12,10 @@ pub fn hex_encode(b: &[u8]) -> String {
 }
 
 pub fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
+    // (named as a character, not by its first byte: "é" is 'é', not 'Ã')
+    if let Some(c) = s.chars().find(|c| !c.is_ascii_hexdigit()) {
+        return Err(format!("Invalid hex digit: {c:?}"));
+    }
     let digit = |c: u8| -> Result<u8, String> {
         match c {
             b'0'..=b'9' => Ok(c - b'0'),
@@ -49,6 +53,10 @@ pub fn base64_encode(b: &[u8], url: bool) -> String {
 
 /// Accepts either alphabet, with or without padding; whitespace is ignored.
 pub fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+    // (named as a character, not by its first byte)
+    if let Some(c) = s.chars().find(|&c| !(c.is_ascii_alphanumeric() || "+-/_=".contains(c) || c.is_ascii_whitespace())) {
+        return Err(format!("Invalid base64 character: {c:?}"));
+    }
     let val = |c: u8| -> Result<u32, String> {
         Ok(match c {
             b'A'..=b'Z' => c - b'A',
@@ -108,5 +116,13 @@ mod tests {
         }
         assert!(base64_decode("Zm9v=Yg").is_err());
         assert!(hex_decode("abc").is_err());
+    }
+
+    #[test]
+    fn errors_name_the_character() {
+        assert_eq!(hex_decode("é").unwrap_err(), "Invalid hex digit: 'é'");
+        assert_eq!(hex_decode("0g").unwrap_err(), "Invalid hex digit: 'g'");
+        assert_eq!(base64_decode("Zm9v→").unwrap_err(), "Invalid base64 character: '→'");
+        assert_eq!(base64_decode("Zm!v").unwrap_err(), "Invalid base64 character: '!'");
     }
 }

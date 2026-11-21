@@ -2,7 +2,7 @@
 ;;;;
 ;;;; Reading: objects become maps (keys as keywords, or as :keys makes them),
 ;;;; arrays become vectors, numbers become integers (of any size) or floats,
-;;;; null becomes nil.
+;;;; null becomes nil. A number past a float's range (`1e400`) is an error.
 ;;;;
 ;;;; Writing: maps (with string, keyword, symbol or number keys) become
 ;;;; objects; vectors, lists, sets and other sequences become arrays;

@@ -133,7 +133,8 @@
   or :create-new (create for writing, signalling FileExists if path exists
   already)."
   ^Handle [^String path ^Keyword mode]
-  (auto-close (%fs-open (str path) mode)))
+  ;; (%fs-open makes it close once unreachable itself)
+  (%fs-open (str path) mode))
 
 (defn sync!
   "Flush everything written to file handle h to storage, so it survives a

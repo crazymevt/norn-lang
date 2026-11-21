@@ -78,7 +78,8 @@ Data libraries (worktree C):
 
 ## Result
 
-Everything above is fixed with a regression check, except:
+Everything above is fixed with a regression check, except (all three
+done 2026-11-21, todo.md):
 - hex/base64 decode errors naming the wrong character (codec.rs), `1e400`
   reading as `##Inf`, and `%bytes-index-of` truncating: not done (P2).
 - A cancel landing between a blocking open's finish and the fiber resuming

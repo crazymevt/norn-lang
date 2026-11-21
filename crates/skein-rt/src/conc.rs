@@ -163,6 +163,9 @@ pub mod waiter {
     pub const NO_CANCEL_WAKE: u64 = 1;
     /// `await` without re-raising the awaited fiber's error (`%join`).
     pub const NO_RAISE: u64 = 2;
+    /// The value delivered is the fiber's alone (a handle the blocking pool
+    /// opened): if the fiber resumes cancelled, the handle is closed.
+    pub const OWNS_RESULT: u64 = 4;
 }
 
 pub fn waiter_new(m: &mut Mutator, fiber: Value, value: Value, claim: Value, chan: Value, flags: u64) -> Value {

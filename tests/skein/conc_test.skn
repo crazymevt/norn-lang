@@ -399,3 +399,23 @@
     (put! ch :stop)
     (is (= :local (deref result 5000 :timeout)))
     (is (= [[:local 1] [:local 1]] @restart-calls))))
+
+;;; and so inside an anonymous function with no name of its own (the
+;;; spawned thunk here, at the top level: its local was named user/name)
+(reset! restart-calls [])
+(let [ch (chan 1)
+      result (promise)
+      f (spawn-detached
+          (let [restart-helper (fn restart-helper [x]
+                                 (swap! restart-calls conj [:local x])
+                                 (let [cmd (take! ch)]
+                                   (if (vector? cmd) (%restart-frame (nth cmd 0) (nth cmd 1)) :local)))]
+            (deliver result (restart-helper 1))))]
+  (parked f)
+  (let [fr (first (filter #(= "restart-helper" (name (:fn %))) (%frames f)))]
+    (is (= "conc-test/fn" (namespace (:fn fr))))
+    (put! ch [(nth (:id fr) 0) (nth (:id fr) 1)])
+    (wait-for (fn [] (and (= 2 (count @restart-calls)) (%fiber-parked? f))))
+    (put! ch :stop)
+    (is (= :local (deref result 5000 :timeout)))
+    (is (= [[:local 1] [:local 1]] @restart-calls))))
