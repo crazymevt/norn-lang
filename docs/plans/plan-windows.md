@@ -110,8 +110,8 @@ plan had left them open):
    - Not changed: the command-line archive is a `.tar.gz` everywhere
      (Windows 10 1809 and later have `tar`). **A Windows layout came
      2026-11-20**: `skein package --windows`, below.
-8. **`skein package --windows`** (2026-11-20, made and checked on the
-   Mac, not yet run on Windows): see [Packaging for
+8. **`skein package --windows`** (2026-11-20, made on the Mac, and run
+   on Windows with Linnet's package): see [Packaging for
    Windows](#packaging-for-windows).
 
 ## Packaging for Windows
